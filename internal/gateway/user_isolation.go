@@ -82,6 +82,40 @@ func (s *Server) requireProviderAccessForUser(w http.ResponseWriter, r *http.Req
 	return true
 }
 
+// providerAllowedForKeyOwner reports whether the owner of an API key may still
+// use the given provider at request time. Keys with no owner belong to the
+// administrator (legacy/admin keys) and are unrestricted.
+//
+// Console-side checks (validateKeyProvidersForUser) only run when a key is
+// created or edited, so a key stays bound to whatever it was granted back then.
+// Without this request-time check, revoking a provider from a user in the 用户
+// page left every already-issued key of theirs working against that provider
+// indefinitely — both via its bound route and via its fallback chain.
+func (s *Server) providerAllowedForKeyOwner(key domain.APIKey, providerID string) bool {
+	ownerID := strings.TrimSpace(key.OwnerUserID)
+	if ownerID == "" {
+		return true
+	}
+	return s.allowedProviderIDsForUser(ownerID)[strings.TrimSpace(providerID)]
+}
+
+// allowedProviderChainForKey filters a failover chain down to the providers the
+// key's owner is still granted, preserving priority order. Admin-owned keys pass
+// through untouched.
+func (s *Server) allowedProviderChainForKey(key domain.APIKey, chain []string) []string {
+	if strings.TrimSpace(key.OwnerUserID) == "" {
+		return chain
+	}
+	allowed := s.allowedProviderIDsForUser(strings.TrimSpace(key.OwnerUserID))
+	out := make([]string, 0, len(chain))
+	for _, id := range chain {
+		if allowed[strings.TrimSpace(id)] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // ownedKeyIDs returns the IDs of API keys owned by the given user.
 func (s *Server) ownedKeyIDs(userID string) []string {
 	ids := []string{}

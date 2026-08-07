@@ -3296,8 +3296,9 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logs.AddApp("error", "chat request failed", err.Error())
-		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, http.StatusBadGateway, usage, ttftMs, body, []byte(err.Error()))
-		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		errStatus := upstreamErrorStatus(err)
+		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, errStatus, usage, ttftMs, body, []byte(err.Error()))
+		writeOpenAIError(w, errStatus, err.Error())
 		return
 	}
 	s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, status, usage, ttftMs, body, responseLog)
@@ -3406,8 +3407,9 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logs.AddApp("error", "responses request failed", err.Error())
-		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, http.StatusBadGateway, usage, ttftMs, body, []byte(err.Error()))
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": err.Error(), "type": "gateway_error"}})
+		errStatus := upstreamErrorStatus(err)
+		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, errStatus, usage, ttftMs, body, []byte(err.Error()))
+		writeJSON(w, errStatus, map[string]any{"error": map[string]any{"message": err.Error(), "type": "gateway_error"}})
 		return
 	}
 	s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, status, usage, ttftMs, body, responseLog)
@@ -3597,8 +3599,9 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logs.AddApp("error", "claude messages request failed", err.Error())
-		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, http.StatusBadGateway, usage, ttftMs, body, []byte(err.Error()))
-		writeClaudeError(w, http.StatusBadGateway, err.Error())
+		errStatus := upstreamErrorStatus(err)
+		s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, errStatus, usage, ttftMs, body, []byte(err.Error()))
+		writeClaudeError(w, errStatus, err.Error())
 		return
 	}
 	s.recordRequestLogFromRequestTTFT(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, decision.Action, decision.ConversionLabel, r.URL.Path, status, usage, ttftMs, body, responseLog)

@@ -512,6 +512,21 @@ func (s *Server) persistAPIKeyActiveProvider(keyID, providerID string) {
 	}
 }
 
+// errProviderNotAssigned marks a request refused because the API key's owner is
+// no longer granted any provider on the key's chain. Handlers map it to 403 so
+// the client and the request log show a permission denial instead of a
+// misleading 502 Bad Gateway.
+var errProviderNotAssigned = errors.New("permission denied")
+
+// upstreamErrorStatus maps an execute-flow error to the client-facing status.
+// Permission denials are 403; everything else stays a 502 upstream failure.
+func upstreamErrorStatus(err error) int {
+	if errors.Is(err, errProviderNotAssigned) {
+		return http.StatusForbidden
+	}
+	return http.StatusBadGateway
+}
+
 // executeProtocolFlowWithFailover tries the sticky/active provider then ordered
 // backups when the upstream failure looks like quota/auth/availability.
 func (s *Server) executeProtocolFlowWithFailover(
@@ -537,6 +552,23 @@ func (s *Server) executeProtocolFlowWithFailover(
 		status, usage, body, err := s.executeProtocolFlow(w, r, route, decision, model, req, clientProtocol, skipIncomingAuth)
 		s.recordProviderRequestOutcome(decision.ProviderID, status, body, err)
 		return status, usage, body, decision, model, err
+	}
+	// 普通用户的 Key 只能使用管理员当前授权的 Provider。授权是在“用户”页面随时可
+	// 改的，而 Key 的路由/兜底链是创建时写死的，所以必须在每次请求时重新校验，
+	// 不能只依赖创建 Key 时的校验（否则撤销授权后旧 Key 会一直可用）。
+	// 先过滤整条链再计算起点，这样即使 ActiveProviderID 指向已被撤销的 Provider，
+	// 也不会跳过链上仍被授权的首选 Provider。
+	if allowedChain := s.allowedProviderChainForKey(matchedKey, chain); len(allowedChain) != len(chain) {
+		for _, providerID := range chain {
+			if !s.providerAllowedForKeyOwner(matchedKey, providerID) {
+				s.logs.AddApp("warn", "provider not assigned to key owner, skipped", fmt.Sprintf("key=%s owner=%s provider=%s", matchedKey.ID, matchedKey.OwnerUserID, providerID))
+			}
+		}
+		chain = allowedChain
+		if len(chain) == 0 {
+			return http.StatusForbidden, TokenUsage{}, nil, decision, model,
+				fmt.Errorf("%w: provider %q is not assigned to your account", errProviderNotAssigned, strings.TrimSpace(route.ProviderID))
+		}
 	}
 	start := apiKeyEffectiveProviderIndex(matchedKey.ActiveProviderID, chain)
 	if start < 0 || start >= len(chain) {
@@ -809,6 +841,12 @@ func (s *Server) probeProviderAvailable(ctx context.Context, provider domain.Pro
 
 func (s *Server) decisionForAPIKey(route domain.Route, key domain.APIKey, fallback domain.RouteDecision) domain.RouteDecision {
 	chain := apiKeyProviderChain(route.ProviderID, key.FallbackProviderIDs)
+	// Mirror the request-time authorization filter in
+	// executeProtocolFlowWithFailover so the pre-flight decision (used for
+	// request-log attribution) never names a provider the owner lost access to.
+	if allowed := s.allowedProviderChainForKey(key, chain); len(allowed) > 0 {
+		chain = allowed
+	}
 	if len(chain) == 0 {
 		return fallback
 	}
