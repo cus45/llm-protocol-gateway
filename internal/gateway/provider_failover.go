@@ -27,10 +27,10 @@ const (
 const (
 	// Soft failures must repeat within this window before the provider is
 	// marked unavailable (avoids single 429/529/5xx blips painting "异常").
-	providerSoftFailureWindow     = 60 * time.Second
-	providerSoftFailureThreshold  = 3
-	providerSoftUnavailableTTL    = 1 * time.Minute
-	claudeUsageHardThresholdPct   = 95.0
+	providerSoftFailureWindow    = 60 * time.Second
+	providerSoftFailureThreshold = 3
+	providerSoftUnavailableTTL   = 1 * time.Minute
+	claudeUsageHardThresholdPct  = 95.0
 )
 
 // hardQuotaHints are narrow subscription/billing exhaustion signals. Broad
@@ -176,13 +176,13 @@ func truncateReason(s string) string {
 // next provider. Successful (2xx) responses flush through immediately so SSE
 // streaming still works.
 type failoverResponseWriter struct {
-	base       http.ResponseWriter
-	header     http.Header
-	status     int
-	buf        bytes.Buffer
-	canDefer   bool
+	base        http.ResponseWriter
+	header      http.Header
+	status      int
+	buf         bytes.Buffer
+	canDefer    bool
 	passthrough bool
-	discarded  bool
+	discarded   bool
 	wroteHeader bool
 }
 

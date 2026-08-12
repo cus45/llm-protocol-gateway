@@ -425,6 +425,51 @@ func TestRedactProviderQoderPATNeverConnected(t *testing.T) {
 
 // A disconnected provider must not silently keep forwarding via the lazy
 // token-refresh path — otherwise "断开连接" would do nothing observable.
+func TestQoderLiteralPAT(t *testing.T) {
+	cases := []struct {
+		name         string
+		apiKeySource string
+		want         string
+	}{
+		{"empty", "", ""},
+		{"plain pt-", "pt-abc123", "pt-abc123"},
+		{"literal prefix", "literal:pt-abc123", "pt-abc123"},
+		{"literal prefix with space", " literal:  pt-abc123 ", "pt-abc123"},
+		{"env source is dynamic", "env:QODER_PAT", ""},
+		{"keychain source is dynamic", "keychain:qoder", ""},
+		{"non-PAT plain source", "sk-not-a-qoder-pat", ""},
+	}
+	for _, tc := range cases {
+		provider := domain.Provider{APIKeySource: tc.apiKeySource}
+		got := qoderLiteralPAT(provider)
+		if got != tc.want {
+			t.Fatalf("%s: qoderLiteralPAT(%q) = %q, want %q", tc.name, tc.apiKeySource, got, tc.want)
+		}
+	}
+}
+
+func TestEnsureFreshQoderTokenPrefersLiteralPAT(t *testing.T) {
+	provider := domain.Provider{
+		ID: "p1", AuthType: domain.AuthTypeQoderPAT, Protocol: domain.ProtocolOpenAIChat,
+		APIKeySource: "pt-fresh-literal-pattern",
+		QoderPAT: &domain.QoderPATCredential{
+			RefreshToken: "pt-old-stored",
+			AccessToken:  "jt-fresh-looking",
+			ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			Connected:    true,
+		},
+	}
+	server := &Server{}
+	if _, err := server.ensureFreshQoderToken(provider); err == nil {
+		// The stored job token is fresh, so without the literal override this
+		// would return immediately; it must instead fail trying to exchange the
+		// (fake) literal PAT, proving the literal took precedence.
+		t.Fatal("expected an exchange error for the fake literal PAT")
+	} else if !strings.Contains(err.Error(), "job token exchange failed") {
+		t.Fatalf("expected an exchange failure, got %v", err)
+	}
+}
+
 func TestEnsureFreshQoderTokenRefusesWhenDisconnected(t *testing.T) {
 	provider := domain.Provider{
 		ID: "p1", AuthType: domain.AuthTypeQoderPAT, Protocol: domain.ProtocolOpenAIChat,

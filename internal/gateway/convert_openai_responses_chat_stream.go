@@ -74,12 +74,12 @@ func trimCallID(raw string) string {
 }
 
 type chatToResponsesStreamState struct {
-	w       http.ResponseWriter
-	opts    ChatToResponsesStreamOptions
-	responseID string
-	model      string
-	seq        int
-	usage      TokenUsage
+	w               http.ResponseWriter
+	opts            ChatToResponsesStreamOptions
+	responseID      string
+	model           string
+	seq             int
+	usage           TokenUsage
 	responseCreated bool
 
 	messageItemID string
@@ -93,16 +93,16 @@ type chatToResponsesStreamState struct {
 }
 
 type streamingToolCallState struct {
-	itemID             string
-	callID             string
-	name               string // Responses-facing name (may be bare after restore)
-	flatName           string // Chat / Claude flat name used for restore lookup
-	arguments          strings.Builder
-	writtenArguments   int
-	outputIndex        int
-	opened             bool
-	done               bool
-	responsesItemType  string // function_call | custom_tool_call | tool_search_call
+	itemID            string
+	callID            string
+	name              string // Responses-facing name (may be bare after restore)
+	flatName          string // Chat / Claude flat name used for restore lookup
+	arguments         strings.Builder
+	writtenArguments  int
+	outputIndex       int
+	opened            bool
+	done              bool
+	responsesItemType string // function_call | custom_tool_call | tool_search_call
 }
 
 func (s *chatToResponsesStreamState) nextSeq() int {

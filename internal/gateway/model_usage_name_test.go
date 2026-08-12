@@ -58,8 +58,8 @@ func TestRewriteRequestLogModelsForUsage(t *testing.T) {
 		}},
 		Routes: []domain.Route{{ID: "r1", ProviderID: "p1"}},
 		APIKeys: []domain.APIKey{{
-			ID:     "k1",
-			Name:   "k1",
+			ID:      "k1",
+			Name:    "k1",
 			RouteID: "r1",
 			ModelAliases: map[string]string{
 				"luca-claude-sonnet-5": "claude-sonnet-5",

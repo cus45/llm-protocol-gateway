@@ -443,7 +443,7 @@ func TestResponsesToolsToOpenAIChatNormalizesCustomAndDropsBuiltins(t *testing.T
 				"function": map[string]any{
 					"name":        "already_nested",
 					"description": "ok",
-					"parameters":   map[string]any{"type": "object", "properties": map[string]any{}},
+					"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 				},
 			},
 		},

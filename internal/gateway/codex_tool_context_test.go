@@ -47,13 +47,13 @@ func TestCodexToolContextNamespaceFlatten(t *testing.T) {
 			},
 			map[string]any{"type": "tool_search"},
 			map[string]any{
-				"type": "custom",
-				"name": "apply_patch",
+				"type":        "custom",
+				"name":        "apply_patch",
 				"description": "Apply a patch",
 			},
 			map[string]any{
-				"type": "function",
-				"name": "exec_command",
+				"type":       "function",
+				"name":       "exec_command",
 				"parameters": map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 		},

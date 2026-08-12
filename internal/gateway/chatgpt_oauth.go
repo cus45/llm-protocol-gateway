@@ -219,7 +219,7 @@ type chatgptTokenResponse struct {
 }
 
 type chatgptIDTokenClaims struct {
-	Email     string `json:"email"`
+	Email      string `json:"email"`
 	OpenAIAuth *struct {
 		ChatGPTAccountID string `json:"chatgpt_account_id"`
 		ChatGPTUserID    string `json:"chatgpt_user_id"`

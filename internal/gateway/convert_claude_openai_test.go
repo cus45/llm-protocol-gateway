@@ -231,7 +231,7 @@ func TestOpenAIChatToClaudeRequestParallelToolCalls(t *testing.T) {
 				"type": "function",
 				"function": map[string]any{
 					"name":       "lookup",
-					"parameters":  map[string]any{"type": "object"},
+					"parameters": map[string]any{"type": "object"},
 				},
 			},
 		},

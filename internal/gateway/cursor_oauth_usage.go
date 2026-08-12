@@ -36,12 +36,12 @@ type CursorOAuthUsageReport struct {
 }
 
 type cursorPeriodUsageResponse struct {
-	BillingCycleStart string `json:"billingCycleStart"`
-	BillingCycleEnd   string `json:"billingCycleEnd"`
-	DisplayMessage    string `json:"displayMessage"`
+	BillingCycleStart                string `json:"billingCycleStart"`
+	BillingCycleEnd                  string `json:"billingCycleEnd"`
+	DisplayMessage                   string `json:"displayMessage"`
 	AutoModelSelectedDisplayMessage  string `json:"autoModelSelectedDisplayMessage"`
 	NamedModelSelectedDisplayMessage string `json:"namedModelSelectedDisplayMessage"`
-	PlanUsage *struct {
+	PlanUsage                        *struct {
 		TotalSpend       int     `json:"totalSpend"`
 		IncludedSpend    int     `json:"includedSpend"`
 		BonusSpend       int     `json:"bonusSpend"`
@@ -55,9 +55,9 @@ type cursorPeriodUsageResponse struct {
 type cursorAuthUsageResponse struct {
 	StartOfMonth string `json:"startOfMonth"`
 	GPT4         *struct {
-		NumRequests     int  `json:"numRequests"`
-		NumRequestsTotal int `json:"numRequestsTotal"`
-		MaxRequestUsage *int `json:"maxRequestUsage"`
+		NumRequests      int  `json:"numRequests"`
+		NumRequestsTotal int  `json:"numRequestsTotal"`
+		MaxRequestUsage  *int `json:"maxRequestUsage"`
 	} `json:"gpt-4"`
 }
 

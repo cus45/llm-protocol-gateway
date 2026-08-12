@@ -323,6 +323,7 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: #3b82f6; color: #
 .btn.danger { color: #fff; border-color: transparent; background: linear-gradient(135deg, #dc2626, #b91c1c); }
 .mini-btn { border: 0; border-radius: 11px; padding: 8px 10px; color: #1d4ed8; background: var(--blue-soft); font-size: 12px; }
 .mini-btn.copied { color: #15803d; background: rgba(220, 252, 231, 0.9); }
+.mini-btn.danger { color: #dc2626; background: var(--red-soft); }
 .route-actions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .icon-btn { border: 0; border-radius: 999px; padding: 6px 9px; cursor: pointer; font-size: 12px; font-weight: 800; background: rgba(15, 23, 42, 0.06); color: var(--muted); }
 .icon-btn.danger { color: #991b1b; background: var(--red-soft); }

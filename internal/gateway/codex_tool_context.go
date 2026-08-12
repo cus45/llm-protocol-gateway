@@ -14,11 +14,11 @@ import (
 // sub2api responses_namespace.go). See THIRD_PARTY_NOTICES.md.
 
 const (
-	codexChatToolNameMaxLen          = 64
-	codexToolSearchProxyName         = "tool_search"
-	codexCustomToolInputField        = "input"
-	codexCustomToolInputDescription  = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description."
-	codexCustomToolMetadataHeading   = "Original tool definition:"
+	codexChatToolNameMaxLen         = 64
+	codexToolSearchProxyName        = "tool_search"
+	codexCustomToolInputField       = "input"
+	codexCustomToolInputDescription = "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description."
+	codexCustomToolMetadataHeading  = "Original tool definition:"
 )
 
 type codexToolKind int

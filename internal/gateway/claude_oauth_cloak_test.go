@@ -137,10 +137,10 @@ func TestRemapClaudeOAuthToolNamesPreservesAllServerToolSurfaces(t *testing.T) {
 			t.Fatalf("blocks[%d].%s=%q want %q (block=%#v)", i, field, got, want, block)
 		}
 	}
-	assertName(0, "name", "web_search")      // server_tool_use
-	assertName(1, "name", "web_fetch")       // hard denylist
-	assertName(2, "name", "bash")            // request-scoped server tool
-	assertName(3, "name", "Write")           // client tool still cloaked
+	assertName(0, "name", "web_search") // server_tool_use
+	assertName(1, "name", "web_fetch")  // hard denylist
+	assertName(2, "name", "bash")       // request-scoped server tool
+	assertName(3, "name", "Write")      // client tool still cloaked
 	refs := blocks[4].(map[string]any)["content"].([]any)
 	if stringValue(refs[0].(map[string]any)["tool_name"]) != "code_execution" {
 		t.Fatalf("nested code_execution remapped: %#v", refs[0])

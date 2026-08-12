@@ -20,14 +20,14 @@ type ClaudeOAuthUsageBucket struct {
 
 // ClaudeOAuthUsageReport is the client-safe usage snapshot for a claude_oauth provider.
 type ClaudeOAuthUsageReport struct {
-	Available  bool                              `json:"available"`
-	Error      string                            `json:"error,omitempty"`
-	FetchedAt  string                            `json:"fetchedAt,omitempty"`
-	FiveHour   *ClaudeOAuthUsageBucket           `json:"five_hour,omitempty"`
-	SevenDay   *ClaudeOAuthUsageBucket           `json:"seven_day,omitempty"`
-	SevenDayOpus   *ClaudeOAuthUsageBucket       `json:"seven_day_opus,omitempty"`
-	SevenDaySonnet *ClaudeOAuthUsageBucket       `json:"seven_day_sonnet,omitempty"`
-	ExtraUsage map[string]any                    `json:"extra_usage,omitempty"`
+	Available      bool                    `json:"available"`
+	Error          string                  `json:"error,omitempty"`
+	FetchedAt      string                  `json:"fetchedAt,omitempty"`
+	FiveHour       *ClaudeOAuthUsageBucket `json:"five_hour,omitempty"`
+	SevenDay       *ClaudeOAuthUsageBucket `json:"seven_day,omitempty"`
+	SevenDayOpus   *ClaudeOAuthUsageBucket `json:"seven_day_opus,omitempty"`
+	SevenDaySonnet *ClaudeOAuthUsageBucket `json:"seven_day_sonnet,omitempty"`
+	ExtraUsage     map[string]any          `json:"extra_usage,omitempty"`
 }
 
 func parseClaudeOAuthUsageBucket(raw any) *ClaudeOAuthUsageBucket {
@@ -84,10 +84,10 @@ func fetchClaudeOAuthUsage(ctx context.Context, accessToken string) (ClaudeOAuth
 	}
 
 	report := ClaudeOAuthUsageReport{
-		Available: true,
-		FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		FiveHour:  parseClaudeOAuthUsageBucket(payload["five_hour"]),
-		SevenDay:  parseClaudeOAuthUsageBucket(payload["seven_day"]),
+		Available:      true,
+		FetchedAt:      time.Now().UTC().Format(time.RFC3339),
+		FiveHour:       parseClaudeOAuthUsageBucket(payload["five_hour"]),
+		SevenDay:       parseClaudeOAuthUsageBucket(payload["seven_day"]),
 		SevenDayOpus:   parseClaudeOAuthUsageBucket(payload["seven_day_opus"]),
 		SevenDaySonnet: parseClaudeOAuthUsageBucket(payload["seven_day_sonnet"]),
 	}

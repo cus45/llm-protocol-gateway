@@ -6,11 +6,38 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
+
+// chatgptFlexibleFloat accepts both a JSON number and a numeric string,
+// since the ChatGPT backend has returned credits.balance as either.
+type chatgptFlexibleFloat float64
+
+func (f *chatgptFlexibleFloat) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*f = 0
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(b, &n); err == nil {
+		*f = chatgptFlexibleFloat(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("invalid number value %q", string(b))
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return fmt.Errorf("invalid number value %q: %w", string(b), err)
+	}
+	*f = chatgptFlexibleFloat(v)
+	return nil
+}
 
 const chatgptOAuthUsageURL = "https://chatgpt.com/backend-api/wham/usage"
 
@@ -24,38 +51,38 @@ type ChatGPTOAuthUsageBucket struct {
 
 // ChatGPTOAuthUsageReport is the client-safe usage snapshot for chatgpt_oauth.
 type ChatGPTOAuthUsageReport struct {
-	Available bool                       `json:"available"`
-	Error     string                     `json:"error,omitempty"`
-	FetchedAt string                     `json:"fetchedAt,omitempty"`
-	PlanName  string                     `json:"planName,omitempty"`
-	Message   string                     `json:"message,omitempty"`
-	Buckets   []ChatGPTOAuthUsageBucket  `json:"buckets,omitempty"`
+	Available bool                      `json:"available"`
+	Error     string                    `json:"error,omitempty"`
+	FetchedAt string                    `json:"fetchedAt,omitempty"`
+	PlanName  string                    `json:"planName,omitempty"`
+	Message   string                    `json:"message,omitempty"`
+	Buckets   []ChatGPTOAuthUsageBucket `json:"buckets,omitempty"`
 }
 
 type chatgptWhamUsageResponse struct {
 	Email     string `json:"email"`
 	PlanType  string `json:"plan_type"`
 	RateLimit *struct {
-		Allowed      bool `json:"allowed"`
-		LimitReached bool `json:"limit_reached"`
+		Allowed       bool `json:"allowed"`
+		LimitReached  bool `json:"limit_reached"`
 		PrimaryWindow *struct {
-			UsedPercent         float64 `json:"used_percent"`
-			LimitWindowSeconds  int64   `json:"limit_window_seconds"`
-			ResetAfterSeconds   int64   `json:"reset_after_seconds"`
-			ResetAt             int64   `json:"reset_at"`
+			UsedPercent        float64 `json:"used_percent"`
+			LimitWindowSeconds int64   `json:"limit_window_seconds"`
+			ResetAfterSeconds  int64   `json:"reset_after_seconds"`
+			ResetAt            int64   `json:"reset_at"`
 		} `json:"primary_window"`
 		SecondaryWindow *struct {
-			UsedPercent         float64 `json:"used_percent"`
-			LimitWindowSeconds  int64   `json:"limit_window_seconds"`
-			ResetAfterSeconds   int64   `json:"reset_after_seconds"`
-			ResetAt             int64   `json:"reset_at"`
+			UsedPercent        float64 `json:"used_percent"`
+			LimitWindowSeconds int64   `json:"limit_window_seconds"`
+			ResetAfterSeconds  int64   `json:"reset_after_seconds"`
+			ResetAt            int64   `json:"reset_at"`
 		} `json:"secondary_window"`
 	} `json:"rate_limit"`
 	Credits *struct {
-		HasCredits          bool    `json:"has_credits"`
-		Unlimited           bool    `json:"unlimited"`
-		OverageLimitReached bool    `json:"overage_limit_reached"`
-		Balance             *float64 `json:"balance"`
+		HasCredits          bool                  `json:"has_credits"`
+		Unlimited           bool                  `json:"unlimited"`
+		OverageLimitReached bool                  `json:"overage_limit_reached"`
+		Balance             *chatgptFlexibleFloat `json:"balance"`
 	} `json:"credits"`
 }
 
@@ -156,7 +183,7 @@ func buildChatGPTOAuthUsageReport(raw chatgptWhamUsageResponse) ChatGPTOAuthUsag
 			detail = "credits 无限"
 		} else if raw.Credits.HasCredits {
 			if raw.Credits.Balance != nil {
-				detail = fmt.Sprintf("credits 余额 %.2f", *raw.Credits.Balance)
+				detail = fmt.Sprintf("credits 余额 %.2f", float64(*raw.Credits.Balance))
 			} else {
 				detail = "有 credits"
 			}

@@ -25,8 +25,10 @@ func TestResolveModelContextLengthClaude(t *testing.T) {
 		{"claude-opus-4-5-20251101", 0, contextLength200K},
 		{"claude-4.5-opus-high", 0, contextLength200K},
 		{"claude-4-sonnet", 0, contextLength200K},
-		{"gpt-5.5", 0, contextLengthDefault},
-		{"gpt-5.5", 256000, 256000},
+		{"gpt-5.5", 0, contextLength1M},
+		{"gpt-5.5", 256000, contextLength1M},
+		{"gpt-5.6-terra", 0, contextLength1050K},
+		{"gpt-5.6-luna", 0, contextLength1050K},
 		{"claude-opus-4-8", 2_000_000, 2_000_000},
 	}
 	for _, tc := range cases {

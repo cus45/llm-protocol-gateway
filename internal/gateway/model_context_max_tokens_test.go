@@ -57,6 +57,22 @@ func TestQoderTierMaxOutputTokens(t *testing.T) {
 	}
 }
 
+func TestGPT56MaxOutputTokens(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"} {
+		ctxLen := resolveModelContextLength(id, 0)
+		if ctxLen != contextLength1050K {
+			t.Fatalf("%s context length: got %d, want %d", id, ctxLen, contextLength1050K)
+		}
+		if got := resolveModelMaxOutputTokens(id, ctxLen); got != 128_000 {
+			t.Fatalf("%s max output: got %d, want 128000", id, got)
+		}
+	}
+	if got := resolveModelContextLength("gpt-5.5", 0); got < contextLength1M {
+		t.Fatalf("gpt-5.5 context length: got %d, want >= %d", got, contextLength1M)
+	}
+}
+
 func TestFillModelTokenBudgets(t *testing.T) {
 	t.Parallel()
 	model := domain.Model{ID: "claude-sonnet-4-5"}

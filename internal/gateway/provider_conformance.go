@@ -17,28 +17,28 @@ const (
 	conformanceSeverityRequired    = "required"
 	conformanceSeverityRecommended = "recommended"
 
-	conformancePrompt         = "2+2等于几"
-	conformanceBodyLimit      = 256 * 1024
-	conformanceHTTPTimeout    = 120 * time.Second
-	conformanceCaseModels     = "models"
-	conformanceCaseNonStream  = "nonstream_shape"
-	conformanceCaseStream     = "stream_shape"
-	conformanceCaseUsage      = "usage_fields"
-	conformanceCaseCacheHit   = "cache_hit"
+	conformancePrompt        = "2+2等于几"
+	conformanceBodyLimit     = 256 * 1024
+	conformanceHTTPTimeout   = 120 * time.Second
+	conformanceCaseModels    = "models"
+	conformanceCaseNonStream = "nonstream_shape"
+	conformanceCaseStream    = "stream_shape"
+	conformanceCaseUsage     = "usage_fields"
+	conformanceCaseCacheHit  = "cache_hit"
 )
 
 // conformanceCaseResult is one protocol probe result.
 type conformanceCaseResult struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Severity  string `json:"severity"` // required | recommended
-	Passed    bool   `json:"passed"`
-	Skipped   bool   `json:"skipped,omitempty"`
-	LatencyMs int64  `json:"latencyMs"`
-	Detail    string `json:"detail,omitempty"`
-	Hint      string `json:"hint,omitempty"`
-	TargetURL string `json:"targetUrl,omitempty"`
-	HTTPStatus int   `json:"httpStatus,omitempty"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Severity   string `json:"severity"` // required | recommended
+	Passed     bool   `json:"passed"`
+	Skipped    bool   `json:"skipped,omitempty"`
+	LatencyMs  int64  `json:"latencyMs"`
+	Detail     string `json:"detail,omitempty"`
+	Hint       string `json:"hint,omitempty"`
+	TargetURL  string `json:"targetUrl,omitempty"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
 }
 
 // conformanceReport is the full suite result for one provider.

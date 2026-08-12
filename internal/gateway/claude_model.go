@@ -34,12 +34,12 @@ func claudeModelAliasEntries() []map[string]any {
 	for alias, target := range claudeModelAliases {
 		contextLen := resolveModelContextLength(target, 0)
 		entries = append(entries, map[string]any{
-			"id":                alias,
-			"type":              "model",
-			"display_name":      target,
-			"created_at":        "",
-			"max_input_tokens":  contextLen,
-			"max_tokens":        resolveModelMaxOutputTokens(target, contextLen),
+			"id":               alias,
+			"type":             "model",
+			"display_name":     target,
+			"created_at":       "",
+			"max_input_tokens": contextLen,
+			"max_tokens":       resolveModelMaxOutputTokens(target, contextLen),
 		})
 	}
 	return entries

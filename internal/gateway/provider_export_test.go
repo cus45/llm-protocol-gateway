@@ -93,7 +93,7 @@ func TestImportProvidersNameMatchAndOAuthSecretMerge(t *testing.T) {
 		Providers: []domain.Provider{
 			{
 				ID: "oauth-1", Name: "Claude Sub", Protocol: domain.ProtocolClaude, AuthType: domain.AuthTypeClaudeOAuth,
-				BaseURL: "https://api.anthropic.com",
+				BaseURL:     "https://api.anthropic.com",
 				ClaudeOAuth: &domain.ClaudeOAuthCredential{AccessToken: "secret-access", RefreshToken: "secret-refresh", AccountLabel: "old"},
 			},
 		},

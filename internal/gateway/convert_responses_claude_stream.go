@@ -102,11 +102,11 @@ func (v *visibilityGatedSSEWriter) markVisible() {
 func (v *visibilityGatedSSEWriter) everVisible() bool { return v.visible }
 
 type claudeToResponsesDirectStreamState struct {
-	w       http.ResponseWriter
-	visGate *visibilityGatedSSEWriter
-	model   string
+	w          http.ResponseWriter
+	visGate    *visibilityGatedSSEWriter
+	model      string
 	responseID string
-	toolCtx *codexToolContext
+	toolCtx    *codexToolContext
 
 	seq             int
 	outputIndex     int

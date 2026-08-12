@@ -16,12 +16,12 @@ import (
 const providerCacheRound2UserPrompt = "继续"
 
 type providerChatTestRequest struct {
-	Model          string `json:"model"`
-	Message        string `json:"message"`
-	SystemPrompt   string `json:"systemPrompt"`
-	UserPrompt     string `json:"userPrompt"`
-	ThinkingField  string `json:"thinkingField"`
-	ThinkingValue  string `json:"thinkingValue"`
+	Model         string `json:"model"`
+	Message       string `json:"message"`
+	SystemPrompt  string `json:"systemPrompt"`
+	UserPrompt    string `json:"userPrompt"`
+	ThinkingField string `json:"thinkingField"`
+	ThinkingValue string `json:"thinkingValue"`
 }
 
 func resolveProviderTestModel(model string) string {

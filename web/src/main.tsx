@@ -5442,6 +5442,19 @@ function App() {
     }
   }
 
+  async function parseRouteTestResponse(response: Response): Promise<RouteTestResult> {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('json')) {
+      return await response.json() as RouteTestResult;
+    }
+    const text = (await response.text()).slice(0, 2000);
+    return {
+      success: false,
+      status: response.status,
+      error: `HTTP ${response.status} · ${contentType || '非 JSON 响应'}：${text}`,
+    };
+  }
+
   async function runChatTest() {
     if (!chatTestContext) {
       showToast('请先选择测试对象');
@@ -5479,7 +5492,7 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: chatTestModel.trim(), message: chatTestMessage.trim() }),
         });
-        const result = await response.json() as RouteTestResult;
+        const result = await parseRouteTestResponse(response);
         if (stillCurrent()) setChatTestResult(result);
         showToast(result.success ? `对话测试成功：HTTP ${result.status}` : `对话测试未通过：${result.status || result.error || 'unknown'}`);
       } else {
@@ -5503,23 +5516,37 @@ function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(baseBody),
         });
-        const result = await mainResponse.json() as RouteTestResult;
+        const result = await parseRouteTestResponse(mainResponse);
         if (stillCurrent()) setChatTestResult(result);
         if (supportsExtraTests) {
-          const [cacheResponse, thinkingResponse] = await Promise.all([
-            fetch(`${providerPath}/cache-test`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(baseBody),
-            }),
-            fetch(`${providerPath}/thinking-test`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(thinkingBody),
-            }),
-          ]);
-          const cacheResult = await cacheResponse.json() as ProviderCacheTestResult;
-          const thinkingResult = await thinkingResponse.json() as ProviderThinkingTestResult;
+          let cacheResponse: Response | null = null;
+          let thinkingResponse: Response | null = null;
+          try {
+            [cacheResponse, thinkingResponse] = await Promise.all([
+              fetch(`${providerPath}/cache-test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(baseBody),
+              }),
+              fetch(`${providerPath}/thinking-test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(thinkingBody),
+              }),
+            ]);
+          } catch { /* extra tests are best-effort; the main result is authoritative */ }
+          let cacheResult: ProviderCacheTestResult | null = null;
+          let thinkingResult: ProviderThinkingTestResult | null = null;
+          if (cacheResponse) {
+            try {
+              cacheResult = await parseRouteTestResponse(cacheResponse) as ProviderCacheTestResult;
+            } catch { /* same best-effort rule */ }
+          }
+          if (thinkingResponse) {
+            try {
+              thinkingResult = await parseRouteTestResponse(thinkingResponse) as ProviderThinkingTestResult;
+            } catch { /* same best-effort rule */ }
+          }
           if (stillCurrent()) {
             setCacheTestResult(cacheResult);
             setThinkingTestResult(thinkingResult);
@@ -6424,17 +6451,8 @@ function App() {
   }
 
   async function deleteProvider(providerID: string, providerName: string) {
-    const usedByKeys = (state.apiKeys || []).filter((key) => apiKeyReferencesProvider(key, state.routes, providerID));
-    if (usedByKeys.length > 0) {
-      showToast(`无法删除：${providerName} 正被 ${usedByKeys.length} 个 API 密钥引用（含备选）`);
-      return;
-    }
     const usedBy = state.routes.filter((route) => route.providerId === providerID);
-    if (usedBy.length > 0) {
-      showToast(`无法删除：${providerName} 正被 ${usedBy.map((route) => route.name).join(', ')} 使用`);
-      return;
-    }
-    if (!window.confirm(`确定删除输入 Provider：${providerName}？`)) return;
+    if (!window.confirm(`确定删除输入 Provider：${providerName}？\n\n绑定到该 Provider 的 API 密钥引用（备选 / 故障转移 / 模型覆盖）将自动重置为空${usedBy.length > 0 ? `；使用它的 ${usedBy.length} 个路由（${usedBy.map((route) => route.name).join('、')}）将一并删除，绑定这些路由的密钥 RouteID 重置为空` : ''}。`)) return;
     setSaving(true);
     try {
       const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerID)}`, { method: 'DELETE' });
@@ -6448,6 +6466,38 @@ function App() {
       await refreshAppLogs();
     } catch (error) {
       showToast(`删除 Provider 失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteSelectedProviders() {
+    const ids = selectedExportProviderIDs.filter((id) => (state.providers || []).some((provider) => provider.id === id));
+    if (ids.length === 0) return;
+    const names = ids.map((id) => (state.providers || []).find((provider) => provider.id === id)?.name || id);
+    if (!window.confirm(`确定删除选中的 ${ids.length} 个输入 Provider？\n\n${names.join('、')}\n\n绑定到这些 Provider 的 API 密钥引用（备选 / 故障转移 / 模型覆盖）将自动重置为空；使用这些 Provider 的路由将一并删除，绑定这些路由的密钥 RouteID 重置为空。`)) return;
+    setSaving(true);
+    try {
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        return id;
+      }));
+      const deleted = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+      const failed = results.length - deleted.length;
+      setSelectedExportProviderIDs((current) => current.filter((id) => !deleted.includes(id)));
+      if (selectedProviderID && deleted.includes(selectedProviderID)) {
+        setSelectedProviderID('');
+      }
+      await refreshState(false);
+      await refreshAppLogs();
+      if (failed > 0) {
+        showToast(`已删除 ${deleted.length} 个 Provider，${failed} 个失败`);
+      } else {
+        showToast(`已删除 ${deleted.length} 个输入 Provider`);
+      }
+    } catch (error) {
+      showToast(`批量删除失败：${String(error)}`);
     } finally {
       setSaving(false);
     }
@@ -7643,8 +7693,8 @@ function App() {
                   <h2 className="panel-title">输入 Provider</h2>
                   <p className="panel-desc">
                     {isNormalUser
-                      ? '展示管理员授权给你的 Provider（只读）以及你自己创建的 Provider（可编辑/克隆/删除/对话测试/获取模型）。删除前会检查是否被 API 密钥引用。'
-                      : '用户自定义添加的上游 Provider。删除前会检查是否被 API 密钥引用。列表按近 3 日请求量排序。支持勾选后导出/导入配置（含 apiKeySource 与已持久化的 OAuth 元数据）。'}
+                      ? '展示管理员授权给你的 Provider（只读）以及你自己创建的 Provider（可编辑/克隆/删除/对话测试/获取模型）。删除时绑定该 Provider 的 API 密钥引用会自动重置为空。'
+                      : '用户自定义添加的上游 Provider。删除时绑定该 Provider 的 API 密钥引用会自动重置为空。列表按近 3 日请求量排序。支持勾选后导出/导入配置（含 apiKeySource 与已持久化的 OAuth 元数据）。'}
                   </p>
                 </div>
                 {isNormalUser ? (
@@ -7746,7 +7796,10 @@ function App() {
                   </label>
                   <span className="providers-toolbar-meta">已选 {selectedExportProviderIDs.length} / {sortedProviders.length}</span>
                   {selectedExportProviderIDs.length > 0 ? (
-                    <button className="mini-btn" type="button" onClick={clearExportProviderSelection}>清除选择</button>
+                    <>
+                      <button className="mini-btn danger" type="button" disabled={saving} onClick={() => void deleteSelectedProviders()}>批量删除</button>
+                      <button className="mini-btn" type="button" onClick={clearExportProviderSelection}>清除选择</button>
+                    </>
                   ) : null}
                 </div>
               ) : null}
@@ -7817,7 +7870,7 @@ function App() {
                   })}
                 </div>
               )}
-              {selectedProvider && !isNormalUser ? <div className="hint-line">当前 Provider 被 {activeProviderRouteCount} 个 API 密钥引用（含备选）。引用数不为 0 时不能删除。</div> : null}
+              {selectedProvider && !isNormalUser ? <div className="hint-line">当前 Provider 被 {activeProviderRouteCount} 个 API 密钥引用（含备选）。删除时这些密钥的 Provider 绑定会自动重置为空。</div> : null}
             </div>
           </section>
           )}
@@ -11031,7 +11084,7 @@ function ProviderCard({ active, selected, name, providerId, protocol, tone, url,
           <button className="icon-btn" disabled={!!chatTesting} onClick={(event) => { event.stopPropagation(); onChatTest(); }} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
           <button className="icon-btn" onClick={(event) => { event.stopPropagation(); onEdit(); }} title="编辑 Provider">编辑</button>
           <button className="icon-btn" onClick={(event) => { event.stopPropagation(); onClone(); }} title="克隆为新 Provider">克隆</button>
-          <button className="icon-btn danger" disabled={usedCount > 0} onClick={(event) => { event.stopPropagation(); onDelete(); }} title={usedCount > 0 ? '该 Provider 正被 API Key 引用' : '删除 Provider'}>删除</button>
+          <button className="icon-btn danger" onClick={(event) => { event.stopPropagation(); onDelete(); }} title="删除 Provider（绑定该 Provider 的 API 密钥引用将自动重置为空）">删除</button>
           {onToggleEnabled ? (
             <button
               className={`icon-btn${providerDisabled ? '' : ' danger'}`}

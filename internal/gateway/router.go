@@ -1053,33 +1053,53 @@ func (r *Router) routeLocked(routeID string) (domain.Route, bool) {
 // DeleteProvider soft-deletes a provider: it marks the row Deleted/DeletedAt
 // instead of removing it, so an accidental delete can be undone with
 // RestoreProvider (config, models, and OAuth credentials are preserved
-// on disk). The provider still can't be deleted while a route or API key
-// references it — that guard is unrelated to soft-vs-hard delete and stays
-// in place so in-use providers are never silently orphaned. Deleting an
-// already-deleted provider is reported as not found (it is effectively gone
-// from every normal code path already). Use PurgeProvider to actually free
-// the row once you're sure the delete wasn't a mistake.
+// on disk). Dependents are cleaned up automatically so dead providers can be
+// removed in bulk without editing every referencing object first:
+//   - API keys: active provider, fallback list, and per-fallback model
+//     overrides pointing at this provider are reset to empty;
+//   - routes: routes using this provider are deleted, and API keys bound
+//     to those routes get RouteID reset to empty.
+//
+// Deleting an already-deleted provider is reported as not found (it is
+// effectively gone from every normal code path already). Use PurgeProvider to
+// actually free the row once you're sure the delete wasn't a mistake.
 func (r *Router) DeleteProvider(providerID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	removedRoutes := make(map[string]bool)
 	for _, route := range r.state.Routes {
 		if route.ProviderID == providerID {
-			return fmt.Errorf("provider %q is used by route %q", providerID, route.Name)
+			removedRoutes[route.ID] = true
 		}
 	}
-	for _, key := range r.state.APIKeys {
-		if route, ok := r.routeLocked(key.RouteID); ok && route.ProviderID == providerID {
-			return fmt.Errorf("provider %q is used by api key %q", providerID, key.Name)
-		}
-		for _, fallbackID := range key.FallbackProviderIDs {
-			if fallbackID == providerID {
-				return fmt.Errorf("provider %q is used as fallback by api key %q", providerID, key.Name)
-			}
+	for index := range r.state.APIKeys {
+		key := &r.state.APIKeys[index]
+		if removedRoutes[key.RouteID] {
+			key.RouteID = ""
 		}
 		if strings.TrimSpace(key.ActiveProviderID) == providerID {
-			return fmt.Errorf("provider %q is the active provider for api key %q", providerID, key.Name)
+			key.ActiveProviderID = ""
 		}
+		cleaned := key.FallbackProviderIDs[:0]
+		for _, fallbackID := range key.FallbackProviderIDs {
+			if fallbackID != providerID {
+				cleaned = append(cleaned, fallbackID)
+			}
+		}
+		key.FallbackProviderIDs = cleaned
+		if key.FallbackModelOverrides != nil {
+			delete(key.FallbackModelOverrides, providerID)
+		}
+	}
+	if len(removedRoutes) > 0 {
+		routes := r.state.Routes[:0]
+		for _, route := range r.state.Routes {
+			if !removedRoutes[route.ID] {
+				routes = append(routes, route)
+			}
+		}
+		r.state.Routes = routes
 	}
 	for index := range r.state.Providers {
 		if r.state.Providers[index].ID != providerID {

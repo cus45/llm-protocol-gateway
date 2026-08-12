@@ -37,6 +37,7 @@ func attachAPIKeyMaxOutputTokens(r *http.Request, key domain.APIKey, matched boo
 }
 
 const (
+	contextLength1050K   = 1_050_000
 	contextLength1M      = 1_000_000
 	contextLength200K    = 200_000
 	contextLengthDefault = 128_000
@@ -73,6 +74,9 @@ func knownModelContextLength(modelID string) (int, bool) {
 		return n, true
 	}
 	if n, ok := knownGLMContextLength(base); ok {
+		return n, true
+	}
+	if n, ok := knownOpenAIContextLength(base); ok {
 		return n, true
 	}
 	return 0, false
@@ -186,6 +190,23 @@ func isGLM5BaseModelID(modelID string) bool {
 		return false
 	}
 	return strings.Contains(id, "glm-5")
+}
+
+// knownOpenAIContextLength maps OpenAI GPT family IDs to official context
+// windows. Per OpenAI docs (developers.openai.com/api/docs/models/gpt-5.6-*):
+// all tiers share a 1.05M context window; GPT-5.5 is ~1M.
+func knownOpenAIContextLength(modelID string) (int, bool) {
+	id := normalizeModelContextID(modelID)
+	if !strings.Contains(id, "gpt-") {
+		return 0, false
+	}
+	if strings.Contains(id, "gpt-5.6") {
+		return contextLength1050K, true
+	}
+	if strings.Contains(id, "gpt-5.5") {
+		return contextLength1M, true
+	}
+	return 0, false
 }
 
 // resolveModelMaxOutputTokens returns a reasonable max output token budget for

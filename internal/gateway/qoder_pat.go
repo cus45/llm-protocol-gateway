@@ -281,32 +281,69 @@ func (s *Server) BackfillQoderAccountLabels() {
 	}
 }
 
+// qoderLiteralPAT returns a PAT pasted as the provider's literal API key, if
+// any. A plain source or "literal:"-prefixed source counts as literal; env /
+// keychain sources are dynamic and must keep using the stored credential.
+func qoderLiteralPAT(provider domain.Provider) string {
+	source := strings.TrimSpace(provider.APIKeySource)
+	if source == "" {
+		return ""
+	}
+	for _, prefix := range []string{"env:", "literal:", "keychain:"} {
+		if !strings.HasPrefix(source, prefix) {
+			continue
+		}
+		if prefix == "literal:" {
+			return strings.TrimSpace(strings.TrimPrefix(source, "literal:"))
+		}
+		return ""
+	}
+	if strings.HasPrefix(source, "pt-") {
+		return source
+	}
+	return ""
+}
+
 func (s *Server) ensureFreshQoderToken(provider domain.Provider) (domain.Provider, error) {
 	if provider.AuthType != domain.AuthTypeQoderPAT {
 		return provider, nil
 	}
-	if provider.QoderPAT == nil || strings.TrimSpace(provider.QoderPAT.RefreshToken) == "" {
+	stored := ""
+	if provider.QoderPAT != nil {
+		stored = strings.TrimSpace(provider.QoderPAT.RefreshToken)
+	}
+	// A fresh PAT pasted into the provider's API key field overrides an
+	// out-of-date stored credential: prefer it whenever it differs, so a
+	// pasted key takes effect immediately without a reconnect round-trip.
+	literal := qoderLiteralPAT(provider)
+	pat := stored
+	if literal != "" && literal != stored {
+		pat = literal
+	}
+	if strings.TrimSpace(pat) == "" {
 		return provider, fmt.Errorf("provider %q has no Qoder personal access token; paste one in provider settings", provider.ID)
 	}
-	if provider.QoderPAT.Disconnected {
+	if provider.QoderPAT != nil && provider.QoderPAT.Disconnected {
 		// A user-initiated disconnect must actually stop forwarding, not just
 		// change a console label — otherwise "断开连接" would silently keep
 		// working via this lazy refresh, defeating the point of disconnecting.
 		return provider, fmt.Errorf("provider %q was disconnected from Qoder; reconnect in provider settings", provider.ID)
 	}
-	if !qoderTokenNeedsRefresh(provider.QoderPAT) {
-		return provider, nil
+	// Force a fresh exchange when the literal PAT wins: the stored job token
+	// (if any) was minted from the old PAT and must not be reused.
+	if (literal != "" && literal != stored) || qoderTokenNeedsRefresh(provider.QoderPAT) {
+		refreshed, err := exchangeQoderJobToken(pat)
+		if err != nil {
+			return provider, err
+		}
+		updated, err := s.router.SetProviderQoderPAT(provider.ID, refreshed)
+		if err != nil {
+			return provider, err
+		}
+		_ = s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT)
+		return updated, nil
 	}
-	refreshed, err := exchangeQoderJobToken(provider.QoderPAT.RefreshToken)
-	if err != nil {
-		return provider, err
-	}
-	updated, err := s.router.SetProviderQoderPAT(provider.ID, refreshed)
-	if err != nil {
-		return provider, err
-	}
-	_ = s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT)
-	return updated, nil
+	return provider, nil
 }
 
 // qoderBackfillToolDescriptions fills in an empty function.description on every
