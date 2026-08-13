@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 )
 
@@ -257,6 +258,99 @@ func TestClaudeRequestToOpenAIChatMapsToolsAndMessages(t *testing.T) {
 	toolMessage := messages[2].(map[string]any)
 	if toolMessage["role"] != "tool" || toolMessage["tool_call_id"] != "toolu_1" {
 		t.Fatalf("expected tool message, got %#v", toolMessage)
+	}
+}
+
+// Qoder (and other OpenAI-compatible upstreams) reject tool_use ids outside
+// ^[a-zA-Z0-9_-]+$; ids that slipped through OpenAI validation but not Qoder's
+// must be sanitized identically on both the tool_use and its tool_result so
+// pairings stay intact (regression: 2026-08-13 "messages.17.content.0.tool_use.id
+// String should match pattern").
+func TestClaudeToOpenAISanitizesToolUseIDs(t *testing.T) {
+	claudeReq := map[string]any{
+		"model": "claude-sonnet-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Weather?"},
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    "call_01Xyz:abc.def",
+						"name":  "get_weather",
+						"input": map[string]any{"location": "SF"},
+					},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_01Xyz:abc.def",
+						"content":     "sunny",
+					},
+				},
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"name":        "get_weather",
+				"description": "Get weather",
+				"input_schema": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+		},
+	}
+	openAIReq, err := claudeRequestToOpenAIChat(claudeReq, "deepseek-chat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	messages := openAIReq["messages"].([]any)
+	assistant := messages[1].(map[string]any)
+	toolCalls := assistant["tool_calls"].([]any)
+	callID := toolCalls[0].(map[string]any)["id"].(string)
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, callID); !matched {
+		t.Fatalf("tool call id %q still contains invalid chars", callID)
+	}
+	toolMessage := messages[2].(map[string]any)
+	if toolMessage["tool_call_id"] != callID {
+		t.Fatalf("tool_result id %q must match tool_use id %q", toolMessage["tool_call_id"], callID)
+	}
+}
+
+// An empty-name tool_use (context-compaction artifact) must be dropped, not
+// forwarded: strict upstreams reject "tool_use.name: String should have at
+// least 1 character" (regression: 2026-08-13 14:06).
+func TestClaudeToOpenAIDropsEmptyToolUseName(t *testing.T) {
+	claudeReq := map[string]any{
+		"model": "claude-sonnet-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Weather?"},
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    "toolu_bdrk_01Q4ejf6ZKopW1vrfgUipPde",
+						"name":  "",
+						"input": map[string]any{"location": "SF"},
+					},
+				},
+			},
+		},
+		"tools": []any{},
+	}
+	openAIReq, err := claudeRequestToOpenAIChat(claudeReq, "deepseek-chat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	messages := openAIReq["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("expected the empty tool_use message to be dropped, got %d messages: %#v", len(messages), messages)
 	}
 }
 

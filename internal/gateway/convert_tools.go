@@ -725,8 +725,16 @@ func claudeToolUseBlocksToOpenAIToolCalls(blocks []any, clientToolNames map[stri
 		if !ok || stringValue(block["type"]) != "tool_use" {
 			continue
 		}
+		// Some clients emit a tool_use block with an empty name (usually an
+		// artifact of context compaction). Qoder and other strict upstreams
+		// reject "tool_use.name: String should have at least 1 character", so
+		// such blocks are dropped instead of forwarded (they cannot be
+		// dispatched anyway).
+		if strings.TrimSpace(stringValue(block["name"])) == "" {
+			continue
+		}
 		toolCalls = append(toolCalls, map[string]any{
-			"id":   stringValue(block["id"]),
+			"id":   sanitizeAnthropicToolUseID(stringValue(block["id"])),
 			"type": "function",
 			"function": map[string]any{
 				"name":      resolveOpenAIToolNameFromClaude(stringValue(block["name"]), clientToolNames),
@@ -878,7 +886,7 @@ func claudeMessagesToOpenAI(rawMessages []any) ([]map[string]any, error) {
 			}
 			hasToolUse := false
 			for _, blockItem := range blocks {
-				if block, ok := blockItem.(map[string]any); ok && stringValue(block["type"]) == "tool_use" {
+				if block, ok := blockItem.(map[string]any); ok && stringValue(block["type"]) == "tool_use" && strings.TrimSpace(stringValue(block["name"])) != "" {
 					hasToolUse = true
 					break
 				}
@@ -924,7 +932,7 @@ func claudeMessagesToOpenAI(rawMessages []any) ([]map[string]any, error) {
 				}
 				messages = append(messages, map[string]any{
 					"role":         "tool",
-					"tool_call_id": toolUseID,
+					"tool_call_id": sanitizeAnthropicToolUseID(toolUseID),
 					"content":      toolResultContentToString(result["content"]),
 				})
 			}
