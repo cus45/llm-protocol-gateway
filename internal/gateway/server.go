@@ -3886,6 +3886,19 @@ func (s *Server) fetchProviderModels(r *http.Request, provider domain.Provider, 
 		request.Header.Set("User-Agent", "axios/1.13.6")
 	} else {
 		applyProviderAuth(request, provider, r.Header.Get("Authorization"))
+		// new-api style relays serve /v1/models with OpenAI-style auth and only
+		// read Authorization: Bearer — a provider configured with Anthropic's
+		// x-api-key header would 401 ("未提供令牌") on the models fetch while
+		// the /v1/messages chat path works fine. Send both headers here; extra
+		// auth headers are ignored by upstreams that already found theirs.
+		if provider.AuthType == domain.AuthTypeAPIKey && !strings.EqualFold(provider.AuthHeader, "Authorization") {
+			if key := resolveProviderAuth(provider); key != "" {
+				if !strings.HasPrefix(strings.ToLower(key), "bearer ") {
+					key = "Bearer " + key
+				}
+				request.Header.Set("Authorization", key)
+			}
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
