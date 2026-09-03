@@ -220,10 +220,12 @@ func withCloudflaredEdgeDNS(args []string) []string {
 		"--edge-ip-version", "4",
 		"--retries", "15",
 	}
+	// Note: --dns-resolver-addrs was removed in cloudflared 2026.x
+	// Keep it commented for compatibility with newer versions
 	afterRun := []string{
-		"--dns-resolver-addrs", "1.1.1.1:53",
-		"--dns-resolver-addrs", "1.0.0.1:53",
-		"--dns-resolver-addrs", "8.8.8.8:53",
+		// "--dns-resolver-addrs", "1.1.1.1:53",
+		// "--dns-resolver-addrs", "1.0.0.1:53",
+		// "--dns-resolver-addrs", "8.8.8.8:53",
 	}
 
 	runIdx := -1
