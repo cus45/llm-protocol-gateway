@@ -68,6 +68,23 @@ func (s *Server) requireProviderOwnerForUser(w http.ResponseWriter, r *http.Requ
 	return true
 }
 
+// requireProviderTesterForUser guards the read-only diagnostic endpoints
+// (fetch-models / chat-test): the owner passes, and so do normal users the
+// admin granted the provider to — anything a user can see on the Providers
+// page must be testable. Edit/delete flows stay on the stricter
+// requireProviderOwnerForUser.
+func (s *Server) requireProviderTesterForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {
+	identity := s.requestIdentity(r)
+	if identity.isAdmin() {
+		return true
+	}
+	if !s.allowedProviderIDsForUser(identity.UserID)[strings.TrimSpace(providerID)] {
+		writeOpenAIError(w, http.StatusForbidden, "permission denied: only the provider owner, granted users, or an admin can do this")
+		return false
+	}
+	return true
+}
+
 // requireProviderAccessForUser rejects normal users who were not granted the
 // given provider. Admins always pass. Returns false after writing 403.
 func (s *Server) requireProviderAccessForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {

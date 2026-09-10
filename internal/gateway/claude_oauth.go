@@ -597,6 +597,44 @@ func (s *Server) startClaudeOAuthLocalFlow(providerID, challenge string, pending
 	return authURL, flowID, nil
 }
 
+// stringFromRequestBody best-effort extracts the "model" field from a Claude
+// Messages JSON request body; empty when unparsable.
+func stringFromRequestBody(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return payload.Model
+}
+
+// claudeContext1MBeta is the beta flag that enables the 1M-token context
+// window on Claude models that support it.
+const claudeContext1MBeta = "context-1m-2025-08-07"
+
+// mergeAnthropicBetaFlags appends extra beta flags to an existing
+// anthropic-beta header value without duplicating entries.
+func mergeAnthropicBetaFlags(existing string, extras ...string) string {
+	seen := map[string]bool{}
+	parts := make([]string, 0, 4)
+	appendPart := func(part string) {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[strings.ToLower(part)] {
+			return
+		}
+		seen[strings.ToLower(part)] = true
+		parts = append(parts, part)
+	}
+	for _, part := range strings.Split(existing, ",") {
+		appendPart(part)
+	}
+	for _, part := range extras {
+		appendPart(part)
+	}
+	return strings.Join(parts, ",")
+}
+
 // mergeAnthropicBetaValue merges OAuth baseline beta flags into any existing
 // anthropic-beta header value without duplicating entries.
 func mergeAnthropicBetaValue(existing string) string {

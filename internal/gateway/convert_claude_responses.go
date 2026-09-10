@@ -36,6 +36,47 @@ func claudeSystemToInstructions(system any) string {
 	}
 }
 
+func claudeDocumentBlockToResponsesInputFile(block map[string]any) map[string]any {
+	if block == nil {
+		return nil
+	}
+	source, _ := block["source"].(map[string]any)
+	if source == nil {
+		return nil
+	}
+	filename := firstNonEmpty(
+		stringValue(block["filename"]),
+		stringValue(block["title"]),
+		stringValue(source["filename"]),
+		"document.pdf",
+	)
+	switch strings.ToLower(strings.TrimSpace(stringValue(source["type"]))) {
+	case "base64":
+		data := strings.TrimSpace(stringValue(source["data"]))
+		if data == "" {
+			return nil
+		}
+		mediaType := firstNonEmpty(stringValue(source["media_type"]), mediaTypeFromFilename(filename), "application/pdf")
+		return map[string]any{
+			"type":      "input_file",
+			"filename":  filename,
+			"file_data": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
+		}
+	case "url":
+		url := strings.TrimSpace(stringValue(source["url"]))
+		if url == "" {
+			return nil
+		}
+		return map[string]any{
+			"type":     "input_file",
+			"filename": filename,
+			"file_url": url,
+		}
+	default:
+		return nil
+	}
+}
+
 // claudeMessagesToResponsesInput flattens Anthropic messages into Responses
 // input items, promoting tool_use / tool_result to top-level items and
 // preserving signed thinking blocks via encrypted_content.
@@ -96,6 +137,10 @@ func claudeMessagesToResponsesInput(messages []any) []any {
 								"image_url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
 							})
 						}
+					}
+				case "document":
+					if file := claudeDocumentBlockToResponsesInputFile(block); file != nil {
+						messageContent = append(messageContent, file)
 					}
 				case "tool_use":
 					flushMessage()

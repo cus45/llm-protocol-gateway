@@ -2152,11 +2152,8 @@ function App() {
   }
 
   async function fetchProviderModels(providerID: string, providerName: string, openModal = false) {
-    // 普通用户只读 Provider 页：禁止调用获取模型接口。
-    if (authStatus?.role === 'user') {
-      showToast('普通用户无权获取模型');
-      return;
-    }
+    // 普通用户对自己拥有（或管理员授权可见）的 Provider 同样允许获取模型；
+    // 后端 requireProviderOwnerForUser 会做所有权校验。
     if (openModal) {
       setProviderModelsOpen(true);
       setProviderModelsLoading(true);

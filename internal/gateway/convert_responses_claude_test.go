@@ -179,6 +179,49 @@ func TestClaudeToResponsesRequestDirectBasic(t *testing.T) {
 	}
 }
 
+func TestClaudeToResponsesRequestDirectCarriesPDFDocument(t *testing.T) {
+	claudeReq := map[string]any{
+		"model":      "gpt-5.5",
+		"max_tokens": float64(512),
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "summarize this pdf"},
+				map[string]any{
+					"type":     "document",
+					"filename": "notes.pdf",
+					"source": map[string]any{
+						"type":       "base64",
+						"media_type": "application/pdf",
+						"data":       "JVBERi0xLjQK",
+					},
+				},
+			}},
+		},
+	}
+	responsesReq, err := claudeToResponsesRequestDirect(claudeReq, "gpt-5.5")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	input := responsesReq["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("expected one message item, got %d: %s", len(input), mustJSON(responsesReq))
+	}
+	content := input[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("expected text + input_file, got %#v", content)
+	}
+	file := content[1].(map[string]any)
+	if file["type"] != "input_file" {
+		t.Fatalf("document must become input_file, got %#v", file)
+	}
+	if file["filename"] != "notes.pdf" {
+		t.Fatalf("filename lost: %#v", file)
+	}
+	if file["file_data"] != "data:application/pdf;base64,JVBERi0xLjQK" {
+		t.Fatalf("unexpected file_data: %#v", file["file_data"])
+	}
+}
+
 func TestResponsesToClaudeResponseDirectRoundTrip(t *testing.T) {
 	claudeResp := map[string]any{
 		"id":    "msg_abc",

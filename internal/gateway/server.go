@@ -1834,7 +1834,7 @@ func (s *Server) handleSetProviderEnabled(w http.ResponseWriter, r *http.Request
 func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderTesterForUser(w, r, providerID) {
 		return
 	}
 	provider, err := s.router.ProviderByID(providerID)
@@ -2438,7 +2438,7 @@ func (s *Server) unlockOAuthUsageFetch(key string) {
 func (s *Server) handleProviderChatTest(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderTesterForUser(w, r, providerID) {
 		return
 	}
 	var payload providerChatTestRequest
@@ -2450,7 +2450,7 @@ func (s *Server) handleProviderChatTest(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleProviderCacheTest(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderTesterForUser(w, r, providerID) {
 		return
 	}
 	var payload providerChatTestRequest
@@ -2462,7 +2462,7 @@ func (s *Server) handleProviderCacheTest(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleProviderThinkingTest(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderTesterForUser(w, r, providerID) {
 		return
 	}
 	var payload providerChatTestRequest
@@ -4590,6 +4590,12 @@ func (s *Server) sendClaudeMessagesUpstream(r *http.Request, provider domain.Pro
 		upstreamURL := strings.TrimSpace(provider.BaseURL)
 		if upstreamURL == "" {
 			upstreamURL = claudeMessagesURL
+		} else if !strings.Contains(strings.ToLower(upstreamURL), "/messages") {
+			// A Claude API-key provider's BaseURL is usually a base (…/v1), not
+			// the full endpoint. Mirrors executeClaudeMessagesHTTP: without this
+			// the pass-through POSTs to the bare base and new-api style relays
+			// answer 404 "Invalid URL (POST /v1)".
+			upstreamURL = strings.TrimRight(upstreamURL, "/") + "/messages"
 		}
 		request, err = http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 		if err != nil {
@@ -4598,6 +4604,17 @@ func (s *Server) sendClaudeMessagesUpstream(r *http.Request, provider domain.Pro
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", r.Header.Get("Accept"))
 		request.Header.Set("anthropic-version", "2023-06-01")
+		// Pass the client's anthropic-beta through (some relays require specific
+		// flags), and auto-enable the 1M-context beta for 1M-capable models:
+		// new-api style relays otherwise reject with 400
+		// "1m 上下文已经全量可用，请启用 1m 上下文后重试".
+		beta := strings.TrimSpace(r.Header.Get("anthropic-beta"))
+		if isClaude1MContextModel(stringFromRequestBody(body)) {
+			beta = mergeAnthropicBetaFlags(beta, claudeContext1MBeta)
+		}
+		if beta != "" {
+			request.Header.Set("anthropic-beta", beta)
+		}
 		applyProviderAuth(request, provider, r.Header.Get("Authorization"))
 	}
 

@@ -622,7 +622,15 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
               </button>
             ) : null}
           </div>
-        ) : null}
+        ) : (
+          // 只读（管理员授权给普通用户的 Provider）也允许获取模型与对话测试；
+          // 编辑/删除等管理操作保持隐藏。后端 requireProviderOwnerForUser 会对
+          // 授权用户放行 test/chat-test（authorized users 视同可测试）。
+          <div className="provider-actions">
+            <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button>
+            <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
+          </div>
+        )}
       </div>
     </div>
   );
