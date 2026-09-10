@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `cmd/gateway/main.go` — the single Go entry point for the gateway binary.
 - `internal/` — all backend logic, one package per concern: `gateway/` (HTTP router, protocol conversion, OAuth providers, usage — the bulk of the code), `store/` + `monitor/` (SQLite persistence, request logs, daily usage), `config/`, `tunnel/` (Cloudflare), `app/`, `domain/`, `netutil/`, `packaged/`.
-- `web/` — Vite + React 19 + TypeScript admin UI. The app lives in `web/src/main.tsx`; the build output `web/dist` is served by the gateway for public/admin pages.
+- `web/` — Vite + React 19 + TypeScript admin UI. Entry is `web/src/main.tsx` (App orchestration only); shared code is split into `web/src/types.ts` (all API types), `web/src/lib.tsx` (pure helpers, formatters, client-config builders) and `web/src/components/` (`ui.tsx` 基础组件/Modal/主题, `selects.tsx` 可搜索下拉, `charts.tsx` 图表, `panels.tsx` Provider/用量面板, `apikeys.tsx` 密钥相关组件). Design system lives in `web/src/styles.css`; the build output `web/dist` is served by the gateway for public/admin pages.
 - `desktop/` — Wails macOS app with its own `go.mod`; it reuses the same core.
 - `scripts/` — dev and ops shell entry points. `docs/` — user docs and screenshots. `deploy/k8s.yaml`, `Dockerfile`, `docker-compose.yml` — deployment.
 

@@ -288,6 +288,12 @@ type Provider struct {
 	// token, instead of a console session login. Nil means self-registration
 	// has not been set up for this provider.
 	SelfRegistration *ProviderSelfRegistration `json:"selfRegistration,omitempty"`
+	// ProxyURL is an optional HTTP/HTTPS/SOCKS5 proxy for this provider's
+	// upstream requests. Format: "http://host:port", "https://host:port",
+	// "socks5://user:pass@host:port". Empty means no proxy (direct connection).
+	// This allows each provider to use a dedicated IP address, avoiding
+	// account association issues when managing multiple Claude/OpenAI accounts.
+	ProxyURL string `json:"proxyUrl,omitempty"`
 }
 
 // ProviderSelfRegistration is the server-side state backing the self-register
