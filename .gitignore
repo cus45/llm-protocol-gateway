@@ -47,3 +47,4 @@ desktop/frontend/.history/
 **/cert.pem
 **/tunnel-config.yml
 !internal/tunnel/quick_tunnel_config.yml
+.workbuddy/
