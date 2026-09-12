@@ -232,6 +232,20 @@ export type ChatGPTOAuthUsageBucket = {
   resetsAt?: string;
 };
 
+export type ChatGPTResetCredit = {
+  id: string;
+  title?: string;
+  status?: string;
+  grantedAt?: string;
+  expiresAt?: string;
+};
+
+export type ChatGPTResetCredits = {
+  availableCount: number;
+  applicable?: number;
+  credits?: ChatGPTResetCredit[];
+};
+
 export type ChatGPTOAuthUsageReport = {
   available: boolean;
   error?: string;
@@ -239,6 +253,7 @@ export type ChatGPTOAuthUsageReport = {
   planName?: string;
   message?: string;
   buckets?: ChatGPTOAuthUsageBucket[];
+  resetCredits?: ChatGPTResetCredits;
 };
 
 export type RequestAdapter = {

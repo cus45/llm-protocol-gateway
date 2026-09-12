@@ -39,7 +39,41 @@ func (f *chatgptFlexibleFloat) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-const chatgptOAuthUsageURL = "https://chatgpt.com/backend-api/wham/usage"
+const (
+	chatgptOAuthUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
+	chatgptOAuthResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+)
+
+// ChatGPTResetCredit is one rate-limit reset card granted by OpenAI
+// (sub2api-compatible: id / expires_at are surfaced, never redeemed here).
+type ChatGPTResetCredit struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	Status    string `json:"status,omitempty"`
+	GrantedAt string `json:"grantedAt,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+// ChatGPTResetCredits summarizes the account's unused reset cards.
+type ChatGPTResetCredits struct {
+	AvailableCount int                  `json:"availableCount"`
+	Applicable     int                  `json:"applicable,omitempty"`
+	Credits        []ChatGPTResetCredit `json:"credits,omitempty"`
+}
+
+type chatgptResetCreditsResponse struct {
+	Credits []struct {
+		ID         string `json:"id"`
+		CreditID   string `json:"credit_id"`
+		ResetType  string `json:"reset_type"`
+		Status     string `json:"status"`
+		Title      string `json:"title"`
+		GrantedAt  string `json:"granted_at"`
+		ExpiresAt  string `json:"expires_at"`
+		RedeemedAt string `json:"redeemed_at"`
+	} `json:"credits"`
+	AvailableCount int `json:"available_count"`
+}
 
 // ChatGPTOAuthUsageBucket is one display row for ChatGPT/Codex quota.
 type ChatGPTOAuthUsageBucket struct {
@@ -51,12 +85,13 @@ type ChatGPTOAuthUsageBucket struct {
 
 // ChatGPTOAuthUsageReport is the client-safe usage snapshot for chatgpt_oauth.
 type ChatGPTOAuthUsageReport struct {
-	Available bool                      `json:"available"`
-	Error     string                    `json:"error,omitempty"`
-	FetchedAt string                    `json:"fetchedAt,omitempty"`
-	PlanName  string                    `json:"planName,omitempty"`
-	Message   string                    `json:"message,omitempty"`
-	Buckets   []ChatGPTOAuthUsageBucket `json:"buckets,omitempty"`
+	Available    bool                      `json:"available"`
+	Error        string                    `json:"error,omitempty"`
+	FetchedAt    string                    `json:"fetchedAt,omitempty"`
+	PlanName     string                    `json:"planName,omitempty"`
+	Message      string                    `json:"message,omitempty"`
+	Buckets      []ChatGPTOAuthUsageBucket `json:"buckets,omitempty"`
+	ResetCredits *ChatGPTResetCredits      `json:"resetCredits,omitempty"`
 }
 
 type chatgptWhamUsageResponse struct {
@@ -198,6 +233,64 @@ func buildChatGPTOAuthUsageReport(raw chatgptWhamUsageResponse) ChatGPTOAuthUsag
 	return report
 }
 
+func fetchChatGPTOAuthResetCredits(ctx context.Context, provider domain.Provider) *ChatGPTResetCredits {
+	return fetchChatGPTOAuthResetCreditsAt(ctx, provider, chatgptOAuthResetCreditsURL)
+}
+
+// fetchChatGPTOAuthResetCreditsAt queries the reset-card endpoint. Failures are
+// non-fatal: the usage panel simply omits the section.
+func fetchChatGPTOAuthResetCreditsAt(ctx context.Context, provider domain.Provider, url string) *ChatGPTResetCredits {
+	if provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.AccessToken) == "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	applyChatGPTCodexHeaders(req, provider)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	var raw chatgptResetCreditsResponse
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	out := &ChatGPTResetCredits{AvailableCount: raw.AvailableCount}
+	for _, credit := range raw.Credits {
+		id := strings.TrimSpace(credit.ID)
+		if id == "" {
+			id = strings.TrimSpace(credit.CreditID)
+		}
+		status := strings.TrimSpace(credit.Status)
+		if status == "" {
+			status = "available"
+		}
+		if status != "available" {
+			continue
+		}
+		if credit.ResetType != "" && credit.ResetType != "codex_rate_limits" {
+			continue
+		}
+		out.Credits = append(out.Credits, ChatGPTResetCredit{
+			ID:        id,
+			Title:     strings.TrimSpace(credit.Title),
+			Status:    status,
+			GrantedAt: strings.TrimSpace(credit.GrantedAt),
+			ExpiresAt: strings.TrimSpace(credit.ExpiresAt),
+		})
+	}
+	if out.AvailableCount == 0 {
+		out.AvailableCount = len(out.Credits)
+	}
+	return out
+}
+
 func fetchChatGPTOAuthUsage(ctx context.Context, provider domain.Provider) (ChatGPTOAuthUsageReport, error) {
 	if provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.AccessToken) == "" {
 		return ChatGPTOAuthUsageReport{Available: false, Error: "missing oauth access token"}, nil
@@ -224,5 +317,9 @@ func fetchChatGPTOAuthUsage(ctx context.Context, provider domain.Provider) (Chat
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return ChatGPTOAuthUsageReport{}, fmt.Errorf("failed to parse chatgpt oauth usage: %w", err)
 	}
-	return buildChatGPTOAuthUsageReport(raw), nil
+	report := buildChatGPTOAuthUsageReport(raw)
+	if reset := fetchChatGPTOAuthResetCredits(ctx, provider); reset != nil {
+		report.ResetCredits = reset
+	}
+	return report, nil
 }

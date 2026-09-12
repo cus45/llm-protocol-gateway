@@ -1,7 +1,18 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, retrySecondsLabel, useNowTick } from '../lib';
-import { BadgeTone, ChatGPTOAuthUsageReport, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
+import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
+
+/** 最早到期的重置卡时间；无效时间为空串。 */
+function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
+  let earliest = '';
+  for (const credit of credits) {
+    const value = (credit.expiresAt || '').trim();
+    if (!value) continue;
+    if (!earliest || value < earliest) earliest = value;
+  }
+  return earliest;
+}
 import { Badge } from './ui';
 export function RouteCard({ active, name, tone, status, meta, flow, onClick, onTest, onEdit, onClone, onDelete }: { active?: boolean; name: string; tone: BadgeTone; status: string; meta: string; flow: string[]; onClick: () => void; onTest: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
   return (
@@ -514,6 +525,35 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact }: { pro
           })}
         </div>
       )}
+      {report?.available && report.resetCredits ? (
+        <div className="chatgpt-reset-credits" title="官方发放的限流重置卡，用一张可重置 5 小时 / 7 天额度窗口">
+          <div className="chatgpt-reset-credits-head">
+            <span>重置卡</span>
+            <span>
+              可用 {report.resetCredits.availableCount} 张
+              {report.resetCredits.credits && report.resetCredits.credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(report.resetCredits.credits))}` : ''}
+            </span>
+          </div>
+          {(report.resetCredits.credits || []).length > 0 ? (
+            <div className="chatgpt-reset-credits-list">
+              {report.resetCredits.credits!.map((credit, index) => (
+                <div className="chatgpt-reset-credit-item" key={credit.id || index} title={credit.title || ''}>
+                  <span className="chatgpt-reset-credit-name">
+                    重置卡 #{index + 1}{credit.title ? ` · ${credit.title}` : ''}
+                  </span>
+                  <span className="chatgpt-reset-credit-expiry">
+                    {credit.expiresAt ? `有效期至 ${formatClaudeUsageResetAt(credit.expiresAt)}` : '有效期未知'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="chatgpt-reset-credit-item">
+              <span className="chatgpt-reset-credit-name">暂无可查明细的可用重置卡</span>
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

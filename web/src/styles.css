@@ -1771,6 +1771,15 @@ html[data-theme="dark"] .claude-usage-state { color: #6ee7b7; }
 /* ChatGPT quota 卡内 grid — 3 桶等宽固定（卡宽 ≥340px 时每格 ~96px 足够） */
 .chatgpt-usage-panel .claude-usage-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
+/* ChatGPT Codex 官方限流重置卡（rate-limit reset credits）明细区。 */
+.chatgpt-reset-credits { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 12px; background: var(--panel); }
+.chatgpt-reset-credits-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 750; font-size: 12px; }
+.chatgpt-reset-credits-head > span:last-child { font-weight: 600; color: var(--text-muted); font-size: 12px; }
+.chatgpt-reset-credits-list { display: flex; flex-direction: column; gap: 6px; }
+.chatgpt-reset-credit-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; padding: 6px 8px; border-radius: 9px; background: var(--blue-soft); }
+.chatgpt-reset-credit-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chatgpt-reset-credit-expiry { flex-shrink: 0; color: var(--text-muted); }
+
 /* ----------------------------------------------------------------
    19. 自检
    ---------------------------------------------------------------- */
