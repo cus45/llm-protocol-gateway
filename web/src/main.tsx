@@ -6,7 +6,7 @@ import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageDailyTrafficLines, UsageLineChart, UsageMonthlyTokenBars, UsageRangeCalendar, UsageStatusChart } from './components/charts';
 import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatLocalISODate, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
-import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, isDocumentActive } from './components/panels';
+import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
 import { Badge, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
@@ -4240,8 +4240,8 @@ function App() {
                   <h2 className="panel-title">输入 Provider</h2>
                   <p className="panel-desc">
                     {isNormalUser
-                      ? '展示管理员授权给你的 Provider（只读）以及你自己创建的 Provider（可编辑/克隆/删除/对话测试/获取模型）。删除时绑定该 Provider 的 API 密钥引用会自动重置为空。'
-                      : '用户自定义添加的上游 Provider。删除时绑定该 Provider 的 API 密钥引用会自动重置为空。列表按近 3 日请求量排序。支持勾选后导出/导入配置（含 apiKeySource 与已持久化的 OAuth 元数据）。'}
+                      ? '展示管理员授权给你的 Provider（只读）及自己创建的 Provider（可编辑 / 克隆 / 删除 / 测试）。删除时绑定的 API 密钥引用会自动重置为空。'
+                      : '自定义上游 Provider，按近 3 日请求量排序；勾选后可批量导出 / 导入配置（含 OAuth 元数据）。删除时绑定的 API 密钥引用会自动重置为空。'}
                   </p>
                 </div>
                 {isNormalUser ? (
@@ -4377,7 +4377,7 @@ function App() {
                         providerId={provider.id}
                         protocol={protocolLabel(provider.protocol)}
                         tone={protocolTone(provider.protocol)}
-                        url={provider.authType === 'claude_oauth' ? 'Claude OAuth (api.anthropic.com)' : provider.authType === 'cursor_oauth' ? 'Cursor OAuth (本地 gRPC bridge)' : provider.authType === 'chatgpt_oauth' ? 'ChatGPT OAuth (chatgpt.com/codex)' : provider.authType === 'qoder_pat' ? `Qoder PAT (${provider.baseUrl})` : provider.baseUrl}
+                        url={provider.authType === 'claude_oauth' ? 'api.anthropic.com' : provider.authType === 'cursor_oauth' ? '本地 gRPC Bridge' : provider.authType === 'chatgpt_oauth' ? 'chatgpt.com/codex' : provider.baseUrl}
                         keyMask={provider.authType === 'api_key' || !provider.authType ? maskApiKeySource(provider.apiKeySource) : undefined}
                         defaultModel={provider.defaultModel}
                         modelCount={(provider.models || []).length}
@@ -6477,7 +6477,7 @@ function App() {
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.claudeOAuth?.accountLabel ? ` · ${editingProvider.claudeOAuth.accountLabel}` : ''}{editingProvider?.claudeOAuth?.expiresAt ? ` · 过期时间：${editingProvider.claudeOAuth.expiresAt}` : ''}</div>
+                      <div className="hint-line">已连接{editingProvider?.claudeOAuth?.accountLabel ? ` · ${editingProvider.claudeOAuth.accountLabel}` : ''}{editingProvider?.claudeOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.claudeOAuth.expiresAt)}` : ''}</div>
                       <ClaudeOAuthUsagePanel providerId={editingProviderID} connected />
                       <button className="btn danger" disabled={claudeOAuthBusy} onClick={() => void disconnectClaudeOAuth()}>{claudeOAuthBusy ? '处理中…' : '断开连接'}</button>
                     </>
@@ -6511,7 +6511,7 @@ function App() {
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.cursorOAuth?.accountLabel ? ` · ${editingProvider.cursorOAuth.accountLabel}` : ''}{editingProvider?.cursorOAuth?.expiresAt ? ` · 过期时间：${editingProvider.cursorOAuth.expiresAt}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
+                      <div className="hint-line">已连接{editingProvider?.cursorOAuth?.accountLabel ? ` · ${editingProvider.cursorOAuth.accountLabel}` : ''}{editingProvider?.cursorOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.cursorOAuth.expiresAt)}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
                       <CursorOAuthUsagePanel providerId={editingProviderID} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
@@ -6540,7 +6540,7 @@ function App() {
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.chatgptOAuth?.accountLabel ? ` · ${editingProvider.chatgptOAuth.accountLabel}` : ''}{editingProvider?.chatgptOAuth?.expiresAt ? ` · 过期时间：${editingProvider.chatgptOAuth.expiresAt}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
+                      <div className="hint-line">已连接{editingProvider?.chatgptOAuth?.accountLabel ? ` · ${editingProvider.chatgptOAuth.accountLabel}` : ''}{editingProvider?.chatgptOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.chatgptOAuth.expiresAt)}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
                       <ChatGPTOAuthUsagePanel providerId={editingProviderID} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>

@@ -98,6 +98,110 @@ export function Badge({ tone, children }: { tone: BadgeTone; children: React.Rea
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
+export interface MoreMenuItem {
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}
+
+/** “更多操作”下拉菜单：低频操作（克隆/禁用/删除）收纳入口，避免卡片页脚按钮堆砌。
+ *  菜单层 portal 到 body 并用 fixed 坐标定位——卡片容器有 overflow:hidden，
+ *  卡内绝对定位会被裁剪；portal 同时天然脱离卡片点击冒泡路径。 */
+export function MoreMenu({ items, label = '更多操作' }: { items: MoreMenuItem[]; label?: string }) {
+  const [open, setOpen] = React.useState(false);
+  const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // 视口下方放不下时向上翻；水平右对齐触发按钮并夹在视口内
+  const place = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = 132;
+    const estimatedHeight = items.length * 33 + 12;
+    const below = window.innerHeight - rect.bottom;
+    const top = below < estimatedHeight + 12 ? Math.max(8, rect.top - estimatedHeight - 8) : rect.bottom + 6;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    setPos({ top, left });
+  }, [items.length]);
+
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onDocMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    // stopPropagation：菜单开着时 Escape 只关菜单，不穿透到下层弹窗
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    const onClose = () => setOpen(false);
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onClose, true);
+    window.addEventListener('resize', onClose);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onClose, true);
+      window.removeEventListener('resize', onClose);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`icon-btn more-menu-trigger${open ? ' open' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={label}
+        title={label}
+        onClick={() => {
+          if (!open) place();
+          setOpen((value) => !value);
+        }}
+      >
+        ⋯
+      </button>
+      {open && pos ? createPortal(
+        <div
+          ref={menuRef}
+          className="more-menu-list"
+          role="menu"
+          style={{ top: pos.top, left: pos.left }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className={`more-menu-item${item.danger ? ' danger' : ''}`}
+              disabled={item.disabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpen(false);
+                item.onClick();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
+}
+
 /**
  * 侧边栏导航图标：统一的 16px 线性 SVG 图标集（stroke 风格），
  * 替换原来的 emoji / 字符画，保证跨平台渲染一致、风格统一。

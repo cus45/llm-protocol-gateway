@@ -179,6 +179,7 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   color: var(--text);
   font-family: var(--font);
   font-size: 13.5px;
@@ -236,6 +237,8 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
   position: sticky;
   top: 16px;
   height: calc(100vh - 32px);
+  /* 移动端浏览器地址栏收放时 100vh 偏大，dvh 修正；旧浏览器回落到上一行 */
+  height: calc(100dvh - 32px);
   padding: 18px 12px 16px;
   border-radius: var(--r-2xl);
   display: flex;
@@ -660,6 +663,39 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .icon-btn.danger { color: var(--red); }
 .icon-btn.danger:hover:not(:disabled) { background: var(--red-soft); color: var(--red); }
 
+/* more-menu：卡片/行内“更多操作”下拉。菜单层 portal 到 body + fixed 定位，
+   不受卡片 overflow:hidden 裁剪；动画仅 transform/opacity。 */
+.more-menu-trigger { min-width: 28px; padding: 0 7px; font-size: 14px; font-weight: 700; letter-spacing: 0.12em; line-height: 1; }
+.more-menu-trigger.open { background: var(--surface-sunken); color: var(--text); }
+.more-menu-list {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  min-width: 128px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-pop);
+  display: grid;
+  gap: 2px;
+  animation: more-menu-in 0.14s ease;
+}
+@keyframes more-menu-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .more-menu-list { animation: none; } }
+.more-menu-item {
+  display: block; width: 100%; text-align: left;
+  border: 0; border-radius: var(--r-xs);
+  background: transparent;
+  padding: 7px 10px;
+  color: var(--text); font-size: 12.5px; font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.more-menu-item:hover:not(:disabled) { background: var(--hover); }
+.more-menu-item.danger { color: var(--red); }
+.more-menu-item.danger:hover:not(:disabled) { background: var(--red-soft); }
+
 /* 通用按钮组合 */
 .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .inline-actions { justify-content: flex-start; margin-top: 16px; }
@@ -806,7 +842,7 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .provider-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .provider-title-block { min-width: 0; flex: 1 1 220px; }
 .provider-name { font-size: 15px; line-height: 1.35; white-space: normal; overflow: visible; text-overflow: unset; }
-.provider-subtitle { margin-top: 4px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.provider-subtitle { margin-top: 4px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* api_key 卡：meta 升级为带标签的信息清单（接入地址/密钥/默认模型/可用模型），
    真实内容填充卡片；OAuth 卡仍是单行描述（配额面板已占位） */
 .provider-meta { display: grid; gap: 7px; margin-top: 8px; }
@@ -1330,7 +1366,7 @@ html[data-theme="dark"] .test-result-card.fail { background: rgba(239, 68, 68, 0
   color: var(--code); font-family: var(--mono); font-size: 12px; line-height: 1.6;
 }
 .test-result-meta { margin-top: 10px; color: var(--subtle); font-family: var(--mono); font-size: 11px; }
-.hint-line { margin-top: 8px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.hint-line { margin-top: 8px; color: var(--muted); font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
 .hint-line.error { color: var(--red); }
 /* field 内紧跟 label 的 hint-line 是"控件行"（如流式响应 checkbox），
    去掉说明文字的 margin-top，并与左侧输入框同高居中，保证行对齐 */
@@ -1711,22 +1747,23 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: var(--accent); co
   display: grid; gap: 10px;
 }
 .claude-usage-panel.compact { margin-top: 10px; padding: 10px 12px; gap: 8px; }
-/* 卡片内紧凑配额条：所有额度桶单行横排，重置/明细收进 title 悬浮提示。
+/* 卡片内紧凑配额条：所有额度桶单行横排；重置时间直接可见（过长省略，title 兜底）。
    额度是卡片核心信息：百分比放大加粗、进度条加粗；标题/状态等附带信息缩小。 */
 .claude-usage-panel.compact .claude-usage-title { font-size: 11.5px; font-weight: 600; }
 /* 卡片上"更新于"时间戳最次要，隐藏换取标题/状态的空间（完整面板仍显示） */
 .claude-usage-panel.compact .claude-usage-status { display: none; }
 .claude-usage-panel.compact .claude-usage-grid { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
-.claude-usage-panel.compact .claude-usage-row { padding: 8px 10px; gap: 4px; }
+.claude-usage-panel.compact .claude-usage-row { padding: 8px; gap: 4px; }
 /* 紧凑单元格纵向堆叠：小标签在上、大数字百分比在下（额度是核心信息，数字放大加粗并随用量变色） */
 .claude-usage-panel.compact .claude-usage-head { flex-direction: column; align-items: flex-start; gap: 3px; white-space: normal; overflow: visible; }
 .claude-usage-panel.compact .claude-usage-head span:first-child { font-size: 10.5px; max-width: 100%; white-space: nowrap; }
 .claude-usage-panel.compact .claude-usage-head span:last-child { font-size: 15px; line-height: 1.25; }
-.claude-usage-row:has(.claude-usage-fill.ok) .claude-usage-head span:last-child { color: var(--green); }
-.claude-usage-row:has(.claude-usage-fill.warn) .claude-usage-head span:last-child { color: var(--amber); }
-.claude-usage-row:has(.claude-usage-fill.danger) .claude-usage-head span:last-child { color: var(--red); }
+/* 行级 tone 类直接由 JSX 挂上（替代旧 :has() 选择器，Firefox/Safari 旧版不支持 :has） */
+.claude-usage-row.ok .claude-usage-head span:last-child { color: var(--green); }
+.claude-usage-row.warn .claude-usage-head span:last-child { color: var(--amber); }
+.claude-usage-row.danger .claude-usage-head span:last-child { color: var(--red); }
 .claude-usage-panel.compact .claude-usage-track { height: 5px; }
-.claude-usage-panel.compact .claude-usage-reset { display: none; }
+/* 重置时间在卡片上始终可见（此前仅悬浮 title 才能看到）；空间不足时省略，完整信息仍在 title */
 .claude-usage-title {
   display: flex; align-items: center; justify-content: space-between;
   gap: 10px;
@@ -1760,11 +1797,17 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: var(--accent); co
 .claude-usage-reset {
   color: var(--subtle); font-size: 10.5px; font-family: var(--mono);
   line-height: 1.4;
+  min-height: 1.4em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* 状态文本（"可用" 等），跟在标题行操作区里；过长时省略不挤压标题换行 */
-.claude-usage-state { color: var(--green); font-size: 11px; font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-usage-panel.compact .claude-usage-reset { color: var(--muted); font-size: 10px; }
+/* 状态文本：正向（“可用”）收在标题行；告警（“额度已用尽…”）单独成行完整可读 */
+.claude-usage-state { font-size: 11px; font-weight: 600; }
+.claude-usage-state.ok { color: var(--green); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-usage-state.warn { color: var(--amber); line-height: 1.5; overflow-wrap: anywhere; }
 .claude-usage-panel.compact .claude-usage-title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-html[data-theme="dark"] .claude-usage-state { color: #6ee7b7; }
+html[data-theme="dark"] .claude-usage-state.ok { color: #6ee7b7; }
+html[data-theme="dark"] .claude-usage-state.warn { color: #fcd34d; }
 .cursor-usage-panel { border-color: var(--border); background: var(--surface-soft); }
 .cursor-usage-panel .claude-usage-title { color: var(--text); }
 
