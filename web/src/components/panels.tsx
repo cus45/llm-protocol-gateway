@@ -187,7 +187,7 @@ export function UsagePanelShell({ panelClass, compact, subtitle, title, planName
       <div className="claude-usage-title">
         <span>{title}{planSuffix}</span>
         <span className="claude-usage-actions">
-          {stateMessage === '可用' ? <span className="claude-usage-state ok">可用</span> : null}
+          {stateMessage === '可用' ? <span className="claude-usage-state ok"><i className="live-dot" aria-hidden="true" />可用</span> : null}
           {loading ? <span className="claude-usage-status">刷新中…</span> : fetchedAt ? <span className="claude-usage-status">更新于 {formatClaudeUsageResetAt(fetchedAt)}</span> : null}
           <button
             type="button"

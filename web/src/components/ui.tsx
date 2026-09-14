@@ -25,10 +25,22 @@ export function readStoredTheme(): ThemeMode {
   return 'system';
 }
 
+let themeAnimArmed = false;
+let themeAnimTimer: number | undefined;
+
 export function applyThemeMode(mode: ThemeMode) {
   const resolved = resolveTheme(mode);
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.style.colorScheme = resolved;
+  const root = document.documentElement;
+  // 初次应用（页面加载）直接落定；此后用户/系统切换主题时短暂挂上
+  // html.theme-anim，让背景/文字/边框颜色平滑过渡而不是瞬间跳变。
+  if (themeAnimArmed) {
+    root.classList.add('theme-anim');
+    if (themeAnimTimer != null) window.clearTimeout(themeAnimTimer);
+    themeAnimTimer = window.setTimeout(() => root.classList.remove('theme-anim'), 380);
+  }
+  themeAnimArmed = true;
+  root.dataset.theme = resolved;
+  root.style.colorScheme = resolved;
   return resolved;
 }
 

@@ -1262,24 +1262,33 @@ function App() {
     }
   }
 
-  async function resetConsoleUserPassword(user: ConsoleUser) {
-    const password = window.prompt(`为用户「${user.username}」设置新密码（至少 8 位）：`);
-    if (password == null) return;
-    if (password.trim().length < 8) {
+  // 重置用户密码走应用内弹窗：window.prompt 在部分嵌入式浏览器会被静默拦截，按钮形同虚设
+  const [passwordResetUser, setPasswordResetUser] = useState<ConsoleUser | null>(null);
+  const [passwordResetValue, setPasswordResetValue] = useState('');
+  const [passwordResetBusy, setPasswordResetBusy] = useState(false);
+
+  async function confirmPasswordReset() {
+    if (!passwordResetUser) return;
+    if (passwordResetValue.trim().length < 8) {
       showToast('密码至少 8 位');
       return;
     }
+    setPasswordResetBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(user.id)}/reset-password`, {
+      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(passwordResetUser.id)}/reset-password`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: password.trim() }),
+        body: JSON.stringify({ password: passwordResetValue.trim() }),
       });
       if (!response.ok) throw new Error(await response.text());
       showToast('密码已重置');
+      setPasswordResetUser(null);
+      setPasswordResetValue('');
     } catch (error) {
       showToast(`重置失败：${String(error)}`);
+    } finally {
+      setPasswordResetBusy(false);
     }
   }
 
@@ -4002,6 +4011,7 @@ function App() {
                 <div className="user-meta">
                   <b>{authStatus.username}</b>
                   <span title={dataFetchedAt ? `页面数据最近一次成功拉取的时间（约每 5 秒自动刷新）` : undefined}>
+                    {dataFetchedAt ? <i className="live-dot" aria-hidden="true" /> : null}
                     {authStatus.role === 'user' ? '普通用户' : '管理员'}
                     {dataFetchedAt ? ` · 更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
                   </span>
@@ -5720,7 +5730,7 @@ function App() {
                           <span className="muted-text" title="该用户的 API Key 最近一次被调用的时间">{lastUsedMs > 0 ? new Date(lastUsedMs).toLocaleString() : '未使用'}</span>
                           <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <button className="mini-btn" type="button" onClick={() => openUserModal(user)}>编辑</button>
-                            <button className="mini-btn" type="button" onClick={() => void resetConsoleUserPassword(user)}>重置密码</button>
+                            <button className="mini-btn" type="button" onClick={() => { setPasswordResetValue(''); setPasswordResetUser(user); }}>重置密码</button>
                             <button className="mini-btn" type="button" onClick={() => void toggleUserEnabled(user)}>{user.enabled ? '禁用' : '启用'}</button>
                             <button className="mini-btn danger" type="button" onClick={() => void deleteConsoleUser(user)}>删除</button>
                           </span>
@@ -6256,6 +6266,39 @@ function App() {
           <div className="actions modal-actions">
             <button className="btn" onClick={() => setTrafficLogDetail(null)}>关闭</button>
           </div>
+        </Modal>
+      )}
+
+      {passwordResetUser && (
+        <Modal
+          title="重置用户密码"
+          description={`为用户「${passwordResetUser.username}」设置新密码，至少 8 位。该用户当前会话不受影响，新密码立即生效。`}
+          onClose={() => { setPasswordResetUser(null); setPasswordResetValue(''); }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmPasswordReset();
+            }}
+          >
+            <div className="form-grid modal-form">
+              <div className="field field-full">
+                <label>新密码（至少 8 位）</label>
+                <input
+                  type="text"
+                  autoComplete="new-password"
+                  value={passwordResetValue}
+                  disabled={passwordResetBusy}
+                  placeholder="至少 8 位"
+                  onChange={(event) => setPasswordResetValue(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="actions modal-actions">
+              <button type="button" className="btn" disabled={passwordResetBusy} onClick={() => { setPasswordResetUser(null); setPasswordResetValue(''); }}>取消</button>
+              <button type="submit" className="btn primary" disabled={passwordResetBusy || passwordResetValue.trim().length < 8}>{passwordResetBusy ? '重置中…' : '重置密码'}</button>
+            </div>
+          </form>
         </Modal>
       )}
 
