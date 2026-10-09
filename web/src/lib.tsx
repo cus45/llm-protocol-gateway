@@ -2015,6 +2015,21 @@ export function formatLocalISODate(date: Date) {
   return `${y}-${m}-${d}`;
 }
 
+/**
+ * 把 YYYY-MM-DD 补成带「浏览器本地时区偏移」的 RFC3339 时间。
+ * 后端对纯日期按网关所在机器的时区解析；浏览器与网关不同时区时（如网关在美国、
+ * 用户在北京），「今天」会错位，所以日志按日期筛选时由前端显式带上偏移。
+ * endOfDay=true 取当天 23:59:59.999（后端对 RFC3339 的 to 不再 +24h）。非日期格式原样返回。
+ */
+export function localDateToRFC3339(date: string, endOfDay = false) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const time = endOfDay ? 'T23:59:59.999' : 'T00:00:00';
+  const offsetMin = -new Date(`${date}${time}`).getTimezoneOffset();
+  const sign = offsetMin < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMin);
+  return `${date}${time}${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
 /** 单日且等于本地今天 → 视为「跟随今天」，跨日后侧边栏再进页会自动滚到新的今天。 */
 export function isFollowingTodayRange(from: string, to: string, today = formatLocalISODate(new Date())) {
   return Boolean(from) && from === to && from === today;
