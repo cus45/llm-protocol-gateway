@@ -2,14 +2,17 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
+	"github.com/luca/llm-protocol-gateway/internal/store"
 )
 
 // recordAndFetch logs one request through the real record path and returns the
@@ -191,5 +194,50 @@ func TestStateExposesEffectiveUsageBatchConfig(t *testing.T) {
 	}
 	if got := payload["usageBatchMaxWaitSeconds"].(float64); got != 30 {
 		t.Fatalf("usageBatchMaxWaitSeconds = %v, want 30", got)
+	}
+}
+
+func TestRequestLogByIDEndpoint(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "gateway.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	router := NewRouter(domain.GatewayState{})
+	server := NewServer(router, monitor.NewStore(), db)
+	server.SetAdminAuthStore(newMemoryAdminAuthStore())
+	server.SetLog2xxBodies(true)
+
+	server.recordRequestLog(
+		time.Now(), domain.APIKey{ID: "k1", Name: "main"}, true,
+		"r1", "p1", "model-x", "chat", "openai_chat->openai_chat", "/v1/chat/completions",
+		200, TokenUsage{InputTokens: 10, OutputTokens: 5},
+		[]byte(`{"prompt":"hello"}`), []byte(`{"answer":"world"}`),
+	)
+	server.FlushRequestLogs()
+
+	page, err := db.QueryRequestLogs(monitor.RequestLogQuery{Page: 1, PageSize: 1, Status: "all"})
+	if err != nil || len(page.Items) == 0 {
+		t.Fatalf("failed to query page: %v", err)
+	}
+	logID := page.Items[0].ID
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/__logs?id=%d", logID), nil)
+	req.Host = "127.0.0.1:18093"
+	req.RemoteAddr = "127.0.0.1:4321"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got monitor.RequestLog
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != logID || got.RequestBody != `{"prompt":"hello"}` || got.ResponseBody != `{"answer":"world"}` {
+		t.Fatalf("unexpected log fetched: %+v", got)
 	}
 }

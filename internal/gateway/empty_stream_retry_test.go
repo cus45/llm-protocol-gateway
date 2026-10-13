@@ -112,7 +112,7 @@ func TestFinishConvertedProxyWithEmptyStreamRetry(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	status, usage, _, err := s.finishConvertedProxyWithEmptyStreamRetry(rec, req, "glm-4.5", true, send, nil, streamConvert)
+	status, usage, body, err := s.finishConvertedProxyWithEmptyStreamRetry(rec, req, "glm-4.5", true, send, nil, streamConvert)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -127,6 +127,9 @@ func TestFinishConvertedProxyWithEmptyStreamRetry(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "data: ok") {
 		t.Fatalf("body=%q", rec.Body.String())
+	}
+	if !strings.Contains(string(body), "data: ok") {
+		t.Fatalf("returned stream log body=%q", string(body))
 	}
 }
 

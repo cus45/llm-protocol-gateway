@@ -296,7 +296,26 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 	return monitor.RequestLogPage{Items: logs, Total: total, Page: page}, nil
 }
 
-func scanRequestLog(rows *sql.Rows) (monitor.RequestLog, error) {
+// RequestLogByID returns a single request log with full request and response bodies.
+// ok is false if the id does not exist.
+func (s *Store) RequestLogByID(id int64) (monitor.RequestLog, bool, error) {
+	row := s.reader().QueryRow(`SELECT id, time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
+		status, input_tokens, output_tokens, cache_tokens, latency_ms, ttft_ms,
+		prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
+		client_host, client_ip, access_source,
+		error_description, request_body, response_body
+		FROM request_logs WHERE id = ?`, id)
+	item, err := scanRequestLog(row)
+	if err == sql.ErrNoRows {
+		return monitor.RequestLog{}, false, nil
+	}
+	if err != nil {
+		return monitor.RequestLog{}, false, err
+	}
+	return item, true, nil
+}
+
+func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 	var item monitor.RequestLog
 	var timeValue string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64
@@ -338,7 +357,7 @@ func scanRequestLog(rows *sql.Rows) (monitor.RequestLog, error) {
 	return item, nil
 }
 
-func scanRequestLogSummary(rows *sql.Rows) (monitor.RequestLog, error) {
+func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 	var item monitor.RequestLog
 	var timeValue string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64

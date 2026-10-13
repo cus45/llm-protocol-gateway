@@ -53,6 +53,7 @@ type RequestLogStore interface {
 	AppendRequestLogs([]monitor.RequestLog) error
 	ListRequestLogs(int) ([]monitor.RequestLog, error)
 	QueryRequestLogs(monitor.RequestLogQuery) (monitor.RequestLogPage, error)
+	RequestLogByID(int64) (monitor.RequestLog, bool, error)
 	PruneRequestLogs(int) error
 }
 
@@ -498,6 +499,47 @@ func redactProviderForClient(provider domain.Provider) domain.Provider {
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	identity := s.requestIdentity(r)
+	if idStr := strings.TrimSpace(r.URL.Query().Get("id")); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request log id")
+			return
+		}
+		s.FlushRequestLogs()
+		if s.requestLogStore == nil {
+			writeOpenAIError(w, http.StatusNotFound, "request log store not available")
+			return
+		}
+		logItem, found, err := s.requestLogStore.RequestLogByID(id)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "failed to query request log: "+err.Error())
+			return
+		}
+		if !found {
+			writeOpenAIError(w, http.StatusNotFound, "request log not found")
+			return
+		}
+		if !identity.isAdmin() {
+			owned := s.ownedKeyIDs(identity.UserID)
+			allowed := false
+			for _, k := range owned {
+				if k == logItem.APIKeyID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				writeOpenAIError(w, http.StatusNotFound, "request log not found")
+				return
+			}
+		}
+		items := []monitor.RequestLog{logItem}
+		s.fillRequestLogKeyNames(items)
+		s.fillRequestLogUserNames(items)
+		writeJSON(w, http.StatusOK, items[0])
+		return
+	}
+
 	query := monitor.RequestLogQuery{
 		Status:        strings.TrimSpace(r.URL.Query().Get("status")),
 		APIKeyName:    strings.TrimSpace(r.URL.Query().Get("apiKeyName")),
@@ -829,7 +871,7 @@ const memoryLogCap = 50000
 // SQLite TEXT 列本身无硬长度限制，这里的上限用于防止单条日志异常超长
 // （如超大 base64 图片/附件）拖垮内存缓存与 DB 写入。
 const (
-	logBodyCapOK    = 8 * 1024   // 2xx 请求体上限：8 KiB
+	logBodyCapOK    = 128 * 1024 // 2xx 请求体上限：128 KiB（满足日常长提示词与对话审计）
 	logBodyCapError = 256 * 1024 // 非 2xx 请求体/响应体上限：256 KiB
 )
 

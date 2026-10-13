@@ -48,13 +48,15 @@ type deferredSSEWriter struct {
 	status      int
 	wroteHeader bool
 	wroteBody   bool
+	bodyLog     *limitedBuffer
 }
 
 func newDeferredSSEWriter(base http.ResponseWriter) *deferredSSEWriter {
 	return &deferredSSEWriter{
-		base:   base,
-		header: make(http.Header),
-		status: http.StatusOK,
+		base:    base,
+		header:  make(http.Header),
+		status:  http.StatusOK,
+		bodyLog: &limitedBuffer{max: passThroughLogBufferMax},
 	}
 }
 
@@ -83,7 +85,19 @@ func (w *deferredSSEWriter) Write(p []byte) (int, error) {
 		w.commitLocked(w.status)
 	}
 	w.wroteBody = true
+	if w.bodyLog != nil {
+		_, _ = w.bodyLog.Write(p)
+	}
 	return w.base.Write(p)
+}
+
+func (w *deferredSSEWriter) BodyBytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.bodyLog == nil {
+		return nil
+	}
+	return w.bodyLog.Bytes()
 }
 
 func (w *deferredSSEWriter) Flush() {

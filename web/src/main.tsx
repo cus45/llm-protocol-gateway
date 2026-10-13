@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageDailyTrafficLines, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
@@ -66,7 +66,10 @@ function App() {
   const authStatusRef = useRef<AdminAuthStatus | null>(null);
   const [trafficLogDetail, setTrafficLogDetail] = useState<LogEntry | null>(null);
   const [trafficLogDetailLoading, setTrafficLogDetailLoading] = useState(false);
-  const [trafficLogDetailTab, setTrafficLogDetailTab] = useState<'apm' | 'request' | 'response' | 'raw'>('apm');
+  const [trafficLogDetailTab, setTrafficLogDetailTab] = useState<'apm' | 'request' | 'response' | 'metadata' | 'curl'>('apm');
+  const [trafficLogRawReqView, setTrafficLogRawReqView] = useState(false);
+  const [trafficLogRawRespView, setTrafficLogRawRespView] = useState(false);
+  const [trafficLogSSEParsedView, setTrafficLogSSEParsedView] = useState(true);
   const [usageMetricDimension, setUsageMetricDimension] = useState<'tokens' | 'requests'>('tokens');
   const [usageViewTab, setUsageViewTab] = useState<'overview' | 'models' | 'providers' | 'keys'>('overview');
   const [logsKeyword, setLogsKeyword] = useState('');
@@ -1511,14 +1514,27 @@ function App() {
   async function openTrafficLogDetail(log: LogEntry) {
     setTrafficLogDetail(log);
     setTrafficLogDetailTab(log.requestBody || log.responseBody ? 'request' : 'apm');
+    setTrafficLogRawReqView(false);
+    setTrafficLogRawRespView(false);
+    setTrafficLogSSEParsedView(true);
     setTrafficLogDetailLoading(true);
     try {
+      if (log.id) {
+        const response = await fetch(`${API_BASE}/__logs?id=${log.id}&includeBodies=1`, { credentials: 'same-origin' });
+        if (response.ok) {
+          const full = await response.json() as LogEntry;
+          if (full && full.id === log.id) {
+            setTrafficLogDetail(full);
+            return;
+          }
+        }
+      }
       const response = await fetch(`${API_BASE}/__logs?${buildLogsQueryParams(logsPage, true).toString()}`, { credentials: 'same-origin' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json() as LogPage | LogEntry[];
       const items = Array.isArray(data) ? data : data.items || [];
       const matchKey = trafficLogMatchKey(log);
-      const full = items.find((item) => trafficLogMatchKey(item) === matchKey);
+      const full = items.find((item) => (log.id ? item.id === log.id : trafficLogMatchKey(item) === matchKey));
       if (full) setTrafficLogDetail(full);
     } catch {
       // Summary-only detail is still useful when body fetch fails.
@@ -6912,20 +6928,51 @@ function App() {
         </main>
       </div>
 
-      {trafficLogDetail && (
+      {trafficLogDetail && (() => {
+        const statusInfo = explainHttpStatus(trafficLogDetail.status);
+        const hasReqBody = Boolean(trafficLogDetail.requestBody?.trim());
+        const hasRespBody = Boolean(trafficLogDetail.responseBody?.trim());
+        const isRespSSE = hasRespBody && (trafficLogDetail.responseBody!.trim().startsWith('data:') || trafficLogDetail.responseBody!.includes('\ndata:'));
+        const sseParsedText = isRespSSE ? parseSSEStreamContent(trafficLogDetail.responseBody!) : '';
+        const curlCmd = buildCurlCommand(trafficLogDetail);
+        const jsonMetadata = formatTrafficLogJSON(trafficLogDetail, state.providers || []);
+
+        return (
         <Modal
           title={isTrafficLogError(trafficLogDetail) ? '请求异常排错诊断' : '请求链路审计详情'}
           description={isTrafficLogError(trafficLogDetail)
-            ? '包含上游报错报文、全链路 APM 耗时分解、Token 用量与出入包体。'
-            : '全链路 APM 耗时指标与 Token 消耗审计，便于性能分析与链路追踪。'}
+            ? '查看完整的错误分类原因、出入报文、全链路 APM 耗时与排错诊断。'
+            : '查看全链路 APM 耗时指标、完整出入报文审计与元数据。'}
           onClose={() => setTrafficLogDetail(null)}
         >
           <div className={`test-result-card ${isTrafficLogError(trafficLogDetail) ? 'fail' : 'pass'}`}>
             <div className="test-result-head">
-              <Badge tone={statusTone(trafficLogDetail.status)}>HTTP {trafficLogDetail.status}</Badge>
-              <span>{trafficLogKeyLabel(trafficLogDetail)} · {trafficLogProviderLabel(trafficLogDetail, state.providers || [])} · {trafficLogDetail.routeId} · {trafficLogDetail.model}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Badge tone={statusTone(trafficLogDetail.status)}>HTTP {trafficLogDetail.status}</Badge>
+                <Badge tone={statusInfo.tone}>{statusInfo.category}</Badge>
+                {trafficLogDetail.id ? <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>#{trafficLogDetail.id}</span> : null}
+              </div>
+              <span>{trafficLogKeyLabel(trafficLogDetail)} · {trafficLogProviderLabel(trafficLogDetail, state.providers || [])} · 路由: {trafficLogDetail.routeId} · 模型: {trafficLogDetail.model}</span>
             </div>
 
+            {/* 状态解读横幅 (尤其在 4xx/5xx/499 时给出清晰排错指引) */}
+            <div className={`log-status-banner ${isTrafficLogError(trafficLogDetail) ? 'error' : trafficLogDetail.status === 499 ? 'warning' : 'ok'}`}>
+              <div className="log-status-banner-title">
+                <strong>{statusInfo.title}</strong>
+                <span className="log-status-banner-desc">{statusInfo.description}</span>
+              </div>
+              {trafficLogDetail.errorDescription ? (
+                <div className="log-status-banner-error">
+                  <strong>错误摘要：</strong>
+                  <code>{trafficLogDetail.errorDescription}</code>
+                </div>
+              ) : null}
+              <div className="log-status-banner-hint">
+                <span style={{ opacity: 0.85 }}>排错建议：</span>{statusInfo.hint}
+              </div>
+            </div>
+
+            {/* KPI 指标卡片 */}
             <div className="log-audit-metrics">
               <div className="log-audit-chip">
                 <span>总耗时</span>
@@ -6977,31 +7024,34 @@ function App() {
                 className={`log-modal-tab ${trafficLogDetailTab === 'request' ? 'active' : ''}`}
                 onClick={() => setTrafficLogDetailTab('request')}
               >
-                请求报文 {trafficLogDetail.requestBody ? '(已记录)' : ''}
+                请求报文 {hasReqBody ? `(${formatBytes(trafficLogDetail.requestBody!.length)})` : '(未落盘)'}
               </button>
               <button
                 type="button"
                 className={`log-modal-tab ${trafficLogDetailTab === 'response' ? 'active' : ''}`}
                 onClick={() => setTrafficLogDetailTab('response')}
               >
-                响应报文 {trafficLogDetail.responseBody ? '(已记录)' : ''}
+                响应报文 {hasRespBody ? `(${formatBytes(trafficLogDetail.responseBody!.length)}${isRespSSE ? ' SSE' : ''})` : '(未落盘)'}
               </button>
               <button
                 type="button"
-                className={`log-modal-tab ${trafficLogDetailTab === 'raw' ? 'active' : ''}`}
-                onClick={() => setTrafficLogDetailTab('raw')}
+                className={`log-modal-tab ${trafficLogDetailTab === 'metadata' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('metadata')}
               >
-                完整元数据
+                排错元数据
+              </button>
+              <button
+                type="button"
+                className={`log-modal-tab ${trafficLogDetailTab === 'curl' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('curl')}
+              >
+                复现命令 (cURL)
               </button>
             </div>
 
-            {trafficLogDetail.errorDescription ? (
-              <div className="hint-line error" style={{ margin: '8px 0', padding: '10px 14px', borderRadius: 'var(--r-md)', background: 'rgba(220, 38, 38, 0.08)', border: '1px solid rgba(220, 38, 38, 0.2)' }}>
-                <strong>错误摘要：</strong>{trafficLogDetail.errorDescription}
-              </div>
-            ) : null}
             {trafficLogDetailLoading ? <div className="hint-line" style={{ margin: '6px 0' }}>⏳ 正在加载完整请求与响应报文…</div> : null}
 
+            {/* Tab: APM */}
             {trafficLogDetailTab === 'apm' && (
               <div>
                 <LogTimingWaterfall log={trafficLogDetail} />
@@ -7016,25 +7066,47 @@ function App() {
               </div>
             )}
 
+            {/* Tab: Request Body */}
             {trafficLogDetailTab === 'request' && (
               <div className="log-body-card">
-                {trafficLogDetail.requestBody ? (
+                {hasReqBody ? (
                   <>
                     <div className="field-label-row">
-                      <label>请求正文 (Request Body)</label>
-                      <CopyButton value={trafficLogDetail.requestBody} label="复制请求体" />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label>请求正文 (Request Body)</label>
+                        <span className="badge slate" style={{ fontSize: 11 }}>{formatBytes(trafficLogDetail.requestBody!.length)}</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div className="view-toggle-capsule">
+                          <button
+                            type="button"
+                            className={`capsule-btn ${!trafficLogRawReqView ? 'active' : ''}`}
+                            onClick={() => setTrafficLogRawReqView(false)}
+                          >
+                            格式化 JSON
+                          </button>
+                          <button
+                            type="button"
+                            className={`capsule-btn ${trafficLogRawReqView ? 'active' : ''}`}
+                            onClick={() => setTrafficLogRawReqView(true)}
+                          >
+                            原始文本
+                          </button>
+                        </div>
+                        <CopyButton value={trafficLogDetail.requestBody!} label="复制请求体" />
+                      </div>
                     </div>
-                    <pre className="json-preview">{formatJsonDisplay(trafficLogDetail.requestBody)}</pre>
+                    <pre className="json-preview">{trafficLogRawReqView ? trafficLogDetail.requestBody! : formatJsonDisplay(trafficLogDetail.requestBody!)}</pre>
                   </>
                 ) : trafficLogDetail.status < 400 && !log2xxBodies ? (
                   <div className="log-body-empty-notice">
                     <div className="log-body-notice-icon">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                     </div>
                     <div>
                       <strong style={{ fontSize: 14 }}>当前未开启「2xx 成功请求正文落盘」</strong>
-                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460 }}>
-                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文，以实现万级并发下的最高吞吐并避免日志数据库体积膨胀。
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460, fontSize: 13, lineHeight: 1.5 }}>
+                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文，以实现万级并发下的最高吞吐并避免日志数据库体积膨胀。开启后，正常请求也将完整保存出入报文（上限已扩容至 128 KiB）。
                       </p>
                     </div>
                     {!isNormalUser && (
@@ -7051,31 +7123,111 @@ function App() {
                       </button>
                     )}
                   </div>
+                ) : trafficLogDetail.status < 400 && log2xxBodies ? (
+                  <div className="log-body-empty-notice info">
+                    <div className="log-body-notice-icon">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </div>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>此历史请求发生时未落盘请求正文</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460, fontSize: 13, lineHeight: 1.5 }}>
+                        该请求是在网关开启「2xx 正文落盘」前产生，或者客户端发起了无正文请求（如 GET / 或握手请求）。当前网关已开启 2xx 正文落盘，后续新发起的请求将完整保留报文。
+                      </p>
+                    </div>
+                  </div>
                 ) : (
-                  <div className="empty-state compact">该请求未携带请求正文（或被客户端省略）。</div>
+                  <div className="empty-state compact">该请求未携带请求正文（或在网络握手建立前已中断）。</div>
                 )}
               </div>
             )}
 
+            {/* Tab: Response Body */}
             {trafficLogDetailTab === 'response' && (
               <div className="log-body-card">
-                {trafficLogDetail.responseBody ? (
+                {hasRespBody ? (
                   <>
                     <div className="field-label-row">
-                      <label>响应正文 (Response Body)</label>
-                      <CopyButton value={trafficLogDetail.responseBody} label="复制响应体" />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label>响应正文 (Response Body)</label>
+                        <span className="badge slate" style={{ fontSize: 11 }}>
+                          {formatBytes(trafficLogDetail.responseBody!.length)}
+                          {isRespSSE ? ' · Server-Sent Events 流' : ''}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {isRespSSE && sseParsedText ? (
+                          <div className="view-toggle-capsule">
+                            <button
+                              type="button"
+                              className={`capsule-btn ${trafficLogSSEParsedView ? 'active' : ''}`}
+                              onClick={() => setTrafficLogSSEParsedView(true)}
+                            >
+                              解包回复文字
+                            </button>
+                            <button
+                              type="button"
+                              className={`capsule-btn ${!trafficLogSSEParsedView ? 'active' : ''}`}
+                              onClick={() => setTrafficLogSSEParsedView(false)}
+                            >
+                              原始 SSE 流
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="view-toggle-capsule">
+                            <button
+                              type="button"
+                              className={`capsule-btn ${!trafficLogRawRespView ? 'active' : ''}`}
+                              onClick={() => setTrafficLogRawRespView(false)}
+                            >
+                              格式化 JSON
+                            </button>
+                            <button
+                              type="button"
+                              className={`capsule-btn ${trafficLogRawRespView ? 'active' : ''}`}
+                              onClick={() => setTrafficLogRawRespView(true)}
+                            >
+                              原始文本
+                            </button>
+                          </div>
+                        )}
+                        <CopyButton
+                          value={isRespSSE && trafficLogSSEParsedView && sseParsedText ? sseParsedText : trafficLogDetail.responseBody!}
+                          label={isRespSSE && trafficLogSSEParsedView && sseParsedText ? '复制解包回复' : '复制响应体'}
+                        />
+                      </div>
                     </div>
-                    <pre className="json-preview">{formatJsonDisplay(trafficLogDetail.responseBody)}</pre>
+                    {isRespSSE && trafficLogSSEParsedView && sseParsedText ? (
+                      <div className="sse-parsed-preview">
+                        <div className="sse-parsed-badge">模型生成文本解包预览</div>
+                        <pre className="sse-parsed-text">{sseParsedText}</pre>
+                      </div>
+                    ) : (
+                      <pre className="json-preview">
+                        {trafficLogRawRespView || isRespSSE ? trafficLogDetail.responseBody! : formatJsonDisplay(trafficLogDetail.responseBody!)}
+                      </pre>
+                    )}
                   </>
+                ) : trafficLogDetail.status === 499 ? (
+                  <div className="log-body-empty-notice warning">
+                    <div className="log-body-notice-icon">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    </div>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>客户端主动切断连接 (HTTP 499)</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460, fontSize: 13, lineHeight: 1.5 }}>
+                        客户端（如 Cursor、网页或 IDE）提前断开了 HTTP/SSE 连接，请求在传输中被主动取消 (Context Canceled)。上游生成被中途掐断，因此未生成完整响应包体。
+                      </p>
+                    </div>
+                  </div>
                 ) : trafficLogDetail.status < 400 && !log2xxBodies ? (
                   <div className="log-body-empty-notice">
                     <div className="log-body-notice-icon">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                     </div>
                     <div>
-                      <strong style={{ fontSize: 14 }}>当前未开启「2xx 成功请求正文落盘」</strong>
-                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460 }}>
-                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文。开启后，正常请求也将完整记录响应包体。
+                      <strong style={{ fontSize: 14 }}>当前未开启「2xx 成功响应正文落盘」</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460, fontSize: 13, lineHeight: 1.5 }}>
+                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文。开启后，正常请求也将完整记录响应正文与流式 SSE 报文（上限 128 KiB）。
                       </p>
                     </div>
                     {!isNormalUser && (
@@ -7092,19 +7244,101 @@ function App() {
                       </button>
                     )}
                   </div>
+                ) : trafficLogDetail.status < 400 && log2xxBodies ? (
+                  <div className="log-body-empty-notice info">
+                    <div className="log-body-notice-icon">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </div>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>此历史请求发生时未落盘响应正文</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460, fontSize: 13, lineHeight: 1.5 }}>
+                        该请求是在开启「2xx 正文落盘」前产生，或上游返回空响应。当前已开启 2xx 正文落盘，后续请求将完整保留响应内容。
+                      </p>
+                    </div>
+                  </div>
                 ) : (
-                  <div className="empty-state compact">该请求未记录响应正文（流式 SSE 请求完成时未保留或空包体）。</div>
+                  <div className="empty-state compact">该请求未记录响应正文（上游未返回有效响应正文或网络异常中断）。</div>
                 )}
               </div>
             )}
 
-            {trafficLogDetailTab === 'raw' && (
+            {/* Tab: Troubleshooting Metadata */}
+            {trafficLogDetailTab === 'metadata' && (
               <div className="log-body-card">
                 <div className="field-label-row">
-                  <label>完整诊断与元数据信息</label>
-                  <CopyButton value={formatTrafficLogDetail(trafficLogDetail, state.providers || [])} label="复制全部" />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <label>完整链路排错元数据</label>
+                    <span className="badge slate" style={{ fontSize: 11 }}>Structured Context</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <CopyButton value={jsonMetadata} label="复制全部元数据 (JSON)" />
+                    <CopyButton value={formatTrafficLogDetail(trafficLogDetail, state.providers || [])} label="复制文本简报" />
+                  </div>
                 </div>
-                <pre className="json-preview">{formatTrafficLogDetail(trafficLogDetail, state.providers || [])}</pre>
+
+                <div className="log-troubleshoot-grid">
+                  {/* 分组 1: 网络与传输 */}
+                  <div className="log-troubleshoot-card">
+                    <h4>网络与传输链路</h4>
+                    <div className="troubleshoot-row"><span>请求路径 (Path)</span><code>{trafficLogDetail.path}</code></div>
+                    <div className="troubleshoot-row"><span>协议流向 (Flow)</span><b>{trafficLogDetail.protocolFlow}</b></div>
+                    <div className="troubleshoot-row"><span>客户端 IP (Client IP)</span><code>{trafficLogDetail.clientIp || '—'}</code></div>
+                    <div className="troubleshoot-row"><span>代理域名 (Host)</span><span>{trafficLogDetail.clientHost || '—'}</span></div>
+                    <div className="troubleshoot-row"><span>网络类型 (Source)</span><Badge tone="slate">{trafficLogDetail.accessSource || 'local'}</Badge></div>
+                  </div>
+
+                  {/* 分组 2: 鉴权与身份 */}
+                  <div className="log-troubleshoot-card">
+                    <h4>身份与鉴权凭据</h4>
+                    <div className="troubleshoot-row"><span>API 密钥名称</span><b>{trafficLogKeyLabel(trafficLogDetail)}</b></div>
+                    <div className="troubleshoot-row"><span>API 密钥 ID</span><code>{trafficLogDetail.apiKeyId || '—'}</code></div>
+                    <div className="troubleshoot-row"><span>所属用户 (User)</span><span>{trafficLogDetail.userName || '—'}</span></div>
+                    <div className="troubleshoot-row"><span>全局日志 ID</span><code>#{trafficLogDetail.id || '—'}</code></div>
+                    <div className="troubleshoot-row"><span>精准时间戳</span><span>{new Date(trafficLogDetail.time).toISOString()}</span></div>
+                  </div>
+
+                  {/* 分组 3: 路由与上游决策 */}
+                  <div className="log-troubleshoot-card">
+                    <h4>路由与上游 Provider</h4>
+                    <div className="troubleshoot-row"><span>命中路由 ID</span><code>{trafficLogDetail.routeId}</code></div>
+                    <div className="troubleshoot-row"><span>上游 Provider</span><b>{trafficLogProviderLabel(trafficLogDetail, state.providers || [])}</b></div>
+                    <div className="troubleshoot-row"><span>Provider ID</span><code>{trafficLogDetail.providerId || '—'}</code></div>
+                    <div className="troubleshoot-row"><span>决策动作 (Action)</span><Badge tone="blue">{trafficLogDetail.action}</Badge></div>
+                    <div className="troubleshoot-row"><span>请求模型 (Model)</span><b>{trafficLogDetail.model}</b></div>
+                  </div>
+
+                  {/* 分组 4: 细分 APM 耗时与 Token */}
+                  <div className="log-troubleshoot-card">
+                    <h4>APM 耗时与 Token 统计</h4>
+                    <div className="troubleshoot-row"><span>端到端总延时</span><b>{trafficLogDetail.latencyMs} ms</b></div>
+                    <div className="troubleshoot-row"><span>首字 TTFT 耗时</span><b>{trafficLogDetail.ttftMs ?? '-'} ms</b></div>
+                    <div className="troubleshoot-row"><span>上游 TTFB 耗时</span><b>{trafficLogDetail.upstreamTtfbMs ?? '-'} ms</b></div>
+                    <div className="troubleshoot-row"><span>网关开销 (Overhead)</span><b>{trafficLogDetail.gatewayOverheadMs ?? '-'} ms</b></div>
+                    <div className="troubleshoot-row"><span>Token (输入/输出/缓存)</span><span>{trafficLogDetail.inputTokens} / {trafficLogDetail.outputTokens} / {trafficLogDetail.cacheTokens ?? 0}</span></div>
+                    <div className="troubleshoot-row"><span>Timing 标记</span><code>{trafficLogDetail.timingFlags || 'none'}</code></div>
+                  </div>
+                </div>
+
+                <details style={{ marginTop: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>查看原始诊断 JSON (Raw JSON)</summary>
+                  <pre className="json-preview" style={{ marginTop: 8 }}>{jsonMetadata}</pre>
+                </details>
+              </div>
+            )}
+
+            {/* Tab: Reproduce with cURL */}
+            {trafficLogDetailTab === 'curl' && (
+              <div className="log-body-card">
+                <div className="field-label-row">
+                  <div>
+                    <label>终端一键复现 (cURL Command)</label>
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted)' }}>
+                      在终端中粘贴执行此命令即可模拟调用端发起相同参数与 Payload 的请求。请将 YOUR_API_KEY 替换为真实密钥。
+                    </p>
+                  </div>
+                  <CopyButton value={curlCmd} label="复制 cURL" />
+                </div>
+                <pre className="json-preview">{curlCmd}</pre>
               </div>
             )}
           </div>
@@ -7112,7 +7346,8 @@ function App() {
             <button className="btn" onClick={() => setTrafficLogDetail(null)}>关闭</button>
           </div>
         </Modal>
-      )}
+        );
+      })()}
 
       {passwordResetUser && (
         <Modal

@@ -513,7 +513,7 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 			// 成功但转换器未写出（极少见）：仍提交状态，避免悬挂。
 			dw.commit(response.StatusCode)
 		}
-		return response.StatusCode, usage, nil, streamErr, false
+		return response.StatusCode, usage, dw.BodyBytes(), streamErr, false
 	}
 
 	responseBody, readErr := io.ReadAll(response.Body)

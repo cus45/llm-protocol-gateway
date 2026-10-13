@@ -571,7 +571,210 @@ export function trafficLogProviderLabel(log: LogEntry, providers: Provider[]) {
 }
 
 export function isTrafficLogError(log: LogEntry) {
-  return log.status >= 400 || Boolean(log.errorDescription?.trim()) || Boolean(log.responseBody?.trim());
+  return log.status >= 400 || Boolean(log.errorDescription?.trim());
+}
+
+export function parseSSEStreamContent(raw: string): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const lines = raw.split(/\r?\n/);
+  const chunks: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const dataStr = trimmed.slice(5).trim();
+    if (dataStr === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(dataStr);
+      // OpenAI / standard chat format
+      if (Array.isArray(parsed.choices)) {
+        for (const choice of parsed.choices) {
+          if (choice?.delta?.content) chunks.push(choice.delta.content);
+          else if (choice?.delta?.text) chunks.push(choice.delta.text);
+          else if (choice?.text) chunks.push(choice.text);
+        }
+      }
+      // Anthropic Claude format
+      else if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+        chunks.push(parsed.delta.text);
+      } else if (parsed.type === 'content_block_start' && parsed.content_block?.text) {
+        chunks.push(parsed.content_block.text);
+      }
+      // Responses format
+      else if (typeof parsed.delta === 'string') {
+        chunks.push(parsed.delta);
+      } else if (typeof parsed.output_text === 'string') {
+        chunks.push(parsed.output_text);
+      }
+    } catch {
+      // Skip non-JSON chunks
+    }
+  }
+  return chunks.join('');
+}
+
+export function explainHttpStatus(status: number): { title: string; category: string; description: string; hint: string; tone: BadgeTone } {
+  if (status >= 200 && status < 300) {
+    return {
+      title: '成功受理 (OK)',
+      category: '正常',
+      description: '上游模型已成功处理并正常生成回复。',
+      hint: '链路健康，响应流完整返回。',
+      tone: 'green',
+    };
+  }
+  if (status === 400) {
+    return {
+      title: '请求格式或参数不合法 (Bad Request)',
+      category: '客户端协议错误',
+      description: '客户端传递的请求正文、参数、模型名称或上下文格式不符合上游规范。',
+      hint: '请检查请求报文中的 messages、tools 结构以及 model 字段是否存在拼写错误。',
+      tone: 'red',
+    };
+  }
+  if (status === 401) {
+    return {
+      title: '鉴权未通过 (Unauthorized)',
+      category: '身份验证失败',
+      description: 'API 密钥缺失、已失效或上游 Provider 密钥凭据无效。',
+      hint: '请核对调用方携带的 Authorization 密钥或在后台检查 Provider 的 API Key / OAuth 状态。',
+      tone: 'red',
+    };
+  }
+  if (status === 403) {
+    return {
+      title: '访问被拒绝 (Forbidden)',
+      category: '权限不足',
+      description: '当前 API 密钥未获得当前路由或 Provider 的使用授权，或已被禁用。',
+      hint: '请在后台「API 密钥」中检查该密钥的路由绑定或在「用户」页面核对 Provider 授权分配。',
+      tone: 'red',
+    };
+  }
+  if (status === 404) {
+    return {
+      title: '资源或路由不存在 (Not Found)',
+      category: '端点不存在',
+      description: '访问的 URL 路径未在网关注册，或指定的模型不存在。',
+      hint: '请核对请求路径（如 /v1/chat/completions 或 /v1/messages）。',
+      tone: 'red',
+    };
+  }
+  if (status === 429) {
+    return {
+      title: '速率或配额超限 (Rate Limited / Quota Exceeded)',
+      category: '配额受限',
+      description: '上游 Provider 账号额度耗尽、欠费，或当前并发触发了 RPM / TPM 速率上限。',
+      hint: '请检查上游账号余额或在密钥中配置 Fallback 兜底链实现自动容灾降级。',
+      tone: 'red',
+    };
+  }
+  if (status === 499) {
+    return {
+      title: '客户端主动取消 (Client Closed Request)',
+      category: '连接主动中断',
+      description: '调用端提前切断了 HTTP/SSE 连接（如用户在界面点击了 Stop 停止生成，或客户端超时）。',
+      hint: '请求在传输中被主动中断 (Context Canceled)，非网关或上游崩溃；若频繁出现请调大客户端 Client Timeout。',
+      tone: 'slate',
+    };
+  }
+  if (status === 502) {
+    return {
+      title: '上游网关错误 (Bad Gateway)',
+      category: '上游连接异常',
+      description: '网关无法连接至上游 Provider、DNS 解析异常或上游返回非标准 HTTP 报文。',
+      hint: '请检查 Provider 的 Base URL 配置、网络连通性或当前网络是否需要代理。',
+      tone: 'red',
+    };
+  }
+  if (status === 503) {
+    return {
+      title: '服务暂时不可用 (Service Unavailable)',
+      category: '服务不可用',
+      description: '上游模型服务当前处于过载维护状态，无法承接新的流量。',
+      hint: '建议开启多 Provider 轮询或配置兜底 Provider 自动重试。',
+      tone: 'red',
+    };
+  }
+  if (status === 504) {
+    return {
+      title: '上游响应超时 (Gateway Timeout)',
+      category: '超时未响应',
+      description: '等待上游模型生成首字或整体响应耗时超过了网络允许的时限。',
+      hint: '思考模型 (Thinking) 可能耗时极长，可尝试配置 Stream 保持长连接心跳，或缩短历史上下文。',
+      tone: 'red',
+    };
+  }
+  return {
+    title: `HTTP ${status} 异常`,
+    category: '其他异常',
+    description: '请求返回了非预期的 HTTP 状态码。',
+    hint: '请结合请求报文与错误摘要深入排错。',
+    tone: 'red',
+  };
+}
+
+export function buildCurlCommand(log: LogEntry, host = window.location.origin): string {
+  const url = `${host}${log.path}`;
+  const headers: string[] = [
+    `-H "Content-Type: application/json"`,
+    `-H "Authorization: Bearer YOUR_API_KEY"`,
+  ];
+  if (log.path.includes('/messages')) {
+    headers.push(`-H "anthropic-version: 2023-06-01"`);
+  }
+  if (log.requestBody) {
+    const escaped = log.requestBody.replace(/'/g, `'\\''`);
+    return `curl -X POST '${url}' \\\n  ${headers.join(' \\\n  ')} \\\n  --data '${escaped}'`;
+  }
+  return `curl -X POST '${url}' \\\n  ${headers.join(' \\\n  ')}`;
+}
+
+export function formatTrafficLogJSON(log: LogEntry, providers: Provider[] = []): string {
+  const provider = providers.find((p) => p.id === log.providerId);
+  const data = {
+    id: log.id,
+    time: log.time,
+    status: log.status,
+    latencyMs: log.latencyMs,
+    ttftMs: log.ttftMs,
+    endpoint: log.path,
+    protocolFlow: log.protocolFlow,
+    routeId: log.routeId,
+    provider: {
+      id: log.providerId,
+      name: provider?.name || log.providerId,
+      protocol: provider?.protocol || '-',
+      baseUrl: provider?.baseUrl || '-',
+    },
+    model: {
+      requested: log.model,
+    },
+    auth: {
+      apiKeyId: log.apiKeyId,
+      apiKeyName: log.apiKeyName,
+      userName: log.userName,
+    },
+    client: {
+      ip: log.clientIp,
+      host: log.clientHost,
+      source: log.accessSource,
+    },
+    timing: {
+      prepMs: log.prepMs,
+      preUpstreamMs: log.preUpstreamMs,
+      upstreamTtfbMs: log.upstreamTtfbMs,
+      gatewayOverheadMs: log.gatewayOverheadMs,
+      convertOutMs: log.convertOutMs,
+      postMs: log.postMs,
+      flags: log.timingFlags,
+    },
+    tokens: {
+      input: log.inputTokens,
+      output: log.outputTokens,
+      cache: log.cacheTokens,
+    },
+    error: log.errorDescription || undefined,
+  };
+  return JSON.stringify(data, null, 2);
 }
 
 export function formatTrafficLogDetail(log: LogEntry, providers: Provider[] = []) {

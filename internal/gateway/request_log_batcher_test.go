@@ -50,6 +50,10 @@ func (f *fakeRequestLogStore) QueryRequestLogs(monitor.RequestLogQuery) (monitor
 	return monitor.RequestLogPage{}, nil
 }
 
+func (f *fakeRequestLogStore) RequestLogByID(int64) (monitor.RequestLog, bool, error) {
+	return monitor.RequestLog{}, false, nil
+}
+
 func (f *fakeRequestLogStore) PruneRequestLogs(int) error { return nil }
 
 func (f *fakeRequestLogStore) snapshot() (singles int, batches [][]monitor.RequestLog) {
