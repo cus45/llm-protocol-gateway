@@ -142,6 +142,7 @@ export function ApiKeyDetailPanel({
   // 方案创建/重命名走应用内弹窗：window.prompt 在部分嵌入式浏览器会被静默拦截，
   // 表现为按钮点击毫无反应（“假按钮”）。
   const [profileDialog, setProfileDialog] = React.useState<'create' | 'rename' | null>(null);
+  const [detailTab, setDetailTab] = React.useState<'connect' | 'routing' | 'params' | 'all'>('connect');
 
   async function submitProfileName(name: string) {
     if (!profileDialog) return;
@@ -192,240 +193,279 @@ export function ApiKeyDetailPanel({
         />
       ) : null}
 
-      <div className="api-key-profile-selector">
-        <div className="field-label-row">
-          <label>转发方案</label>
-          <div className="api-key-profile-toolbar">
-            <button className="btn" type="button" disabled={saving} onClick={() => setProfileDialog('create')}>
-              新建方案
-            </button>
-            {activeProfile ? (
-              <button className="btn" type="button" disabled={saving} onClick={() => setProfileDialog('rename')}>
-                重命名
-              </button>
-            ) : null}
-            {activeProfile && profiles.length > 1 ? (
-              <button className="btn danger" type="button" disabled={saving} onClick={() => void handleDeleteProfile()}>
-                删除当前
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <div className="hint-line">
-          同一 Key（token 不变）可切换多套完整转发配置。下方整页表单即当前生效方案（Provider / 备选 / 模型映射等）；切换方案后新请求立即走新配置。
-        </div>
-        <div className="api-key-profile-tabs" role="tablist" aria-label="转发方案">
-          {profiles.length === 0 ? (
-            <button className="api-key-profile-tab active" type="button" role="tab" aria-selected="true" disabled>
-              当前配置
-            </button>
-          ) : (
-            profiles.map((profile) => {
-              const isActive = profile.id === activeProfileId;
-              return (
-                <button
-                  key={profile.id}
-                  className={`api-key-profile-tab${isActive ? ' active' : ''}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  disabled={saving || isActive}
-                  onClick={() => void onSwitchProfile(keyItem, profile.id)}
-                  title={isActive ? '当前生效方案' : `切换到「${profile.name}」`}
-                >
-                  {profile.name}
-                  {isActive ? <span className="api-key-profile-tab-mark">生效</span> : null}
-                </button>
-              );
-            })
-          )}
-        </div>
+      <div className="api-key-detail-tabs" role="tablist">
+        <button
+          type="button"
+          className={`api-key-detail-tab ${detailTab === 'connect' ? 'active' : ''}`}
+          onClick={() => setDetailTab('connect')}
+        >
+          接入指南 (Connect)
+        </button>
+        <button
+          type="button"
+          className={`api-key-detail-tab ${detailTab === 'routing' ? 'active' : ''}`}
+          onClick={() => setDetailTab('routing')}
+        >
+          路由与方案 (Routing)
+        </button>
+        <button
+          type="button"
+          className={`api-key-detail-tab ${detailTab === 'params' ? 'active' : ''}`}
+          onClick={() => setDetailTab('params')}
+        >
+          模型与参数 (Parameters)
+        </button>
+        <button
+          type="button"
+          className={`api-key-detail-tab ${detailTab === 'all' ? 'active' : ''}`}
+          onClick={() => setDetailTab('all')}
+        >
+          全部展开 (All)
+        </button>
       </div>
 
-      <div className="detail-section">
-        <div className="detail-section-title">基本绑定</div>
-        <div className="form-grid compact">
-          <ApiKeyNameField
-            name={keyItem.name}
-            disabled={saving}
-            onSave={(name) => onUpdateField(keyItem, 'name', name)}
-          />
-          <div className="field">
-            <label>输入 Provider（首选）</label>
-            <select
-              value={binding.providerId}
-              disabled={saving}
-              onChange={(event) => {
-                void onUpdateBinding(keyItem, event.target.value, binding.outputProtocol);
-              }}
-            >
-              {providers.map((item) => <option key={item.id} value={item.id}>{providerOptionLabel(item)}</option>)}
-            </select>
+      {(detailTab === 'connect' || detailTab === 'all') && (
+        <div className="detail-section">
+          <div className="detail-section-title">客户端快速接入指南</div>
+          <div className="api-key-client-configs">
+            <div className="field-label-row">
+              <label>一键复制客户端配置</label>
+            </div>
             <div className="hint-line">
-              {routeProvider ? `输入协议：${protocolLabel(routeProvider.protocol)}（由 Provider 决定，不可单独修改）` : '未绑定'}
+              仅显示与当前输出协议匹配的客户端。点击后复制到剪贴板，并弹窗预览配置路径与内容；可在弹窗内切换内网 / 公网域名。
+            </div>
+            <div className="api-key-client-config-actions">
+              {clientConfigsForProtocol(route?.outputProtocol).map((client) => (
+                <button
+                  key={client}
+                  className="btn client-config-btn"
+                  type="button"
+                  disabled={!route}
+                  onClick={() => openClientConfigModal(client)}
+                >
+                  {client === 'opencode' ? '复制 OpenCode 配置' : client === 'codex' ? '复制 Codex 配置' : '复制 Claude 配置'}
+                </button>
+              ))}
+            </div>
+            {route ? (
+              <div className="hint-line">
+                当前输出协议：{protocolLabel(route.outputProtocol)}
+                {route.outputProtocol === 'openai_responses'
+                  ? ' · 适配 Codex / OpenCode。'
+                  : route.outputProtocol === 'claude'
+                    ? ' · 适配 Claude Code / OpenCode（Messages）；不走 OpenAI Responses。'
+                    : ' · 适配 OpenCode（Chat Completions）。'}
+              </div>
+            ) : null}
+          </div>
+
+          {route ? (
+            <div className="api-key-call-example">
+              <div className="field-label-row">
+                <label>{tunnelRunning ? '公网调用示例' : '局域网调用示例'}</label>
+                <CopyButton value={buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)} label="复制 curl" />
+              </div>
+              <div className="hint-line">
+                协议：{protocolLabel(route.outputProtocol)} · 客户端 Base URL：{apiKeyClientURL}
+                {route.outputProtocol === 'openai_chat' ? ' · 完整路径：/v1/chat/completions' : route.outputProtocol === 'claude' ? ' · 完整路径：/anthropic/v1/messages（Base URL 不要带 /v1）' : ' · 完整路径：/openai/v1/responses'}
+                {keyItem.modelOverride ? ` · 固定模型：${keyItem.modelOverride}` : routeProvider?.defaultModel ? ` · 默认模型：${routeProvider.defaultModel}` : ''}
+              </div>
+              <pre className="curl-preview">{buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)}</pre>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {(detailTab === 'routing' || detailTab === 'all') && (
+        <>
+          <div className="api-key-profile-selector">
+            <div className="field-label-row">
+              <label>转发方案</label>
+              <div className="api-key-profile-toolbar">
+                <button className="btn" type="button" disabled={saving} onClick={() => setProfileDialog('create')}>
+                  新建方案
+                </button>
+                {activeProfile ? (
+                  <button className="btn" type="button" disabled={saving} onClick={() => setProfileDialog('rename')}>
+                    重命名
+                  </button>
+                ) : null}
+                {activeProfile && profiles.length > 1 ? (
+                  <button className="btn danger" type="button" disabled={saving} onClick={() => void handleDeleteProfile()}>
+                    删除当前
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="hint-line">
+              同一 Key（token 不变）可切换多套完整转发配置。下方整页表单即当前生效方案（Provider / 备选 / 模型映射等）；切换方案后新请求立即走新配置。
+            </div>
+            <div className="api-key-profile-tabs" role="tablist" aria-label="转发方案">
+              {profiles.length === 0 ? (
+                <button className="api-key-profile-tab active" type="button" role="tab" aria-selected="true" disabled>
+                  当前配置
+                </button>
+              ) : (
+                profiles.map((profile) => {
+                  const isActive = profile.id === activeProfileId;
+                  return (
+                    <button
+                      key={profile.id}
+                      className={`api-key-profile-tab${isActive ? ' active' : ''}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      disabled={saving || isActive}
+                      onClick={() => void onSwitchProfile(keyItem, profile.id)}
+                      title={isActive ? '当前生效方案' : `切换到「${profile.name}」`}
+                    >
+                      {profile.name}
+                      {isActive ? <span className="api-key-profile-tab-mark">生效</span> : null}
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
-          {owners && onUpdateOwner ? (
-            <div className="field">
-              <label>所属用户</label>
-              <select
-                value={keyItem.ownerUserId || ''}
+
+          <div className="detail-section">
+            <div className="detail-section-title">基本绑定</div>
+            <div className="form-grid compact">
+              <ApiKeyNameField
+                name={keyItem.name}
                 disabled={saving}
-                onChange={(event) => void onUpdateOwner(keyItem, event.target.value)}
-              >
-                <option value="">管理员</option>
-                {owners.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
+                onSave={(name) => onUpdateField(keyItem, 'name', name)}
+              />
+              <div className="field">
+                <label>输入 Provider（首选）</label>
+                <select
+                  value={binding.providerId}
+                  disabled={saving}
+                  onChange={(event) => {
+                    void onUpdateBinding(keyItem, event.target.value, binding.outputProtocol);
+                  }}
+                >
+                  {providers.map((item) => <option key={item.id} value={item.id}>{providerOptionLabel(item)}</option>)}
+                </select>
+                <div className="hint-line">
+                  {routeProvider ? `输入协议：${protocolLabel(routeProvider.protocol)}（由 Provider 决定，不可单独修改）` : '未绑定'}
+                </div>
+              </div>
+              {owners && onUpdateOwner ? (
+                <div className="field">
+                  <label>所属用户</label>
+                  <select
+                    value={keyItem.ownerUserId || ''}
+                    disabled={saving}
+                    onChange={(event) => void onUpdateOwner(keyItem, event.target.value)}
+                  >
+                    <option value="">管理员</option>
+                    {owners.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
+                  </select>
+                </div>
+              ) : null}
+              <div className="field">
+                <label>输出协议</label>
+                <select
+                  value={protocolLabel(binding.outputProtocol)}
+                  disabled={saving || !binding.providerId}
+                  onChange={(event) => {
+                    void onUpdateBinding(keyItem, binding.providerId, protocolFromLabel(event.target.value));
+                  }}
+                >
+                  {fixedOutputLabels.map((label) => <option key={label} value={label}>{label}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div className="detail-section">
+            <div className="detail-section-title">备选与故障转移</div>
+            <div className="api-key-fallback-summary">
+              <div className="hint-line">
+                当前在用：{activeProvider ? providerOptionLabel(activeProvider) : '未绑定'}
+                {usingFallback ? `（已从首选故障转移${activeFallbackModel ? ` · 模型 ${activeFallbackModel}` : ''}）` : ''}
+              </div>
+              <div className="hint-line">
+                {fallbackIds.length === 0
+                  ? '未配置备选。首选额度耗尽后将无法自动切换。'
+                  : `备选顺序：${fallbackIds.map((id, index) => {
+                    const provider = providers.find((item) => item.id === id);
+                    const model = fallbackModelOverrides[id] || '未选模型';
+                    return `${index + 1}. ${provider ? providerOptionLabel(provider) : id} → ${model}`;
+                  }).join(' ； ')}`}
+              </div>
+              <div>
+                <button className="btn" type="button" disabled={saving || !binding.providerId || providers.length < 2} onClick={() => setFallbackModalOpen(true)}>
+                  配置备选
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {(detailTab === 'params' || detailTab === 'all') && (
+        <div className="detail-section">
+          <div className="detail-section-title">模型与生成参数</div>
+          <div className="form-grid compact">
+            <ApiKeyFixedModelField
+              value={keyItem.modelOverride || ''}
+              models={modelOptions}
+              disabled={saving || !routeProvider}
+              refreshing={routeProvider ? testingProviderID === routeProvider.id : false}
+              onChange={(value) => void onUpdateField(keyItem, 'modelOverride', value)}
+              onRefresh={() => routeProvider ? void onRefreshModels(routeProvider.id, routeProvider.name) : undefined}
+            />
+            <div className="field">
+              <label>思考深度</label>
+              <select value={keyItem.thinkingDepthOverride || ''} disabled={saving} onChange={(event) => void onUpdateField(keyItem, 'thinkingDepthOverride', event.target.value)}>
+                {thinkingDepthSelectOptions({ value: '', label: '（不覆盖）' })}
               </select>
             </div>
-          ) : null}
-          <div className="field">
-            <label>输出协议</label>
-            <select
-              value={protocolLabel(binding.outputProtocol)}
-              disabled={saving || !binding.providerId}
-              onChange={(event) => {
-                void onUpdateBinding(keyItem, binding.providerId, protocolFromLabel(event.target.value));
-              }}
-            >
-              {fixedOutputLabels.map((label) => <option key={label} value={label}>{label}</option>)}
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div className="detail-section">
-        <div className="detail-section-title">备选与故障转移</div>
-        <div className="api-key-fallback-summary">
-          <div className="hint-line">
-            当前在用：{activeProvider ? providerOptionLabel(activeProvider) : '未绑定'}
-            {usingFallback ? `（已从首选故障转移${activeFallbackModel ? ` · 模型 ${activeFallbackModel}` : ''}）` : ''}
-          </div>
-          <div className="hint-line">
-            {fallbackIds.length === 0
-              ? '未配置备选。首选额度耗尽后将无法自动切换。'
-              : `备选顺序：${fallbackIds.map((id, index) => {
-                const provider = providers.find((item) => item.id === id);
-                const model = fallbackModelOverrides[id] || '未选模型';
-                return `${index + 1}. ${provider ? providerOptionLabel(provider) : id} → ${model}`;
-              }).join(' ； ')}`}
-          </div>
-          <div>
-            <button className="btn" type="button" disabled={saving || !binding.providerId || providers.length < 2} onClick={() => setFallbackModalOpen(true)}>
-              配置备选
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="detail-section">
-        <div className="detail-section-title">模型与生成参数</div>
-        <div className="form-grid compact">
-          <ApiKeyFixedModelField
-            value={keyItem.modelOverride || ''}
-            models={modelOptions}
-            disabled={saving || !routeProvider}
-            refreshing={routeProvider ? testingProviderID === routeProvider.id : false}
-            onChange={(value) => void onUpdateField(keyItem, 'modelOverride', value)}
-            onRefresh={() => routeProvider ? void onRefreshModels(routeProvider.id, routeProvider.name) : undefined}
-          />
-          <div className="field">
-            <label>思考深度</label>
-            <select value={keyItem.thinkingDepthOverride || ''} disabled={saving} onChange={(event) => void onUpdateField(keyItem, 'thinkingDepthOverride', event.target.value)}>
-              {thinkingDepthSelectOptions({ value: '', label: '（不覆盖）' })}
-            </select>
-          </div>
-          <ApiKeyMaxOutputTokensField
-            value={keyItem.maxOutputTokens && keyItem.maxOutputTokens > 0 ? keyItem.maxOutputTokens : 0}
-            disabled={saving}
-            onSave={(n) => onUpdateField(keyItem, 'maxOutputTokens', n)}
-          />
-          <div className="field">
-            <label>流式响应（SSE）</label>
-            <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={keyItem.streamEnabled !== false}
-                disabled={saving}
-                onChange={(event) => void onUpdateField(keyItem, 'streamEnabled', event.target.checked)}
-              />
-              允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）
-            </label>
-          </div>
-          <div className="field">
-            <label>Codex Fast 档（强制）</label>
-            <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={keyItem.codexForceFast === true}
-                disabled={saving}
-                onChange={(event) => void onUpdateField(keyItem, 'codexForceFast', event.target.checked)}
-              />
-              开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发
-              （service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。
-            </label>
-          </div>
-          <ApiKeyModelMappingControl
-            aliases={keyItem.modelAliases || {}}
-            models={modelOptions}
-            providerName={routeProvider?.name || 'Provider'}
-            disabled={saving || !routeProvider}
-            saving={saving}
-            refreshing={routeProvider ? testingProviderID === routeProvider.id : false}
-            onRefresh={() => routeProvider ? void onRefreshModels(routeProvider.id, routeProvider.name) : undefined}
-            onSave={(modelAliases) => onUpdateModelAliases(keyItem, modelAliases)}
-          />
-        </div>
-      </div>
-
-      <div className="detail-section">
-        <div className="detail-section-title">客户端接入</div>
-        <div className="api-key-client-configs">
-          <div className="field-label-row">
-            <label>一键复制客户端配置</label>
-          </div>
-          <div className="hint-line">
-            仅显示与当前输出协议匹配的客户端。点击后复制到剪贴板，并弹窗预览配置路径与内容；可在弹窗内切换内网 / 公网域名。
-          </div>
-          <div className="api-key-client-config-actions">
-            {clientConfigsForProtocol(route?.outputProtocol).map((client) => (
-              <button
-                key={client}
-                className="btn client-config-btn"
-                type="button"
-                disabled={!route}
-                onClick={() => openClientConfigModal(client)}
-              >
-                {client === 'opencode' ? '复制 OpenCode 配置' : client === 'codex' ? '复制 Codex 配置' : '复制 Claude 配置'}
-              </button>
-            ))}
-          </div>
-          {route ? (
-            <div className="hint-line">
-              当前输出协议：{protocolLabel(route.outputProtocol)}
-              {route.outputProtocol === 'openai_responses'
-                ? ' · 适配 Codex / OpenCode。'
-                : route.outputProtocol === 'claude'
-                  ? ' · 适配 Claude Code / OpenCode（Messages）；不走 OpenAI Responses。'
-                  : ' · 适配 OpenCode（Chat Completions）。'}
+            <ApiKeyMaxOutputTokensField
+              value={keyItem.maxOutputTokens && keyItem.maxOutputTokens > 0 ? keyItem.maxOutputTokens : 0}
+              disabled={saving}
+              onSave={(n) => onUpdateField(keyItem, 'maxOutputTokens', n)}
+            />
+            <div className="field">
+              <label>流式响应（SSE）</label>
+              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={keyItem.streamEnabled !== false}
+                  disabled={saving}
+                  onChange={(event) => void onUpdateField(keyItem, 'streamEnabled', event.target.checked)}
+                />
+                允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）
+              </label>
             </div>
-          ) : null}
-        </div>
-
-        {route ? (
-          <div className="api-key-call-example">
-            <div className="field-label-row">
-              <label>{tunnelRunning ? '公网调用示例' : '局域网调用示例'}</label>
-              <CopyButton value={buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)} label="复制 curl" />
+            <div className="field">
+              <label>Codex Fast 档（强制）</label>
+              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={keyItem.codexForceFast === true}
+                  disabled={saving}
+                  onChange={(event) => void onUpdateField(keyItem, 'codexForceFast', event.target.checked)}
+                />
+                开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发
+                （service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。
+              </label>
             </div>
-            <div className="hint-line">
-              协议：{protocolLabel(route.outputProtocol)} · 客户端 Base URL：{apiKeyClientURL}
-              {route.outputProtocol === 'openai_chat' ? ' · 完整路径：/v1/chat/completions' : route.outputProtocol === 'claude' ? ' · 完整路径：/anthropic/v1/messages（Base URL 不要带 /v1）' : ' · 完整路径：/openai/v1/responses'}
-              {keyItem.modelOverride ? ` · 固定模型：${keyItem.modelOverride}` : routeProvider?.defaultModel ? ` · 默认模型：${routeProvider.defaultModel}` : ''}
-            </div>
-            <pre className="curl-preview">{buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)}</pre>
+            <ApiKeyModelMappingControl
+              aliases={keyItem.modelAliases || {}}
+              models={modelOptions}
+              providerName={routeProvider?.name || 'Provider'}
+              disabled={saving || !routeProvider}
+              saving={saving}
+              refreshing={routeProvider ? testingProviderID === routeProvider.id : false}
+              onRefresh={() => routeProvider ? void onRefreshModels(routeProvider.id, routeProvider.name) : undefined}
+              onSave={(modelAliases) => onUpdateModelAliases(keyItem, modelAliases)}
+            />
           </div>
-        ) : null}
-      </div>
+        </div>
+      )}
 
       {clientConfigModal && route ? (
         <ApiKeyClientConfigModal

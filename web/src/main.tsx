@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
-import { MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageDailyTrafficLines, UsageLineChart, UsageMonthlyTokenBars, UsageRangeCalendar, UsageStatusChart } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageDailyTrafficLines, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart } from './components/charts';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
@@ -66,6 +66,24 @@ function App() {
   const authStatusRef = useRef<AdminAuthStatus | null>(null);
   const [trafficLogDetail, setTrafficLogDetail] = useState<LogEntry | null>(null);
   const [trafficLogDetailLoading, setTrafficLogDetailLoading] = useState(false);
+  const [trafficLogDetailTab, setTrafficLogDetailTab] = useState<'apm' | 'request' | 'response' | 'raw'>('apm');
+  const [usageMetricDimension, setUsageMetricDimension] = useState<'tokens' | 'requests'>('tokens');
+  const [usageViewTab, setUsageViewTab] = useState<'overview' | 'models' | 'providers' | 'keys'>('overview');
+  const [logsKeyword, setLogsKeyword] = useState('');
+  const displayedLogs = useMemo(() => {
+    if (!logsKeyword.trim()) return logs;
+    const kw = logsKeyword.trim().toLowerCase();
+    return logs.filter((log) =>
+      (log.model && log.model.toLowerCase().includes(kw)) ||
+      (log.path && log.path.toLowerCase().includes(kw)) ||
+      (log.apiKeyName && log.apiKeyName.toLowerCase().includes(kw)) ||
+      (log.clientIp && log.clientIp.toLowerCase().includes(kw)) ||
+      (log.errorDescription && log.errorDescription.toLowerCase().includes(kw)) ||
+      (log.userName && log.userName.toLowerCase().includes(kw)) ||
+      (log.accessSource && log.accessSource.toLowerCase().includes(kw)) ||
+      (log.providerId && log.providerId.toLowerCase().includes(kw))
+    );
+  }, [logs, logsKeyword]);
   const [selfcheckCaseDetail, setSelfcheckCaseDetail] = useState<SelfcheckCaseResult | null>(null);
   const [requestStats, setRequestStats] = useState<RequestStatsSnapshot | null>(null);
   const [monthlyDaily, setMonthlyDaily] = useState<DailyRequestPoint[]>([]);
@@ -259,8 +277,11 @@ function App() {
   });
   const [modelsProviderFilter, setModelsProviderFilter] = useState('__all__');
   const [modelsSearchQuery, setModelsSearchQuery] = useState('');
+  const [modelsCapabilityFilter, setModelsCapabilityFilter] = useState<'all' | 'thinking' | 'vision' | 'context'>('all');
+  const [modelsViewMode, setModelsViewMode] = useState<'grid' | 'table'>('grid');
   const [providersSearchQuery, setProvidersSearchQuery] = useState('');
   const [providersConnectFilter, setProvidersConnectFilter] = useState<'' | ProviderConnectKind>('');
+  const [providersStatusFilter, setProvidersStatusFilter] = useState<'all' | 'healthy' | 'unavailable' | 'disabled' | 'oauth'>('all');
 
   const selectedRoute = useMemo(
     () => state.routes.find((route) => route.id === selectedRouteID) || state.routes[0],
@@ -371,6 +392,17 @@ function App() {
 
   const filteredProviders = useMemo(() => {
     return sortedProviders.filter((provider) => {
+      if (providersStatusFilter === 'healthy') {
+        if (provider.disabled || provider.healthStatus === 'unavailable') return false;
+      } else if (providersStatusFilter === 'unavailable') {
+        if (provider.disabled || provider.healthStatus !== 'unavailable') return false;
+      } else if (providersStatusFilter === 'disabled') {
+        if (!provider.disabled) return false;
+      } else if (providersStatusFilter === 'oauth') {
+        const isOAuth = provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || provider.authType === 'qoder_pat';
+        if (!isOAuth) return false;
+      }
+
       if (providersConnectFilter && providerConnectKind(provider) !== providersConnectFilter) {
         return false;
       }
@@ -384,7 +416,7 @@ function App() {
       ].join(' ');
       return providersSearch.matcher(haystack);
     });
-  }, [sortedProviders, providersConnectFilter, providersSearch]);
+  }, [sortedProviders, providersStatusFilter, providersConnectFilter, providersSearch]);
 
   const modelsMenuProviders = useMemo(() => {
     const providerIDs = new Set(state.models.map((model) => model.providerId));
@@ -431,13 +463,27 @@ function App() {
           ];
           return haystacks.some((text) => Boolean(text) && modelsSearch.matcher!(text));
         });
-    return [...matched].sort((a, b) => {
+    const capabilityMatched = modelsCapabilityFilter === 'all'
+      ? matched
+      : matched.filter((model) => {
+          if (modelsCapabilityFilter === 'thinking') {
+            return /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
+          }
+          if (modelsCapabilityFilter === 'vision') {
+            return /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+          }
+          if (modelsCapabilityFilter === 'context') {
+            return (model.contextLength || 0) >= 128000;
+          }
+          return true;
+        });
+    return [...capabilityMatched].sort((a, b) => {
       const ca = recentModelRequestCounts.get(`${a.providerId}::${a.id}`) || recentModelRequestCounts.get(a.id) || 0;
       const cb = recentModelRequestCounts.get(`${b.providerId}::${b.id}`) || recentModelRequestCounts.get(b.id) || 0;
       if (ca !== cb) return cb - ca;
       return a.id.localeCompare(b.id);
     });
-  }, [state.models, state.providers, modelsProviderFilter, modelsSearch, recentModelRequestCounts]);
+  }, [state.models, state.providers, modelsProviderFilter, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
   const modelsMenuSummary = useMemo(() => {
     const counts = new Map<string, number>();
     for (const model of state.models) {
@@ -1464,6 +1510,7 @@ function App() {
 
   async function openTrafficLogDetail(log: LogEntry) {
     setTrafficLogDetail(log);
+    setTrafficLogDetailTab(log.requestBody || log.responseBody ? 'request' : 'apm');
     setTrafficLogDetailLoading(true);
     try {
       const response = await fetch(`${API_BASE}/__logs?${buildLogsQueryParams(logsPage, true).toString()}`, { credentials: 'same-origin' });
@@ -3017,6 +3064,64 @@ function App() {
     }
   }
 
+  async function batchTestSelectedProviders() {
+    const ids = selectedExportProviderIDs.filter((id) => (state.providers || []).some((provider) => provider.id === id));
+    if (ids.length === 0) return;
+    setSaving(true);
+    showToast(`正在对选中的 ${ids.length} 个 Provider 逐个探测连通性与模型…`);
+    try {
+      let okCount = 0;
+      let failCount = 0;
+      for (const id of ids) {
+        try {
+          const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+          if (response.ok) {
+            const data = await response.json() as ProviderTestResult;
+            if (data.success) okCount++;
+            else failCount++;
+          } else {
+            failCount++;
+          }
+        } catch {
+          failCount++;
+        }
+      }
+      await refreshState(false);
+      await refreshAppLogs();
+      showToast(`批量探测完成：${okCount} 个成功，${failCount} 个异常`);
+    } catch (error) {
+      showToast(`批量探测失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function batchToggleSelectedProviders(enabled: boolean) {
+    const ids = selectedExportProviderIDs.filter((id) => (state.providers || []).some((provider) => provider.id === id));
+    if (ids.length === 0) return;
+    setSaving(true);
+    try {
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(id)}/enabled`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        return id;
+      }));
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - succeeded;
+      await refreshState(false);
+      showToast(`已批量${enabled ? '启用' : '禁用'} ${succeeded} 个 Provider${failed > 0 ? `，${failed} 个失败` : ''}`);
+    } catch (error) {
+      showToast(`批量修改状态失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function toggleExportProviderSelection(providerID: string) {
     setSelectedExportProviderIDs((current) => (
       current.includes(providerID)
@@ -4280,6 +4385,73 @@ function App() {
                   </div>
                 ) : null}
               </div>
+              {sortedProviders.length > 0 ? (
+                <div className="cluster-summary-bar">
+                  <button
+                    type="button"
+                    className={`cluster-summary-pill ${providersStatusFilter === 'all' ? 'active' : ''}`}
+                    onClick={() => setProvidersStatusFilter('all')}
+                    title="点击筛选全部 Provider"
+                  >
+                    <span className="cluster-pill-label">接入总量</span>
+                    <b className="cluster-pill-val">{sortedProviders.length}</b>
+                  </button>
+                  <button
+                    type="button"
+                    className={`cluster-summary-pill ok ${providersStatusFilter === 'healthy' ? 'active' : ''}`}
+                    onClick={() => setProvidersStatusFilter(providersStatusFilter === 'healthy' ? 'all' : 'healthy')}
+                    title="点击筛选运行健康的 Provider"
+                  >
+                    <i className="status-dot ok" />
+                    <span className="cluster-pill-label">运行健康</span>
+                    <b className="cluster-pill-val">
+                      {sortedProviders.filter((p) => !p.disabled && (p.healthStatus === 'healthy' || p.healthStatus === 'unchecked')).length}
+                    </b>
+                  </button>
+                  {sortedProviders.some((p) => !p.disabled && p.healthStatus === 'unavailable') ? (
+                    <button
+                      type="button"
+                      className={`cluster-summary-pill err ${providersStatusFilter === 'unavailable' ? 'active' : ''}`}
+                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'unavailable' ? 'all' : 'unavailable')}
+                      title="点击筛选异常待试的 Provider"
+                    >
+                      <i className="status-dot err" />
+                      <span className="cluster-pill-label">异常待试</span>
+                      <b className="cluster-pill-val">
+                        {sortedProviders.filter((p) => !p.disabled && p.healthStatus === 'unavailable').length}
+                      </b>
+                    </button>
+                  ) : null}
+                  {sortedProviders.some((p) => !!p.disabled) ? (
+                    <button
+                      type="button"
+                      className={`cluster-summary-pill disabled ${providersStatusFilter === 'disabled' ? 'active' : ''}`}
+                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'disabled' ? 'all' : 'disabled')}
+                      title="点击筛选已停用的 Provider"
+                    >
+                      <span className="cluster-pill-label">已停用</span>
+                      <b className="cluster-pill-val">
+                        {sortedProviders.filter((p) => !!p.disabled).length}
+                      </b>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`cluster-summary-pill oauth ${providersStatusFilter === 'oauth' ? 'active' : ''}`}
+                    onClick={() => setProvidersStatusFilter(providersStatusFilter === 'oauth' ? 'all' : 'oauth')}
+                    title="点击筛选 OAuth / 账号授权的 Provider"
+                  >
+                    <span className="cluster-pill-label">OAuth / 账号</span>
+                    <b className="cluster-pill-val">
+                      {sortedProviders.filter((p) => p.authType === 'claude_oauth' || p.authType === 'cursor_oauth' || p.authType === 'chatgpt_oauth' || p.authType === 'qoder_pat').length}
+                    </b>
+                  </button>
+                  <div className="cluster-summary-pill" style={{ cursor: 'default' }}>
+                    <span className="cluster-pill-label">关联密钥</span>
+                    <b className="cluster-pill-val">{(state.apiKeys || []).length}</b>
+                  </div>
+                </div>
+              ) : null}
               <div className="providers-filter-toolbar">
                 <div className="models-search-row">
                   {/* Chrome 会无视 autoComplete="off"（尤其同页存在密码框时），把这类
@@ -4329,6 +4501,7 @@ function App() {
                 {isNormalUser ? (
                   <div className="models-toolbar-meta">
                     显示 {filteredProviders.length} / {sortedProviders.length}
+                    {providersStatusFilter !== 'all' ? ` · 状态「${providersStatusFilter === 'healthy' ? '运行健康' : providersStatusFilter === 'unavailable' ? '异常待试' : providersStatusFilter === 'disabled' ? '已停用' : 'OAuth'}」` : ''}
                     {providersSearchQuery.trim() ? ` · 检索「${providersSearchQuery.trim()}」` : ''}
                     {providersConnectFilter ? ` · ${providerConnectLabel(providersConnectFilter)}` : ''}
                   </div>
@@ -4357,11 +4530,15 @@ function App() {
                   </label>
                   <span className="providers-toolbar-meta">
                     已选 {selectedExportProviderIDs.length} / {sortedProviders.length} · 显示 {filteredProviders.length} / {sortedProviders.length}
+                    {providersStatusFilter !== 'all' ? ` · 状态「${providersStatusFilter === 'healthy' ? '运行健康' : providersStatusFilter === 'unavailable' ? '异常待试' : providersStatusFilter === 'disabled' ? '已停用' : 'OAuth'}」` : ''}
                     {providersSearchQuery.trim() ? ` · 检索「${providersSearchQuery.trim()}」` : ''}
                     {providersConnectFilter ? ` · ${providerConnectLabel(providersConnectFilter)}` : ''}
                   </span>
                   {selectedExportProviderIDs.length > 0 ? (
                     <span className="providers-toolbar-actions">
+                      <button className="mini-btn" type="button" disabled={saving} onClick={() => void batchTestSelectedProviders()}>批量探测</button>
+                      <button className="mini-btn" type="button" disabled={saving} onClick={() => void batchToggleSelectedProviders(true)}>批量启用</button>
+                      <button className="mini-btn" type="button" disabled={saving} onClick={() => void batchToggleSelectedProviders(false)}>批量停用</button>
                       <button className="mini-btn danger" type="button" disabled={saving} onClick={() => void deleteSelectedProviders()}>批量删除</button>
                       <button className="mini-btn" type="button" onClick={clearExportProviderSelection}>清除选择</button>
                     </span>
@@ -4448,21 +4625,117 @@ function App() {
             <div className="card panel">
               <div className="panel-header">
                 <div>
-                  <h2 className="panel-title">接入地址</h2>
-                  <p className="panel-desc">网关对外的三种协议接入地址（复制给客户端使用）；公网访问在「公网访问」页统一配置。流式开关已移至 API Key（与 Key 绑定）。</p>
+                  <h2 className="panel-title">接入地址 · 开发者中心</h2>
+                  <p className="panel-desc">网关对外提供三种标准大模型协议端点。将端点地址填入你的客户端工具或 SDK 中，即可无缝转发并享受协议转换与智能路由。</p>
                 </div>
                 <Badge tone={publicStatusTone(publicAccess.status)}>{publicAccessStatusLabel(publicAccess.status)}</Badge>
               </div>
-              {state.endpoints.map((endpoint) => {
-                const url = endpointURL(endpoint);
-                const publicEndpointURL = publicAccessURL(endpoint, tunnelRunning);
-                return (
-                  <div className="endpoint-pair" key={endpoint.id}>
-                    <URLRow label={`${protocolLabel(endpoint.protocol)} 局域网`} value={url} onCopy={() => copy(url)} />
-                    <URLRow label={`${protocolLabel(endpoint.protocol)} 公网`} value={publicEndpointURL} onCopy={tunnelRunning && endpoint.publicUrl ? () => copy(publicEndpointURL) : undefined} />
+
+              <div className="output-hero-card">
+                <div className="output-hero-left">
+                  <div className="output-hero-title">
+                    <span>网关连通状态</span>
+                    <Badge tone={tunnelRunning ? 'green' : 'slate'}>{tunnelRunning ? '公网穿透运行中' : '仅局域网监听'}</Badge>
                   </div>
-                );
-              })}
+                  <div className="output-hero-desc">
+                    {tunnelRunning
+                      ? `当前已通过 Cloudflare 隧道穿透公网，外网客户端可通过 HTTPS 访问模型 API；Web 管理页具备独立安全鉴权。`
+                      : `网关当前仅在本地或局域网提供服务。如需外网访问，请在「公网访问」页一键开启免费隧道或绑定自有域名。`}
+                  </div>
+                </div>
+                <div className="output-hero-actions">
+                  <button className="btn" type="button" onClick={() => { copy(localGatewayRoot(state.endpoints)); showToast(`已复制局域网根地址：${localGatewayRoot(state.endpoints)}`); }}>
+                    复制局域网根地址
+                  </button>
+                  {tunnelRunning && activePublicBaseURL(publicAccess, tunnelRunning) ? (
+                    <button className="btn primary" type="button" onClick={() => { const u = activePublicBaseURL(publicAccess, tunnelRunning); copy(u); showToast(`已复制公网根地址：${u}`); }}>
+                      复制公网根地址
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="output-showcase-grid">
+                {state.endpoints.map((endpoint) => {
+                  const url = endpointURL(endpoint);
+                  const publicEndpointURL = publicAccessURL(endpoint, tunnelRunning);
+                  const isClaude = endpoint.protocol === 'claude';
+                  const isResponses = endpoint.protocol === 'openai_responses';
+                  const title = isClaude ? 'Anthropic Claude Messages' : isResponses ? 'OpenAI Responses (Codex)' : 'OpenAI Chat Completions';
+                  const desc = isClaude
+                    ? '兼容 Claude Code CLI、Cline、Roo Code 及 Anthropic 官方 SDK。支持自动转换为 OpenAI 上游模型或透传。'
+                    : isResponses
+                      ? '兼容 OpenAI Responses 格式与 Codex 命令行工具，支持流式交互与官方登录态保留。'
+                      : '兼容标准 OpenAI SDK、LangChain、LobeChat、Cherry Studio、NextChat、Cursor 等绝大多数 AI 工具生态。';
+
+                  const activeTestUrl = tunnelRunning && endpoint.publicUrl ? publicEndpointURL : url;
+                  const sampleCurl = isClaude
+                    ? `curl -X POST "${activeTestUrl}" \\\n  -H "Content-Type: application/json" \\\n  -H "x-api-key: sk-gw-YOUR_KEY" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -d '{"model": "claude-3-7-sonnet-20250219", "max_tokens": 100, "messages": [{"role": "user", "content": "ping"}]}'`
+                    : isResponses
+                      ? `curl -X POST "${activeTestUrl}" \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer sk-gw-YOUR_KEY" \\\n  -d '{"model": "gpt-4o", "input": "ping"}'`
+                      : `curl -X POST "${activeTestUrl}" \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer sk-gw-YOUR_KEY" \\\n  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "ping"}]}'`;
+
+                  const features = isClaude
+                    ? ['流式输出 (SSE)', '深度思考 (Extended Thinking)', '提示词缓存 (Prompt Caching)', '协议互转']
+                    : isResponses
+                      ? ['流式输出 (SSE)', 'Responses 协议', 'Codex 官方兼容', '多方案热切换']
+                      : ['流式输出 (SSE)', '多轮对话', 'Function Calling', '智能模型重定向', '高可用备选'];
+
+                  return (
+                    <div className="output-card" key={endpoint.id}>
+                      <div className="output-card-head">
+                        <div className="output-card-title-group">
+                          <div className="output-card-title">
+                            <span className="output-method-pill">POST</span>
+                            <span>{title}</span>
+                          </div>
+                          <span className="output-card-path">{endpoint.basePath}</span>
+                        </div>
+                        <Badge tone={protocolTone(endpoint.protocol)}>{protocolLabel(endpoint.protocol)}</Badge>
+                      </div>
+
+                      <div className="output-card-desc">{desc}</div>
+
+                      <div className="output-url-group">
+                        <div className="output-url-item">
+                          <span className="output-url-tag">局域网</span>
+                          <span className="output-url-code" title={url}>{url}</span>
+                          <button className="mini-btn" type="button" onClick={() => { copy(url); showToast(`已复制局域网地址：${url}`); }}>复制</button>
+                        </div>
+                        <div className="output-url-item">
+                          <span className="output-url-tag">公网</span>
+                          <span className="output-url-code" title={publicEndpointURL}>{tunnelRunning && endpoint.publicUrl ? publicEndpointURL : '未开启公网穿透'}</span>
+                          {tunnelRunning && endpoint.publicUrl ? (
+                            <button className="mini-btn" type="button" onClick={() => { copy(publicEndpointURL); showToast(`已复制公网地址：${publicEndpointURL}`); }}>复制</button>
+                          ) : (
+                            <button className="mini-btn" type="button" onClick={() => goToPage('public-access')}>去开启</button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="output-curl-box">
+                        <div className="output-curl-head">
+                          <span>快速测试命令 (Terminal)</span>
+                          <button
+                            className="mini-btn"
+                            type="button"
+                            onClick={() => { copy(sampleCurl); showToast('已复制测试 curl 命令'); }}
+                          >
+                            复制代码
+                          </button>
+                        </div>
+                        <pre className="output-curl-code">{sampleCurl}</pre>
+                      </div>
+
+                      <div className="output-features-list">
+                        {features.map((feat) => (
+                          <span className="output-feature-pill" key={feat}>{feat}</span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </section>
           )}
@@ -4507,97 +4780,239 @@ function App() {
                 />
               </div>
 
-              <div className="grid-4">
+              <div className="usage-metric-grid">
                 <Metric label="区间总请求" value={String(requestStats?.range?.total.requestCount ?? usageToday?.total.requestCount ?? 0)} note={requestStats?.range?.period || usageToday?.date || '—'} />
                 <Metric label="区间总 Token" value={formatTokenCount(((requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0) + (requestStats?.range?.total.outputTokens ?? usageToday?.total.outputTokens ?? 0)))} note={requestStats?.range?.total ? formatTokenSummary(requestStats.range.total) : (usageToday?.total ? formatTokenSummary(usageToday.total) : '暂无数据')} />
                 <Metric label="本月总请求" value={String(usageMonth?.total.requestCount ?? 0)} note={usageMonth?.period || '—'} />
                 <Metric label="本月总 Token" value={formatTokenCount((usageMonth?.total.inputTokens ?? 0) + (usageMonth?.total.outputTokens ?? 0))} note={usageMonth?.total ? formatTokenSummary(usageMonth.total) : '暂无数据'} />
+                <Metric label="平均往返延迟" value={state.metrics?.averageLatencyMs != null && state.metrics.averageLatencyMs > 0 ? `${Math.round(state.metrics.averageLatencyMs)} ms` : '—'} note="网关整体平均耗时" />
+                <Metric label="请求成功率" value={state.metrics?.successRate != null ? `${(state.metrics.successRate * 100).toFixed(1)}%` : '100%'} note="2xx 正常响应占比" />
               </div>
 
-              {usageFrom !== usageTo ? (
-                <div className="usage-charts-full">
-                  <UsageMonthlyTokenBars
-                    title={`按日请求量 · ${usageFrom} ~ ${usageTo}`}
-                    points={requestStats?.daily || []}
-                    onPickDay={(date) => {
-                      usageFollowTodayRef.current = isFollowingTodayRange(date, date);
-                      setUsageFrom(date);
-                      setUsageTo(date);
-                      void refreshRequestStats(date, date);
-                    }}
-                  />
+              {/* 维度与指标切换导航 */}
+              <div className="usage-dimension-nav">
+                <div className="usage-nav-tabs">
+                  {[
+                    { id: 'overview', label: '综合看板' },
+                    { id: 'models', label: '模型排行' },
+                    { id: 'providers', label: 'Provider 统计' },
+                    { id: 'keys', label: 'API 密钥审计' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      className={`usage-nav-tab ${usageViewTab === tab.id ? 'active' : ''}`}
+                      onClick={() => setUsageViewTab(tab.id as typeof usageViewTab)}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
-              ) : null}
 
-              <div className="usage-charts">
-                {usageFrom === usageTo ? (
-                  <UsageLineChart title="按日请求量" points={requestStats?.daily || []} />
-                ) : null}
-                <UsageBarChart
-                  title="按 API Key 请求"
-                  items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((item) => ({
-                    label: item.apiKeyName || item.apiKeyId || '未命名',
-                    value: item.requestCount,
-                  }))}
-                />
-                <UsageBarChart
-                  title="按 Provider 请求"
-                  items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).slice(0, 8).map((item) => ({
-                    label: providerUsageLabel(item.providerId, state.providers || []),
-                    value: item.requestCount,
-                  }))}
-                />
-                <UsageBarChart
-                  title="按输出协议请求"
-                  items={(requestStats?.range?.byProtocol || usageToday?.byProtocol || []).slice(0, 8).map((item) => ({
-                    label: item.protocol,
-                    value: item.requestCount,
-                  }))}
-                />
-                {!isNormalUser && (
-                  <UsageBarChart
-                    title="按用户请求"
-                    items={(requestStats?.range?.byUser || usageToday?.byUser || []).slice(0, 8).map((item) => ({
-                      label: item.userName || item.userId || '未绑定用户',
-                      value: item.requestCount,
+                <div className="usage-metric-toggle-group">
+                  <span>统计维度：</span>
+                  <div className="usage-nav-tabs" style={{ padding: 2 }}>
+                    <button
+                      type="button"
+                      className={`usage-nav-tab ${usageMetricDimension === 'tokens' ? 'active' : ''}`}
+                      onClick={() => setUsageMetricDimension('tokens')}
+                    >
+                      Token 消耗
+                    </button>
+                    <button
+                      type="button"
+                      className={`usage-nav-tab ${usageMetricDimension === 'requests' ? 'active' : ''}`}
+                      onClick={() => setUsageMetricDimension('requests')}
+                    >
+                      请求次数
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 视图 1：综合看板 */}
+              {usageViewTab === 'overview' && (
+                <>
+                  <div style={{ marginBottom: 16 }}>
+                    <UsageSegmentedShare
+                      title={`热门模型 ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '请求次数'} 分布`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                        .filter((item) => item.model && item.model !== '_unknown')
+                        .slice(0, 8)
+                        .map((item) => ({
+                          label: item.model,
+                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                        }))}
+                    />
+                  </div>
+
+                  {usageFrom !== usageTo ? (
+                    <div className="usage-charts-full">
+                      <UsageMonthlyTokenBars
+                        title={`按日请求量 · ${usageFrom} ~ ${usageTo}`}
+                        points={requestStats?.daily || []}
+                        onPickDay={(date) => {
+                          usageFollowTodayRef.current = isFollowingTodayRange(date, date);
+                          setUsageFrom(date);
+                          setUsageTo(date);
+                          void refreshRequestStats(date, date);
+                        }}
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="usage-charts">
+                    {usageFrom === usageTo ? (
+                      <UsageLineChart title="按日请求量" points={requestStats?.daily || []} />
+                    ) : null}
+                    <UsageBarChart
+                      title={`按 API Key（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((item) => ({
+                        label: item.apiKeyName || item.apiKeyId || '未命名',
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                    />
+                    <UsageBarChart
+                      title={`按 Provider（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).slice(0, 8).map((item) => ({
+                        label: providerUsageLabel(item.providerId, state.providers || []),
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                    />
+                    <UsageBarChart
+                      title={`按输出协议（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byProtocol || usageToday?.byProtocol || []).slice(0, 8).map((item) => ({
+                        label: item.protocol,
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                    />
+                    {!isNormalUser && (
+                      <UsageBarChart
+                        title={`按用户（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                        formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                        items={(requestStats?.range?.byUser || usageToday?.byUser || []).slice(0, 8).map((item) => ({
+                          label: item.userName || item.userId || '未绑定用户',
+                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                        }))}
+                      />
+                    )}
+                    <UsageCacheHitRate
+                      title="缓存命中率（区间）"
+                      input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
+                      cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
+                    />
+                    <UsageStatusChart title="状态码分布" items={requestStats?.status || []} />
+                  </div>
+
+                  <div className="usage-charts-full">
+                    <UsageDailyTrafficLines
+                      title={usageFrom === usageTo ? '按日流量（网关转发）' : `按日流量（网关转发） · ${usageFrom} ~ ${usageTo}`}
+                      points={requestStats?.daily || []}
+                      onPickDay={(date) => {
+                        usageFollowTodayRef.current = isFollowingTodayRange(date, date);
+                        setUsageFrom(date);
+                        setUsageTo(date);
+                        void refreshRequestStats(date, date);
+                      }}
+                    />
+                    <p className="hint-line">
+                      统计网关实际转发的请求体 / 响应体字节数（业务流量），一天一条、永久保留。
+                      与「机器状态」页的整机网卡累计值不同：后者含本机所有流量且重启归零。
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* 视图 2：模型排行榜 */}
+              {usageViewTab === 'models' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  <UsageModelLeaderboard
+                    title="模型用量深度排行榜（输入 Prompt vs 输出 Completion 拆分）"
+                    items={requestStats?.range?.byModel || usageToday?.byModel || []}
+                  />
+                  <div className="usage-charts">
+                    <UsageSegmentedShare
+                      title={`模型 ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 占比条`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                        .filter((item) => item.model && item.model !== '_unknown')
+                        .slice(0, 10)
+                        .map((item) => ({
+                          label: item.model,
+                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                        }))}
+                    />
+                    <UsageCacheHitRate
+                      title="模型关联缓存命中率"
+                      input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
+                      cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 视图 3：Provider 消耗 */}
+              {usageViewTab === 'providers' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  <UsageSegmentedShare
+                    title={`Provider ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 连续占比`}
+                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                    items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
+                      label: providerUsageLabel(item.providerId, state.providers || []),
+                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
                     }))}
                   />
-                )}
-                <UsageBarChart
-                  title="模型使用量排名（Token）"
-                  formatValue={formatCompactCount}
-                  items={(requestStats?.range?.byModel || usageToday?.byModel || [])
-                    .filter((item) => item.model && item.model !== '_unknown')
-                    .slice(0, 8)
-                    .map((item) => ({
-                      label: item.model,
-                      value: (item.inputTokens || 0) + (item.outputTokens || 0),
-                    }))}
-                />
-                <UsageCacheHitRate
-                  title="缓存命中率（区间）"
-                  input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
-                  cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
-                />
-                <UsageStatusChart title="状态码分布" items={requestStats?.status || []} />
-              </div>
+                  <div className="usage-charts">
+                    <UsageBarChart
+                      title={`Provider 使用排名（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
+                        label: providerUsageLabel(item.providerId, state.providers || []),
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                    />
+                    <UsageStatusChart title="全量状态码分布" items={requestStats?.status || []} />
+                  </div>
+                </div>
+              )}
 
-              <div className="usage-charts-full">
-                <UsageDailyTrafficLines
-                  title={usageFrom === usageTo ? '按日流量（网关转发）' : `按日流量（网关转发） · ${usageFrom} ~ ${usageTo}`}
-                  points={requestStats?.daily || []}
-                  onPickDay={(date) => {
-                    usageFollowTodayRef.current = isFollowingTodayRange(date, date);
-                    setUsageFrom(date);
-                    setUsageTo(date);
-                    void refreshRequestStats(date, date);
-                  }}
-                />
-                <p className="hint-line">
-                  统计网关实际转发的请求体 / 响应体字节数（业务流量），一天一条、永久保留。
-                  与「机器状态」页的整机网卡累计值不同：后者含本机所有流量且重启归零。
-                </p>
-              </div>
+              {/* 视图 4：API Key 审计 */}
+              {usageViewTab === 'keys' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  <UsageSegmentedShare
+                    title={`API Key ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 占比`}
+                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                    items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).map((item) => ({
+                      label: item.apiKeyName || item.apiKeyId || '未命名',
+                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                    }))}
+                  />
+                  <div className="usage-charts">
+                    <UsageBarChart
+                      title={`API Key 排名（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).map((item) => ({
+                        label: item.apiKeyName || item.apiKeyId || '未命名',
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                    />
+                    {!isNormalUser && (
+                      <UsageBarChart
+                        title={`用户消耗排行（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
+                        formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                        items={(requestStats?.range?.byUser || usageToday?.byUser || []).map((item) => ({
+                          label: item.userName || item.userId || '未绑定用户',
+                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                        }))}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
 
               {usageToday?.lastRequest ? (
                 <div className="usage-last-card">
@@ -5055,7 +5470,25 @@ function App() {
                       : '查看全部模型，或按输入 Provider 过滤；支持按名称关键字 / 正则检索。在 Provider 卡片点击「获取模型」可同步最新列表。'}
                   </p>
                 </div>
-                <button className="btn" onClick={() => void refreshState()}>刷新列表</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="view-mode-toggle">
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${modelsViewMode === 'grid' ? 'active' : ''}`}
+                      onClick={() => setModelsViewMode('grid')}
+                    >
+                      卡片网格
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${modelsViewMode === 'table' ? 'active' : ''}`}
+                      onClick={() => setModelsViewMode('table')}
+                    >
+                      紧凑表格
+                    </button>
+                  </div>
+                  <button className="btn" onClick={() => void refreshState()}>刷新列表</button>
+                </div>
               </div>
               <div className="models-toolbar">
                 <div className="models-search-row">
@@ -5099,8 +5532,40 @@ function App() {
                     </button>
                   ))}
                 </div>
+                <div className="models-filter-group capability-filter-group">
+                  <span className="filter-group-label">能力特性：</span>
+                  <button
+                    type="button"
+                    className={`models-filter-chip ${modelsCapabilityFilter === 'all' ? 'active' : ''}`}
+                    onClick={() => setModelsCapabilityFilter('all')}
+                  >
+                    全部
+                  </button>
+                  <button
+                    type="button"
+                    className={`models-filter-chip ${modelsCapabilityFilter === 'thinking' ? 'active' : ''}`}
+                    onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'thinking' ? 'all' : 'thinking')}
+                  >
+                    思考 / 推理
+                  </button>
+                  <button
+                    type="button"
+                    className={`models-filter-chip ${modelsCapabilityFilter === 'vision' ? 'active' : ''}`}
+                    onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'vision' ? 'all' : 'vision')}
+                  >
+                    视觉 / 多模态
+                  </button>
+                  <button
+                    type="button"
+                    className={`models-filter-chip ${modelsCapabilityFilter === 'context' ? 'active' : ''}`}
+                    onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'context' ? 'all' : 'context')}
+                  >
+                    长上下文 (128K+)
+                  </button>
+                </div>
                 <div className="models-toolbar-meta">
                   当前显示 {filteredModels.length} 个模型
+                  {modelsCapabilityFilter !== 'all' ? ` · 特性「${modelsCapabilityFilter === 'thinking' ? '思考/推理' : modelsCapabilityFilter === 'vision' ? '视觉多模态' : '128K+ 上下文'}」` : ''}
                   {modelsProviderFilter !== '__all__' ? ` · ${state.providers.find((item) => item.id === modelsProviderFilter)?.name || modelsProviderFilter}` : ''}
                   {modelsSearchQuery.trim() ? ` · 检索「${modelsSearchQuery.trim()}」` : ''}
                 </div>
@@ -5113,10 +5578,10 @@ function App() {
                 </div>
               ) : filteredModels.length === 0 ? (
                 <div className="empty-state">
-                  {modelsSearchQuery.trim()
-                    ? '没有匹配当前检索条件的模型，请调整关键字或正则。'
+                  {modelsSearchQuery.trim() || modelsCapabilityFilter !== 'all'
+                    ? '没有匹配当前检索条件的模型，请调整关键字、正则或能力特性筛选。'
                     : '该 Provider 暂无模型记录。'}
-                  {!isNormalUser && !modelsSearchQuery.trim() && (() => {
+                  {!isNormalUser && !modelsSearchQuery.trim() && modelsCapabilityFilter === 'all' && (() => {
                     const provider = state.providers.find((item) => item.id === modelsProviderFilter);
                     if (!provider) return null;
                     const canSync = provider.authType === 'cursor_oauth'
@@ -5138,18 +5603,97 @@ function App() {
                     );
                   })()}
                 </div>
+              ) : modelsViewMode === 'table' ? (
+                <div className="models-table-wrap">
+                  <table className="models-table">
+                    <thead>
+                      <tr>
+                        <th>模型 ID</th>
+                        <th>所属 Provider</th>
+                        <th>能力特性</th>
+                        <th>协议类型</th>
+                        <th>上下文长度</th>
+                        <th>状态</th>
+                        <th style={{ textAlign: 'right' }}>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredModels.map((model) => {
+                        const provider = state.providers.find((item) => item.id === model.providerId);
+                        const isThinking = /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
+                        const isVision = /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+                        const isLongContext = (model.contextLength || 0) >= 128000;
+                        return (
+                          <tr key={`${model.providerId}-${model.id}`}>
+                            <td className="model-id-cell">
+                              <span title={model.id}>{model.id}</span>
+                            </td>
+                            <td>{provider ? providerOptionLabel(provider) : model.providerId}</td>
+                            <td>
+                              <div className="model-tags-row">
+                                {isThinking ? <span className="model-tag reasoning">思考</span> : null}
+                                {isVision ? <span className="model-tag vision">多模态</span> : null}
+                                {isLongContext ? <span className="model-tag context">128K+</span> : null}
+                                {!isThinking && !isVision && !isLongContext ? <span style={{ color: 'var(--muted)', fontSize: 12 }}>-</span> : null}
+                              </div>
+                            </td>
+                            <td><Badge tone={protocolTone(model.protocol)}>{protocolLabel(model.protocol)}</Badge></td>
+                            <td className="model-ctx-cell">{model.contextLength.toLocaleString()}</td>
+                            <td><Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge></td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="mini-btn copy-model-btn"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  copy(model.id);
+                                  showToast(`已复制模型 ID：${model.id}`);
+                                }}
+                                title={`复制模型 ID (${model.id})`}
+                              >
+                                复制
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="model-grid">
                   {filteredModels.map((model) => {
                     const provider = state.providers.find((item) => item.id === model.providerId);
+                    const isThinking = /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
+                    const isVision = /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+                    const isLongContext = (model.contextLength || 0) >= 128000;
                     return (
                       <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
-                        <div className="provider-top">
-                          <div className="provider-name" title={model.id}>{model.id}</div>
-                          <Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge>
+                        <div className="model-card-head">
+                          <div className="model-card-title-row">
+                            <span className="provider-name" title={model.id}>{model.id}</span>
+                            <Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge>
+                          </div>
+                          <button
+                            className="mini-btn copy-model-btn"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              copy(model.id);
+                              showToast(`已复制模型 ID：${model.id}`);
+                            }}
+                            title={`复制模型 ID (${model.id})`}
+                          >
+                            复制
+                          </button>
                         </div>
                         <div className="provider-meta" title={provider?.name || model.providerId}>
                           {provider ? providerOptionLabel(provider) : model.providerId}
+                        </div>
+                        <div className="model-tags-row">
+                          {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
+                          {isVision ? <span className="model-tag vision">视觉多模态</span> : null}
+                          {isLongContext ? <span className="model-tag context">128K+ 上下文</span> : null}
                         </div>
                         <div className="model-card-stats">
                           <span>上下文 {model.contextLength.toLocaleString()}</span>
@@ -5171,13 +5715,15 @@ function App() {
                 <div>
                   <h2 className="panel-title">API 日志</h2>
                   <p className="panel-desc">
-                    支持按时间段、状态与密钥名称筛选；展示访问来源与首 Token 延迟（TTFT）。默认保留 {requestLogRetentionDays} 天。
-                    {dataFetchedAt ? ` · 数据更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
+                    全链路请求追踪与流量审计：支持按时间段、状态码、密钥及 Provider 筛选；展示首字延迟（TTFT）与各阶段耗时。
                   </p>
                 </div>
               </div>
-              <div className="usage-range-bar" style={{ marginBottom: 12 }}>
-                <div className="usage-range-left">
+
+              {/* 统一过滤控制台 */}
+              <div className="traffic-filter-dashboard">
+                {/* 左栏：日期日历 */}
+                <div className="traffic-calendar-pane">
                   <UsageRangeCalendar
                     from={logsFrom}
                     to={logsTo}
@@ -5194,78 +5740,180 @@ function App() {
                       void refreshLogs(1, '', '');
                     }}
                   />
-                  <div className="usage-range-summary">
+                  <div className="traffic-calendar-badge">
                     {logsFrom || logsTo
                       ? `当前区间：${logsFrom === logsTo ? logsFrom : `${logsFrom} ~ ${logsTo}`}`
-                      : '未选日期：显示全部日志（倒序）'}
+                      : '全部历史日期'}
                   </div>
                 </div>
-                <div className="traffic-filter-fields">
-                  <label className="field">
-                    <span>状态</span>
-                    <select value={logsStatusFilter} onChange={(e) => { setLogsPage(1); setLogsStatusFilter(e.target.value as typeof logsStatusFilter); }}>
-                      <option value="all">全部</option>
-                      <option value="2xx">2xx</option>
-                      <option value="4xx">4xx</option>
-                      <option value="5xx">5xx</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>密钥名称</span>
-                    <select
-                      value={logsApiKeyName}
-                      onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}
-                    >
-                      <option value="">全部</option>
-                      {(state.apiKeys || []).map((key) => (
-                        <option key={key.id} value={key.name}>{key.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>输入 Provider</span>
-                    <select
-                      value={logsProviderFilter}
-                      onChange={(e) => { setLogsPage(1); setLogsProviderFilter(e.target.value); }}
-                    >
-                      <option value="">全部</option>
-                      {(state.providers || []).map((provider) => (
-                        <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {!isNormalUser ? (
-                    <label className="field">
-                      <span>用户</span>
-                      <select
-                        value={logsOwnerFilter}
-                        onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}
+
+                {/* 右栏：多维控制台 */}
+                <div className="traffic-controls-pane">
+                  {/* 第一行：状态统计与 2xx 正文开关 */}
+                  <div className="traffic-meta-row">
+                    <div className="traffic-meta-stats">
+                      <span className="traffic-meta-stat">日志总数: <b>{logsTotal}</b> 条</span>
+                      <span className="traffic-meta-stat">当前页码: <b>{logsPage}</b> / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))}</span>
+                      <span className="traffic-meta-stat">历史留存: <b>{requestLogRetentionDays} 天</b></span>
+                      {dataFetchedAt && (
+                        <span className="traffic-meta-stat" style={{ color: 'var(--subtle)' }}>
+                          更新于 <b>{dataFetchedAt.toLocaleTimeString()}</b>
+                        </span>
+                      )}
+                    </div>
+                    {!isNormalUser && (
+                      <label
+                        className="traffic-quick-switch"
+                        title="开启后，2xx 正常请求也将完整落盘请求体与响应体（便于全量审计，但会增加 SQLite 写入量）；关闭时仅 4xx/5xx 错误请求记录正文以保障极限吞吐。"
                       >
-                        <option value="">全部</option>
-                        <option value={LOG_OWNER_FILTER_ADMIN}>管理员</option>
-                        {consoleUsers.map((user) => (
-                          <option key={user.id} value={user.id}>{user.username}</option>
+                        <input
+                          type="checkbox"
+                          checked={log2xxBodies}
+                          disabled={saving}
+                          onChange={(e) => void updateLog2xxBodies(e.target.checked)}
+                        />
+                        <span>记录 2xx 成功正文</span>
+                        <Badge tone={log2xxBodies ? 'green' : 'slate'}>{log2xxBodies ? '已开启' : '已关闭'}</Badge>
+                      </label>
+                    )}
+                  </div>
+
+                  {/* 第二行：即时关键词搜索 */}
+                  <div className="traffic-search-row">
+                    <svg className="traffic-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input
+                      type="search"
+                      placeholder="快速过滤模型、请求路径、IP、报错摘要、密钥名称..."
+                      value={logsKeyword}
+                      onChange={(e) => setLogsKeyword(e.target.value)}
+                    />
+                    {logsKeyword && (
+                      <button
+                        type="button"
+                        className="traffic-search-clear"
+                        onClick={() => setLogsKeyword('')}
+                        title="清空搜索词"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 第三行：状态过滤芯片 */}
+                  <div className="traffic-chips-row">
+                    <span className="traffic-chips-label">状态筛选：</span>
+                    {[
+                      { id: 'all', label: '全部状态' },
+                      { id: '2xx', label: '2xx 正常', tone: 'green' },
+                      { id: '4xx', label: '4xx 客户端异常', tone: 'amber' },
+                      { id: '5xx', label: '5xx 服务端错误', tone: 'red' },
+                    ].map((chip) => (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        className={`traffic-status-chip ${chip.tone || ''} ${logsStatusFilter === chip.id ? 'active' : ''}`}
+                        onClick={() => {
+                          setLogsPage(1);
+                          setLogsStatusFilter(chip.id as typeof logsStatusFilter);
+                        }}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 第四行：下拉表单项与操作按钮 */}
+                  <div className="traffic-fields-grid">
+                    <label className="field">
+                      <span>API 密钥</span>
+                      <select
+                        value={logsApiKeyName}
+                        onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}
+                      >
+                        <option value="">全部密钥</option>
+                        {(state.apiKeys || []).map((key) => (
+                          <option key={key.id} value={key.name}>{key.name}</option>
                         ))}
                       </select>
                     </label>
-                  ) : null}
-                  <div className="traffic-filter-apply">
-                    <button
-                      className="mini-btn"
-                      type="button"
-                      title="回到第 1 页并按当前筛选条件刷新（各筛选项修改后已即时生效，此按钮主要用于翻页后重新回到第 1 页）"
-                      onClick={() => { setLogsPage(1); void refreshLogs(1); }}
-                    >
-                      应用筛选
-                    </button>
+
+                    <label className="field">
+                      <span>输入 Provider</span>
+                      <select
+                        value={logsProviderFilter}
+                        onChange={(e) => { setLogsPage(1); setLogsProviderFilter(e.target.value); }}
+                      >
+                        <option value="">全部 Provider</option>
+                        {(state.providers || []).map((provider) => (
+                          <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {!isNormalUser && (
+                      <label className="field">
+                        <span>所属用户</span>
+                        <select
+                          value={logsOwnerFilter}
+                          onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}
+                        >
+                          <option value="">全部用户</option>
+                          <option value={LOG_OWNER_FILTER_ADMIN}>管理员</option>
+                          {consoleUsers.map((user) => (
+                            <option key={user.id} value={user.id}>{user.username}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+
+                    <div className="traffic-action-group">
+                      <button
+                        className="btn primary"
+                        type="button"
+                        title="回到第 1 页并刷新日志"
+                        onClick={() => { setLogsPage(1); void refreshLogs(1); }}
+                      >
+                        应用筛选
+                      </button>
+                      {(logsApiKeyName || logsProviderFilter || logsOwnerFilter || logsStatusFilter !== 'all' || logsKeyword) && (
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          title="重置所有筛选项"
+                          onClick={() => {
+                            setLogsApiKeyName('');
+                            setLogsProviderFilter('');
+                            setLogsOwnerFilter('');
+                            setLogsStatusFilter('all');
+                            setLogsKeyword('');
+                            setLogsPage(1);
+                            void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' });
+                          }}
+                        >
+                          重置
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
+
+              {/* 日志表格 */}
               <div className="log-table">
                 {logsLoading || !logsFetchedOnce ? (
                   <div className="empty-state">加载流量日志中…</div>
                 ) : logs.length === 0 ? (
                   <div className="empty-state">暂无流量日志。运行路由测试或真实转发请求后会记录。</div>
+                ) : displayedLogs.length === 0 ? (
+                  <div className="empty-state">
+                    未找到包含「{logsKeyword}」的日志条目。
+                    <button className="mini-btn" type="button" onClick={() => setLogsKeyword('')} style={{ marginLeft: 8 }}>
+                      清空搜索词
+                    </button>
+                  </div>
                 ) : (
                   <>
                     <div className="log-header traffic-log-header">
@@ -5281,9 +5929,14 @@ function App() {
                       <span>耗时</span>
                       <span />
                     </div>
-                    {logs.map((log, index) => (
-                      <div className={`log-row${isTrafficLogError(log) ? ' error' : ''}`} key={trafficLogMatchKey(log)}>
-                        <div className="log-row-main traffic-log-row">
+                    {displayedLogs.map((log) => (
+                      <div
+                        className={`log-row${isTrafficLogError(log) ? ' error' : ''}`}
+                        key={trafficLogMatchKey(log)}
+                        onClick={() => void openTrafficLogDetail(log)}
+                        title="点击查看请求链路 APM 耗时分解与完整报文"
+                      >
+                        <div className={`log-row-main traffic-log-row clickable${isTrafficLogError(log) ? ' has-error' : ''}`}>
                           <span className="log-time">{new Date(log.time).toLocaleString()}</span>
                           <Badge tone={statusTone(log.status)}>{log.status}</Badge>
                           <span className="log-source" title={trafficLogSourceTitle(log)}>{accessSourceLabel(log.accessSource)}</span>
@@ -5291,12 +5944,20 @@ function App() {
                           <span className="log-user" title={log.userName || undefined}>{log.userName || '—'}</span>
                           <span className="log-provider" title={log.providerId || undefined}>{trafficLogProviderLabel(log, state.providers || [])}</span>
                           <span className="log-model">{log.model}</span>
-                          <span className="log-token" title="入=总 input（含缓存命中）；缓存=cache hit">入 {log.inputTokens} · 出 {log.outputTokens} · 缓存 {log.cacheTokens || 0}</span>
+                          <span className="log-token" title="入=总 input（含缓存命中）；出=output；缓存=cache hit">入 {log.inputTokens} · 出 {log.outputTokens} · 缓存 {log.cacheTokens || 0}</span>
                           <span className="log-latency" title={log.upstreamTtfbMs || log.gatewayOverheadMs ? `upstreamTtfb=${log.upstreamTtfbMs ?? 0}ms overhead=${log.gatewayOverheadMs ?? 0}ms prep=${log.prepMs ?? 0}ms flags=${log.timingFlags || '-'}` : undefined}>{log.ttftMs != null ? `${log.ttftMs}ms` : '—'}</span>
                           <span className="log-latency">{log.latencyMs}ms</span>
-                          {isTrafficLogError(log) ? (
-                            <button className="mini-btn" type="button" onClick={() => void openTrafficLogDetail(log)}>详情</button>
-                          ) : <span className="log-detail-placeholder" />}
+                          <button
+                            className={`mini-btn ${isTrafficLogError(log) ? 'danger' : ''}`}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void openTrafficLogDetail(log);
+                            }}
+                            title={isTrafficLogError(log) ? '查看错误原因与链路诊断' : '查看完整耗时与请求审计'}
+                          >
+                            {isTrafficLogError(log) ? '排错' : '审计'}
+                          </button>
                         </div>
                         <div className="log-row-sub" title={`${log.protocolFlow} · ${log.path}`}>
                           {trafficLogProviderLabel(log, state.providers || [])} · {actionLabel(log.action)} · {log.protocolFlow} · {log.path}{log.errorDescription ? ` · ${log.errorDescription}` : ''}
@@ -5306,6 +5967,7 @@ function App() {
                     <div className="hint-line" style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                       <span>
                         共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
+                        {logsKeyword ? ` · 当前关键词过滤匹配 ${displayedLogs.length} 条` : ''}
                         {logsPage > 1 ? ' · 当前页不自动刷新（避免新日志把翻页顶得乱跳），需要看最新请回到第 1 页' : ''}
                       </span>
                       <span style={{ display: 'flex', gap: 8 }}>
@@ -6251,19 +6913,200 @@ function App() {
       </div>
 
       {trafficLogDetail && (
-        <Modal title="流量错误详情" description="包含请求体、响应体与错误摘要，便于复制后排查。" onClose={() => setTrafficLogDetail(null)}>
-          <div className={`test-result-card fail`}>
+        <Modal
+          title={isTrafficLogError(trafficLogDetail) ? '请求异常排错诊断' : '请求链路审计详情'}
+          description={isTrafficLogError(trafficLogDetail)
+            ? '包含上游报错报文、全链路 APM 耗时分解、Token 用量与出入包体。'
+            : '全链路 APM 耗时指标与 Token 消耗审计，便于性能分析与链路追踪。'}
+          onClose={() => setTrafficLogDetail(null)}
+        >
+          <div className={`test-result-card ${isTrafficLogError(trafficLogDetail) ? 'fail' : 'pass'}`}>
             <div className="test-result-head">
               <Badge tone={statusTone(trafficLogDetail.status)}>HTTP {trafficLogDetail.status}</Badge>
-              <span>{trafficLogKeyLabel(trafficLogDetail)} · {trafficLogProviderLabel(trafficLogDetail, state.providers || [])} · {trafficLogDetail.routeId} · {trafficLogDetail.model} · {trafficLogDetail.latencyMs}ms</span>
+              <span>{trafficLogKeyLabel(trafficLogDetail)} · {trafficLogProviderLabel(trafficLogDetail, state.providers || [])} · {trafficLogDetail.routeId} · {trafficLogDetail.model}</span>
             </div>
-            {trafficLogDetail.errorDescription ? <div className="hint-line error">{trafficLogDetail.errorDescription}</div> : null}
-            {trafficLogDetailLoading ? <div className="hint-line">加载请求/响应体…</div> : null}
-            <div className="field-label-row">
-              <label>完整诊断信息</label>
-              <CopyButton value={formatTrafficLogDetail(trafficLogDetail, state.providers || [])} label="复制全部" />
+
+            <div className="log-audit-metrics">
+              <div className="log-audit-chip">
+                <span>总耗时</span>
+                <b>{trafficLogDetail.latencyMs} ms</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>首字 TTFT</span>
+                <b>{trafficLogDetail.ttftMs != null ? `${trafficLogDetail.ttftMs} ms` : '-'}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>上游 TTFB</span>
+                <b>{trafficLogDetail.upstreamTtfbMs != null ? `${trafficLogDetail.upstreamTtfbMs} ms` : '-'}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>网关开销</span>
+                <b>{trafficLogDetail.gatewayOverheadMs != null ? `${trafficLogDetail.gatewayOverheadMs} ms` : '-'}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>输入 Token</span>
+                <b>{trafficLogDetail.inputTokens}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>输出 Token</span>
+                <b>{trafficLogDetail.outputTokens}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>缓存 Token</span>
+                <b>{trafficLogDetail.cacheTokens ?? 0}</b>
+              </div>
+              <div className="log-audit-chip">
+                <span>客户端来源</span>
+                <b title={`${trafficLogDetail.clientIp || '-'}${trafficLogDetail.accessSource ? ` (${trafficLogDetail.accessSource})` : ''}`}>
+                  {trafficLogDetail.clientIp || trafficLogDetail.accessSource || '-'}
+                </b>
+              </div>
             </div>
-            <pre className="json-preview">{formatTrafficLogDetail(trafficLogDetail, state.providers || [])}</pre>
+
+            {/* Modal Tabs */}
+            <div className="log-modal-tabs">
+              <button
+                type="button"
+                className={`log-modal-tab ${trafficLogDetailTab === 'apm' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('apm')}
+              >
+                耗时分解 (APM)
+              </button>
+              <button
+                type="button"
+                className={`log-modal-tab ${trafficLogDetailTab === 'request' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('request')}
+              >
+                请求报文 {trafficLogDetail.requestBody ? '(已记录)' : ''}
+              </button>
+              <button
+                type="button"
+                className={`log-modal-tab ${trafficLogDetailTab === 'response' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('response')}
+              >
+                响应报文 {trafficLogDetail.responseBody ? '(已记录)' : ''}
+              </button>
+              <button
+                type="button"
+                className={`log-modal-tab ${trafficLogDetailTab === 'raw' ? 'active' : ''}`}
+                onClick={() => setTrafficLogDetailTab('raw')}
+              >
+                完整元数据
+              </button>
+            </div>
+
+            {trafficLogDetail.errorDescription ? (
+              <div className="hint-line error" style={{ margin: '8px 0', padding: '10px 14px', borderRadius: 'var(--r-md)', background: 'rgba(220, 38, 38, 0.08)', border: '1px solid rgba(220, 38, 38, 0.2)' }}>
+                <strong>错误摘要：</strong>{trafficLogDetail.errorDescription}
+              </div>
+            ) : null}
+            {trafficLogDetailLoading ? <div className="hint-line" style={{ margin: '6px 0' }}>⏳ 正在加载完整请求与响应报文…</div> : null}
+
+            {trafficLogDetailTab === 'apm' && (
+              <div>
+                <LogTimingWaterfall log={trafficLogDetail} />
+                <div className="machine-facts" style={{ marginTop: 12 }}>
+                  <div className="machine-fact"><span>请求协议流向</span><b>{trafficLogDetail.protocolFlow}</b></div>
+                  <div className="machine-fact"><span>访问端点路径</span><b title={trafficLogDetail.path}>{trafficLogDetail.path}</b></div>
+                  <div className="machine-fact"><span>命中路由 ID</span><b>{trafficLogDetail.routeId}</b></div>
+                  <div className="machine-fact"><span>调用客户端 IP</span><b>{trafficLogDetail.clientIp || '—'}</b></div>
+                  <div className="machine-fact"><span>上游 Provider</span><b>{trafficLogProviderLabel(trafficLogDetail, state.providers || [])}</b></div>
+                  <div className="machine-fact"><span>Timing 标记</span><b>{trafficLogDetail.timingFlags || '—'}</b></div>
+                </div>
+              </div>
+            )}
+
+            {trafficLogDetailTab === 'request' && (
+              <div className="log-body-card">
+                {trafficLogDetail.requestBody ? (
+                  <>
+                    <div className="field-label-row">
+                      <label>请求正文 (Request Body)</label>
+                      <CopyButton value={trafficLogDetail.requestBody} label="复制请求体" />
+                    </div>
+                    <pre className="json-preview">{formatJsonDisplay(trafficLogDetail.requestBody)}</pre>
+                  </>
+                ) : trafficLogDetail.status < 400 && !log2xxBodies ? (
+                  <div className="log-body-empty-notice">
+                    <div className="log-body-notice-icon">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </div>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>当前未开启「2xx 成功请求正文落盘」</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460 }}>
+                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文，以实现万级并发下的最高吞吐并避免日志数据库体积膨胀。
+                      </p>
+                    </div>
+                    {!isNormalUser && (
+                      <button
+                        className="btn primary"
+                        type="button"
+                        disabled={saving}
+                        onClick={async () => {
+                          await updateLog2xxBodies(true);
+                          showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
+                        }}
+                      >
+                        立即开启「记录 2xx 成功正文」
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="empty-state compact">该请求未携带请求正文（或被客户端省略）。</div>
+                )}
+              </div>
+            )}
+
+            {trafficLogDetailTab === 'response' && (
+              <div className="log-body-card">
+                {trafficLogDetail.responseBody ? (
+                  <>
+                    <div className="field-label-row">
+                      <label>响应正文 (Response Body)</label>
+                      <CopyButton value={trafficLogDetail.responseBody} label="复制响应体" />
+                    </div>
+                    <pre className="json-preview">{formatJsonDisplay(trafficLogDetail.responseBody)}</pre>
+                  </>
+                ) : trafficLogDetail.status < 400 && !log2xxBodies ? (
+                  <div className="log-body-empty-notice">
+                    <div className="log-body-notice-icon">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </div>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>当前未开启「2xx 成功请求正文落盘」</strong>
+                      <p style={{ margin: '6px 0 0', color: 'var(--muted)', maxWidth: 460 }}>
+                        网关默认策略仅对 4xx/5xx 错误请求记录完整报文。开启后，正常请求也将完整记录响应包体。
+                      </p>
+                    </div>
+                    {!isNormalUser && (
+                      <button
+                        className="btn primary"
+                        type="button"
+                        disabled={saving}
+                        onClick={async () => {
+                          await updateLog2xxBodies(true);
+                          showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
+                        }}
+                      >
+                        立即开启「记录 2xx 成功正文」
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="empty-state compact">该请求未记录响应正文（流式 SSE 请求完成时未保留或空包体）。</div>
+                )}
+              </div>
+            )}
+
+            {trafficLogDetailTab === 'raw' && (
+              <div className="log-body-card">
+                <div className="field-label-row">
+                  <label>完整诊断与元数据信息</label>
+                  <CopyButton value={formatTrafficLogDetail(trafficLogDetail, state.providers || [])} label="复制全部" />
+                </div>
+                <pre className="json-preview">{formatTrafficLogDetail(trafficLogDetail, state.providers || [])}</pre>
+              </div>
+            )}
           </div>
           <div className="actions modal-actions">
             <button className="btn" onClick={() => setTrafficLogDetail(null)}>关闭</button>

@@ -181,6 +181,7 @@ curl -s http://127.0.0.1:18093/__health   # {"status":"ok",...}
 - [Bearer 令牌 Provider 说明](docs/bearer-provider.md) —— 配置、鉴权、健康探测、故障转移、自注册
 - [macOS App](docs/macos-app.md)
 - [容器部署（Docker / Compose / K8s）](docs/deploy.md) —— 一键部署；镜像 docker.io/yangyongyong/llm-protocol-gateway
+- [Linux 裸机部署（systemd 原生二进制，无 Docker）](docs/deploy-linux-bare-metal.md)
 - [已知问题 / 踩坑记录](docs/known-issues.md)
 
 ---

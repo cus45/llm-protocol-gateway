@@ -1,7 +1,7 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import { formatBytes, formatEnCompact, formatLocalISODate, formatTokenCount, normalizePromptTokenStats, pickUsageXTickIndexes } from '../lib';
-import { DailyRequestPoint, StatusBucketStats } from '../types';
+import { DailyRequestPoint, LogEntry, StatusBucketStats } from '../types';
 export function UsageLineChart({ title, points }: { title: string; points: DailyRequestPoint[] }) {
   const width = 360;
   const height = 168;
@@ -516,6 +516,188 @@ export function UsageDailyTrafficLines({ title = '按日流量', points, onPickD
           ))}
         </svg>
       )}
+    </div>
+  );
+}
+
+const SHARE_COLORS = [
+  '#4f46e5', // Indigo
+  '#06b6d4', // Cyan
+  '#10b981', // Emerald
+  '#f59e0b', // Amber
+  '#8b5cf6', // Violet
+  '#ec4899', // Pink
+  '#3b82f6', // Blue
+  '#64748b', // Slate
+];
+
+export function UsageSegmentedShare({
+  title,
+  items,
+  formatValue,
+}: {
+  title: string;
+  items: Array<{ label: string; value: number }>;
+  formatValue?: (val: number) => string;
+}) {
+  const filtered = items.filter((item) => item.value > 0);
+  const total = filtered.reduce((sum, item) => sum + item.value, 0);
+
+  return (
+    <div className="usage-chart-card usage-segmented-card">
+      <div className="usage-section-title">{title}</div>
+      {filtered.length === 0 ? (
+        <div className="empty-state compact">暂无数据</div>
+      ) : (
+        <>
+          <div className="segmented-share-bar" role="progressbar" aria-valuenow={100}>
+            {filtered.map((item, idx) => {
+              const pct = (item.value / total) * 100;
+              const color = SHARE_COLORS[idx % SHARE_COLORS.length];
+              return (
+                <div
+                  key={item.label}
+                  className="segmented-share-slice"
+                  style={{ width: `${pct}%`, backgroundColor: color }}
+                  title={`${item.label}: ${formatValue ? formatValue(item.value) : item.value} (${pct.toFixed(1)}%)`}
+                />
+              );
+            })}
+          </div>
+          <div className="segmented-share-legend">
+            {filtered.map((item, idx) => {
+              const pct = (item.value / total) * 100;
+              const color = SHARE_COLORS[idx % SHARE_COLORS.length];
+              return (
+                <div key={item.label} className="segmented-legend-item">
+                  <span className="segmented-legend-dot" style={{ backgroundColor: color }} />
+                  <span className="segmented-legend-label" title={item.label}>{item.label}</span>
+                  <span className="segmented-legend-val">
+                    {formatValue ? formatValue(item.value) : item.value}
+                    <small>({pct.toFixed(1)}%)</small>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function UsageModelLeaderboard({
+  title = '模型深度用量排行',
+  items,
+}: {
+  title?: string;
+  items: Array<{
+    model: string;
+    requestCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheTokens: number;
+  }>;
+}) {
+  const sorted = [...items]
+    .filter((m) => m.model && m.model !== '_unknown')
+    .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens))
+    .slice(0, 10);
+
+  const maxTokens = Math.max(1, ...sorted.map((m) => m.inputTokens + m.outputTokens));
+  const totalTokens = sorted.reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0);
+
+  return (
+    <div className="usage-chart-card usage-leaderboard-card">
+      <div className="usage-section-title-row">
+        <div className="usage-section-title">{title}</div>
+        <div className="usage-leaderboard-legend">
+          <span className="prompt-legend"><i />输入 Prompt</span>
+          <span className="completion-legend"><i />输出 Completion</span>
+        </div>
+      </div>
+      {sorted.length === 0 ? (
+        <div className="empty-state compact">暂无模型使用记录</div>
+      ) : (
+        <div className="usage-leaderboard-list">
+          {sorted.map((item, index) => {
+            const sum = item.inputTokens + item.outputTokens;
+            const pctOfMax = (sum / maxTokens) * 100;
+            const pctOfTotal = totalTokens > 0 ? ((sum / totalTokens) * 100).toFixed(1) : '0';
+            const inputPct = sum > 0 ? (item.inputTokens / sum) * 100 : 50;
+            const outputPct = sum > 0 ? (item.outputTokens / sum) * 100 : 50;
+
+            return (
+              <div key={item.model} className="usage-leaderboard-row">
+                <div className={`leaderboard-rank-badge rank-${index + 1}`}>
+                  #{index + 1}
+                </div>
+                <div className="leaderboard-model-info">
+                  <div className="leaderboard-model-name-row">
+                    <span className="leaderboard-model-name" title={item.model}>{item.model}</span>
+                    <span className="leaderboard-share-badge">{pctOfTotal}%</span>
+                  </div>
+                  <div className="leaderboard-split-track" style={{ width: `${Math.max(12, pctOfMax)}%` }}>
+                    <div className="split-fill input" style={{ width: `${inputPct}%` }} title={`输入: ${formatTokenCount(item.inputTokens)}`} />
+                    <div className="split-fill output" style={{ width: `${outputPct}%` }} title={`输出: ${formatTokenCount(item.outputTokens)}`} />
+                  </div>
+                </div>
+                <div className="leaderboard-stats-col">
+                  <span className="leaderboard-token-total">{formatTokenCount(sum)} tokens</span>
+                  <span className="leaderboard-token-meta">
+                    入 {formatTokenCount(item.inputTokens)} · 出 {formatTokenCount(item.outputTokens)}
+                    {item.cacheTokens > 0 ? ` · 缓存 ${formatTokenCount(item.cacheTokens)}` : ''} · {item.requestCount} 次
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function LogTimingWaterfall({ log }: { log: LogEntry }) {
+  const total = Math.max(1, log.latencyMs);
+  const stages = [
+    { label: '网关准备', ms: log.prepMs ?? 0, color: '#38bdf8' },
+    { label: '上游等待 TTFB', ms: log.upstreamTtfbMs ?? 0, color: '#f59e0b' },
+    { label: '首字响应 TTFT', ms: log.ttftMs != null ? Math.max(0, log.ttftMs - (log.upstreamTtfbMs ?? 0)) : 0, color: '#8b5cf6' },
+    { label: '网关格式转换', ms: log.convertOutMs ?? 0, color: '#06b6d4' },
+    { label: '网关处理开销', ms: log.gatewayOverheadMs ?? 0, color: '#10b981' },
+    { label: '后处理耗时', ms: log.postMs ?? 0, color: '#64748b' },
+  ].filter((s) => s.ms > 0);
+
+  return (
+    <div className="log-waterfall-card">
+      <div className="log-waterfall-title-row">
+        <span>全链路 APM 耗时分解</span>
+        <b>总耗时: {log.latencyMs} ms</b>
+      </div>
+      <div className="log-waterfall-stack-bar">
+        {stages.map((stage) => {
+          const pct = Math.min(100, Math.max(1, (stage.ms / total) * 100));
+          return (
+            <div
+              key={stage.label}
+              className="log-waterfall-slice"
+              style={{ width: `${pct}%`, backgroundColor: stage.color }}
+              title={`${stage.label}: ${stage.ms}ms (${((stage.ms / total) * 100).toFixed(1)}%)`}
+            />
+          );
+        })}
+      </div>
+      <div className="log-waterfall-legend">
+        {stages.map((stage) => (
+          <div key={stage.label} className="log-waterfall-item">
+            <span className="log-waterfall-dot" style={{ backgroundColor: stage.color }} />
+            <span className="log-waterfall-name">{stage.label}</span>
+            <b className="log-waterfall-ms">{stage.ms} ms</b>
+            <small>({((stage.ms / total) * 100).toFixed(0)}%)</small>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -48,3 +48,9 @@ desktop/frontend/.history/
 **/tunnel-config.yml
 !internal/tunnel/quick_tunnel_config.yml
 .workbuddy/
+
+# Trellis & agent metadata
+.trellis/
+.agent/
+.codegraph/
+.zcode/
