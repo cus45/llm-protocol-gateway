@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+#
+# deploy-linux.sh — 一键部署 llm-protocol-gateway 到 Linux 服务器
+#
+# 流程：本机交叉编译（前端 + 后端）→ 打包 → scp 上传 → 服务器替换 → 重启 → 健康检查
+#       健康检查失败会自动回滚到部署前的版本。
+#
+# 用法：
+#   ./deploy/deploy-linux.sh                # 完整部署（构建 + 上传 + 重启 + 验证）
+#   ./deploy/deploy-linux.sh --skip-web     # 跳过前端构建（只更后端）
+#   ./deploy/deploy-linux.sh --skip-go      # 跳过后端构建（只更前端）
+#   ./deploy/deploy-linux.sh --rollback     # 回滚到服务器上最近一次备份
+#   ./deploy/deploy-linux.sh --status       # 只查看服务器当前状态，不改动任何东西
+#
+# 可用环境变量覆盖默认配置（无需改脚本）：
+#   SERVER_HOST   目标服务器 IP/域名      默认 173.249.207.202
+#   SERVER_USER   SSH 用户                默认 root
+#   SSH_KEY       私钥路径                默认 ~/.ssh/greencloud_new
+#   SSH_PORT      SSH 端口                默认 22
+#   INSTALL_DIR   服务器安装目录          默认 /opt/llm-protocol-gateway
+#   SERVICE_NAME  systemd 服务名          默认 llm-protocol-gateway
+#   GOARCH_TARGET 目标架构                默认 amd64（arm64 服务器请改）
+#
+# 示例：
+#   SERVER_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519 ./deploy/deploy-linux.sh
+#   GOARCH_TARGET=arm64 ./deploy/deploy-linux.sh
+#
+set -euo pipefail
+
+# ───────────────────────── 配置区 ─────────────────────────
+SERVER_HOST="${SERVER_HOST:-173.249.207.202}"
+SERVER_USER="${SERVER_USER:-root}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/greencloud_new}"
+SSH_PORT="${SSH_PORT:-22}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/llm-protocol-gateway}"
+DATA_DIR="${DATA_DIR:-/var/lib/llm-protocol-gateway}"
+SERVICE_NAME="${SERVICE_NAME:-llm-protocol-gateway}"
+GOARCH_TARGET="${GOARCH_TARGET:-amd64}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-5}"   # 服务器上保留的历史版本份数
+
+SKIP_WEB=0
+SKIP_GO=0
+MODE="deploy"
+
+# ───────────────────────── 工具函数 ─────────────────────────
+c_red=$'\e[31m'; c_green=$'\e[92m'; c_yellow=$'\e[33m'; c_cyan=$'\e[96m'; c_gray=$'\e[90m'; c_none=$'\e[0m'
+info()  { printf '%s\n' "${c_cyan}▶ $*${c_none}"; }
+ok()    { printf '%s\n' "${c_green}✓ $*${c_none}"; }
+warn()  { printf '%s\n' "${c_yellow}! $*${c_none}"; }
+die()   { printf '%s\n' "${c_red}✗ $*${c_none}" >&2; exit 1; }
+step()  { printf '\n%s\n' "${c_cyan}==== $* ====${c_none}"; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# ssh 用 -p 指定端口，scp 用 -P（小写 -p 在 scp 里是「保留时间戳」，写错会把端口号当成文件名）
+SSH_BASE_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+SSH_OPTS=("${SSH_BASE_OPTS[@]}" -p "$SSH_PORT")
+SCP_OPTS=("${SSH_BASE_OPTS[@]}" -P "$SSH_PORT")
+REMOTE="${SERVER_USER}@${SERVER_HOST}"
+rsh() { ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# ───────────────────────── 参数解析 ─────────────────────────
+for arg in "$@"; do
+  case "$arg" in
+    --skip-web) SKIP_WEB=1 ;;
+    --skip-go)  SKIP_GO=1 ;;
+    --rollback) MODE="rollback" ;;
+    --status)   MODE="status" ;;
+    -h|--help)  usage ;;
+    *) die "未知参数: $arg（用 --help 查看用法）" ;;
+  esac
+done
+
+# ───────────────────────── 前置检查 ─────────────────────────
+step "0. 前置检查"
+[[ -f "$SSH_KEY" ]] || die "找不到 SSH 私钥: $SSH_KEY（用 SSH_KEY=... 指定）"
+command -v ssh >/dev/null || die "缺少 ssh 命令"
+command -v scp >/dev/null || die "缺少 scp 命令"
+command -v tar >/dev/null || die "缺少 tar 命令"
+
+if [[ "$MODE" == "deploy" ]]; then
+  [[ "$SKIP_GO"  == "1" ]] || command -v go >/dev/null  || die "缺少 go 命令（或用 --skip-go）"
+  [[ "$SKIP_WEB" == "1" ]] || command -v npm >/dev/null || die "缺少 npm 命令（或用 --skip-web）"
+fi
+
+info "目标: ${REMOTE}:${SSH_PORT}  目录: ${INSTALL_DIR}  服务: ${SERVICE_NAME}"
+rsh "echo ok" >/dev/null 2>&1 || die "SSH 连接失败，请检查 ${SSH_KEY} 与服务器状态"
+ok "SSH 连接正常"
+[[ $EUID -eq 0 ]] && warn "当前以 root 运行；本地构建其实不需要 root"
+
+# ═════════════════════ 模式：status ═════════════════════
+if [[ "$MODE" == "status" ]]; then
+  step "服务器状态"
+  rsh "
+    echo '--- 服务状态 ---';
+    systemctl is-active ${SERVICE_NAME} 2>/dev/null || true;
+    systemctl is-enabled ${SERVICE_NAME} 2>/dev/null || true;
+    echo '--- 二进制 ---';
+    ls -la ${INSTALL_DIR}/bin/gateway 2>/dev/null || true;
+    echo '--- 备份 ---';
+    ls -1 ${INSTALL_DIR}/bin/gateway.bak-* 2>/dev/null | tail -5 || echo '(无备份)';
+    echo '--- 健康检查 ---';
+    curl -s --max-time 5 http://127.0.0.1:18093/__health || echo '(无响应)';
+    echo;
+    echo '--- 最近日志 ---';
+    journalctl -u ${SERVICE_NAME} -n 8 --no-pager 2>/dev/null | tail -8;
+  "
+  exit 0
+fi
+
+# ═════════════════════ 模式：rollback ═════════════════════
+if [[ "$MODE" == "rollback" ]]; then
+  step "回滚到最近一次备份"
+  rsh "
+    set -e
+    LATEST=\$(ls -1t ${INSTALL_DIR}/bin/gateway.bak-* 2>/dev/null | head -1 || true)
+    if [ -z \"\$LATEST\" ]; then echo '没有可用备份，退出'; exit 1; fi
+    TS=\${LATEST##*gateway.bak-}
+    WEB=${INSTALL_DIR}/web/dist.bak-\${TS}.tar.gz
+    echo \"使用备份: \$LATEST\"
+    [ -f \"\$WEB\" ] && echo \"前端备份: \$WEB\" || echo '（无前端备份，仅回滚后端）'
+    # 必须先停服务：运行中的进程占用着二进制，直接覆盖会报 'Text file busy'
+    systemctl stop ${SERVICE_NAME}
+    cp \"\$LATEST\" ${INSTALL_DIR}/bin/gateway
+    chmod +x ${INSTALL_DIR}/bin/gateway
+    if [ -f \"\$WEB\" ]; then
+      rm -rf ${INSTALL_DIR}/web/dist
+      mkdir -p ${INSTALL_DIR}/web/dist
+      tar xzf \"\$WEB\" -C ${INSTALL_DIR}/web
+    fi
+    systemctl start ${SERVICE_NAME}
+    sleep 3
+    systemctl is-active ${SERVICE_NAME}
+    curl -s --max-time 5 http://127.0.0.1:18093/__health; echo
+  "
+  ok "回滚完成"
+  exit 0
+fi
+
+# ═════════════════════ 模式：deploy ═════════════════════
+
+# ── 1. 构建前端 ──
+if [[ "$SKIP_WEB" == "0" ]]; then
+  step "1. 构建前端 (web/dist)"
+  cd "$ROOT/web"
+  # Windows/Git-Bash 上 safe-delete 守卫会阻止 npm 清理 node_modules，
+  # 因此只在依赖缺失/损坏时才安装，且安装前把旧目录「移走」而非删除。
+  if [[ ! -x "node_modules/.bin/tsc" ]]; then
+    if [[ -d "node_modules" ]]; then
+      warn "node_modules 不完整，移走后重装"
+      mv node_modules "node_modules.broken.$(date +%s)"
+    fi
+    info "npm ci ..."
+    npm ci
+  else
+    info "依赖已就绪，跳过 npm ci"
+  fi
+  info "npm run build ..."
+  npm run build
+  [[ -f "dist/index.html" ]] || die "前端构建失败：web/dist/index.html 不存在"
+  ok "前端构建完成"
+  cd "$ROOT"
+else
+  warn "跳过前端构建（--skip-web）"
+fi
+
+# ── 2. 构建后端 ──
+if [[ "$SKIP_GO" == "0" ]]; then
+  step "2. 交叉编译后端 (linux/${GOARCH_TARGET})"
+  mkdir -p bin
+  info "go build ..."
+  CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+    go build -trimpath -ldflags "-s -w" -o bin/gateway-linux ./cmd/gateway
+  [[ -f bin/gateway-linux ]] || die "后端构建失败"
+  ok "后端构建完成: $(ls -lh bin/gateway-linux | awk '{print $5}')"
+else
+  warn "跳过后端构建（--skip-go）"
+  [[ -f bin/gateway-linux ]] || die "跳过后端构建，但 bin/gateway-linux 不存在，无法上传"
+fi
+
+# ── 3. 打包 ──
+step "3. 打包产物"
+# 注意：必须用 POSIX 路径（如 /tmp/xxx）。Git-Bash 下 mktemp -t 会返回
+# "C:\...\Temp\xxx" 这种带盘符的 Windows 路径，tar 会把 "C:" 误判为远程主机而报错。
+PKG="/tmp/gateway-dist.$$.tar.gz"
+trap 'rm -f "$PKG"' EXIT
+TAR_ITEMS=()
+[[ "$SKIP_GO"  == "0" ]] && TAR_ITEMS+=(bin/gateway-linux)
+[[ "$SKIP_WEB" == "0" ]] && TAR_ITEMS+=(web/dist)
+tar czf "$PKG" "${TAR_ITEMS[@]}"
+ok "已打包: $(ls -lh "$PKG" | awk '{print $5}')  [${TAR_ITEMS[*]}]"
+
+# ── 4. 上传 ──
+step "4. 上传到服务器"
+REMOTE_TMP="/tmp/gateway-dist-$$.tar.gz"
+scp "${SCP_OPTS[@]}" "$PKG" "${REMOTE}:${REMOTE_TMP}"
+ok "上传完成"
+
+# ── 5. 服务器部署 ──
+step "5. 服务器部署（备份 → 替换 → 重启）"
+rsh "
+  set -e
+  TS=\$(date +%F-%H%M%S)
+  BK=${INSTALL_DIR}/bin/gateway.bak-\$TS
+  WS=/tmp/gw-deploy-\$\$
+
+  mkdir -p \$WS && tar xzf ${REMOTE_TMP} -C \$WS
+
+  # 备份现有产物（用于回滚 / 失败自动恢复）
+  if [ -f ${INSTALL_DIR}/bin/gateway ]; then
+    cp ${INSTALL_DIR}/bin/gateway \$BK
+    echo \"备份二进制: \$BK\"
+  fi
+  if [ -d ${INSTALL_DIR}/web/dist ]; then
+    tar czf ${INSTALL_DIR}/web/dist.bak-\$TS.tar.gz -C ${INSTALL_DIR}/web dist
+    echo \"备份前端: ${INSTALL_DIR}/web/dist.bak-\$TS.tar.gz\"
+  fi
+  # 只保留最近 ${KEEP_BACKUPS} 份备份，避免磁盘无限增长
+  ls -1t ${INSTALL_DIR}/bin/gateway.bak-* 2>/dev/null | tail -n +\$(( ${KEEP_BACKUPS} + 1 )) | while read -r old; do
+    rm -f \"\$old\"; rm -f \"${INSTALL_DIR}/web/dist.bak-\${old##*gateway.bak-}.tar.gz\"
+  done
+
+  # 替换后端
+  if [ -f \$WS/bin/gateway-linux ]; then
+    mv \$WS/bin/gateway-linux ${INSTALL_DIR}/bin/gateway
+    chmod +x ${INSTALL_DIR}/bin/gateway
+    echo '已替换后端二进制'
+  fi
+
+  # 替换前端（先清旧 assets，避免哈希文件残留）
+  if [ -d \$WS/web/dist ]; then
+    rm -rf ${INSTALL_DIR}/web/dist/assets
+    mkdir -p ${INSTALL_DIR}/web/dist
+    cp -r \$WS/web/dist/. ${INSTALL_DIR}/web/dist/
+    echo '已替换前端静态资源'
+  fi
+
+  chown -R root:root ${INSTALL_DIR}
+
+  # 重启服务
+  systemctl restart ${SERVICE_NAME}
+  sleep 3
+
+  # 健康检查（失败自动回滚）
+  if systemctl is-active --quiet ${SERVICE_NAME} \
+     && curl -fsS --max-time 8 http://127.0.0.1:18093/__health >/dev/null; then
+    echo 'HEALTH_OK'
+    curl -s --max-time 5 http://127.0.0.1:18093/__health; echo
+  else
+    echo 'HEALTH_FAIL'
+    echo '--- 最近日志 ---'
+    journalctl -u ${SERVICE_NAME} -n 20 --no-pager | tail -20
+    if [ -f \$BK ]; then
+      echo '--- 检测到失败，自动回滚 ---'
+      systemctl stop ${SERVICE_NAME} || true
+      cp \$BK ${INSTALL_DIR}/bin/gateway
+      chmod +x ${INSTALL_DIR}/bin/gateway
+      systemctl start ${SERVICE_NAME}
+      sleep 3
+      systemctl is-active ${SERVICE_NAME} || true
+      echo '已回滚到部署前版本'
+    fi
+    rm -rf \$WS ${REMOTE_TMP}
+    exit 1
+  fi
+
+  rm -rf \$WS ${REMOTE_TMP}
+  echo '清理完成'
+"
+
+# ── 6. 外部验证 ──
+step "6. 公网访问验证"
+sleep 1
+CODE="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://${SERVER_HOST}:18093/" || echo 000)"
+if [[ "$CODE" =~ ^(200|301|302|401)$ ]]; then
+  ok "公网访问正常（HTTP ${CODE}）"
+else
+  warn "公网返回 HTTP ${CODE}，请检查服务器安全组是否放行 18093"
+fi
+
+printf '\n%s\n' "${c_green}════════════════════════════════════════${c_none}"
+ok "部署完成 → http://${SERVER_HOST}:18093/"
+printf '%s\n' "${c_green}════════════════════════════════════════${c_none}"
