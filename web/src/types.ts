@@ -615,6 +615,13 @@ export type StatusBucketStats = {
   requestCount: number;
 };
 
+export type HourlyBucketStats = {
+  hour: number;
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export type RequestStatsSnapshot = {
   today: {
     date: string;
@@ -648,6 +655,7 @@ export type RequestStatsSnapshot = {
   to?: string;
   daily?: DailyRequestPoint[];
   status?: StatusBucketStats[];
+  hourly?: HourlyBucketStats[];
 };
 
 export type AppLogEntry = {

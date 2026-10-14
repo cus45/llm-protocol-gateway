@@ -230,6 +230,13 @@ type StatusBucketStats struct {
 	RequestCount int64  `json:"requestCount"`
 }
 
+type HourlyBucketStats struct {
+	Hour         int   `json:"hour"`
+	RequestCount int64 `json:"requestCount"`
+	InputTokens  int64 `json:"inputTokens"`
+	OutputTokens int64 `json:"outputTokens"`
+}
+
 type UsageStatsSnapshot struct {
 	Today  TodayStatsSnapshot   `json:"today"`
 	Month  PeriodStatsSnapshot  `json:"month"`
@@ -238,6 +245,7 @@ type UsageStatsSnapshot struct {
 	To     string               `json:"to,omitempty"`
 	Daily  []DailyRequestPoint  `json:"daily,omitempty"`
 	Status []StatusBucketStats  `json:"status,omitempty"`
+	Hourly []HourlyBucketStats  `json:"hourly,omitempty"`
 }
 
 type AppLog struct {
@@ -775,6 +783,7 @@ func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs
 		To:     to.Format(time.RFC3339),
 		Daily:  daily,
 		Status: aggregateStatus(logs, from, to),
+		Hourly: AggregateHourly(logs, from, to),
 	}
 }
 
@@ -842,6 +851,7 @@ func (s *Store) UsageStatsRange(now time.Time, from, to time.Time) UsageStatsSna
 		To:     to.Format(time.RFC3339),
 		Daily:  s.dailyStatsInRangeLocked(from, to),
 		Status: s.statusStatsInRangeLocked(from, to),
+		Hourly: s.hourlyStatsInRangeLocked(from, to),
 	}
 }
 
@@ -962,6 +972,39 @@ func aggregateStatus(logs []RequestLog, from, to time.Time) []StatusBucketStats 
 		out = append(out, StatusBucketStats{Class: class, RequestCount: buckets[class]})
 	}
 	return out
+}
+
+// AggregateHourly aggregates request counts and token usage by hour of the day
+// (0..23) within the provided [from, to) time window.
+func AggregateHourly(logs []RequestLog, from, to time.Time) []HourlyBucketStats {
+	buckets := make([]HourlyBucketStats, 24)
+	for i := 0; i < 24; i++ {
+		buckets[i].Hour = i
+	}
+	loc := time.Local
+	if !from.IsZero() {
+		loc = from.Location()
+	}
+	for i := range logs {
+		log := logs[i]
+		if !from.IsZero() && log.Time.Before(from) {
+			continue
+		}
+		if !to.IsZero() && !log.Time.Before(to) {
+			continue
+		}
+		h := log.Time.In(loc).Hour()
+		if h >= 0 && h < 24 {
+			buckets[h].RequestCount++
+			buckets[h].InputTokens += log.InputTokens
+			buckets[h].OutputTokens += log.OutputTokens
+		}
+	}
+	return buckets
+}
+
+func (s *Store) hourlyStatsInRangeLocked(from, to time.Time) []HourlyBucketStats {
+	return AggregateHourly(s.logs, from, to)
 }
 
 func (s *Store) TodayStatsFromLogs(logs []RequestLog, now time.Time) TodayStatsSnapshot {

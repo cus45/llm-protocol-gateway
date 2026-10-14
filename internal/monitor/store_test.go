@@ -197,6 +197,46 @@ func TestUsageStatsRangeDailyAndStatus(t *testing.T) {
 	}
 }
 
+func TestUsageStatsRangeHourly(t *testing.T) {
+	store := NewStore()
+	day := time.Date(2026, 7, 8, 14, 0, 0, 0, time.Local)
+	from := time.Date(2026, 7, 8, 0, 0, 0, 0, time.Local)
+	to := from.Add(24 * time.Hour)
+
+	store.Add(RequestLog{
+		Time:         time.Date(2026, 7, 8, 9, 15, 0, 0, time.Local),
+		InputTokens:  100,
+		OutputTokens: 50,
+		Status:       200,
+	})
+	store.Add(RequestLog{
+		Time:         time.Date(2026, 7, 8, 9, 45, 0, 0, time.Local),
+		InputTokens:  200,
+		OutputTokens: 80,
+		Status:       200,
+	})
+	store.Add(RequestLog{
+		Time:         time.Date(2026, 7, 8, 14, 30, 0, 0, time.Local),
+		InputTokens:  500,
+		OutputTokens: 250,
+		Status:       200,
+	})
+
+	snapshot := store.UsageStatsRange(day, from, to)
+	if len(snapshot.Hourly) != 24 {
+		t.Fatalf("expected 24 hourly buckets, got %d", len(snapshot.Hourly))
+	}
+	if snapshot.Hourly[9].RequestCount != 2 || snapshot.Hourly[9].InputTokens != 300 || snapshot.Hourly[9].OutputTokens != 130 {
+		t.Fatalf("hourly[9]=%+v", snapshot.Hourly[9])
+	}
+	if snapshot.Hourly[14].RequestCount != 1 || snapshot.Hourly[14].InputTokens != 500 || snapshot.Hourly[14].OutputTokens != 250 {
+		t.Fatalf("hourly[14]=%+v", snapshot.Hourly[14])
+	}
+	if snapshot.Hourly[0].RequestCount != 0 {
+		t.Fatalf("hourly[0]=%+v", snapshot.Hourly[0])
+	}
+}
+
 func TestUsageStatsLastRequest(t *testing.T) {
 	store := NewStore()
 	early := time.Date(2026, 7, 8, 10, 0, 0, 0, time.Local)

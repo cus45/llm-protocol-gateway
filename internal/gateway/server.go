@@ -668,6 +668,11 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snapshot := s.logs.UsageStatsRangeForKeys(now, from, to, keyIDs)
+		if s.requestLogStore != nil && len(keyIDs) > 0 && hourlyStatsTotal(snapshot.Hourly) == 0 {
+			if dbLogs := s.loadRequestLogsForStatsForKeys(from, to, keyIDs, 5000); len(dbLogs) > 0 {
+				snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+			}
+		}
 		s.fillUsageKeyNames(&snapshot)
 		s.requestStatsCache.set(userCacheKey, snapshot)
 		w.Header().Set("Cache-Control", "private, max-age=5")
@@ -680,11 +685,24 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.logs.UsageStatsRange(now, from, to)
+	if s.requestLogStore != nil && hourlyStatsTotal(snapshot.Hourly) == 0 {
+		if dbLogs := s.loadRequestLogsForStats(from, to, 5000); len(dbLogs) > 0 {
+			snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+		}
+	}
 	s.fillUsageKeyNames(&snapshot)
 	s.fillUsageUserNames(&snapshot)
 	s.requestStatsCache.set(cacheKey, snapshot)
 	w.Header().Set("Cache-Control", "private, max-age=5")
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func hourlyStatsTotal(buckets []monitor.HourlyBucketStats) int64 {
+	var total int64
+	for _, b := range buckets {
+		total += b.RequestCount
+	}
+	return total
 }
 
 // fillUsageUserNames resolves display names for every byUser breakdown in the
@@ -718,6 +736,34 @@ func (s *Server) loadRequestLogsForStats(from, to time.Time, limit int) []monito
 	for page := 1; len(out) < limit; page++ {
 		result, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{
 			From: from, To: to, Page: page, PageSize: pageSize, Status: "all",
+		})
+		if err != nil || len(result.Items) == 0 {
+			break
+		}
+		out = append(out, result.Items...)
+		if len(result.Items) < pageSize || len(out) >= result.Total {
+			break
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func (s *Server) loadRequestLogsForStatsForKeys(from, to time.Time, keyIDs []string, limit int) []monitor.RequestLog {
+	if s.requestLogStore == nil || len(keyIDs) == 0 {
+		return nil
+	}
+	s.FlushRequestLogs()
+	if limit <= 0 {
+		limit = 5000
+	}
+	out := make([]monitor.RequestLog, 0, limit)
+	pageSize := 500
+	for page := 1; len(out) < limit; page++ {
+		result, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{
+			From: from, To: to, Page: page, PageSize: pageSize, Status: "all", APIKeyIDs: keyIDs,
 		})
 		if err != nil || len(result.Items) == 0 {
 			break

@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
-import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageDailyTrafficLines, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
@@ -72,6 +72,12 @@ function App() {
   const [trafficLogSSEParsedView, setTrafficLogSSEParsedView] = useState(true);
   const [usageMetricDimension, setUsageMetricDimension] = useState<'tokens' | 'requests'>('tokens');
   const [usageViewTab, setUsageViewTab] = useState<'overview' | 'models' | 'providers' | 'keys'>('overview');
+  const [overviewRankTab, setOverviewRankTab] = useState<'keys' | 'users'>('keys');
+  const [usageDrill, setUsageDrill] = useState<{
+    type: 'model' | 'provider' | 'apiKey';
+    value: string;
+    label: string;
+  } | null>(null);
   const [logsKeyword, setLogsKeyword] = useState('');
   const displayedLogs = useMemo(() => {
     if (!logsKeyword.trim()) return logs;
@@ -4769,7 +4775,47 @@ function App() {
                 </div>
               </div>
 
-              <div className="usage-range-bar" style={{ marginBottom: 12 }}>
+              {/* 维度下钻高亮横幅 */}
+              {usageDrill && (
+                <div className="drill-banner">
+                  <div className="drill-banner-info">
+                    <span>🔍 正在下钻聚焦：</span>
+                    <span className="drill-banner-badge">
+                      {usageDrill.type === 'model' ? '模型' : usageDrill.type === 'provider' ? 'Provider' : 'API 密钥'}
+                      : {usageDrill.label}
+                    </span>
+                  </div>
+                  <div className="drill-banner-actions">
+                    <button
+                      type="button"
+                      className="drill-banner-clear-btn"
+                      onClick={() => {
+                        setActiveNav('traffic-tokens');
+                        if (usageDrill.type === 'model') {
+                          setLogsKeyword(usageDrill.value);
+                        } else if (usageDrill.type === 'provider') {
+                          setLogsProviderFilter(usageDrill.value);
+                        } else if (usageDrill.type === 'apiKey') {
+                          setLogsApiKeyName(usageDrill.label);
+                        }
+                      }}
+                      title="快速前往 API 日志查看该维度的调用细节"
+                    >
+                      查看相关 API 日志 →
+                    </button>
+                    <button
+                      type="button"
+                      className="drill-banner-clear-btn"
+                      onClick={() => setUsageDrill(null)}
+                    >
+                      ✕ 清除下钻 / 返回全局看板
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 顶部：日期选择日历 + 全新双 Y 轴柱线复合时序图 */}
+              <div className="usage-range-bar" style={{ marginBottom: 14 }}>
                 <div className="usage-range-left">
                   <UsageRangeCalendar
                     from={usageFrom}
@@ -4785,174 +4831,470 @@ function App() {
                     当前区间：{usageFrom === usageTo ? usageFrom : `${usageFrom} ~ ${usageTo}`}
                   </div>
                 </div>
-                <UsageMonthlyTokenBars
-                  points={monthlyDaily}
-                  onPickDay={(date) => {
-                    usageFollowTodayRef.current = isFollowingTodayRange(date, date);
-                    setUsageFrom(date);
-                    setUsageTo(date);
-                    void refreshRequestStats(date, date);
-                  }}
-                />
-              </div>
-
-              <div className="usage-metric-grid">
-                <Metric label="区间总请求" value={String(requestStats?.range?.total.requestCount ?? usageToday?.total.requestCount ?? 0)} note={requestStats?.range?.period || usageToday?.date || '—'} />
-                <Metric label="区间总 Token" value={formatTokenCount(((requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0) + (requestStats?.range?.total.outputTokens ?? usageToday?.total.outputTokens ?? 0)))} note={requestStats?.range?.total ? formatTokenSummary(requestStats.range.total) : (usageToday?.total ? formatTokenSummary(usageToday.total) : '暂无数据')} />
-                <Metric label="本月总请求" value={String(usageMonth?.total.requestCount ?? 0)} note={usageMonth?.period || '—'} />
-                <Metric label="本月总 Token" value={formatTokenCount((usageMonth?.total.inputTokens ?? 0) + (usageMonth?.total.outputTokens ?? 0))} note={usageMonth?.total ? formatTokenSummary(usageMonth.total) : '暂无数据'} />
-                <Metric label="平均往返延迟" value={state.metrics?.averageLatencyMs != null && state.metrics.averageLatencyMs > 0 ? `${Math.round(state.metrics.averageLatencyMs)} ms` : '—'} note="网关整体平均耗时" />
-                <Metric label="请求成功率" value={state.metrics?.successRate != null ? `${(state.metrics.successRate * 100).toFixed(1)}%` : '100%'} note="2xx 正常响应占比" />
-              </div>
-
-              {/* 维度与指标切换导航 */}
-              <div className="usage-dimension-nav">
-                <div className="usage-nav-tabs">
-                  {[
-                    { id: 'overview', label: '综合看板' },
-                    { id: 'models', label: '模型排行' },
-                    { id: 'providers', label: 'Provider 统计' },
-                    { id: 'keys', label: 'API 密钥审计' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      className={`usage-nav-tab ${usageViewTab === tab.id ? 'active' : ''}`}
-                      onClick={() => setUsageViewTab(tab.id as typeof usageViewTab)}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="usage-metric-toggle-group">
-                  <span>统计维度：</span>
-                  <div className="usage-nav-tabs" style={{ padding: 2 }}>
-                    <button
-                      type="button"
-                      className={`usage-nav-tab ${usageMetricDimension === 'tokens' ? 'active' : ''}`}
-                      onClick={() => setUsageMetricDimension('tokens')}
-                    >
-                      Token 消耗
-                    </button>
-                    <button
-                      type="button"
-                      className={`usage-nav-tab ${usageMetricDimension === 'requests' ? 'active' : ''}`}
-                      onClick={() => setUsageMetricDimension('requests')}
-                    >
-                      请求次数
-                    </button>
-                  </div>
+                <div style={{ flex: '1 1 520px', minWidth: 320 }}>
+                  <UsageComboTrendChart
+                    title={usageFrom === usageTo ? `单日时序走势 · ${usageFrom}` : `时序用量走势 · ${usageFrom} ~ ${usageTo}`}
+                    points={requestStats?.daily && requestStats.daily.length > 0 ? requestStats.daily : monthlyDaily}
+                    selectedDay={usageFrom === usageTo ? usageFrom : undefined}
+                    onPickDay={(date) => {
+                      usageFollowTodayRef.current = isFollowingTodayRange(date, date);
+                      setUsageFrom(date);
+                      setUsageTo(date);
+                      void refreshRequestStats(date, date);
+                    }}
+                  />
                 </div>
               </div>
 
-              {/* 视图 1：综合看板 */}
-              {usageViewTab === 'overview' && (
-                <>
-                  <div style={{ marginBottom: 16 }}>
-                    <UsageSegmentedShare
-                      title={`热门模型 ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '请求次数'} 分布`}
-                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
-                        .filter((item) => item.model && item.model !== '_unknown')
-                        .slice(0, 8)
-                        .map((item) => ({
-                          label: item.model,
-                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                        }))}
-                    />
-                  </div>
+              {/* 计算用于指标卡片微波形 Sparkline 的走势序列与导出函数 */}
+              {(() => {
+                const dailyList = requestStats?.daily || [];
+                const sparkRequests = dailyList.map((d) => d.requestCount || 0);
+                const sparkTokens = dailyList.map((d) => (d.inputTokens || 0) + (d.outputTokens || 0));
+                const sparkLatencies = dailyList.map((d) => Math.round(d.avgLatencyMs || 0));
+                const sparkCache = dailyList.map((d) => Math.round((d.cacheTokens || 0) / 1000));
 
-                  {usageFrom !== usageTo ? (
-                    <div className="usage-charts-full">
-                      <UsageMonthlyTokenBars
-                        title={`按日请求量 · ${usageFrom} ~ ${usageTo}`}
-                        points={requestStats?.daily || []}
-                        onPickDay={(date) => {
-                          usageFollowTodayRef.current = isFollowingTodayRange(date, date);
-                          setUsageFrom(date);
-                          setUsageTo(date);
-                          void refreshRequestStats(date, date);
-                        }}
+                // 1. 真实请求成功率 (基于当前区间 requestStats.status 2xx vs 总数)
+                const totalStatusRequests = (requestStats?.status || []).reduce((acc, s) => acc + (s.requestCount || 0), 0);
+                const success2xx = (requestStats?.status || []).find((s) => s.class === '2xx')?.requestCount || 0;
+                const intervalRequests = requestStats?.range?.total.requestCount ?? usageToday?.total.requestCount ?? 0;
+                const intervalSuccessRate = totalStatusRequests > 0
+                  ? (success2xx / totalStatusRequests) * 100
+                  : (intervalRequests > 0 ? 100 : null);
+
+                // 2. 真实平均往返延迟与首字延迟 (基于当前区间 dailyList 加权汇总)
+                const totalLatencySum = dailyList.reduce((acc, d) => acc + (d.avgLatencyMs || 0) * (d.requestCount || 0), 0);
+                const totalLatencyReqs = dailyList.reduce((acc, d) => acc + (d.requestCount || 0), 0);
+                const intervalAvgLatency = totalLatencyReqs > 0
+                  ? Math.round(totalLatencySum / totalLatencyReqs)
+                  : (sparkLatencies.some((l) => l > 0) ? Math.round(sparkLatencies.filter((l) => l > 0).reduce((a, b) => a + b, 0) / sparkLatencies.filter((l) => l > 0).length) : null);
+                const totalTTFTSum = dailyList.reduce((acc, d) => acc + (d.avgTtftMs || 0) * (d.requestCount || 0), 0);
+                const intervalAvgTTFT = totalLatencyReqs > 0 && totalTTFTSum > 0 ? Math.round(totalTTFTSum / totalLatencyReqs) : null;
+
+                // 3. Prompt 缓存省流与命中率 (当前区间)
+                const intervalInputTokens = requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0;
+                const intervalOutputTokens = requestStats?.range?.total.outputTokens ?? usageToday?.total.outputTokens ?? 0;
+                const intervalCacheTokens = requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0;
+                const { totalInput: normPromptTotal, cacheHits: normCacheHits, hitRatePct: normCacheHitRate } = normalizePromptTokenStats(intervalInputTokens, intervalCacheTokens);
+
+                function handleExportReportCSV() {
+                  const lines: string[] = [];
+                  lines.push('LLM Protocol Gateway 用量统计报表');
+                  lines.push(`统计区间,${usageFrom} ~ ${usageTo}`);
+                  lines.push(`导出时间,${new Date().toLocaleString()}`);
+                  lines.push('\n[逐日业务与性能时序]');
+                  lines.push('日期,请求次数,输入Token,输出Token,缓存Token,接收流量Bytes,发送流量Bytes,平均延迟ms,首字TTFTms');
+                  dailyList.forEach((d) => {
+                    lines.push(`${d.date},${d.requestCount},${d.inputTokens || 0},${d.outputTokens || 0},${d.cacheTokens || 0},${d.rxBytes || 0},${d.txBytes || 0},${d.avgLatencyMs || 0},${d.avgTtftMs || 0}`);
+                  });
+                  lines.push('\n[模型深度消耗排行]');
+                  lines.push('模型名称,请求次数,输入Token,输出Token,缓存Token');
+                  (requestStats?.range?.byModel || []).forEach((m) => {
+                    lines.push(`"${m.model}",${m.requestCount},${m.inputTokens || 0},${m.outputTokens || 0},${m.cacheTokens || 0}`);
+                  });
+                  lines.push('\n[Provider 消耗分布]');
+                  lines.push('Provider,请求次数,输入Token,输出Token');
+                  (requestStats?.range?.byProvider || []).forEach((p) => {
+                    lines.push(`"${p.providerId}",${p.requestCount},${p.inputTokens || 0},${p.outputTokens || 0}`);
+                  });
+                  lines.push('\n[API 密钥审计]');
+                  lines.push('API密钥,请求次数,输入Token,输出Token');
+                  (requestStats?.range?.byApiKey || []).forEach((k) => {
+                    lines.push(`"${k.apiKeyName || k.apiKeyId}",${k.requestCount},${k.inputTokens || 0},${k.outputTokens || 0}`);
+                  });
+                  downloadCSV(`gateway-usage-${usageFrom}-to-${usageTo}.csv`, lines.join('\n'));
+                }
+
+                return (
+                  <>
+                    {/* 6 宫格核心指标概览卡片 (含 Sparkline 迷你走势波形与状态徽章) */}
+                    <div className="usage-metric-grid">
+                      <Metric
+                        label="区间总请求"
+                        value={String(intervalRequests)}
+                        note={requestStats?.range?.period || usageToday?.date || '—'}
+                        badge="⚡ 业务吞吐"
+                        badgeTone="blue"
+                        sparkline={sparkRequests}
+                        sparklineColor="#38bdf8"
+                      />
+                      <Metric
+                        label="区间总 Token"
+                        value={formatTokenCount(intervalInputTokens + intervalOutputTokens)}
+                        note={`输入 ${formatTokenCount(intervalInputTokens)} · 输出 ${formatTokenCount(intervalOutputTokens)}`}
+                        badge="算力峰值"
+                        badgeTone="purple"
+                        sparkline={sparkTokens}
+                        sparklineColor="#6366f1"
+                      />
+                      <Metric
+                        label="Prompt 缓存省流"
+                        value={normCacheHits > 0 ? formatTokenCount(normCacheHits) : '0'}
+                        note={normCacheHits > 0
+                          ? `命中率 ${normCacheHitRate.toFixed(1)}% · 省流 ${formatTokenCount(normCacheHits)}`
+                          : (normPromptTotal > 0 ? `Prompt ${formatTokenCount(normPromptTotal)} · 无缓存加速` : '暂无缓存记录')}
+                        badge={normCacheHits > 0 ? `省流 ${normCacheHitRate.toFixed(0)}%` : '未命中'}
+                        badgeTone={normCacheHits > 0 ? 'green' : undefined}
+                        sparkline={sparkCache}
+                        sparklineColor="#10b981"
+                      />
+                      <Metric
+                        label="平均往返延迟"
+                        value={intervalAvgLatency != null && intervalAvgLatency > 0 ? `${intervalAvgLatency} ms` : '—'}
+                        note={intervalAvgTTFT != null && intervalAvgTTFT > 0 ? `网关耗时 · 首字延迟 ~${intervalAvgTTFT}ms` : '网关整体平均往返耗时'}
+                        badge="APM 监控"
+                        badgeTone="amber"
+                        sparkline={sparkLatencies}
+                        sparklineColor="#f59e0b"
+                      />
+                      <Metric
+                        label="请求成功率"
+                        value={intervalSuccessRate != null ? `${intervalSuccessRate.toFixed(1)}%` : (intervalRequests > 0 ? '100%' : '—')}
+                        note={totalStatusRequests > 0 ? `2xx 正常响应 (${success2xx}/${totalStatusRequests} 次)` : '2xx 正常响应占比'}
+                        badge="可用性"
+                        badgeTone={intervalSuccessRate == null || intervalSuccessRate >= 99 ? 'green' : (intervalSuccessRate >= 90 ? 'amber' : 'red')}
+                      />
+                      <Metric
+                        label="本月总用量"
+                        value={`${usageMonth?.total.requestCount ?? 0} 次`}
+                        note={`月度算力 ${formatTokenCount((usageMonth?.total.inputTokens ?? 0) + (usageMonth?.total.outputTokens ?? 0))} · ${usageMonth?.period || '本月'}`}
+                        badge="月度大盘"
+                        badgeTone="blue"
                       />
                     </div>
-                  ) : null}
 
-                  <div className="usage-charts">
-                    {usageFrom === usageTo ? (
-                      <UsageLineChart title="按日请求量" points={requestStats?.daily || []} />
-                    ) : null}
-                    <UsageBarChart
-                      title={`按 API Key（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
-                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                      items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((item) => ({
-                        label: item.apiKeyName || item.apiKeyId || '未命名',
-                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                      }))}
-                    />
-                    <UsageBarChart
-                      title={`按 Provider（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
-                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).slice(0, 8).map((item) => ({
-                        label: providerUsageLabel(item.providerId, state.providers || []),
-                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                      }))}
-                    />
-                    <UsageBarChart
-                      title={`按输出协议（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
-                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                      items={(requestStats?.range?.byProtocol || usageToday?.byProtocol || []).slice(0, 8).map((item) => ({
-                        label: item.protocol,
-                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                      }))}
-                    />
-                    {!isNormalUser && (
-                      <UsageBarChart
-                        title={`按用户（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
-                        formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                        items={(requestStats?.range?.byUser || usageToday?.byUser || []).slice(0, 8).map((item) => ({
-                          label: item.userName || item.userId || '未绑定用户',
-                          value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                        }))}
-                      />
+                    {/* 维度与指标切换导航 + 报表导出 */}
+                    <div className="usage-dimension-nav">
+                      <div className="usage-nav-tabs">
+                        {[
+                          { id: 'overview', label: '综合看板' },
+                          { id: 'models', label: '模型排行' },
+                          { id: 'providers', label: 'Provider 统计' },
+                          { id: 'keys', label: 'API 密钥审计' },
+                        ].map((tab) => (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            className={`usage-nav-tab ${usageViewTab === tab.id ? 'active' : ''}`}
+                            onClick={() => setUsageViewTab(tab.id as typeof usageViewTab)}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <div className="usage-metric-toggle-group">
+                          <span>数值维度：</span>
+                          <div className="usage-nav-tabs" style={{ padding: 2 }}>
+                            <button
+                              type="button"
+                              className={`usage-nav-tab ${usageMetricDimension === 'tokens' ? 'active' : ''}`}
+                              onClick={() => setUsageMetricDimension('tokens')}
+                            >
+                              Token 消耗
+                            </button>
+                            <button
+                              type="button"
+                              className={`usage-nav-tab ${usageMetricDimension === 'requests' ? 'active' : ''}`}
+                              onClick={() => setUsageMetricDimension('requests')}
+                            >
+                              请求次数
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={handleExportReportCSV}
+                          title="将当前统计区间的每日趋势、模型排行与密钥消耗导出为 CSV 文件"
+                        >
+                          📥 导出 CSV 报表
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 视图 1：综合看板 */}
+                    {usageViewTab === 'overview' && (
+                      <>
+                        {/* 如果处于下钻模式，展示实体专项深度卡片 */}
+                        {usageDrill ? (
+                          <div style={{ marginBottom: 16 }}>
+                            <div className="usage-chart-card">
+                              <div className="usage-section-title-row">
+                                <div>
+                                  <div className="usage-section-title">
+                                    下钻聚焦画像：{usageDrill.type === 'model' ? '模型' : usageDrill.type === 'provider' ? 'Provider' : 'API 密钥'} · {usageDrill.label}
+                                  </div>
+                                  <div className="usage-section-subtitle">当前区间内该实体的多维度交叉分析与算力估算</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => setUsageDrill(null)}
+                                >
+                                  退出下钻
+                                </button>
+                              </div>
+
+                              {/* 模型专项：算力与成本估算卡片 */}
+                              {usageDrill.type === 'model' && (() => {
+                                const mStat = (requestStats?.range?.byModel || []).find((m) => m.model === usageDrill.value);
+                                if (!mStat) return null;
+                                const inK = Math.round(mStat.inputTokens / 1000);
+                                const outK = Math.round(mStat.outputTokens / 1000);
+                                const cacheK = Math.round((mStat.cacheTokens || 0) / 1000);
+                                return (
+                                  <div className="cost-stat-grid">
+                                    <div className="cost-stat-item">
+                                      <div className="cost-stat-label">模型总请求</div>
+                                      <div className="cost-stat-value font-mono">{mStat.requestCount} 次</div>
+                                    </div>
+                                    <div className="cost-stat-item">
+                                      <div className="cost-stat-label">输入 Prompt</div>
+                                      <div className="cost-stat-value font-mono">{formatTokenCount(mStat.inputTokens)}</div>
+                                    </div>
+                                    <div className="cost-stat-item">
+                                      <div className="cost-stat-label">输出 Completion</div>
+                                      <div className="cost-stat-value font-mono">{formatTokenCount(mStat.outputTokens)}</div>
+                                    </div>
+                                    <div className="cost-stat-item">
+                                      <div className="cost-stat-label">Prompt 缓存节省</div>
+                                      <div className="cost-stat-value font-mono" style={{ color: '#10b981' }}>
+                                        {cacheK > 0 ? `${formatTokenCount(mStat.cacheTokens)}` : '无缓存'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <div className="usage-charts" style={{ marginTop: 12 }}>
+                                {usageDrill.type === 'model' && (
+                                  <>
+                                    <UsageDonutChart
+                                      title={`该模型在各 Provider 的路由份额`}
+                                      subtitle={usageDrill.label}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((p) => ({
+                                        label: providerUsageLabel(p.providerId, state.providers || []),
+                                        value: usageMetricDimension === 'tokens' ? (p.inputTokens || 0) + (p.outputTokens || 0) : p.requestCount,
+                                      }))}
+                                      onSelect={(pLabel) => {
+                                        const found = (state.providers || []).find((pr) => pr.name === pLabel || pr.id === pLabel);
+                                        if (found) setUsageDrill({ type: 'provider', value: found.id, label: found.name || found.id });
+                                      }}
+                                    />
+                                    <UsageBarChart
+                                      title={`调用该模型的 API Key 消耗排行`}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((k) => ({
+                                        label: k.apiKeyName || k.apiKeyId || '未命名',
+                                        value: usageMetricDimension === 'tokens' ? (k.inputTokens || 0) + (k.outputTokens || 0) : k.requestCount,
+                                      }))}
+                                      onSelect={(kLabel) => {
+                                        setUsageDrill({ type: 'apiKey', value: kLabel, label: kLabel });
+                                      }}
+                                    />
+                                  </>
+                                )}
+                                {usageDrill.type === 'provider' && (
+                                  <>
+                                    <UsageDonutChart
+                                      title={`该 Provider 承载的模型分布`}
+                                      subtitle={usageDrill.label}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                                        .filter((m) => m.model && m.model !== '_unknown')
+                                        .slice(0, 8)
+                                        .map((m) => ({
+                                          label: m.model,
+                                          value: usageMetricDimension === 'tokens' ? (m.inputTokens || 0) + (m.outputTokens || 0) : m.requestCount,
+                                        }))}
+                                      onSelect={(mLabel) => setUsageDrill({ type: 'model', value: mLabel, label: mLabel })}
+                                    />
+                                    <UsageBarChart
+                                      title={`路由至该 Provider 的 API Key 排行`}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((k) => ({
+                                        label: k.apiKeyName || k.apiKeyId || '未命名',
+                                        value: usageMetricDimension === 'tokens' ? (k.inputTokens || 0) + (k.outputTokens || 0) : k.requestCount,
+                                      }))}
+                                      onSelect={(kLabel) => setUsageDrill({ type: 'apiKey', value: kLabel, label: kLabel })}
+                                    />
+                                  </>
+                                )}
+                                {usageDrill.type === 'apiKey' && (
+                                  <>
+                                    <UsageDonutChart
+                                      title={`该 API Key 调用的模型偏好`}
+                                      subtitle={usageDrill.label}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                                        .filter((m) => m.model && m.model !== '_unknown')
+                                        .slice(0, 8)
+                                        .map((m) => ({
+                                          label: m.model,
+                                          value: usageMetricDimension === 'tokens' ? (m.inputTokens || 0) + (m.outputTokens || 0) : m.requestCount,
+                                        }))}
+                                      onSelect={(mLabel) => setUsageDrill({ type: 'model', value: mLabel, label: mLabel })}
+                                    />
+                                    <UsageBarChart
+                                      title={`该 API Key 关联的 Provider 路由分布`}
+                                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).slice(0, 8).map((p) => ({
+                                        label: providerUsageLabel(p.providerId, state.providers || []),
+                                        value: usageMetricDimension === 'tokens' ? (p.inputTokens || 0) + (p.outputTokens || 0) : p.requestCount,
+                                      }))}
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          /* 全局概览图表集合：采用结构化分层网格，严格高度对齐与视觉协调 */
+                          <>
+                            {/* 行 1：业务潮汐活跃度 与 全网健康度 (双栏配对) */}
+                            <div className="overview-ops-row">
+                              <UsageHourlyDistribution
+                                title="24 小时全天候调用活跃度分布（潮汐流量热力）"
+                                items={requestStats?.hourly}
+                                logs={logs}
+                              />
+                              <UsageStatusChart
+                                title="全网状态码与健康度分布"
+                                items={requestStats?.status || []}
+                              />
+                            </div>
+
+                            {/* 行 2：三列等高结构分布 (Provider 份额 + 协议转换 + Prompt 缓存深度分析) */}
+                            <div className="overview-distribution-row">
+                              <UsageDonutChart
+                                title={`Provider 算力与流量份额（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                                subtitle="各上游服务商推理算力占比"
+                                formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
+                                  label: providerUsageLabel(item.providerId, state.providers || []),
+                                  value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                                }))}
+                                onSelect={(pLabel) => {
+                                  const found = (state.providers || []).find((pr) => pr.name === pLabel || pr.id === pLabel);
+                                  if (found) setUsageDrill({ type: 'provider', value: found.id, label: found.name || found.id });
+                                }}
+                              />
+                              <UsageDonutChart
+                                title={`输出协议分布（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                                subtitle="网关输出协议转换份额"
+                                formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                items={(requestStats?.range?.byProtocol || usageToday?.byProtocol || []).map((item) => ({
+                                  label: item.protocol,
+                                  value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                                }))}
+                              />
+                              <UsageCacheHitRate
+                                title="Prompt 缓存加速与省流分析"
+                                input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
+                                cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
+                              />
+                            </div>
+
+                            {/* 行 3：核心模型排行 与 实体消耗分析 (双栏等高结构) */}
+                            <div className="overview-rankings-row">
+                              <UsageModelLeaderboard
+                                title="核心模型用量排行（输入 Prompt vs 输出 Completion）"
+                                items={requestStats?.range?.byModel || usageToday?.byModel || []}
+                                onSelectModel={(m) => setUsageDrill({ type: 'model', value: m, label: m })}
+                              />
+                              <div className="usage-chart-card usage-rank-explorer-card">
+                                <div className="usage-section-title-row">
+                                  <div>
+                                    <div className="usage-section-title">
+                                      {overviewRankTab === 'keys' ? 'API Key 消耗排行' : '用户消耗排行'}（{usageMetricDimension === 'tokens' ? 'Token' : '请求'}）
+                                    </div>
+                                    <div className="usage-section-subtitle">
+                                      {overviewRankTab === 'keys' ? '调用凭据流量与配额消耗 Top 8' : '团队成员算力消耗 Top 8'}
+                                    </div>
+                                  </div>
+                                  <div className="view-toggle-capsule">
+                                    <button
+                                      type="button"
+                                      className={`capsule-btn ${overviewRankTab === 'keys' ? 'active' : ''}`}
+                                      onClick={() => setOverviewRankTab('keys')}
+                                    >
+                                      API 密钥
+                                    </button>
+                                    {!isNormalUser && (
+                                      <button
+                                        type="button"
+                                        className={`capsule-btn ${overviewRankTab === 'users' ? 'active' : ''}`}
+                                        onClick={() => setOverviewRankTab('users')}
+                                      >
+                                        用户维度
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                                {overviewRankTab === 'keys' ? (
+                                  <UsageBarChart
+                                    title=""
+                                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                    items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).slice(0, 8).map((item) => ({
+                                      label: item.apiKeyName || item.apiKeyId || '未命名',
+                                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                                    }))}
+                                    onSelect={(kLabel) => setUsageDrill({ type: 'apiKey', value: kLabel, label: kLabel })}
+                                  />
+                                ) : (
+                                  <UsageBarChart
+                                    title=""
+                                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                                    items={(requestStats?.range?.byUser || usageToday?.byUser || []).slice(0, 8).map((item) => ({
+                                      label: item.userName || item.userId || '未绑定用户',
+                                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                                    }))}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {/* 底部全宽：按日流量平滑双色面积走势图 */}
+                        <div className="usage-charts-full">
+                          <UsageDailyTrafficLines
+                            title={usageFrom === usageTo ? `按日业务流量 · ${usageFrom}` : `按日业务流量趋势（上行接收 vs 下行发送） · ${usageFrom} ~ ${usageTo}`}
+                            points={requestStats?.daily || []}
+                            selectedDay={usageFrom === usageTo ? usageFrom : undefined}
+                            onPickDay={(date) => {
+                              usageFollowTodayRef.current = isFollowingTodayRange(date, date);
+                              setUsageFrom(date);
+                              setUsageTo(date);
+                              void refreshRequestStats(date, date);
+                            }}
+                          />
+                          <p className="hint-line">
+                            统计网关实际转发的请求体与响应体字节数（业务吞吐），已采用平滑面积曲线与双纵轴科学缩放呈现。
+                          </p>
+                        </div>
+                      </>
                     )}
-                    <UsageCacheHitRate
-                      title="缓存命中率（区间）"
-                      input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
-                      cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
-                    />
-                    <UsageStatusChart title="状态码分布" items={requestStats?.status || []} />
-                  </div>
-
-                  <div className="usage-charts-full">
-                    <UsageDailyTrafficLines
-                      title={usageFrom === usageTo ? '按日流量（网关转发）' : `按日流量（网关转发） · ${usageFrom} ~ ${usageTo}`}
-                      points={requestStats?.daily || []}
-                      onPickDay={(date) => {
-                        usageFollowTodayRef.current = isFollowingTodayRange(date, date);
-                        setUsageFrom(date);
-                        setUsageTo(date);
-                        void refreshRequestStats(date, date);
-                      }}
-                    />
-                    <p className="hint-line">
-                      统计网关实际转发的请求体 / 响应体字节数（业务流量），一天一条、永久保留。
-                      与「机器状态」页的整机网卡累计值不同：后者含本机所有流量且重启归零。
-                    </p>
-                  </div>
-                </>
-              )}
-
+                  </>
+                );
+              })()}
               {/* 视图 2：模型排行榜 */}
               {usageViewTab === 'models' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                   <UsageModelLeaderboard
                     title="模型用量深度排行榜（输入 Prompt vs 输出 Completion 拆分）"
                     items={requestStats?.range?.byModel || usageToday?.byModel || []}
+                    onSelectModel={(m) => setUsageDrill({ type: 'model', value: m, label: m })}
+                    selectedModel={usageDrill?.type === 'model' ? usageDrill.value : undefined}
                   />
-                  <div className="usage-charts">
-                    <UsageSegmentedShare
-                      title={`模型 ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 占比条`}
+                  <div className="overview-distribution-row">
+                    <UsageDonutChart
+                      title={`模型 ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 份额环形图`}
+                      subtitle="Top 10 核心模型占比"
                       formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
                       items={(requestStats?.range?.byModel || usageToday?.byModel || [])
                         .filter((item) => item.model && item.model !== '_unknown')
@@ -4961,6 +5303,22 @@ function App() {
                           label: item.model,
                           value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
                         }))}
+                      onSelect={(m) => setUsageDrill({ type: 'model', value: m, label: m })}
+                      selectedKey={usageDrill?.type === 'model' ? usageDrill.value : undefined}
+                    />
+                    <UsageDonutChart
+                      title="上游 Provider 路由分布"
+                      subtitle="模型在各服务商的承载占比"
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
+                        label: providerUsageLabel(item.providerId, state.providers || []),
+                        value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
+                      }))}
+                      onSelect={(pLabel) => {
+                        const found = (state.providers || []).find((pr) => pr.name === pLabel || pr.id === pLabel);
+                        if (found) setUsageDrill({ type: 'provider', value: found.id, label: found.name || found.id });
+                      }}
+                      selectedKey={usageDrill?.type === 'provider' ? usageDrill.label : undefined}
                     />
                     <UsageCacheHitRate
                       title="模型关联缓存命中率"
@@ -4973,62 +5331,86 @@ function App() {
 
               {/* 视图 3：Provider 消耗 */}
               {usageViewTab === 'providers' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                  <UsageSegmentedShare
-                    title={`Provider ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 连续占比`}
-                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                    items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
-                      label: providerUsageLabel(item.providerId, state.providers || []),
-                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                    }))}
-                  />
-                  <div className="usage-charts">
-                    <UsageBarChart
-                      title={`Provider 使用排名（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div className="overview-distribution-row">
+                    <UsageDonutChart
+                      title={`Provider ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 份额`}
+                      subtitle="各上游服务商流量与算力占比"
                       formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
                       items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
                         label: providerUsageLabel(item.providerId, state.providers || []),
                         value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
                       }))}
+                      onSelect={(pLabel) => {
+                        const found = (state.providers || []).find((pr) => pr.name === pLabel || pr.id === pLabel);
+                        if (found) setUsageDrill({ type: 'provider', value: found.id, label: found.name || found.id });
+                      }}
+                      selectedKey={usageDrill?.type === 'provider' ? usageDrill.label : undefined}
                     />
-                    <UsageStatusChart title="全量状态码分布" items={requestStats?.status || []} />
+                    <UsageDonutChart
+                      title="Provider 承载核心模型分布"
+                      subtitle="当前上游承载的核心模型占比"
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                        .filter((m) => m.model && m.model !== '_unknown')
+                        .slice(0, 8)
+                        .map((m) => ({
+                          label: m.model,
+                          value: usageMetricDimension === 'tokens' ? (m.inputTokens || 0) + (m.outputTokens || 0) : m.requestCount,
+                        }))}
+                      onSelect={(mLabel) => setUsageDrill({ type: 'model', value: mLabel, label: mLabel })}
+                      selectedKey={usageDrill?.type === 'model' ? usageDrill.value : undefined}
+                    />
+                    <UsageStatusChart title="全网状态码与健康度" items={requestStats?.status || []} />
                   </div>
                 </div>
               )}
 
               {/* 视图 4：API Key 审计 */}
               {usageViewTab === 'keys' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                  <UsageSegmentedShare
-                    title={`API Key ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 占比`}
-                    formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                    items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).map((item) => ({
-                      label: item.apiKeyName || item.apiKeyId || '未命名',
-                      value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
-                    }))}
-                  />
-                  <div className="usage-charts">
-                    <UsageBarChart
-                      title={`API Key 排名（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div className="usage-charts" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+                    <UsageDonutChart
+                      title={`API Key ${usageMetricDimension === 'tokens' ? 'Token 消耗' : '调用次数'} 占比`}
+                      subtitle="各客户端密钥流量份额"
                       formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
                       items={(requestStats?.range?.byApiKey || usageToday?.byApiKey || []).map((item) => ({
                         label: item.apiKeyName || item.apiKeyId || '未命名',
                         value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
                       }))}
+                      onSelect={(kLabel) => setUsageDrill({ type: 'apiKey', value: kLabel, label: kLabel })}
+                      selectedKey={usageDrill?.type === 'apiKey' ? usageDrill.label : undefined}
                     />
-                    {!isNormalUser && (
+                    <UsageDonutChart
+                      title="API 密钥调用模型分布"
+                      subtitle="客户端密钥调用的模型构成"
+                      formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
+                      items={(requestStats?.range?.byModel || usageToday?.byModel || [])
+                        .filter((m) => m.model && m.model !== '_unknown')
+                        .slice(0, 8)
+                        .map((m) => ({
+                          label: m.model,
+                          value: usageMetricDimension === 'tokens' ? (m.inputTokens || 0) + (m.outputTokens || 0) : m.requestCount,
+                        }))}
+                      onSelect={(mLabel) => setUsageDrill({ type: 'model', value: mLabel, label: mLabel })}
+                      selectedKey={usageDrill?.type === 'model' ? usageDrill.value : undefined}
+                    />
+                    {!isNormalUser ? (
                       <UsageBarChart
                         title={`用户消耗排行（${usageMetricDimension === 'tokens' ? 'Token' : '请求数'}）`}
                         formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
-                        items={(requestStats?.range?.byUser || usageToday?.byUser || []).map((item) => ({
+                        items={(requestStats?.range?.byUser || usageToday?.byUser || []).slice(0, 8).map((item) => ({
                           label: item.userName || item.userId || '未绑定用户',
                           value: usageMetricDimension === 'tokens' ? (item.inputTokens || 0) + (item.outputTokens || 0) : item.requestCount,
                         }))}
                       />
+                    ) : (
+                      <UsageStatusChart title="客户端请求健康度" items={requestStats?.status || []} />
                     )}
                   </div>
                 </div>
               )}
+
 
               {usageToday?.lastRequest ? (
                 <div className="usage-last-card">
@@ -5043,168 +5425,29 @@ function App() {
                 </div>
               ) : null}
 
-              <details className="usage-details">
-                <summary>明细数据（按维度下钻）</summary>
-                <div className="usage-details-body">
-              <div className="usage-table-wrap">
-                <div className="usage-section-title">按 API 密钥（区间）</div>
-                <div className="usage-table">
-                  <div className="usage-header">
-                    <span>API 密钥</span>
-                    <span>区间请求</span>
-                    <span>区间 Token</span>
-                    <span>本月请求</span>
-                    <span>本月 Token</span>
-                  </div>
-                  {(() => {
-                    const rangeKeys = requestStats?.range?.byApiKey || usageToday?.byApiKey || [];
-                    if (rangeKeys.length === 0) {
-                      return <div className="empty-state">暂无 API 密钥或请求记录。</div>;
-                    }
-                    return rangeKeys.map((row) => {
-                      const month = usageMonth?.byApiKey.find((item) => item.apiKeyId === row.apiKeyId);
-                      return (
-                        <div className="usage-row" key={row.apiKeyId || row.apiKeyName}>
-                          <span className="usage-key-name">{row.apiKeyName || row.apiKeyId}</span>
-                          <span>{row.requestCount}</span>
-                          <span>{formatTokenSummary(row)}</span>
-                          <span>{month?.requestCount ?? 0}</span>
-                          <span>{month ? formatTokenSummary(month) : '—'}</span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-
-              <div className="usage-table-wrap">
-                <div className="usage-section-title">按 Provider（区间）</div>
-                <div className="usage-table">
-                  <div className="usage-header">
-                    <span>Provider</span>
-                    <span>区间请求</span>
-                    <span>区间 Token</span>
-                    <span>本月请求</span>
-                    <span>本月 Token</span>
-                  </div>
-                  {(() => {
-                    const rows = [...(requestStats?.range?.byProvider || usageToday?.byProvider || [])];
-                    if (rows.length === 0) {
-                      return <div className="empty-state">暂无 Provider 或请求记录。</div>;
-                    }
-                    return rows.map((row) => {
-                      const month = usageMonth?.byProvider?.find((item) => item.providerId === row.providerId);
-                      return (
-                        <div className="usage-row" key={row.providerId}>
-                          <span className="usage-key-name">{providerUsageLabel(row.providerId, state.providers || [])}</span>
-                          <span>{row.requestCount}</span>
-                          <span>{formatTokenSummary(row)}</span>
-                          <span>{month?.requestCount ?? 0}</span>
-                          <span>{month ? formatTokenSummary(month) : '—'}</span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-
-              <div className="usage-table-wrap">
-                <div className="usage-section-title">按输出协议（区间）</div>
-                <div className="usage-table">
-                  <div className="usage-header">
-                    <span>输出协议</span>
-                    <span>区间请求</span>
-                    <span>区间 Token</span>
-                    <span>本月请求</span>
-                    <span>本月 Token</span>
-                  </div>
-                  {(() => {
-                    const rows = [...(requestStats?.range?.byProtocol || usageToday?.byProtocol || [])];
-                    if (rows.length === 0) {
-                      return <div className="empty-state">暂无输出协议请求记录。</div>;
-                    }
-                    return rows.map((row) => {
-                      const month = usageMonth?.byProtocol?.find((item) => item.protocol === row.protocol);
-                      return (
-                        <div className="usage-row" key={row.protocol}>
-                          <span className="usage-key-name">{row.protocol}</span>
-                          <span>{row.requestCount}</span>
-                          <span>{formatTokenSummary(row)}</span>
-                          <span>{month?.requestCount ?? 0}</span>
-                          <span>{month ? formatTokenSummary(month) : '—'}</span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-
-              {!isNormalUser && (
-                <div className="usage-table-wrap">
-                  <div className="usage-section-title">按用户（区间）</div>
-                  <div className="usage-table">
-                    <div className="usage-header">
-                      <span>用户</span>
-                      <span>区间请求</span>
-                      <span>区间 Token</span>
-                      <span>本月请求</span>
-                      <span>本月 Token</span>
-                    </div>
-                    {(() => {
-                      const rows = requestStats?.range?.byUser || usageToday?.byUser || [];
-                      if (rows.length === 0) {
-                        return <div className="empty-state">暂无用户请求记录。</div>;
-                      }
-                      return rows.map((row) => {
-                        const month = usageMonth?.byUser?.find((item) => item.userId === row.userId);
-                        return (
-                          <div className="usage-row" key={row.userId || row.userName}>
-                            <span className="usage-key-name">{row.userName || row.userId || '未绑定用户'}</span>
-                            <span>{row.requestCount}</span>
-                            <span>{formatTokenSummary(row)}</span>
-                            <span>{month?.requestCount ?? 0}</span>
-                            <span>{month ? formatTokenSummary(month) : '—'}</span>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-              )}
-
-              <div className="usage-table-wrap">
-                <div className="usage-section-title">模型使用量排名（区间，按 Token 总量）</div>
-                <div className="usage-table">
-                  <div className="usage-header">
-                    <span>排名 / 模型</span>
-                    <span>区间请求</span>
-                    <span>区间 Token</span>
-                    <span>本月请求</span>
-                    <span>本月 Token</span>
-                  </div>
-                  {(() => {
-                    const rows = [...(requestStats?.range?.byModel || usageToday?.byModel || [])]
-                      .filter((item) => item.model && item.model !== '_unknown');
-                    if (rows.length === 0) {
-                      return <div className="empty-state">暂无模型请求记录。</div>;
-                    }
-                    return rows.map((row, index) => {
-                      const month = usageMonth?.byModel?.find((item) => item.model === row.model);
-                      return (
-                        <div className="usage-row" key={row.model}>
-                          <span className="usage-key-name">#{index + 1} {row.model}</span>
-                          <span>{formatCompactCount(row.requestCount)}</span>
-                          <span>{formatTokenSummaryCompact(row)}</span>
-                          <span>{formatCompactCount(month?.requestCount ?? 0)}</span>
-                          <span>{month ? formatTokenSummaryCompact(month) : '—'}</span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-                </div>
-              </details>
+              {/* 全新多维实体下钻透视中心：彻底颠覆死板长列表，支持切片导航、实体卡片矩阵与紧凑数据表双模式 */}
+              <UsagePivotExplorer
+                stats={requestStats}
+                monthStats={usageMonth}
+                providers={state.providers || []}
+                isNormalUser={isNormalUser}
+                initialDim={
+                  usageViewTab === 'models'
+                    ? 'models'
+                    : usageViewTab === 'providers'
+                    ? 'providers'
+                    : usageViewTab === 'keys'
+                    ? 'keys'
+                    : 'models'
+                }
+                onDrill={(type, val, lbl) => setUsageDrill({ type, value: val, label: lbl })}
+                onNavigateLogs={(type, val, lbl) => {
+                  setActiveNav('traffic-tokens');
+                  if (type === 'model') setLogsKeyword(val);
+                  else if (type === 'provider') setLogsProviderFilter(val);
+                  else if (type === 'apiKey') setLogsApiKeyName(lbl);
+                }}
+              />
             </div>
           </section>
           )}
