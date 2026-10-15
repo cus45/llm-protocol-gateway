@@ -15,11 +15,11 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { callCursorUnaryRpc } from "./proxy";
+import { callCursorUnaryRpc } from "./proxy.ts";
 import {
   GetUsableModelsRequestSchema,
   GetUsableModelsResponseSchema,
-} from "./proto/agent_pb";
+} from "./proto/agent_pb.ts";
 
 const GET_USABLE_MODELS_PATH = "/agent.v1.AgentService/GetUsableModels";
 const AVAILABLE_MODELS_PATH = "/aiserver.v1.AiService/AvailableModels";

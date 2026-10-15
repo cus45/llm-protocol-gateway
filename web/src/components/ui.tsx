@@ -257,6 +257,50 @@ export function NavIcon({ id }: { id: NavItemID }) {
   }
 }
 
+/**
+ * BrandIcon：品牌图标。web/public/icons/ 里 -color 结尾的是彩色版，按 <img> 原样
+ * 显示；裸名版是 currentColor 单色，只能走 CSS mask 才会跟着主题着色（当图片渲染
+ * 会在深色下变成一团黑）。没有匹配到图标时退回名称首字。
+ */
+export function BrandIcon({
+  icon,
+  name,
+  size = 18,
+  className = '',
+}: {
+  icon?: string;
+  name: string;
+  size?: number;
+  className?: string;
+}) {
+  if (!icon) {
+    return (
+      <span className={`brand-icon fallback ${className}`} aria-hidden="true" style={{ width: size, height: size }}>
+        {brandMonogram(name)}
+      </span>
+    );
+  }
+  const source = `/icons/${icon}.svg`;
+  if (icon.endsWith('-color')) {
+    return <img className={`brand-icon ${className}`} src={source} alt="" width={size} height={size} />;
+  }
+  return (
+    <span
+      className={`brand-icon mask ${className}`}
+      aria-hidden="true"
+      style={{ width: size, height: size, WebkitMaskImage: `url(${source})`, maskImage: `url(${source})` }}
+    />
+  );
+}
+
+// brandMonogram：中文名只取一个字——两个汉字放不进小方块，实测会把"阶跃"挤成两行。
+export function brandMonogram(name: string): string {
+  const source = (name || '').replace(/[（(].*$/, '').trim();
+  const letters = source.match(/[A-Za-z]/g);
+  if (letters && letters.length >= 2) return letters.slice(0, 2).join('').toUpperCase();
+  return source.slice(0, 1) || '?';
+}
+
 export function Field({ label, value, onChange, placeholder, fullWidth }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; fullWidth?: boolean }) {
   return <div className={`field${fullWidth ? ' field-full' : ''}`}><label>{label}</label><input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} /></div>;
 }

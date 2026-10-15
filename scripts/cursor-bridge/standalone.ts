@@ -1,3 +1,4 @@
+import "./polyfills.ts";
 import { readFileSync } from "node:fs";
 import { startProxy, getProxyPort } from "./proxy.ts";
 import { getCursorModels } from "./models.ts";

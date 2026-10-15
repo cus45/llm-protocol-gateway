@@ -91,23 +91,31 @@ func Bun() (string, error) {
 // Order: GATEWAY_CURSOR_BRIDGE_DIR → App Resources/cursor-bridge → repo scripts/cursor-bridge.
 func CursorBridgeDir() string {
 	if v := strings.TrimSpace(os.Getenv("GATEWAY_CURSOR_BRIDGE_DIR")); v != "" {
-		if fileExists(filepath.Join(v, "standalone.ts")) {
+		if cursorBridgePresent(v) {
 			return v
 		}
 	}
 	if res := ResourcesDir(); res != "" {
 		candidate := filepath.Join(res, "cursor-bridge")
-		if fileExists(filepath.Join(candidate, "standalone.ts")) {
+		if cursorBridgePresent(candidate) {
 			return candidate
 		}
 	}
 	if root := RepoRoot(); root != "" {
 		candidate := filepath.Join(root, "scripts", "cursor-bridge")
-		if fileExists(filepath.Join(candidate, "standalone.ts")) {
+		if cursorBridgePresent(candidate) {
 			return candidate
 		}
 	}
 	return ""
+}
+
+// cursorBridgePresent reports whether dir can serve the Cursor bridge: either a
+// source checkout (standalone.ts, run through bun or node) or a deployment that
+// only carries the prebuilt bundle (dist/cursor-bridge.mjs, run through node).
+func cursorBridgePresent(dir string) bool {
+	return fileExists(filepath.Join(dir, "standalone.ts")) ||
+		fileExists(filepath.Join(dir, "dist", "cursor-bridge.mjs"))
 }
 
 // WebDistDir returns the packaged or checkout web UI dist directory.

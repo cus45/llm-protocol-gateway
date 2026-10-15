@@ -1,4 +1,5 @@
-import type { ProviderPreset, ProviderPresetSection } from './types';
+import type { Provider, ProviderConnectKind, ProviderPreset, ProviderPresetSection } from './types';
+import { presetMatchesProvider } from './lib';
 
 // 添加 Provider 的可选目录：点一个磁贴即填好连接方式、协议与接入地址，
 // 省掉手抄 URL。端点取自上游厂商公开文档（与参考项目 magpie 的预设表一致），
@@ -74,6 +75,25 @@ const presetById = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset])
 
 export function findProviderPreset(id: string): ProviderPreset | undefined {
   return presetById.get(id);
+}
+
+/**
+ * 给一个已存在的 Provider 找品牌图标：目录里第一个匹配上的预设就是它的厂商。
+ * 匹配不中（自建反代、换过域名的厂商）返回空，由 BrandIcon 退回名称首字。
+ */
+export function resolveProviderIcon(provider: Provider): string {
+  const preset = PROVIDER_PRESETS.find((item) => item.icon && presetMatchesProvider(item, provider));
+  return preset?.icon || '';
+}
+
+/**
+ * 连接方式（订阅账号类）的品牌图标：从订阅预设里反查，和目录弹窗、Provider 卡
+ * 共用同一张表，避免"同一个厂商在三个地方是三个图标"。
+ * API Key 与自助注册没有厂商可指（前者是任意端点），返回空即纯文字胶囊。
+ */
+export function providerConnectIcon(kind: '' | ProviderConnectKind): string {
+  if (kind === '' || kind === 'api_key' || kind === 'self_register') return '';
+  return PROVIDER_PRESETS.find((preset) => preset.section === 'subscription' && preset.authType === kind)?.icon || '';
 }
 
 export type ProviderPresetGroup = {

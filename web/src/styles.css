@@ -808,9 +808,6 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .providers-toolbar-meta { color: var(--muted); font-size: 12px; font-weight: 600; }
 .providers-filter-toolbar { display: grid; gap: 12px; margin-bottom: 14px; }
 .providers-toolbar-actions { display: inline-flex; gap: 8px; margin-left: auto; }
-.provider-select { align-items: flex-start; gap: 10px; margin-bottom: 0; }
-.provider-select .provider-name { margin: 0; }
-
 /* 卡片等高（stretch）：卡片内配额面板已压缩为单行横排（.claude-usage-panel.compact），
    高度差缩小后 stretch 不再产生大片空白，同排卡片底部对齐 */
 .provider-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: stretch; }
@@ -832,9 +829,10 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
   min-width: 0;
   overflow: hidden;
 }
-/* Provider 卡内部纵向 flex：内容纵向分布（space-between），head 贴顶、页脚贴底，
-   短卡的空白均分到各区块间距而不是汇成一个大空洞；同排卡页脚仍对齐 */
-.provider-card { display: flex; flex-direction: column; justify-content: space-between; }
+/* Provider 卡内部纵向 flex：内容贴顶顺序排布，页脚用 margin-top:auto 钉到卡片底部。
+   之前用 space-between 把空白摊到每个区块之间，同排卡片等高时会在卡内出现两三处
+   空洞；贴顶后空白只留在页脚上方一处，读起来是"这张卡内容少"而不是"排版坏了"。 */
+.provider-card { display: flex; flex-direction: column; justify-content: flex-start; }
 .clickable { cursor: pointer; }
 .clickable:hover {
   border-color: var(--accent-border);
@@ -850,18 +848,38 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
   box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 .route-name, .provider-name { font-weight: 700; letter-spacing: -0.01em; }
-.provider-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.provider-title-block { min-width: 0; flex: 1 1 220px; }
+/* 卡头三列：图标 | 名称+副标题 | 选择框。选择框挪到右上角，不再挤在名称前面
+   跟图标抢视觉；换行会让右上角空掉，所以这里禁止 wrap。 */
+.provider-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: nowrap; }
+.provider-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+}
+.provider-title-block { min-width: 0; flex: 1 1 auto; }
+.provider-check { flex: 0 0 auto; display: inline-flex; align-items: center; padding-top: 9px; }
+.provider-check input[type="checkbox"] { margin: 0; }
 .provider-name { font-size: 15px; line-height: 1.35; white-space: normal; overflow: visible; text-overflow: unset; }
 .provider-subtitle { margin-top: 4px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* api_key 卡：meta 升级为带标签的信息清单（接入地址/密钥/默认模型/可用模型），
-   真实内容填充卡片；OAuth 卡仍是单行描述（配额面板已占位） */
-.provider-meta { display: grid; gap: 7px; margin-top: 8px; }
-.provider-meta-line { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.provider-meta-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.provider-meta-label { flex-shrink: 0; width: 48px; color: var(--subtle); font-size: 11px; font-family: var(--font); font-weight: 500; }
-.provider-meta-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.provider-badges { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+/* 徽章独立成行：以前它在卡头右侧，宽度不够就换行，导致有的卡徽章同行、有的
+   换行，一排卡看过去高低不齐。 */
+.provider-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+/* 事实区：两列网格取代四行竖排清单 —— 同样四个字段，高度减半，扫读时
+   标签列对齐、值列等宽。地址独占整行（通常最长，截断也比挤在两列里可读）。 */
+.provider-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 16px; margin-top: 10px; }
+.provider-fact { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.provider-fact.wide { grid-column: 1 / -1; }
+.provider-fact-label { flex: 0 0 28px; color: var(--subtle); font-size: 11px; font-weight: 500; }
+.provider-fact-value {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+}
 .provider-retry-hint { color: var(--red); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .provider-users-badge { cursor: pointer; display: inline-flex; }
 .provider-card.provider-disabled { opacity: 0.62; }
@@ -876,7 +894,8 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .provider-foot {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap;
-  margin-top: 14px;
+  /* auto 把卡片剩余空白全部收到页脚上方，14px 是内容已填满时的最小间距 */
+  margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
@@ -933,6 +952,13 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
   transition: all 0.14s ease;
 }
 .models-filter-chip:hover { border-color: var(--accent-border); color: var(--text); }
+/* 带品牌图标的连接方式筛选：图标 14px 与文字同轴，选中态是渐变底 + 白字，
+   所以单色图标（mask）必须跟着反白，否则在深色渐变上看不清。 */
+.models-filter-chip.with-icon { display: inline-flex; align-items: center; gap: 6px; }
+.models-filter-chip.with-icon:hover .brand-icon.mask { background-color: var(--accent-strong); }
+.models-filter-chip-count { font-feature-settings: "tnum" 1; opacity: 0.75; font-weight: 500; }
+.models-filter-chip.active .brand-icon.mask { background-color: #fff; }
+.models-filter-chip.active:hover .brand-icon.mask { background-color: #fff; }
 .models-filter-chip.active {
   border-color: transparent;
   background: var(--accent-grad);
@@ -2352,12 +2378,14 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: var(--accent); co
 /* 紧凑单元格纵向堆叠：小标签在上、大数字百分比在下（额度是核心信息，数字放大加粗并随用量变色） */
 .claude-usage-panel.compact .claude-usage-head { flex-direction: column; align-items: flex-start; gap: 3px; white-space: normal; overflow: visible; }
 .claude-usage-panel.compact .claude-usage-head span:first-child { font-size: 10.5px; max-width: 100%; white-space: nowrap; }
-.claude-usage-panel.compact .claude-usage-head span:last-child { font-size: 15px; line-height: 1.25; }
+/* 额度百分比是卡片上最该一眼看到的运营数字：字号压过其它所有正文，
+   tabular 数字保证同排卡片的小数位对齐。 */
+.claude-usage-panel.compact .claude-usage-head span:last-child { font-size: 19px; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
 /* 行级 tone 类直接由 JSX 挂上（替代旧 :has() 选择器，Firefox/Safari 旧版不支持 :has） */
 .claude-usage-row.ok .claude-usage-head span:last-child { color: var(--green); }
 .claude-usage-row.warn .claude-usage-head span:last-child { color: var(--amber); }
 .claude-usage-row.danger .claude-usage-head span:last-child { color: var(--red); }
-.claude-usage-panel.compact .claude-usage-track { height: 5px; }
+.claude-usage-panel.compact .claude-usage-track { height: 6px; }
 /* 重置时间在卡片上始终可见（此前仅悬浮 title 才能看到）；空间不足时省略，完整信息仍在 title */
 .claude-usage-title {
   display: flex; align-items: center; justify-content: space-between;
@@ -2413,6 +2441,32 @@ html[data-theme="dark"] .claude-usage-state.warn { color: #fcd34d; }
 .chatgpt-reset-credits { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 12px; background: var(--panel); }
 .chatgpt-reset-credits-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 750; font-size: 12px; }
 .chatgpt-reset-credits-head > span:last-child { font-weight: 600; color: var(--text-muted); font-size: 12px; }
+/* 折叠态：摘要行即开关，沿用 .usage-details 的三角指示（收起朝右、展开转 90°）。
+   两侧留白由 summary 自己给，展开后明细与摘要之间补一条分隔线。 */
+details.chatgpt-reset-credits.expandable { padding: 0; gap: 0; }
+details.chatgpt-reset-credits.expandable > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  user-select: none;
+  border-radius: 12px;
+  transition: background 0.13s ease;
+}
+details.chatgpt-reset-credits.expandable > summary::-webkit-details-marker { display: none; }
+details.chatgpt-reset-credits.expandable > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0; height: 0;
+  border-left: 4px solid var(--subtle);
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform 0.16s ease;
+}
+details.chatgpt-reset-credits.expandable[open] > summary::before { transform: rotate(90deg); }
+details.chatgpt-reset-credits.expandable > summary:hover { background: var(--surface-soft); }
+details.chatgpt-reset-credits.expandable > summary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+details.chatgpt-reset-credits.expandable[open] > summary { border-bottom: 1px dashed var(--border); border-radius: 12px 12px 0 0; }
+details.chatgpt-reset-credits.expandable > .chatgpt-reset-credits-list { padding: 8px 12px 10px; }
 .chatgpt-reset-credits-list { display: flex; flex-direction: column; gap: 6px; }
 .chatgpt-reset-credit-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; padding: 6px 8px; border-radius: 9px; background: var(--blue-soft); }
 .chatgpt-reset-credit-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -5256,17 +5310,14 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   font-size: 10.5px;
   color: var(--accent-strong);
 }
-.provider-tile.have { border-color: var(--accent-border); }
-
-/* 品牌图标：彩色版按 <img> 显示；单色版（currentColor）必须走 mask 才跟着主题着色。 */
-.provider-tile-icon {
+/* 品牌图标（BrandIcon）：彩色版按 <img> 显示；单色版（currentColor）走 mask 才
+   跟着主题着色。尺寸由组件的行内 style 给，这里只管着色与占位。 */
+.brand-icon {
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
   display: block;
+  object-fit: contain;
 }
-.provider-tile-icon.mask {
+.brand-icon.mask {
   background-color: var(--muted);
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
@@ -5275,11 +5326,7 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   -webkit-mask-size: contain;
   mask-size: contain;
 }
-.provider-tile:hover .provider-tile-icon.mask { background-color: var(--accent-strong); }
-.provider-tile-mark {
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+.brand-icon.fallback {
   display: grid;
   place-items: center;
   border-radius: var(--r-xs);
@@ -5292,3 +5339,5 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   letter-spacing: -0.02em;
   white-space: nowrap;
 }
+.provider-tile:hover .brand-icon.mask { background-color: var(--accent-strong); }
+.provider-tile.have { border-color: var(--accent-border); }

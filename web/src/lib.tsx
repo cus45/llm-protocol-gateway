@@ -1192,13 +1192,22 @@ export function presetMatchesProvider(preset: ProviderPreset, provider: Provider
 function urlHost(value?: string): string {
   const raw = (value || '').trim();
   if (!raw) return '';
+  // 目录有 50 个预设，每张 Provider 卡都要比对一遍主机名，而控制台是轮询刷新的；
+  // 主机名对同一字符串永远不变，缓存掉这点重复解析。
+  const cached = urlHostCache.get(raw);
+  if (cached !== undefined) return cached;
+  let host: string;
   try {
-    return new URL(raw).host.toLowerCase();
+    host = new URL(raw).host.toLowerCase();
   } catch {
     // 相对地址或占位值（example.com/v1）：退化为取第一段主机名。
-    return raw.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+    host = raw.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
   }
+  urlHostCache.set(raw, host);
+  return host;
 }
+
+const urlHostCache = new Map<string, string>();
 
 export function providerConnectLabel(kind: ProviderConnectKind): string {
   switch (kind) {

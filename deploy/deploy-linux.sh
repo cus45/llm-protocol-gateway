@@ -183,6 +183,19 @@ fi
 
 # ── 3. 打包 ──
 step "3. 打包产物"
+# Cursor bridge 预编译：服务器上往往没有 bun、node 也偏老（跑不了带 enum 的 TS），
+# 所以在本机把 TS + 依赖打成单个纯 JS bundle 一起上服务器，node ≥18 直接能跑。
+if [[ -x web/node_modules/.bin/rolldown ]]; then
+  mkdir -p scripts/cursor-bridge/dist
+  web/node_modules/.bin/rolldown scripts/cursor-bridge/standalone.ts \
+    --format esm --platform node \
+    --file scripts/cursor-bridge/dist/cursor-bridge.mjs >/dev/null 2>&1 \
+    || die "Cursor bridge 打包失败（rolldown 报错，见上）"
+  cp scripts/cursor-bridge/h2-bridge.mjs scripts/cursor-bridge/dist/h2-bridge.mjs
+  ok "已打包 Cursor bridge: scripts/cursor-bridge/dist/cursor-bridge.mjs"
+else
+  warn "找不到 web/node_modules/.bin/rolldown：跳过 bridge 打包，服务器上将无法使用 Cursor Provider"
+fi
 # 注意：必须用 POSIX 路径（如 /tmp/xxx）。Git-Bash 下 mktemp -t 会返回
 # "C:\...\Temp\xxx" 这种带盘符的 Windows 路径，tar 会把 "C:" 误判为远程主机而报错。
 PKG="/tmp/gateway-dist.$$.tar.gz"
@@ -190,6 +203,7 @@ trap 'rm -f "$PKG"' EXIT
 TAR_ITEMS=()
 [[ "$SKIP_GO"  == "0" ]] && TAR_ITEMS+=(bin/gateway-linux)
 [[ "$SKIP_WEB" == "0" ]] && TAR_ITEMS+=(web/dist)
+[[ -f scripts/cursor-bridge/dist/cursor-bridge.mjs ]] && TAR_ITEMS+=(scripts/cursor-bridge/dist)
 tar czf "$PKG" "${TAR_ITEMS[@]}"
 ok "已打包: $(ls -lh "$PKG" | awk '{print $5}')  [${TAR_ITEMS[*]}]"
 
@@ -236,6 +250,19 @@ rsh "
     mkdir -p ${INSTALL_DIR}/web/dist
     cp -r \$WS/web/dist/. ${INSTALL_DIR}/web/dist/
     echo '已替换前端静态资源'
+  fi
+
+  # Cursor bridge：预编译 bundle，服务器只需要 node（无需 bun / npm install）
+  if [ -d \$WS/scripts/cursor-bridge/dist ]; then
+    mkdir -p ${INSTALL_DIR}/scripts/cursor-bridge
+    rm -rf ${INSTALL_DIR}/scripts/cursor-bridge/dist
+    cp -r \$WS/scripts/cursor-bridge/dist ${INSTALL_DIR}/scripts/cursor-bridge/dist
+    echo '已替换 Cursor bridge bundle'
+    if command -v node >/dev/null 2>&1; then
+      echo \"服务器 node: \$(node -v)\"
+    else
+      echo '警告: 服务器没有 node，Cursor Provider 将不可用（安装 node >= 18 即可）'
+    fi
   fi
 
   chown -R root:root ${INSTALL_DIR}

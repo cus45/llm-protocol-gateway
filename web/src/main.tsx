@@ -9,8 +9,9 @@ import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREA
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { ProviderCatalogDialog } from './components/provider_catalog';
+import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache, WorkBuddyUsage } from './types';
-import { Badge, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
+import { Badge, BrandIcon, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
 import { TerminalAuthGate } from './components/terminal_auth';
 function App() {
   const [activeNav, setActiveNav] = useState<NavItemID>(() => navIDFromPath(window.location.pathname));
@@ -298,8 +299,7 @@ function App() {
   const [modelsCapabilityFilter, setModelsCapabilityFilter] = useState<'all' | 'thinking' | 'vision' | 'context'>('all');
   const [modelsViewMode, setModelsViewMode] = useState<'grid' | 'table'>('grid');
   const [providersSearchQuery, setProvidersSearchQuery] = useState('');
-  const [providersConnectFilter, setProvidersConnectFilter] = useState<'' | ProviderConnectKind>('');
-  const [providersStatusFilter, setProvidersStatusFilter] = useState<'all' | 'healthy' | 'unavailable' | 'disabled' | 'oauth'>('all');
+  const [providersConnectFilter, setProvidersConnectFilter] = useState<'' | ProviderConnectKind>('');  const [providersStatusFilter, setProvidersStatusFilter] = useState<'all' | 'healthy' | 'unavailable' | 'disabled' | 'oauth'>('all');
 
   const selectedRoute = useMemo(
     () => state.routes.find((route) => route.id === selectedRouteID) || state.routes[0],
@@ -407,6 +407,15 @@ function App() {
       };
     }
   }, [providersSearchQuery]);
+
+  // 筛选胶囊只列"配了的"连接方式，所以当前选中的那种被删光时胶囊会消失：
+  // 此时退回"全部"，否则用户会停在一个看不见的筛选项上、列表恒空。
+  // 口径与胶囊一致（含已停用的，禁用不等于没配）。
+  useEffect(() => {
+    if (!providersConnectFilter) return;
+    const stillThere = state.providers.some((provider) => providerConnectKind(provider) === providersConnectFilter);
+    if (!stillThere) setProvidersConnectFilter('');
+  }, [providersConnectFilter, state.providers]);
 
   const filteredProviders = useMemo(() => {
     return sortedProviders.filter((provider) => {
@@ -4609,19 +4618,31 @@ function App() {
                   <div className="hint-line error">正则无效，已回退为普通包含匹配：{providersSearch.error}</div>
                 ) : null}
                 <div className="models-filter-group">
-                  {PROVIDER_CONNECT_FILTERS.map((item) => (
-                    <button
-                      key={item.id || 'all'}
-                      type="button"
-                      className={`models-filter-chip ${providersConnectFilter === item.id ? 'active' : ''}`}
-                      onClick={() => setProvidersConnectFilter(item.id)}
-                    >
-                      {item.label}
-                      {item.id === ''
-                        ? ` (${sortedProviders.length})`
-                        : ` (${sortedProviders.filter((provider) => providerConnectKind(provider) === item.id).length})`}
-                    </button>
-                  ))}
+                  {(() => {
+                    // 只列真的配了的连接方式：0 个的胶囊筛出来是空列表，留着只是噪音。
+                    const counts = new Map<string, number>();
+                    for (const provider of sortedProviders) {
+                      const kind = providerConnectKind(provider);
+                      counts.set(kind, (counts.get(kind) || 0) + 1);
+                    }
+                    const visible = PROVIDER_CONNECT_FILTERS.filter((item) => item.id === '' || (counts.get(item.id) || 0) > 0);
+                    return visible.map((item) => {
+                      const icon = providerConnectIcon(item.id);
+                      const count = item.id === '' ? sortedProviders.length : (counts.get(item.id) || 0);
+                      return (
+                        <button
+                          key={item.id || 'all'}
+                          type="button"
+                          className={`models-filter-chip${icon ? ' with-icon' : ''} ${providersConnectFilter === item.id ? 'active' : ''}`}
+                          onClick={() => setProvidersConnectFilter(item.id)}
+                        >
+                          {icon ? <BrandIcon icon={icon} name={item.label} size={14} /> : null}
+                          <span>{item.label}</span>
+                          <span className="models-filter-chip-count">({count})</span>
+                        </button>
+                      );
+                    });
+                  })()}
                 </div>
                 {isNormalUser ? (
                   <div className="models-toolbar-meta">
@@ -4709,6 +4730,7 @@ function App() {
                           || (provider.authType === 'qoder_pat' && provider.qoderPat?.accountLabel)
                           || (provider.workbuddyOAuth?.accountLabel)
                           || undefined}
+                        icon={resolveProviderIcon(provider)}
                         isClaudeOAuth={provider.authType === 'claude_oauth'}
                         claudeOAuthConnected={provider.claudeOAuth?.connected}
                         isCursorOAuth={provider.authType === 'cursor_oauth'}

@@ -8,6 +8,10 @@ bin/
 web/node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
+# Cursor bridge JS deps (npm install in scripts/cursor-bridge)
+scripts/cursor-bridge/node_modules/
+# Cursor bridge 预编译产物（deploy-linux.sh 构建期生成）
+scripts/cursor-bridge/dist/
 
 # Desktop (Wails)
 desktop/build/bin/

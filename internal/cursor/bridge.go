@@ -126,12 +126,71 @@ func (b *Bridge) bridgeDir() string {
 	return ""
 }
 
-func (b *Bridge) findBun() (string, error) {
-	path, err := packaged.Bun()
-	if err != nil {
-		return "", fmt.Errorf("bun not found: install bun (https://bun.sh) or use a packaged App: %w", err)
+// findBun / findNode are vars so tests can describe a machine that has one,
+// both, or neither runtime without depending on what the host happens to
+// install.
+var (
+	findBun  = packaged.Bun
+	findNode = func() (string, error) { return exec.LookPath("node") }
+)
+
+func bunLookupError(err error) error {
+	return fmt.Errorf("bun not found: %w", err)
+}
+
+// bridgeRuntime is the JS runtime plus the entry file the Cursor bridge runs
+// on. bun comes first — the packaged macOS App ships its own — but the bridge
+// also runs on plain node, so a machine without bun (Windows, or a bare
+// checkout) is not left unable to serve Cursor.
+//
+// Two entry shapes exist: the TypeScript sources (a dev checkout), which node
+// can only run with --experimental-transform-types because the generated
+// protobuf module uses TS enums; and the prebuilt dist/cursor-bridge.mjs bundle
+// (what deploy ships), which is plain JS and runs on any modern node.
+type bridgeRuntime struct {
+	path   string
+	args   []string
+	entry  string
+	name   string
+	bunErr error
+}
+
+func (b *Bridge) resolveRuntime(bridgeDir string) (bridgeRuntime, error) {
+	tsEntry := filepath.Join(bridgeDir, "standalone.ts")
+	bundleEntry := filepath.Join(bridgeDir, "dist", "cursor-bridge.mjs")
+	hasTS := fileExists(tsEntry)
+	hasBundle := fileExists(bundleEntry)
+
+	bun, bunErr := findBun()
+	node, nodeErr := findNode()
+
+	switch {
+	case hasTS && bunErr == nil:
+		return bridgeRuntime{path: bun, args: []string{"run"}, entry: tsEntry, name: "bun"}, nil
+	case hasTS && nodeErr == nil:
+		return bridgeRuntime{
+			path:   node,
+			args:   []string{"--experimental-transform-types", "--no-warnings"},
+			entry:  tsEntry,
+			name:   "node",
+			bunErr: bunLookupError(bunErr),
+		}, nil
+	case hasBundle && nodeErr == nil:
+		return bridgeRuntime{path: node, entry: bundleEntry, name: "node"}, nil
+	case hasBundle && bunErr == nil:
+		return bridgeRuntime{path: bun, args: []string{"run"}, entry: bundleEntry, name: "bun"}, nil
 	}
-	return path, nil
+	if !hasTS && !hasBundle {
+		return bridgeRuntime{}, fmt.Errorf(
+			"cursor bridge missing at %s: expected standalone.ts (source checkout) or dist/cursor-bridge.mjs (built bundle)", bridgeDir)
+	}
+	return bridgeRuntime{}, fmt.Errorf(
+		"cursor bridge needs a JS runtime but neither bun nor node was found: install node (https://nodejs.org) or bun (https://bun.sh); %v", bunLookupError(bunErr))
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func (b *Bridge) client() *http.Client {
@@ -246,21 +305,15 @@ func (b *Bridge) probePort(port int) error {
 }
 
 func (b *Bridge) startLocked() error {
-	bun, err := b.findBun()
-	if err != nil {
-		b.status = BridgeStatusUnhealthy
-		b.message = err.Error()
-		return err
-	}
 	bridgeDir := b.bridgeDir()
 	if bridgeDir == "" {
-		err := fmt.Errorf("cursor bridge sources missing (expected App Resources/cursor-bridge or scripts/cursor-bridge)")
+		err := fmt.Errorf("cursor bridge missing (expected App Resources/cursor-bridge or scripts/cursor-bridge)")
 		b.status = BridgeStatusUnhealthy
 		b.message = err.Error()
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(bridgeDir, "standalone.ts")); err != nil {
-		err := fmt.Errorf("cursor bridge sources missing at %s", bridgeDir)
+	runtime, err := b.resolveRuntime(bridgeDir)
+	if err != nil {
 		b.status = BridgeStatusUnhealthy
 		b.message = err.Error()
 		return err
@@ -270,7 +323,7 @@ func (b *Bridge) startLocked() error {
 	b.status = BridgeStatusStarting
 	b.message = ""
 
-	cmd := exec.Command(bun, "run", "standalone.ts")
+	cmd := exec.Command(runtime.path, append(runtime.args, runtime.entry)...)
 	cmd.Dir = bridgeDir
 	cmd.Env = append(os.Environ(),
 		"CURSOR_TOKEN_FILE="+b.tokenFilePathLocked(),

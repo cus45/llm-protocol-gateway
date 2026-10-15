@@ -78,16 +78,22 @@ import {
   type KvServerMessage,
   type McpToolDefinition,
   type SelectedImage,
-} from "./proto/agent_pb";
+} from "./proto/agent_pb.ts";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { resolve as pathResolve } from "node:path";
-import { resolveCursorModelId } from "./models";
+import { resolve as pathResolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn as nodeSpawn } from "node:child_process";
+import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { once } from "node:events";
+import { getCursorModels, resolveCursorModelId } from "./models.ts";
 
 const CURSOR_API_URL = process.env.CURSOR_API_URL ?? "https://api2.cursor.sh";
 const CONNECT_END_STREAM_FLAG = 0b00000010;
-const BRIDGE_PATH = pathResolve(import.meta.dir, "h2-bridge.mjs");
+// import.meta.dir is Bun-only; this bridge runs under node --experimental-transform-types
+// as well, where only import.meta.url is defined.
+const BRIDGE_PATH = pathResolve(dirname(fileURLToPath(import.meta.url)), "h2-bridge.mjs");
 const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
@@ -287,7 +293,7 @@ interface SpawnBridgeOptions {
 }
 
 function spawnBridge(options: SpawnBridgeOptions): {
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: ReturnType<typeof nodeSpawn>;
   write: (data: Uint8Array) => void;
   end: () => void;
   onData: (cb: (chunk: Buffer) => void) => void;
@@ -295,10 +301,10 @@ function spawnBridge(options: SpawnBridgeOptions): {
   /** True while the bridge subprocess is still running. */
   get alive(): boolean;
 } {
-  const proc = Bun.spawn(["node", BRIDGE_PATH], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "ignore",
+  // process.execPath, not "node": the child is the same runtime that started
+  // us, so a packaged App or an unusual PATH can't split the two apart.
+  const proc = nodeSpawn(process.execPath, [BRIDGE_PATH], {
+    stdio: ["pipe", "pipe", "ignore"],
   });
 
   const config = JSON.stringify({
@@ -310,7 +316,7 @@ function spawnBridge(options: SpawnBridgeOptions): {
     clientType: options.clientType,
     clientVersion: options.clientVersion,
   });
-  proc.stdin.write(lpEncode(new TextEncoder().encode(config)));
+  proc.stdin!.write(lpEncode(new TextEncoder().encode(config)));
 
   const cbs = {
     data: null as ((chunk: Buffer) => void) | null,
@@ -322,14 +328,11 @@ function spawnBridge(options: SpawnBridgeOptions): {
   let exitCode = 1;
 
   (async () => {
-    const reader = proc.stdout.getReader();
     let pending = Buffer.alloc(0);
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        pending = Buffer.concat([pending, Buffer.from(value)]);
+      for await (const chunk of proc.stdout!) {
+        pending = Buffer.concat([pending, Buffer.from(chunk as Uint8Array)]);
 
         while (pending.length >= 4) {
           const len = pending.readUInt32BE(0);
@@ -343,22 +346,22 @@ function spawnBridge(options: SpawnBridgeOptions): {
       // Stream ended
     }
 
-    const code = await proc.exited ?? 1;
+    const [code] = proc.exitCode !== null ? [proc.exitCode] : await once(proc, "close");
     exited = true;
-    exitCode = code;
-    cbs.close?.(code);
+    exitCode = typeof code === "number" ? code : 1;
+    cbs.close?.(exitCode);
   })();
 
   return {
     proc,
     get alive() { return !exited; },
     write(data) {
-      try { proc.stdin.write(lpEncode(data)); } catch {}
+      try { proc.stdin!.write(lpEncode(data)); } catch {}
     },
     end() {
       try {
-        proc.stdin.write(lpEncode(new Uint8Array(0)));
-        proc.stdin.end();
+        proc.stdin!.write(lpEncode(new Uint8Array(0)));
+        proc.stdin!.end();
       } catch {}
     },
     onData(cb) { cbs.data = cb; },
@@ -437,10 +440,79 @@ export async function callCursorUnaryRpc(
   return promise;
 }
 
-let proxyServer: ReturnType<typeof Bun.serve> | undefined;
+let proxyServer: Server | undefined;
 let proxyPort: number | undefined;
 let proxyAccessTokenProvider: (() => Promise<string>) | undefined;
 let proxyModels: Array<{ id: string; name: string }> = [];
+
+// readAllText drains a node child-process stream to text; a missing stream (the
+// handle was closed before we got it) reads as empty rather than throwing.
+async function readAllText(stream: NodeJS.ReadableStream | null | undefined): Promise<string> {
+  if (!stream) return "";
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// The routes below speak the web Request/Response API (global since node 18),
+// so this adapter only translates the transport: node's http messages in, a
+// Response back out, streamed so SSE reaches the caller unbuffered.
+function requestHeaders(raw: IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(raw.headers)) {
+    if (value === undefined) continue;
+    for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
+  }
+  return headers;
+}
+
+async function serveRequest(raw: IncomingMessage, res: ServerResponse): Promise<void> {
+  const method = raw.method ?? "GET";
+  const host = raw.headers.host ?? `127.0.0.1:${proxyPort ?? 0}`;
+  let body: Buffer | undefined;
+  if (method !== "GET" && method !== "HEAD") {
+    const chunks: Buffer[] = [];
+    for await (const chunk of raw) chunks.push(Buffer.from(chunk as Uint8Array));
+    body = Buffer.concat(chunks);
+  }
+  let response: Response;
+  try {
+    const request = new Request(`http://${host}${raw.url ?? "/"}`, {
+      method,
+      headers: requestHeaders(raw),
+      body,
+    });
+    response = await proxyFetch(request);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    response = new Response(
+      JSON.stringify({ error: { message, type: "server_error", code: "internal_error" } }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, value] of response.headers.entries()) {
+    // node owns these two; forwarding them breaks keep-alive and chunking.
+    if (name === "connection" || name === "transfer-encoding") continue;
+    headers[name] = value;
+  }
+  res.writeHead(response.status, headers);
+  if (!response.body) {
+    res.end();
+    return;
+  }
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+  } catch {
+    // The caller hung up mid-stream; nothing left to deliver.
+  }
+  res.end();
+}
 
 function buildOpenAIModelList(models: ReadonlyArray<{ id: string; name: string }>): Array<{
   id: string;
@@ -471,11 +543,29 @@ export async function startProxy(
   }));
   if (proxyServer && proxyPort) return proxyPort;
 
-  proxyServer = Bun.serve({
-    port: 0,
-    idleTimeout: 255, // max — Cursor responses can take 30s+
-    async fetch(req) {
-      const url = new URL(req.url);
+  const server = createHttpServer((raw, res) => {
+    void serveRequest(raw, res);
+  });
+  // Cursor answers can take 30s+ on a long turn; node's default request timeout
+  // would cut the stream mid-generation, so it is switched off here (Bun got
+  // the same protection from its 255s idleTimeout).
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+  server.keepAliveTimeout = 255_000;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  if (!port) throw new Error("Failed to bind proxy to a port");
+  proxyServer = server;
+  proxyPort = port;
+  return port;
+}
+
+async function proxyFetch(req: Request): Promise<Response> {
+  const url = new URL(req.url);
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
         // Refresh when the in-memory catalog TTL expires (or ?refresh=1).
@@ -483,7 +573,6 @@ export async function startProxy(
         // newly shipped models within a few minutes / on provider test.
         try {
           if (proxyAccessTokenProvider) {
-            const { getCursorModels } = await import("./models.ts");
             const token = await proxyAccessTokenProvider();
             const force = url.searchParams.get("refresh") === "1";
             const fresh = await getCursorModels(token, { force });
@@ -539,18 +628,15 @@ export async function startProxy(
         }
       }
 
-      return new Response("Not Found", { status: 404 });
-    },
-  });
-
-  proxyPort = proxyServer.port;
-  if (!proxyPort) throw new Error("Failed to bind proxy to a port");
-  return proxyPort;
+  return new Response("Not Found", { status: 404 });
 }
 
 export function stopProxy(): void {
   if (proxyServer) {
-    proxyServer.stop();
+    proxyServer.close();
+    // Long-lived SSE streams would otherwise keep the process (and the Go
+    // side's shutdown wait) hanging after close().
+    proxyServer.closeAllConnections();
     proxyServer = undefined;
     proxyPort = undefined;
     proxyAccessTokenProvider = undefined;
@@ -1462,18 +1548,22 @@ function handleExecMessage(
       // Async so we don't block the H2/SSE event loop while the command runs.
       (async () => {
         try {
-          const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
+          // Cursor's CLI asks for a login shell; the original hard-coded
+          // /bin/zsh, which left Windows with no shell to run in at all.
+          const [shell, shellFlags] = process.platform === "win32"
+            ? [process.env.COMSPEC || "cmd.exe", ["/d", "/s", "/c"]]
+            : [process.env.ZSH || "/bin/zsh", ["-lc"]];
+          const proc = nodeSpawn(shell, [...shellFlags, command], {
             cwd,
-            stdout: "pipe",
-            stderr: "pipe",
+            stdio: ["ignore", "pipe", "pipe"],
             env: process.env,
           });
-          const [stdout, stderr, code] = await Promise.all([
-            new Response(proc.stdout).text(),
-            new Response(proc.stderr).text(),
-            proc.exited,
+          const [stdout, stderr, [code]] = await Promise.all([
+            readAllText(proc.stdout),
+            readAllText(proc.stderr),
+            once(proc, "close"),
           ]);
-          const exitCode = code < 0 ? 1 : code;
+          const exitCode = (code ?? 1) < 0 ? 1 : (code ?? 1);
           const shellSuccess = create(ShellResultSchema, {
             result: {
               case: "success",

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Provider, ProviderPreset } from '../types';
 import { presetMatchesProvider } from '../lib';
 import { groupProviderPresets } from '../provider_presets';
-import { Modal } from './ui';
+import { BrandIcon, Modal } from './ui';
 
 /**
  * 添加 Provider 的目录弹窗：检索 + 分区磁贴，点一个即预填连接方式、协议与接入
@@ -87,7 +87,7 @@ export function ProviderCatalogDialog({
                     title={[preset.baseUrl, preset.note, preset.keysUrl ? `密钥：${preset.keysUrl}` : ''].filter(Boolean).join('\n')}
                     onClick={() => onPick(preset)}
                   >
-                    <PresetMark preset={preset} />
+                    <BrandIcon icon={preset.icon} name={preset.name} className="provider-tile-icon" />
                     <span className="provider-tile-name">{preset.name}</span>
                     {added > 0 ? <span className="provider-tile-count">{added}</span> : null}
                   </button>
@@ -101,27 +101,6 @@ export function ProviderCatalogDialog({
   );
 }
 
-// PresetMark：品牌图标。-color 是彩色版，按 <img> 原样显示；其余是 currentColor
-// 单色版，只能走 CSS mask 才会跟着主题着色——直接当图片渲染会在深色下变成一团黑。
-// 没有图标的（自定义端点、自助注册）退回名称首字。
-function PresetMark({ preset }: { preset: ProviderPreset }) {
-  const icon = preset.icon;
-  if (!icon) {
-    return <span className="provider-tile-mark" aria-hidden="true">{presetMonogram(preset)}</span>;
-  }
-  const source = `/icons/${icon}.svg`;
-  if (icon.endsWith('-color')) {
-    return <img className="provider-tile-icon" src={source} alt="" width={18} height={18} />;
-  }
-  return (
-    <span
-      className="provider-tile-icon mask"
-      aria-hidden="true"
-      style={{ WebkitMaskImage: `url(${source})`, maskImage: `url(${source})` }}
-    />
-  );
-}
-
 function customEndpointPreset(): ProviderPreset {
   return {
     id: 'custom',
@@ -131,13 +110,4 @@ function customEndpointPreset(): ProviderPreset {
     protocol: 'openai_chat',
     baseUrl: 'https://example.com/v1/chat/completions',
   };
-}
-
-// presetMonogram：磁贴左侧的名称首字。中文名只取一个字——两个汉字放不进 18px
-// 的方块，实测会把"阶跃"挤成两行。
-function presetMonogram(preset: ProviderPreset): string {
-  const source = preset.name.replace(/[（(].*$/, '').trim();
-  const letters = source.match(/[A-Za-z]/g);
-  if (letters && letters.length >= 2) return letters.slice(0, 2).join('').toUpperCase();
-  return source.slice(0, 1);
 }

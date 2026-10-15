@@ -13,7 +13,7 @@ function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
   }
   return earliest;
 }
-import { Badge, MoreMenu } from './ui';
+import { Badge, BrandIcon, MoreMenu } from './ui';
 export function RouteCard({ active, name, tone, status, meta, flow, onClick, onTest, onEdit, onClone, onDelete }: { active?: boolean; name: string; tone: BadgeTone; status: string; meta: string; flow: string[]; onClick: () => void; onTest: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
   return (
     <div className={`route-card clickable ${active ? 'active' : ''}`} onClick={onClick} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') onClick(); }}>
@@ -461,40 +461,58 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
           ))}
         </div>
       )}
-      {report?.available && report.resetCredits ? (
-        <div className="chatgpt-reset-credits" title="官方发放的限流重置卡，用一张可重置 5 小时 / 7 天额度窗口">
-          <div className="chatgpt-reset-credits-head">
+      {report?.available && report.resetCredits ? (() => {
+        const credits = report.resetCredits.credits || [];
+        const summary = (
+          <>
             <span>重置卡</span>
             <span>
               可用 {report.resetCredits.availableCount} 张
-              {report.resetCredits.credits && report.resetCredits.credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(report.resetCredits.credits))}` : ''}
+              {credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(credits))}` : ''}
             </span>
+          </>
+        );
+        const list = credits.length > 0 ? (
+          <div className="chatgpt-reset-credits-list">
+            {credits.map((credit, index) => (
+              <div className="chatgpt-reset-credit-item" key={credit.id || index} title={credit.title || ''}>
+                <span className="chatgpt-reset-credit-name">
+                  重置卡 #{index + 1}{credit.title ? ` · ${credit.title}` : ''}
+                </span>
+                <span className="chatgpt-reset-credit-expiry">
+                  {credit.expiresAt ? `有效期至 ${formatClaudeUsageResetAt(credit.expiresAt)}` : '有效期未知'}
+                </span>
+              </div>
+            ))}
           </div>
-          {(report.resetCredits.credits || []).length > 0 ? (
-            <div className="chatgpt-reset-credits-list">
-              {report.resetCredits.credits!.map((credit, index) => (
-                <div className="chatgpt-reset-credit-item" key={credit.id || index} title={credit.title || ''}>
-                  <span className="chatgpt-reset-credit-name">
-                    重置卡 #{index + 1}{credit.title ? ` · ${credit.title}` : ''}
-                  </span>
-                  <span className="chatgpt-reset-credit-expiry">
-                    {credit.expiresAt ? `有效期至 ${formatClaudeUsageResetAt(credit.expiresAt)}` : '有效期未知'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="chatgpt-reset-credit-item">
-              <span className="chatgpt-reset-credit-name">暂无可查明细的可用重置卡</span>
-            </div>
-          )}
-        </div>
-      ) : null}
+        ) : (
+          <div className="chatgpt-reset-credit-item">
+            <span className="chatgpt-reset-credit-name">暂无可查明细的可用重置卡</span>
+          </div>
+        );
+        // 明细折进摘要行：一张卡 3 条就把整张 Provider 卡撑高 100 多 px，同排卡被
+        // 跟着拉伸。没有明细可看时不渲染折叠控件，避免出现一个点开是空的箭头。
+        return credits.length > 0 ? (
+          <details
+            className="chatgpt-reset-credits expandable"
+            title="官方发放的限流重置卡，用一张可重置 5 小时 / 7 天额度窗口"
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <summary className="chatgpt-reset-credits-head">{summary}</summary>
+            {list}
+          </details>
+        ) : (
+          <div className="chatgpt-reset-credits" title="官方发放的限流重置卡，用一张可重置 5 小时 / 7 天额度窗口">
+            <div className="chatgpt-reset-credits-head">{summary}</div>
+            {list}
+          </div>
+        );
+      })() : null}
     </UsagePanelShell>
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, icon, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; icon?: string; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
   const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : isWorkBuddy ? workBuddyConnected : false;
   const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy;
   // Qoder 用的是 PAT 而非 OAuth，徽章文案跟着认证方式走，避免误导
@@ -509,68 +527,71 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
   return (
     <div className={`provider-card clickable ${active ? 'active' : ''} ${selected ? 'selected' : ''} ${providerDisabled ? 'provider-disabled' : ''}`} onClick={onClick} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') onClick(); }}>
       <div className="provider-head">
+        {/* 品牌图标：一屏十几张卡时，认图比认字快；匹配不到厂商就退回名称首字。 */}
+        <span className="provider-icon">
+          <BrandIcon icon={icon} name={name} size={20} />
+        </span>
         <div className="provider-title-block">
-          {selectable ? (
-            <label className="provider-select checkbox-field" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-              <input type="checkbox" checked={!!selected} onChange={onToggleSelect} aria-label={`选择 ${name}`} />
-              <span className="provider-name">{name}</span>
-            </label>
-          ) : (
-            <div className="provider-name">{name}</div>
-          )}
+          <div className="provider-name">{name}</div>
           {/* 副标题只放账号/ID：协议已由徽章表达，不再重复拼接 */}
           <div className="provider-subtitle" title={subtitleText}>{subtitleText}</div>
         </div>
-        <div className="provider-badges">
-          {providerDisabled ? <Badge tone="red">已禁用</Badge> : null}
-          <Badge tone={tone}>{protocol}</Badge>
-          {showOAuthBadge ? (
-            <Badge tone={oauthConnected ? 'green' : 'amber'}>{oauthBadgeLabel}{oauthConnected ? ' 已连接' : ' 未连接'}</Badge>
-          ) : (
-            <Badge tone={healthTone(healthStatus)}>{healthStatusLabel(healthStatus)}</Badge>
-          )}
-          {retryLabel ? <span className="provider-retry-hint" title="后台会周期性自动重试探测该 Provider">{retryLabel}</span> : null}
-          {isCursorOAuth ? (
-            <span title={cursorBridge?.checkedAt ? `上次探活：${cursorBridge.checkedAt}${bridgeHint}` : (bridgeHint || undefined)}>
-              <Badge tone={cursorBridgeTone(cursorBridge?.status)}>
-                {cursorBridgeStatusLabel(cursorBridge?.status)}
-              </Badge>
-            </span>
-          ) : null}
-        </div>
+        {selectable ? (
+          <label className="provider-check" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+            <input type="checkbox" checked={!!selected} onChange={onToggleSelect} aria-label={`选择 ${name}`} />
+          </label>
+        ) : null}
       </div>
-      <div className="provider-meta">
-        {keyMask ? (
-          <>
-            <div className="provider-meta-row">
-              <span className="provider-meta-label">接入地址</span>
-              <span className="provider-meta-value" title={url}>{url}</span>
-            </div>
-            <div className="provider-meta-row">
-              <span className="provider-meta-label">密钥</span>
-              <span className="provider-meta-value" title={keyMask}>{keyMask}</span>
-            </div>
-            <div className="provider-meta-row">
-              <span className="provider-meta-label">默认模型</span>
-              <span className="provider-meta-value" title={defaultModel || undefined}>{defaultModel || '未设置'}</span>
-            </div>
-            <div className="provider-meta-row">
-              <span className="provider-meta-label">可用模型</span>
-              <span className="provider-meta-value" title={modelCount != null && modelCount > 0 ? undefined : '点击下方「获取模型」拉取可用模型列表'}>
-                {modelCount != null && modelCount > 0 ? `${modelCount} 个` : '未获取 · 可点下方「获取模型」拉取'}
-              </span>
-            </div>
-          </>
+      <div className="provider-badges">
+        {providerDisabled ? <Badge tone="red">已禁用</Badge> : null}
+        <Badge tone={tone}>{protocol}</Badge>
+        {showOAuthBadge ? (
+          <Badge tone={oauthConnected ? 'green' : 'amber'}>{oauthBadgeLabel}{oauthConnected ? ' 已连接' : ' 未连接'}</Badge>
         ) : (
-          <span className="provider-meta-line" title={url}>{url}{isCursorOAuth && cursorBridge?.port ? ` · 127.0.0.1:${cursorBridge.port}` : ''}</span>
+          <Badge tone={healthTone(healthStatus)}>{healthStatusLabel(healthStatus)}</Badge>
         )}
+        {retryLabel ? <span className="provider-retry-hint" title="后台会周期性自动重试探测该 Provider">{retryLabel}</span> : null}
+        {isCursorOAuth ? (
+          <span title={cursorBridge?.checkedAt ? `上次探活：${cursorBridge.checkedAt}${bridgeHint}` : (bridgeHint || undefined)}>
+            <Badge tone={cursorBridgeTone(cursorBridge?.status)}>
+              {cursorBridgeStatusLabel(cursorBridge?.status)}
+            </Badge>
+          </span>
+        ) : null}
       </div>
+      {/* 额度是运营上最该一眼看到的数字，放在徽章之后、事实区之前当视觉锚点。 */}
       {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
       {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
       {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
       {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {/* 事实区：两列网格。地址独占一行（通常最长），其余两项一行；订阅卡没有
+          密钥这一项，自动少一格，不补假字段。 */}
+      <div className="provider-facts">
+        <div className="provider-fact wide">
+          <span className="provider-fact-label">地址</span>
+          <span className="provider-fact-value" title={url}>
+            {url}{isCursorOAuth && cursorBridge?.port ? ` · :${cursorBridge.port}` : ''}
+          </span>
+        </div>
+        {keyMask ? (
+          <div className="provider-fact">
+            <span className="provider-fact-label">密钥</span>
+            <span className="provider-fact-value" title={keyMask}>{keyMask}</span>
+          </div>
+        ) : null}
+        <div className="provider-fact">
+          <span className="provider-fact-label">默认</span>
+          <span className="provider-fact-value" title={defaultModel || undefined}>{defaultModel || '未设置'}</span>
+        </div>
+        <div className="provider-fact">
+          <span className="provider-fact-label">模型</span>
+          <span className="provider-fact-value" title={modelCount != null && modelCount > 0 ? undefined : '点下方「获取模型」拉取'}>
+            {modelCount != null && modelCount > 0 ? `${modelCount} 个` : '未获取'}
+          </span>
+        </div>
+      </div>
       <div className="provider-foot" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
         <div className="provider-foot-meta">
           <span><b>{usedCount}</b> 个 API Key</span>
