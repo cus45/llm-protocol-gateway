@@ -10,6 +10,7 @@ import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, D
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
 import { Badge, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
+import { TerminalAuthGate } from './components/terminal_auth';
 function App() {
   const [activeNav, setActiveNav] = useState<NavItemID>(() => navIDFromPath(window.location.pathname));
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredTheme());
@@ -3997,7 +3998,8 @@ function App() {
   const providerThinkingFieldPresets = providerThinkingPresets?.fields.find((item) => item.key === providerChatOptions.thinkingField) || providerThinkingPresets?.fields[0];
   const usageToday = requestStats?.today;
   const usageMonth = requestStats?.month;
-  const needsAuthGate = Boolean(authChecked && authStatus?.requireAuth && !authStatus.authenticated);
+  const isExplicitLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
+  const needsAuthGate = Boolean((authChecked && authStatus?.requireAuth && !authStatus.authenticated) || isExplicitLoginPage);
   const authSetupMode = Boolean(needsAuthGate && authStatus && !authStatus.configured);
   // 普通用户角色：仅显示 API 密钥 / 流量 / 用量三个页面
   const isNormalUser = Boolean(authStatus?.authenticated && authStatus.role === 'user');
@@ -4014,66 +4016,19 @@ function App() {
 
   if (needsAuthGate) {
     return (
-      <div className="auth-shell">
-        <div className="auth-card">
-          <div className="brand">
-            <div className="brand-logo">PG</div>
-            <div>
-              <div className="brand-title">协议网关</div>
-              <div className="brand-subtitle">{authSetupMode ? '首次远程访问，请设置管理员密码' : '请登录管理控制台'}</div>
-            </div>
-          </div>
-          <div className="hint-line">
-            {authSetupMode
-              ? '公网与局域网访问需要管理员密码；本机 App（127.0.0.1）可免登录。'
-              : '此域名仅用于管理控制台，模型 API 请使用独立的 API 域名与 API Key。'}
-          </div>
-          {!authSetupMode ? (
-            <label className="field">
-              <span>用户名</span>
-              <input
-                type="text"
-                autoComplete="username"
-                value={authUsername}
-                onChange={(event) => setAuthUsername(event.target.value)}
-                placeholder="管理员留空或填 admin"
-              />
-            </label>
-          ) : null}
-          <label className="field">
-            <span>{authSetupMode ? '管理员密码' : '密码'}</span>
-            <input
-              type="password"
-              autoComplete={authSetupMode ? 'new-password' : 'current-password'}
-              value={authPassword}
-              onChange={(event) => setAuthPassword(event.target.value)}
-              placeholder="至少 8 位"
-            />
-          </label>
-          {authSetupMode ? (
-            <label className="field">
-              <span>确认密码</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={authPasswordConfirm}
-                onChange={(event) => setAuthPasswordConfirm(event.target.value)}
-                placeholder="再输入一次"
-              />
-            </label>
-          ) : null}
-          {authError ? <div className="hint-line error">{authError}</div> : null}
-          <div className="public-simple-actions">
-            <button
-              className="btn primary"
-              disabled={authBusy}
-              onClick={() => void submitAdminAuth(authSetupMode ? 'setup' : 'login')}
-            >
-              {authBusy ? '处理中…' : authSetupMode ? '设置密码并进入' : '登录'}
-            </button>
-          </div>
-        </div>
-      </div>
+      <TerminalAuthGate
+        authSetupMode={authSetupMode}
+        authUsername={authUsername}
+        setAuthUsername={setAuthUsername}
+        authPassword={authPassword}
+        setAuthPassword={setAuthPassword}
+        authPasswordConfirm={authPasswordConfirm}
+        setAuthPasswordConfirm={setAuthPasswordConfirm}
+        authBusy={authBusy}
+        authError={authError}
+        setAuthError={setAuthError}
+        onSubmit={submitAdminAuth}
+      />
     );
   }
 
