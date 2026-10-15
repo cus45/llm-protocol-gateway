@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { APIKey, APIKeyDayStats, AdminAuthStatus, BadgeTone, CloudflareZoneOption, GatewayState, HostDiskTemp, HostFanSpeed, HostMetrics, LegacyRequestStatsSnapshot, LogEntry, Model, NavItemID, OutputEndpoint, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderThinkingTestResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckPrefs } from './types';
+import { APIKey, APIKeyDayStats, AdminAuthStatus, BadgeTone, CloudflareZoneOption, GatewayState, HostDiskTemp, HostFanSpeed, HostMetrics, LegacyRequestStatsSnapshot, LogEntry, Model, NavItemID, OutputEndpoint, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderThinkingTestResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckPrefs } from './types';
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
   {
     id: 'tuya-azure-deployment',
@@ -1165,8 +1165,39 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
   if (provider.authType === 'cursor_oauth') return 'cursor_oauth';
   if (provider.authType === 'chatgpt_oauth') return 'chatgpt_oauth';
   if (provider.authType === 'qoder_pat') return 'qoder_pat';
+  if (provider.authType === 'workbuddy') return 'workbuddy';
+  if (provider.authType === 'workbuddy_ai') return 'workbuddy_ai';
   if (provider.selfRegistration) return 'self_register';
   return 'api_key';
+}
+
+// isWorkBuddyConnectKind 判定两个 WorkBuddy 构建：它们只在端点与模型表上不同，
+// 控制台里的展示、徽标与登录流程都走同一套分支。
+export function isWorkBuddyConnectKind(kind: ProviderConnectKind): boolean {
+  return kind === 'workbuddy' || kind === 'workbuddy_ai';
+}
+
+// presetMatchesProvider 判断一个 Provider 是否属于目录里的某个预设，用于磁贴上
+// 的「已添加」标记与计数。订阅类按连接方式归组（同一账号族可以有多个 Provider）；
+// API Key 类按端点主机归组，因为同一个厂商的多个 Provider 通常指向同一主机。
+export function presetMatchesProvider(preset: ProviderPreset, provider: Provider): boolean {
+  if (preset.authType === 'api_key') {
+    if (providerConnectKind(provider) !== 'api_key') return false;
+    const presetHost = urlHost(preset.baseUrl);
+    return presetHost !== '' && presetHost === urlHost(provider.baseUrl);
+  }
+  return providerConnectKind(provider) === preset.authType;
+}
+
+function urlHost(value?: string): string {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw).host.toLowerCase();
+  } catch {
+    // 相对地址或占位值（example.com/v1）：退化为取第一段主机名。
+    return raw.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+  }
 }
 
 export function providerConnectLabel(kind: ProviderConnectKind): string {
@@ -1175,6 +1206,8 @@ export function providerConnectLabel(kind: ProviderConnectKind): string {
     case 'cursor_oauth': return '登录 Cursor 账号 (OAuth)';
     case 'chatgpt_oauth': return '登录 ChatGPT 账号 (OAuth)';
     case 'qoder_pat': return '连接 Qoder 账号 (PAT)';
+    case 'workbuddy': return '登录 WorkBuddy 账号';
+    case 'workbuddy_ai': return '登录 WorkBuddy AI 账号';
     case 'self_register': return '内网穿透自助注册（Bearer 令牌）';
     default: return 'API Key';
   }
@@ -1188,6 +1221,8 @@ export const PROVIDER_CONNECT_FILTERS: Array<{ id: '' | ProviderConnectKind; lab
   { id: 'cursor_oauth', label: 'Cursor OAuth' },
   { id: 'chatgpt_oauth', label: 'ChatGPT OAuth' },
   { id: 'qoder_pat', label: 'Qoder PAT' },
+  { id: 'workbuddy', label: 'WorkBuddy' },
+  { id: 'workbuddy_ai', label: 'WorkBuddy AI' },
 ];
 
 export function buildApiKeyPatchBody(key: APIKey, patch: Partial<APIKey> = {}) {

@@ -302,7 +302,8 @@ func (r *Router) AddProvider(provider domain.Provider) (domain.Provider, error) 
 		provider.AuthType != domain.AuthTypeClaudeOAuth &&
 		provider.AuthType != domain.AuthTypeCursorOAuth &&
 		provider.AuthType != domain.AuthTypeChatGPTOAuth &&
-		provider.AuthType != domain.AuthTypeQoderPAT {
+		provider.AuthType != domain.AuthTypeQoderPAT &&
+		!isWorkBuddyAuthType(provider.AuthType) {
 		return domain.Provider{}, fmt.Errorf("provider baseUrl is required")
 	}
 	if provider.ID == "" {
@@ -388,6 +389,16 @@ func normalizeProvider(provider *domain.Provider) {
 		// ChatGPT OAuth providers call Codex CLI upstream (chatgpt.com/backend-api).
 		provider.Protocol = domain.ProtocolOpenAIResponses
 		provider.BaseURL = chatgptCodexResponsesURL
+	}
+	if isWorkBuddyAuthType(provider.AuthType) {
+		// Both WorkBuddy builds serve the plan on an OpenAI-Chat compatible
+		// endpoint. Like Qoder and unlike the clauses above, the base URL is
+		// only defaulted, so an endpoint move is a config edit, not a rebuild.
+		provider.Protocol = domain.ProtocolOpenAIChat
+		site, _ := workBuddySiteForAuthType(provider.AuthType)
+		if isPlaceholderBaseURL(provider.BaseURL) {
+			provider.BaseURL = site.chatBaseURL()
+		}
 	}
 	if provider.AuthType == domain.AuthTypeQoderPAT {
 		// Qoder's direct endpoint is natively OpenAI-Chat compatible. Unlike the
@@ -1305,6 +1316,48 @@ func (r *Router) DisconnectProviderQoderPAT(providerID string) (domain.Provider,
 			credential.Disconnected = true
 			updated.QoderPAT = &credential
 		}
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderWorkBuddy stores (or replaces) the WorkBuddy session for a
+// provider and forces it into that build's auth mode: authType says which one
+// (WorkBuddy or WorkBuddy AI), since the endpoint, model list and headers all
+// follow from it.
+func (r *Router) SetProviderWorkBuddy(providerID, authType string, credential domain.WorkBuddyCredential) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		updated.AuthType = authType
+		credentialCopy := credential
+		updated.WorkBuddy = &credentialCopy
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// ClearProviderWorkBuddy discards a WorkBuddy session; the provider keeps its
+// name and protocol but has to sign in again before it can serve traffic.
+func (r *Router) ClearProviderWorkBuddy(providerID string) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		updated.WorkBuddy = nil
 		normalizeProvider(&updated)
 		r.state.Providers[index] = updated
 		return updated, nil

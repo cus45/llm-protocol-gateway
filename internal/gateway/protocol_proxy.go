@@ -50,6 +50,12 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 		body = prepared
 		accept = "text/event-stream"
 	}
+	if isWorkBuddyProvider(provider) {
+		// Both WorkBuddy builds require a leading system message and a
+		// streaming request; idempotent, so a caller that already shaped the
+		// body is unaffected.
+		body, _ = prepareWorkBuddyChatBody(body)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -353,16 +359,23 @@ type streamConverter func(http.ResponseWriter, io.Reader, string) (TokenUsage, e
 
 func (s *Server) proxyConvertedThroughChat(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, chatReq map[string]any, skipIncomingAuth bool, convert responseConverter, streamConvert streamConverter) (int, TokenUsage, []byte, error) {
 	stream, _ := chatReq["stream"].(bool)
+	// WorkBuddy refuses a non-stream chat, so it always streams upstream. The
+	// stream is rebuilt into a single chat.completion before the converter
+	// runs, so a client that asked for a non-streaming answer still gets one.
+	workBuddyForcedStream := !stream && isWorkBuddyProvider(provider)
+	if workBuddyForcedStream {
+		chatReq["stream"] = true
+	}
 	upstreamBody, err := json.Marshal(chatReq)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
 	accept := "application/json"
-	if stream {
+	if stream || workBuddyForcedStream {
 		accept = "text/event-stream"
 	}
 	model = applyProviderModelMapping(provider, model)
-	send := func() (*http.Response, error) {
+	sendUpstream := func() (*http.Response, error) {
 		if provider.AuthType == domain.AuthTypeCursorOAuth {
 			baseURL, refreshed, bridgeErr := s.resolveCursorBridgeBaseURL(r.Context(), provider)
 			if bridgeErr != nil {
@@ -383,6 +396,17 @@ func (s *Server) proxyConvertedThroughChat(w http.ResponseWriter, r *http.Reques
 			return nil, bodyErr
 		}
 		return s.doOpenAIProviderRequest(r.Context(), r, provider, resolveProviderChatURLWithAdapter(provider, model), adaptedBody, accept, skipIncomingAuth)
+	}
+	send := sendUpstream
+	if workBuddyForcedStream {
+		send = func() (*http.Response, error) {
+			response, sendErr := sendUpstream()
+			if sendErr != nil || response == nil {
+				return response, sendErr
+			}
+			_ = rewriteWorkBuddyUpstreamStreamedBody(response, model)
+			return response, nil
+		}
 	}
 	return s.finishConvertedProxyWithEmptyStreamRetry(w, r, model, stream, send, convert, streamConvert)
 }
@@ -571,6 +595,13 @@ func (s *Server) executeProtocolFlow(
 	// and every protocol conversion below flows through here.
 	if provider.AuthType == domain.AuthTypeQoderPAT {
 		provider, err = s.ensureFreshQoderToken(provider)
+		if err != nil {
+			return 0, TokenUsage{}, nil, err
+		}
+	}
+	// Same for a WorkBuddy session, whose access token is short-lived.
+	if isWorkBuddyProvider(provider) {
+		provider, err = s.ensureFreshWorkBuddyToken(provider)
 		if err != nil {
 			return 0, TokenUsage{}, nil, err
 		}

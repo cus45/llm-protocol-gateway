@@ -348,6 +348,13 @@ func (s *Server) testProviderChat(r *http.Request, providerID string, req provid
 		}
 		provider = refreshed
 	}
+	if isWorkBuddyProvider(provider) {
+		refreshed, err := s.ensureFreshWorkBuddyToken(provider)
+		if err != nil {
+			return map[string]any{"success": false, "error": err.Error(), "latencyMs": time.Since(started).Milliseconds()}, http.StatusBadGateway
+		}
+		provider = refreshed
+	}
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -509,12 +516,12 @@ func (s *Server) testProviderCacheChat(r *http.Request, providerID string, req p
 	// cache_control system block yields prompt_tokens=8 where the same text as a
 	// plain string yields 810. The request would succeed while measuring nothing,
 	// so skip rather than report a misleading result.
-	if provider.AuthType == domain.AuthTypeChatGPTOAuth || provider.AuthType == domain.AuthTypeQoderPAT || provider.Protocol == domain.ProtocolOpenAIResponses {
+	if provider.AuthType == domain.AuthTypeChatGPTOAuth || provider.AuthType == domain.AuthTypeQoderPAT || isWorkBuddyProvider(provider) || provider.Protocol == domain.ProtocolOpenAIResponses {
 		return map[string]any{
 			"success":    true,
 			"skipped":    true,
 			"providerId": provider.ID,
-			"summary":    "ChatGPT OAuth / Qoder / Responses provider skips Cache test",
+			"summary":    "ChatGPT OAuth / Qoder / WorkBuddy / Responses provider skips Cache test",
 			"latencyMs":  time.Since(started).Milliseconds(),
 		}, http.StatusOK
 	}
@@ -633,6 +640,13 @@ func (s *Server) testProviderThinkingChat(r *http.Request, providerID string, re
 	// job token has to be refreshed here explicitly.
 	if provider.AuthType == domain.AuthTypeQoderPAT {
 		refreshed, refreshErr := s.ensureFreshQoderToken(provider)
+		if refreshErr != nil {
+			return map[string]any{"success": false, "error": refreshErr.Error(), "latencyMs": time.Since(started).Milliseconds()}, http.StatusBadGateway
+		}
+		provider = refreshed
+	}
+	if isWorkBuddyProvider(provider) {
+		refreshed, refreshErr := s.ensureFreshWorkBuddyToken(provider)
 		if refreshErr != nil {
 			return map[string]any{"success": false, "error": refreshErr.Error(), "latencyMs": time.Since(started).Milliseconds()}, http.StatusBadGateway
 		}

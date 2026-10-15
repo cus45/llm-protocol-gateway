@@ -150,6 +150,33 @@ export type ChatGPTOAuthInfo = {
   accountLabel?: string;
 };
 
+export type WorkBuddyOAuthInfo = {
+  connected?: boolean;
+  expiresAt?: string;
+  accountLabel?: string;
+  /** 订阅账号 id（X-User-Id），非敏感，用于区分不同账号。 */
+  userId?: string;
+  /** 账号所属域（X-Domain），非敏感。 */
+  domain?: string;
+};
+
+export type WorkBuddyUsageWindow = {
+  name: string;
+  /** 已用百分比 0-100。 */
+  used: number;
+  amount: number;
+  limit: number;
+  unit: string;
+};
+
+export type WorkBuddyUsage = {
+  plan?: string;
+  user?: string;
+  windows: WorkBuddyUsageWindow[];
+  error?: string;
+  fetchedAt?: string;
+};
+
 export type QoderPATInfo = {
   connected?: boolean;
   /** 用户点了「断开连接」：令牌仍保留在后端，只是暂停转发。见 disconnected 分支 UI。 */
@@ -296,7 +323,7 @@ export type Provider = {
     createdAt?: string;
     lastSeenAt?: string;
   };
-  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat';
+  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai';
   // 智谱（bigmodel / z.ai）编程套餐额度查询配置：团队版需要组织 + 项目 ID，
   // 两者都填时走团队版端点（?type=2 + bigmodel-organization/-project 请求头），
   // 否则走个人版端点。均为非敏感账号标识。
@@ -307,6 +334,7 @@ export type Provider = {
   cursorOAuth?: CursorOAuthInfo;
   chatgptOAuth?: ChatGPTOAuthInfo;
   qoderPat?: QoderPATInfo;
+  workbuddyOAuth?: WorkBuddyOAuthInfo;
   requestAdapter?: RequestAdapter;
 };
 
@@ -796,7 +824,31 @@ export type TrafficRankCache = {
   models: Record<string, number>;
 };
 
-export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat';
+export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai';
+
+/** 添加 Provider 目录：一个可点选的接入预设（订阅登录、厂商、中转、本机服务）。 */
+export type ProviderPresetSection = 'subscription' | 'vendor' | 'relay' | 'local';
+
+export type ProviderPreset = {
+  id: string;
+  name: string;
+  section: ProviderPresetSection;
+  /** 点选后写入草稿的连接方式；厂商/中转都是 api_key。 */
+  authType: ProviderConnectKind;
+  protocol?: Protocol;
+  baseUrl?: string;
+  /** 厂商控制台/取密钥入口，sheet 里作为次级信息展示。 */
+  keysUrl?: string;
+  website?: string;
+  note?: string;
+  /** 订阅类预设需要浏览器登录，草稿保存后才能开始。 */
+  needsSignIn?: boolean;
+  /**
+   * 图标基名（web/public/icons/<icon>.svg）。以 -color 结尾的是品牌彩色版，按
+   * <img> 渲染；否则是 currentColor 单色版，必须用 CSS mask 才能跟着主题着色。
+   */
+  icon?: string;
+};
 
 export type LegacyRequestStatsSnapshot = {
   date: string;

@@ -1,7 +1,7 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, retrySecondsLabel, useNowTick } from '../lib';
-import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
+import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, WorkBuddyUsage, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
 
 /** 最早到期的重置卡时间；无效时间为空串。 */
 function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
@@ -494,9 +494,9 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
-  const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : false;
-  const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT;
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
+  const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : isWorkBuddy ? workBuddyConnected : false;
+  const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy;
   // Qoder 用的是 PAT 而非 OAuth，徽章文案跟着认证方式走，避免误导
   const oauthBadgeLabel = isQoderPAT ? 'PAT' : 'OAuth';
   const isUnavailable = healthStatus === 'unavailable';
@@ -568,8 +568,9 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
       {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
       {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       <div className="provider-foot" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
         <div className="provider-foot-meta">
           <span><b>{usedCount}</b> 个 API Key</span>
@@ -610,5 +611,52 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * WorkBuddy 订阅额度：套餐 credits 的已用/总量。个人版读资源汇总，
+ * 团队版没有套餐包，只能从企业计量接口拿到，后端已合并成同一组窗口。
+ */
+export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }: { providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
+  const { report, loading, refresh } = useOAuthUsageReport<WorkBuddyUsage>(
+    Boolean(connected),
+    `/__providers/${encodeURIComponent(providerId)}/workbuddy-oauth/usage`,
+  );
+
+  if (compact && (!report || report.error || report.windows.length === 0)) return null;
+
+  return (
+    <UsagePanelShell
+      panelClass="workbuddy-usage-panel"
+      compact={compact}
+      subtitle={subtitle}
+      title="WorkBuddy 套餐额度"
+      planName={report?.plan}
+      stateMessage={report && !report.error && report.windows.length > 0 ? '可用' : undefined}
+      loading={loading}
+      fetchedAt={report?.fetchedAt}
+      onRefresh={refresh}
+    >
+      {!report ? (
+        <div className="claude-usage-empty">{loading ? '正在拉取额度…' : '暂无额度数据'}</div>
+      ) : report.error ? (
+        <div className="claude-usage-empty">{report.error}</div>
+      ) : report.windows.length === 0 ? (
+        <div className="claude-usage-empty">该账号没有返回额度窗口（未订阅或接口未开放）</div>
+      ) : (
+        <div className="claude-usage-grid">
+          {report.windows.map((window) => (
+            <UsageBucketRow
+              key={window.name}
+              label={window.name}
+              percent={Math.min(100, Math.max(0, window.used))}
+              note={`${window.amount.toFixed(0)} / ${window.limit.toFixed(0)} ${window.unit}`}
+              compact={compact}
+            />
+          ))}
+        </div>
+      )}
+    </UsagePanelShell>
   );
 }

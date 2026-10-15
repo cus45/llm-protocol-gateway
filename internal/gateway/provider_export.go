@@ -129,7 +129,8 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 		provider.AuthType = domain.AuthTypeAPIKey
 	}
 	switch provider.AuthType {
-	case domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth, domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT:
+	case domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth, domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT,
+		domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
 	default:
 		return domain.Provider{}, fmt.Errorf("unsupported authType %q", provider.AuthType)
 	}
@@ -144,7 +145,8 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 		provider.AuthType != domain.AuthTypeClaudeOAuth &&
 		provider.AuthType != domain.AuthTypeCursorOAuth &&
 		provider.AuthType != domain.AuthTypeChatGPTOAuth &&
-		provider.AuthType != domain.AuthTypeQoderPAT {
+		provider.AuthType != domain.AuthTypeQoderPAT &&
+		!isWorkBuddyAuthType(provider.AuthType) {
 		return domain.Provider{}, fmt.Errorf("provider baseUrl is required")
 	}
 
@@ -152,6 +154,7 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 	provider.CursorOAuth = sanitizeImportedCursorOAuth(provider.CursorOAuth)
 	provider.ChatGPTOAuth = sanitizeImportedChatGPTOAuth(provider.ChatGPTOAuth)
 	provider.QoderPAT = sanitizeImportedQoderPAT(provider.QoderPAT)
+	provider.WorkBuddy = sanitizeImportedWorkBuddy(provider.WorkBuddy)
 	if provider.RequestAdapter != nil {
 		// Drop generated display-only curl; it is rebuilt on read.
 		adapter := *provider.RequestAdapter
@@ -214,6 +217,38 @@ func sanitizeImportedCursorOAuth(cred *domain.CursorOAuthCredential) *domain.Cur
 		RefreshToken: refresh,
 		ExpiresAt:    expires,
 		AccountLabel: label,
+	}
+}
+
+func sanitizeImportedWorkBuddy(cred *domain.WorkBuddyCredential) *domain.WorkBuddyCredential {
+	if cred == nil {
+		return nil
+	}
+	access := strings.TrimSpace(cred.AccessToken)
+	refresh := strings.TrimSpace(cred.RefreshToken)
+	expires := strings.TrimSpace(cred.ExpiresAt)
+	label := strings.TrimSpace(cred.AccountLabel)
+	userID := strings.TrimSpace(cred.UserID)
+	domainName := strings.TrimSpace(cred.Domain)
+	if access == "" && refresh == "" {
+		if expires == "" && label == "" && userID == "" && !cred.Connected {
+			return nil
+		}
+		return &domain.WorkBuddyCredential{
+			ExpiresAt:    expires,
+			AccountLabel: label,
+			UserID:       userID,
+			Domain:       domainName,
+			Connected:    false,
+		}
+	}
+	return &domain.WorkBuddyCredential{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		ExpiresAt:    expires,
+		AccountLabel: label,
+		UserID:       userID,
+		Domain:       domainName,
 	}
 }
 
@@ -351,7 +386,29 @@ func mergeProviderImport(existing, incoming domain.Provider) domain.Provider {
 	updated.ClaudeOAuth = mergeClaudeOAuthImport(existing.ClaudeOAuth, incoming.ClaudeOAuth)
 	updated.CursorOAuth = mergeCursorOAuthImport(existing.CursorOAuth, incoming.CursorOAuth)
 	updated.QoderPAT = mergeQoderPATImport(existing.QoderPAT, incoming.QoderPAT)
+	updated.WorkBuddy = mergeWorkBuddyImport(existing.WorkBuddy, incoming.WorkBuddy)
 	return updated
+}
+
+func mergeWorkBuddyImport(existing, incoming *domain.WorkBuddyCredential) *domain.WorkBuddyCredential {
+	if incoming == nil {
+		return cloneWorkBuddy(existing)
+	}
+	if strings.TrimSpace(incoming.AccessToken) != "" || strings.TrimSpace(incoming.RefreshToken) != "" {
+		return cloneWorkBuddy(incoming)
+	}
+	if existing == nil {
+		return nil
+	}
+	return cloneWorkBuddy(existing)
+}
+
+func cloneWorkBuddy(cred *domain.WorkBuddyCredential) *domain.WorkBuddyCredential {
+	if cred == nil {
+		return nil
+	}
+	cloned := *cred
+	return &cloned
 }
 
 func mergeQoderPATImport(existing, incoming *domain.QoderPATCredential) *domain.QoderPATCredential {
@@ -425,6 +482,7 @@ func cloneProviderForExport(provider domain.Provider) domain.Provider {
 	cloned.ClaudeOAuth = cloneClaudeOAuth(provider.ClaudeOAuth)
 	cloned.CursorOAuth = cloneCursorOAuth(provider.CursorOAuth)
 	cloned.QoderPAT = cloneQoderPAT(provider.QoderPAT)
+	cloned.WorkBuddy = cloneWorkBuddy(provider.WorkBuddy)
 	if cloned.RequestAdapter != nil {
 		cloned.RequestAdapter.CurlExample = ""
 	}

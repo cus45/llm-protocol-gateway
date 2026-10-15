@@ -106,7 +106,7 @@ func (s *Server) handleQoderPATDisconnect(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if updated.QoderPAT != nil {
-		if err := s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT); err != nil {
+		if err := s.persistProviderOAuth(updated); err != nil {
 			s.logs.AddApp("warn", "failed to persist qoder disconnect", err.Error())
 		}
 	}
@@ -151,7 +151,7 @@ func (s *Server) handleQoderPATReconnect(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err := s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT); err != nil {
+	if err := s.persistProviderOAuth(updated); err != nil {
 		s.logs.AddApp("warn", "failed to persist qoder reconnect", err.Error())
 	}
 	if err := s.saveState(); err != nil {

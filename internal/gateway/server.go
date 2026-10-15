@@ -44,7 +44,7 @@ type APIKeyStore interface {
 // ProviderOAuthSaver persists just the OAuth token columns of one provider,
 // avoiding a full-state rewrite on every token refresh.
 type ProviderOAuthSaver interface {
-	UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel string) error
+	UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain string) error
 }
 
 type RequestLogStore interface {
@@ -77,6 +77,7 @@ type Server struct {
 	pendingClaudeOAuth      *claudeOAuthPendingStore
 	pendingCursorOAuth      *cursorOAuthPendingStore
 	pendingChatGPTOAuth     *chatgptOAuthPendingStore
+	pendingWorkBuddyOAuth   *workBuddyOAuthPendingStore
 	cursorBridge            *cursor.Bridge
 	listenAddr              string
 	requestLogRetentionDays int
@@ -129,6 +130,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		pendingClaudeOAuth:      newClaudeOAuthPendingStore(),
 		pendingCursorOAuth:      newCursorOAuthPendingStore(),
 		pendingChatGPTOAuth:     newChatGPTOAuthPendingStore(),
+		pendingWorkBuddyOAuth:   newWorkBuddyOAuthPendingStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
 		requestLogRetentionDays: 7,
@@ -311,6 +313,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__providers/{id}/qoder-pat/status", s.handleQoderPATStatus)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/disconnect", s.handleQoderPATDisconnect)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/reconnect", s.handleQoderPATReconnect)
+	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/start", s.handleWorkBuddyOAuthStart)
+	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/status", s.handleWorkBuddyOAuthStatus)
+	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/disconnect", s.handleWorkBuddyOAuthDisconnect)
+	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/usage", s.handleWorkBuddyUsage)
 	mux.HandleFunc("GET /__providers/{id}/zhipu/usage", s.handleZhipuUsage)
 	mux.HandleFunc("GET /__providers/{id}/deepseek/usage", s.handleDeepSeekBalance)
 	mux.HandleFunc("DELETE /__providers/{id}", s.handleDeleteProvider)
@@ -491,6 +497,19 @@ func redactProviderForClient(provider domain.Provider) domain.Provider {
 			Connected:      hasToken && !original.Disconnected,
 			Disconnected:   original.Disconnected,
 			HasStoredToken: hasToken,
+		}
+	}
+	if provider.WorkBuddy != nil {
+		original := provider.WorkBuddy
+		provider.WorkBuddy = &domain.WorkBuddyCredential{
+			ExpiresAt:    original.ExpiresAt,
+			AccountLabel: original.AccountLabel,
+			// The account id and domain are identifiers, not secrets, and the
+			// console shows them so an operator can tell two WorkBuddy accounts
+			// apart.
+			UserID:    original.UserID,
+			Domain:    original.Domain,
+			Connected: strings.TrimSpace(original.AccessToken) != "" && strings.TrimSpace(original.RefreshToken) != "",
 		}
 	}
 	// Regenerate curl against the real BaseURL for UI display.
@@ -2742,23 +2761,22 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 		}
 	}
 	upstreamURL := resolveProviderChatURLWithAdapter(provider, resolvedModel)
+	// WorkBuddy accepts only a streaming request whose first message is the
+	// system prompt; the console asked for one JSON object, so the stream is
+	// rebuilt into one below.
+	workBuddy := isWorkBuddyProvider(provider)
+	if workBuddy {
+		body, _ = prepareWorkBuddyChatBody(body)
+	}
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return providerChatHTTPResult{Error: err.Error(), TargetURL: upstreamURL, RequestBody: string(body), LatencyMs: time.Since(started).Milliseconds()}
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if authValue := resolveProviderAuth(provider); authValue != "" {
-		header := provider.AuthHeader
-		if header == "" {
-			header = "Authorization"
-		}
-		if strings.EqualFold(header, "Authorization") && !strings.HasPrefix(strings.ToLower(authValue), "bearer ") {
-			authValue = "Bearer " + authValue
-		}
-		request.Header.Set(header, authValue)
-	} else if incomingAuth := r.Header.Get("Authorization"); incomingAuth != "" {
-		request.Header.Set("Authorization", incomingAuth)
+	if workBuddy {
+		request.Header.Set("Accept", "text/event-stream")
 	}
+	applyProviderAuth(request, provider, r.Header.Get("Authorization"))
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	response, err := client.Do(request)
@@ -2771,6 +2789,9 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 		}
 	}
 	defer response.Body.Close()
+	if workBuddy {
+		_ = rewriteWorkBuddyUpstreamStreamedBody(response, resolvedModel)
+	}
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 16384))
 	return providerChatHTTPResult{
 		Status:       response.StatusCode,
@@ -3236,39 +3257,47 @@ func (s *Server) saveState() error {
 // full-state Save (which DELETEs + re-INSERTs all providers/models/routes on
 // the single shared SQLite connection and blocks request-hot-path writes).
 // Falls back to saveState when the incremental saver is unavailable.
-func (s *Server) persistProviderOAuth(providerID string, claude *domain.ClaudeOAuthCredential, cursor *domain.CursorOAuthCredential, chatgpt *domain.ChatGPTOAuthCredential, qoder *domain.QoderPATCredential) error {
+func (s *Server) persistProviderOAuth(provider domain.Provider) error {
 	if s.providerOAuthSaver != nil {
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
+		var userID, authDomain string
 		switch {
-		case claude != nil:
-			accessToken = claude.AccessToken
-			refreshToken = claude.RefreshToken
-			expiresAt = claude.ExpiresAt
-			scope = claude.Scope
-			accountLabel = claude.AccountLabel
-		case cursor != nil:
-			accessToken = cursor.AccessToken
-			refreshToken = cursor.RefreshToken
-			expiresAt = cursor.ExpiresAt
-			accountLabel = cursor.AccountLabel
-		case chatgpt != nil:
-			accessToken = chatgpt.AccessToken
-			refreshToken = chatgpt.RefreshToken
-			expiresAt = chatgpt.ExpiresAt
-			scope = chatgpt.ChatGPTAccountID
-			accountLabel = chatgpt.AccountLabel
-		case qoder != nil:
-			accessToken = qoder.AccessToken
-			refreshToken = qoder.RefreshToken
-			expiresAt = qoder.ExpiresAt
-			accountLabel = qoder.AccountLabel
-			if qoder.Disconnected {
+		case provider.ClaudeOAuth != nil:
+			accessToken = provider.ClaudeOAuth.AccessToken
+			refreshToken = provider.ClaudeOAuth.RefreshToken
+			expiresAt = provider.ClaudeOAuth.ExpiresAt
+			scope = provider.ClaudeOAuth.Scope
+			accountLabel = provider.ClaudeOAuth.AccountLabel
+		case provider.CursorOAuth != nil:
+			accessToken = provider.CursorOAuth.AccessToken
+			refreshToken = provider.CursorOAuth.RefreshToken
+			expiresAt = provider.CursorOAuth.ExpiresAt
+			accountLabel = provider.CursorOAuth.AccountLabel
+		case provider.ChatGPTOAuth != nil:
+			accessToken = provider.ChatGPTOAuth.AccessToken
+			refreshToken = provider.ChatGPTOAuth.RefreshToken
+			expiresAt = provider.ChatGPTOAuth.ExpiresAt
+			scope = provider.ChatGPTOAuth.ChatGPTAccountID
+			accountLabel = provider.ChatGPTOAuth.AccountLabel
+		case provider.QoderPAT != nil:
+			accessToken = provider.QoderPAT.AccessToken
+			refreshToken = provider.QoderPAT.RefreshToken
+			expiresAt = provider.QoderPAT.ExpiresAt
+			accountLabel = provider.QoderPAT.AccountLabel
+			if provider.QoderPAT.Disconnected {
 				scope = domain.QoderDisconnectedScopeMarker
 			}
+		case provider.WorkBuddy != nil:
+			accessToken = provider.WorkBuddy.AccessToken
+			refreshToken = provider.WorkBuddy.RefreshToken
+			expiresAt = provider.WorkBuddy.ExpiresAt
+			accountLabel = provider.WorkBuddy.AccountLabel
+			userID = provider.WorkBuddy.UserID
+			authDomain = provider.WorkBuddy.Domain
 		default:
 			return nil
 		}
-		return s.providerOAuthSaver.UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel)
+		return s.providerOAuthSaver.UpdateProviderOAuth(provider.ID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain)
 	}
 	return s.saveState()
 }
@@ -3906,6 +3935,7 @@ func (s *Server) proxyClaudeCountTokens(r *http.Request, provider domain.Provide
 	// Anthropic count_tokens call against api2-v2.qoder.sh and fail.
 	if provider.AuthType == domain.AuthTypeCursorOAuth ||
 		provider.AuthType == domain.AuthTypeQoderPAT ||
+		isWorkBuddyProvider(provider) ||
 		(provider.Protocol == domain.ProtocolOpenAIChat && strings.TrimSpace(provider.BaseURL) == "") {
 		stub, _ := json.Marshal(map[string]any{"input_tokens": 1})
 		return http.StatusOK, stub, nil
@@ -4022,6 +4052,31 @@ func (s *Server) fetchProviderModels(r *http.Request, provider domain.Provider, 
 			Models:    defaultQoderModels(provider.ID),
 			Preview:   "qoder direct endpoint exposes no /models route; using the known alias list",
 		}
+	}
+
+	if isWorkBuddyProvider(provider) {
+		site, _ := workBuddySiteForAuthType(provider.AuthType)
+		refreshed, err := s.ensureFreshWorkBuddyToken(provider)
+		if err != nil {
+			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: err.Error(), Models: []domain.Model{}}
+		}
+		provider = refreshed
+		// The plan's model list comes from its product config, not a /models
+		// route: WorkBuddy's OpenAI-compatible /v2 does not serve one.
+		modelsURL := site.api() + workBuddyConfigPath
+		if provider.WorkBuddy == nil {
+			return providerTestResult{Success: false, Provider: provider.ID, ModelsURL: modelsURL, LatencyMs: time.Since(started).Milliseconds(), Error: "WorkBuddy 尚未登录", Models: []domain.Model{}}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		models, err := fetchWorkBuddyModels(ctx, site, *provider.WorkBuddy)
+		if err != nil {
+			return providerTestResult{Success: false, Provider: provider.ID, ModelsURL: modelsURL, Status: http.StatusBadGateway, LatencyMs: time.Since(started).Milliseconds(), Error: err.Error(), Models: []domain.Model{}}
+		}
+		for index := range models {
+			models[index].ProviderID = provider.ID
+		}
+		return providerTestResult{Success: true, Provider: provider.ID, ModelsURL: modelsURL, Status: http.StatusOK, LatencyMs: time.Since(started).Milliseconds(), Models: models}
 	}
 
 	if provider.AuthType == domain.AuthTypeChatGPTOAuth {
@@ -4612,27 +4667,30 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	if bodyErr != nil {
 		return 0, TokenUsage{}, nil, bodyErr
 	}
+	// WorkBuddy refuses a non-stream chat ("Non-stream chat request is
+	// currently not supported"), so its upstream call always streams; a client
+	// that asked for a single JSON object gets the stream rebuilt into one
+	// before the response is written.
+	workBuddy := isWorkBuddyProvider(provider)
+	if workBuddy {
+		body, _ = prepareWorkBuddyChatBody(body)
+	}
 	upstreamURL := resolveProviderChatURLWithAdapter(provider, model)
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", r.Header.Get("Accept"))
-	if authValue := resolveProviderAuth(provider); authValue != "" {
-		header := provider.AuthHeader
-		if header == "" {
-			header = "Authorization"
-		}
-		if strings.EqualFold(header, "Authorization") && !strings.HasPrefix(strings.ToLower(authValue), "bearer ") {
-			authValue = "Bearer " + authValue
-		}
-		request.Header.Set(header, authValue)
-	} else if !skipIncomingAuth {
-		if incomingAuth := r.Header.Get("Authorization"); incomingAuth != "" {
-			request.Header.Set("Authorization", incomingAuth)
-		}
+	if workBuddy && !stream {
+		request.Header.Set("Accept", "text/event-stream")
+	} else {
+		request.Header.Set("Accept", r.Header.Get("Accept"))
 	}
+	incomingAuth := ""
+	if !skipIncomingAuth {
+		incomingAuth = r.Header.Get("Authorization")
+	}
+	applyProviderAuth(request, provider, incomingAuth)
 	applyRequestAdapterHeaders(request, provider, model)
 
 	response, err := doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
@@ -4640,6 +4698,9 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 		return 0, TokenUsage{}, nil, err
 	}
 	defer response.Body.Close()
+	if workBuddy && !stream {
+		_ = rewriteWorkBuddyUpstreamStreamedBody(response, model)
+	}
 	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
 }
 
@@ -4957,6 +5018,9 @@ func applyProviderAuth(request *http.Request, provider domain.Provider, incoming
 	} else if incomingAuth != "" {
 		request.Header.Set("Authorization", incomingAuth)
 	}
+	// A WorkBuddy request is always signed by its own account, so these
+	// overwrite whatever the generic path above put in Authorization.
+	applyWorkBuddyHeaders(request, provider)
 }
 
 func resolveProviderAuth(provider domain.Provider) string {
@@ -4966,6 +5030,14 @@ func resolveProviderAuth(provider domain.Provider) string {
 	if provider.AuthType == domain.AuthTypeQoderPAT {
 		if provider.QoderPAT != nil {
 			return strings.TrimSpace(provider.QoderPAT.AccessToken)
+		}
+		return ""
+	}
+	// WorkBuddy likewise carries its bearer in the credential; the token itself
+	// is renewed by ensureFreshWorkBuddyToken on the forward path.
+	if isWorkBuddyProvider(provider) {
+		if provider.WorkBuddy != nil {
+			return strings.TrimSpace(provider.WorkBuddy.AccessToken)
 		}
 		return ""
 	}

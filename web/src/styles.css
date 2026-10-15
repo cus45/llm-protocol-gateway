@@ -5197,4 +5197,98 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   background: var(--accent-soft);
 }
 
-
+
+
+/* ── 添加 Provider 目录弹窗 ────────────────────────────────────────────── */
+/* 检索条钉在弹窗顶部：标题随内容滚走，检索框常驻，50 个磁贴滚动时始终可过滤。
+   负外边距正好抵掉 .modal-card 的 24px 内边距，让横条铺满卡片宽度而不出横向滚动。 */
+.provider-catalog-search {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: -6px -24px 14px;
+  padding: 6px 24px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.provider-catalog-search .models-search-input { width: 100%; }
+
+.provider-catalog-section { padding-bottom: 14px; }
+.provider-catalog-section + .provider-catalog-section {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.provider-catalog-section-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+.provider-catalog-section-title { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.provider-catalog-section-desc { font-size: 10.5px; color: var(--subtle); }
+.provider-catalog-empty { padding: 8px 0 4px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+
+/* 磁贴：一行图标 + 名称，密排可扫读；已添加的带计数。高度只用 --control-h 一档。 */
+.provider-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+.provider-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease;
+}
+.provider-tile:hover { border-color: var(--accent-border); background: var(--active-surface); }
+.provider-tile:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+.provider-tile:active { transform: translateY(1px); }
+.provider-tile-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-tile-count {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10.5px;
+  color: var(--accent-strong);
+}
+.provider-tile.have { border-color: var(--accent-border); }
+
+/* 品牌图标：彩色版按 <img> 显示；单色版（currentColor）必须走 mask 才跟着主题着色。 */
+.provider-tile-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+.provider-tile-icon.mask {
+  background-color: var(--muted);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.provider-tile:hover .provider-tile-icon.mask { background-color: var(--accent-strong); }
+.provider-tile-mark {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xs);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}

@@ -210,7 +210,7 @@ func isUserProviderManagementPath(method, path string) bool {
 	}
 	if len(parts) == 3 {
 		switch parts[1] {
-		case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "qoder-pat":
+		case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "qoder-pat", "workbuddy-oauth":
 			// qoder-pat has no browser round-trip (the user pastes a PAT), so it
 			// only uses complete/status/disconnect/reconnect — the OAuth
 			// families additionally share start/complete/disconnect/status but
@@ -249,7 +249,7 @@ func isUserProviderUsagePath(path string) bool {
 		return false
 	}
 	switch parts[1] {
-	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "zhipu", "deepseek":
+	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "workbuddy-oauth", "zhipu", "deepseek":
 		return parts[2] == "usage"
 	default:
 		return false

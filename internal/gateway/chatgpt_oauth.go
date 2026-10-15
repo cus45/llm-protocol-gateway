@@ -381,7 +381,7 @@ func (s *Server) ensureFreshChatGPTToken(provider domain.Provider) (domain.Provi
 	if err != nil {
 		return provider, err
 	}
-	if err := s.persistProviderOAuth(updated.ID, nil, nil, updated.ChatGPTOAuth, nil); err != nil {
+	if err := s.persistProviderOAuth(updated); err != nil {
 		s.logs.AddApp("warn", "failed to persist refreshed chatgpt oauth token", err.Error())
 	}
 	return updated, nil

@@ -272,7 +272,7 @@ func (s *Server) BackfillQoderAccountLabels() {
 		if err != nil {
 			continue
 		}
-		if err := s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT); err != nil {
+		if err := s.persistProviderOAuth(updated); err != nil {
 			s.logs.AddApp("warn", "failed to persist qoder account label", err.Error())
 			continue
 		}
@@ -340,7 +340,7 @@ func (s *Server) ensureFreshQoderToken(provider domain.Provider) (domain.Provide
 		if err != nil {
 			return provider, err
 		}
-		_ = s.persistProviderOAuth(updated.ID, nil, nil, nil, updated.QoderPAT)
+		_ = s.persistProviderOAuth(updated)
 		return updated, nil
 	}
 	return provider, nil

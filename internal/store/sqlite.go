@@ -203,6 +203,11 @@ func (s *Store) migrate() error {
 		{"coding_plan_provider", "TEXT NOT NULL DEFAULT ''"},
 		{"team_organization_id", "TEXT NOT NULL DEFAULT ''"},
 		{"team_project_id", "TEXT NOT NULL DEFAULT ''"},
+		// oauth_user_id / oauth_domain: the two identity headers a WorkBuddy
+		// subscription request carries besides its bearer (X-User-Id /
+		// X-Domain). Empty for every other auth type.
+		{"oauth_user_id", "TEXT NOT NULL DEFAULT ''"},
+		{"oauth_domain", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -446,6 +451,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 	}
 	for pIndex, provider := range state.Providers {
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
+		var userID, authDomain string
 		switch provider.AuthType {
 		case domain.AuthTypeClaudeOAuth:
 			if provider.ClaudeOAuth != nil {
@@ -480,6 +486,15 @@ func (s *Store) Save(state domain.GatewayState) error {
 					scope = domain.QoderDisconnectedScopeMarker
 				}
 			}
+		case domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
+			if provider.WorkBuddy != nil {
+				accessToken = provider.WorkBuddy.AccessToken
+				refreshToken = provider.WorkBuddy.RefreshToken
+				expiresAt = provider.WorkBuddy.ExpiresAt
+				accountLabel = provider.WorkBuddy.AccountLabel
+				userID = provider.WorkBuddy.UserID
+				authDomain = provider.WorkBuddy.Domain
+			}
 		}
 		disabled := 0
 		if provider.Disabled {
@@ -500,14 +515,14 @@ func (s *Store) Save(state domain.GatewayState) error {
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
 			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
-			 coding_plan_provider, team_organization_id, team_project_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
 			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
-			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID); err != nil {
+			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain); err != nil {
 			return err
 		}
 		for mIndex, model := range provider.Models {
@@ -611,7 +626,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
 		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
-		coding_plan_provider, team_organization_id, team_project_id
+		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain
 		FROM providers ORDER BY position, id`)
 	if err != nil {
 		return nil, err
@@ -621,6 +636,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var p domain.Provider
 		var protocol string
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
+		var userID, authDomain string
 		var disabled int
 		var selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt string
 		var deleted int
@@ -629,7 +645,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
 			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
-			&codingPlanProvider, &teamOrganizationID, &teamProjectID); err != nil {
+			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -686,6 +702,17 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 					ExpiresAt:    expiresAt,
 					AccountLabel: accountLabel,
 					Disconnected: scope == domain.QoderDisconnectedScopeMarker,
+				}
+			}
+		case domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
+			if accessToken != "" || refreshToken != "" {
+				p.WorkBuddy = &domain.WorkBuddyCredential{
+					AccessToken:  accessToken,
+					RefreshToken: refreshToken,
+					ExpiresAt:    expiresAt,
+					AccountLabel: accountLabel,
+					UserID:       userID,
+					Domain:       authDomain,
 				}
 			}
 		default:
@@ -993,7 +1020,7 @@ func (s *Store) TouchAPIKey(id string, lastUsedAt string) error {
 // re-INSERTs every provider/model/route row on the single shared connection,
 // which serialized behind and blocked request-hot-path DB writes on every
 // token refresh.
-func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel string) error {
+func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain string) error {
 	var err error
 	for attempt := 0; attempt < 8; attempt++ {
 		_, err = s.db.Exec(`UPDATE providers SET
@@ -1001,9 +1028,11 @@ func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expir
 			oauth_refresh_token = ?,
 			oauth_expires_at = ?,
 			oauth_scope = ?,
-			oauth_account_label = ?
+			oauth_account_label = ?,
+			oauth_user_id = ?,
+			oauth_domain = ?
 			WHERE id = ?`,
-			accessToken, refreshToken, expiresAt, scope, accountLabel, providerID)
+			accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, providerID)
 		if err == nil {
 			return nil
 		}

@@ -268,6 +268,10 @@ type Provider struct {
 	// QoderPAT holds the Qoder personal access token plus the job token
 	// exchanged from it, for AuthType == "qoder_pat" providers.
 	QoderPAT *QoderPATCredential `json:"qoderPat,omitempty"`
+	// WorkBuddy holds the WorkBuddy subscription token pair for
+	// AuthType == "workbuddy" (Tencent build) and "workbuddy_ai"
+	// (international build) providers. Nil/omitted when not signed in.
+	WorkBuddy *WorkBuddyCredential `json:"workbuddyOAuth,omitempty"`
 	// RequestAdapter is an optional provider-level request rewrite template
 	// (URL/headers/body/model mapping). Nil means use built-in protocol logic.
 	RequestAdapter *RequestAdapter `json:"requestAdapter,omitempty"`
@@ -391,12 +395,38 @@ type ChatGPTOAuthCredential struct {
 	Connected        bool   `json:"connected,omitempty"`
 }
 
+// WorkBuddyCredential holds a WorkBuddy subscription session. WorkBuddy (and
+// its international build, WorkBuddy AI) serves the Tencent CodeBuddy plan on
+// an OpenAI-compatible endpoint, where a request carries the account's JWT
+// access token plus the account id and domain in headers. AccessToken and
+// RefreshToken are secrets and must never reach the frontend (see
+// gateway.redactProviderForClient).
+type WorkBuddyCredential struct {
+	AccessToken  string `json:"accessToken,omitempty"`
+	RefreshToken string `json:"refreshToken,omitempty"`
+	ExpiresAt    string `json:"expiresAt,omitempty"` // RFC3339
+	AccountLabel string `json:"accountLabel,omitempty"`
+	// UserID is the plan account's id, sent as X-User-Id on every request.
+	// It is an account identifier rather than a secret, so it may be shown to
+	// the console.
+	UserID string `json:"userId,omitempty"`
+	// Domain is the account's auth domain, sent as X-Domain; empty means
+	// derive it from the endpoint host.
+	Domain    string `json:"domain,omitempty"`
+	Connected bool   `json:"connected,omitempty"`
+}
+
 const (
 	AuthTypeAPIKey       = "api_key"
 	AuthTypeClaudeOAuth  = "claude_oauth"
 	AuthTypeCursorOAuth  = "cursor_oauth"
 	AuthTypeChatGPTOAuth = "chatgpt_oauth"
 	AuthTypeQoderPAT     = "qoder_pat"
+	// AuthTypeWorkBuddy is WorkBuddy (China, copilot.tencent.com) and
+	// AuthTypeWorkBuddyAI is WorkBuddy AI (www.workbuddy.ai): the same sign-in
+	// and API, a different endpoint, model list and extra request headers.
+	AuthTypeWorkBuddy   = "workbuddy"
+	AuthTypeWorkBuddyAI = "workbuddy_ai"
 )
 
 type Model struct {
