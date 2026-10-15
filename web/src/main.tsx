@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isTrafficLogError, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache } from './types';
@@ -476,10 +476,10 @@ function App() {
       ? matched
       : matched.filter((model) => {
           if (modelsCapabilityFilter === 'thinking') {
-            return /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
+            return isThinkingModel(model.id);
           }
           if (modelsCapabilityFilter === 'vision') {
-            return /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+            return isVisionModel(model.id);
           }
           if (modelsCapabilityFilter === 'context') {
             return (model.contextLength || 0) >= 128000;
@@ -493,6 +493,35 @@ function App() {
       return a.id.localeCompare(b.id);
     });
   }, [state.models, state.providers, modelsProviderFilter, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
+
+  const modelsCapabilityCounts = useMemo(() => {
+    const base = modelsProviderFilter === '__all__'
+      ? state.models
+      : state.models.filter((model) => model.providerId === modelsProviderFilter);
+    const matched = !modelsSearch.matcher
+      ? base
+      : base.filter((model) => {
+          const provider = state.providers.find((item) => item.id === model.providerId);
+          const haystacks = [
+            model.id,
+            model.providerId,
+            provider?.name || '',
+            provider ? providerOptionLabel(provider) : '',
+            protocolLabel(model.protocol),
+          ];
+          return haystacks.some((text) => Boolean(text) && modelsSearch.matcher!(text));
+        });
+    let thinking = 0;
+    let vision = 0;
+    let context = 0;
+    for (const m of matched) {
+      if (isThinkingModel(m.id)) thinking++;
+      if (isVisionModel(m.id)) vision++;
+      if ((m.contextLength || 0) >= 128000) context++;
+    }
+    return { all: matched.length, thinking, vision, context };
+  }, [state.models, state.providers, modelsProviderFilter, modelsSearch]);
+
   const modelsMenuSummary = useMemo(() => {
     const counts = new Map<string, number>();
     for (const model of state.models) {
@@ -1621,8 +1650,8 @@ function App() {
       // 容错：开始时间晚于结束时间时自动交换，避免后端返回空区间
       if (from && to && from > to) [from, to] = [to, from];
       const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
+      if (from) params.set('from', localDateToRFC3339(from));
+      if (to) params.set('to', localDateToRFC3339(to, true));
       const response = await fetch(`${API_BASE}/__request-stats?${params.toString()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const snapshot = normalizeRequestStats(await response.json() as RequestStatsSnapshot | LegacyRequestStatsSnapshot);
@@ -1643,8 +1672,8 @@ function App() {
       const start = new Date();
       start.setDate(end.getDate() - 6);
       const params = new URLSearchParams();
-      params.set('from', formatLocalISODate(start));
-      params.set('to', formatLocalISODate(end));
+      params.set('from', localDateToRFC3339(formatLocalISODate(start)));
+      params.set('to', localDateToRFC3339(formatLocalISODate(end), true));
       const response = await fetch(`${API_BASE}/__request-stats?${params.toString()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = normalizeRequestStats(await response.json() as RequestStatsSnapshot | LegacyRequestStatsSnapshot);
@@ -3835,9 +3864,14 @@ function App() {
     }
   }
 
-  async function copy(value: string) {
-    await navigator.clipboard.writeText(value);
-    showToast(`已复制：${value}`);
+  async function copy(value: string, customMessage?: string) {
+    const ok = await copyToClipboard(value);
+    if (ok) {
+      showToast(customMessage || `已复制：${value}`);
+    } else {
+      showToast('复制失败，请手动选中文本复制');
+    }
+    return ok;
   }
 
   function showToast(text: string) {
@@ -5798,28 +5832,28 @@ function App() {
                     className={`models-filter-chip ${modelsCapabilityFilter === 'all' ? 'active' : ''}`}
                     onClick={() => setModelsCapabilityFilter('all')}
                   >
-                    全部
+                    全部 ({modelsCapabilityCounts.all})
                   </button>
                   <button
                     type="button"
                     className={`models-filter-chip ${modelsCapabilityFilter === 'thinking' ? 'active' : ''}`}
                     onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'thinking' ? 'all' : 'thinking')}
                   >
-                    思考 / 推理
+                    思考 / 推理 ({modelsCapabilityCounts.thinking})
                   </button>
                   <button
                     type="button"
                     className={`models-filter-chip ${modelsCapabilityFilter === 'vision' ? 'active' : ''}`}
                     onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'vision' ? 'all' : 'vision')}
                   >
-                    视觉 / 多模态
+                    视觉 / 多模态 ({modelsCapabilityCounts.vision})
                   </button>
                   <button
                     type="button"
                     className={`models-filter-chip ${modelsCapabilityFilter === 'context' ? 'active' : ''}`}
                     onClick={() => setModelsCapabilityFilter(modelsCapabilityFilter === 'context' ? 'all' : 'context')}
                   >
-                    长上下文 (128K+)
+                    长上下文 (128K+) ({modelsCapabilityCounts.context})
                   </button>
                 </div>
                 <div className="models-toolbar-meta">
@@ -5879,18 +5913,25 @@ function App() {
                     <tbody>
                       {filteredModels.map((model) => {
                         const provider = state.providers.find((item) => item.id === model.providerId);
-                        const isThinking = /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
-                        const isVision = /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+                        const isThinking = isThinkingModel(model.id);
+                        const isVision = isVisionModel(model.id);
                         const isLongContext = (model.contextLength || 0) >= 128000;
                         return (
                           <tr key={`${model.providerId}-${model.id}`}>
                             <td className="model-id-cell">
-                              <span title={model.id}>{model.id}</span>
+                              <div
+                                className="model-id-wrapper"
+                                title={`点击复制模型 ID：${model.id}`}
+                                onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                              >
+                                <span className="model-id-text">{model.id}</span>
+                                <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                              </div>
                             </td>
                             <td>{provider ? providerOptionLabel(provider) : model.providerId}</td>
                             <td>
                               <div className="model-tags-row">
-                                {isThinking ? <span className="model-tag reasoning">思考</span> : null}
+                                {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
                                 {isVision ? <span className="model-tag vision">多模态</span> : null}
                                 {isLongContext ? <span className="model-tag context">128K+</span> : null}
                                 {!isThinking && !isVision && !isLongContext ? <span style={{ color: 'var(--muted)', fontSize: 12 }}>-</span> : null}
@@ -5900,18 +5941,12 @@ function App() {
                             <td className="model-ctx-cell">{model.contextLength.toLocaleString()}</td>
                             <td><Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge></td>
                             <td style={{ textAlign: 'right' }}>
-                              <button
-                                className="mini-btn copy-model-btn"
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  copy(model.id);
-                                  showToast(`已复制模型 ID：${model.id}`);
-                                }}
-                                title={`复制模型 ID (${model.id})`}
-                              >
-                                复制
-                              </button>
+                              <CopyButton
+                                value={model.id}
+                                label="复制"
+                                className="copy-model-btn"
+                                toastContent={`已复制模型 ID：${model.id}`}
+                              />
                             </td>
                           </tr>
                         );
@@ -5923,28 +5958,29 @@ function App() {
                 <div className="model-grid">
                   {filteredModels.map((model) => {
                     const provider = state.providers.find((item) => item.id === model.providerId);
-                    const isThinking = /(?:thinking|reasoner|r1|o1|o3)/i.test(model.id);
-                    const isVision = /(?:vision|4o|sonnet|gemini)/i.test(model.id);
+                    const isThinking = isThinkingModel(model.id);
+                    const isVision = isVisionModel(model.id);
                     const isLongContext = (model.contextLength || 0) >= 128000;
                     return (
                       <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
                         <div className="model-card-head">
                           <div className="model-card-title-row">
-                            <span className="provider-name" title={model.id}>{model.id}</span>
+                            <span
+                              className="provider-name model-id-clickable"
+                              title={`点击复制模型 ID：${model.id}`}
+                              onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                            >
+                              {model.id}
+                              <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                            </span>
                             <Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge>
                           </div>
-                          <button
-                            className="mini-btn copy-model-btn"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              copy(model.id);
-                              showToast(`已复制模型 ID：${model.id}`);
-                            }}
-                            title={`复制模型 ID (${model.id})`}
-                          >
-                            复制
-                          </button>
+                          <CopyButton
+                            value={model.id}
+                            label="复制"
+                            className="copy-model-btn"
+                            toastContent={`已复制模型 ID：${model.id}`}
+                          />
                         </div>
                         <div className="provider-meta" title={provider?.name || model.providerId}>
                           {provider ? providerOptionLabel(provider) : model.providerId}
@@ -8233,8 +8269,23 @@ function App() {
                   {providerModelsResult.models.map((model) => (
                     <div className="route-card" key={model.id}>
                       <div className="route-top">
-                        <div className="route-name">{model.id}</div>
-                        <Badge tone="slate">{model.contextLength ? `${model.contextLength} 上下文` : '模型'}</Badge>
+                        <div
+                          className="route-name model-id-clickable"
+                          title={`点击复制模型 ID：${model.id}`}
+                          onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <span>{model.id}</span>
+                          <span className="model-id-copy-hint" aria-hidden="true" style={{ fontSize: 12 }}>📋</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Badge tone="slate">{model.contextLength ? `${model.contextLength} 上下文` : '模型'}</Badge>
+                          <CopyButton
+                            value={model.id}
+                            label="复制"
+                            toastContent={`已复制模型 ID：${model.id}`}
+                          />
+                        </div>
                       </div>
                     </div>
                   ))}

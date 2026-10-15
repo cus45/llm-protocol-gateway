@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildApiKeyClientConfigExtras, buildApiKeyClientConfigInstallScript, buildApiKeyCodexRestoreOfficialScript, buildApiKeyPublicCurl, clientConfigFilePath, clientConfigProtocolHint, clientConfigScriptNoun, clientConfigTitle, clientConfigsForProtocol, fixedOutputLabels, getApiKeyBinding, localGatewayRoot, protocolFromLabel, protocolLabel, providerOptionLabel, thinkingDepthSelectOptions } from '../lib';
+import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildApiKeyClientConfigExtras, buildApiKeyClientConfigInstallScript, buildApiKeyCodexRestoreOfficialScript, buildApiKeyPublicCurl, clientConfigFilePath, clientConfigProtocolHint, clientConfigScriptNoun, clientConfigTitle, clientConfigsForProtocol, copyToClipboard, fixedOutputLabels, getApiKeyBinding, localGatewayRoot, protocolFromLabel, protocolLabel, providerOptionLabel, thinkingDepthSelectOptions } from '../lib';
 import { SearchableModelSelect } from './selects';
 import { APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route } from '../types';
 import { Badge, CopyButton, Modal } from './ui';
@@ -740,8 +740,10 @@ export function ApiKeyClientConfigModal({
   const protocolHint = clientConfigProtocolHint(client, route);
 
   const copyConfig = React.useCallback((text: string, message: string) => {
-    void navigator.clipboard.writeText(text).then(() => {
-      onToast?.(message);
+    void copyToClipboard(text).then((ok) => {
+      if (ok) {
+        onToast?.(message);
+      }
     });
   }, [onToast]);
 
@@ -1088,7 +1090,25 @@ export function ApiKeyModelMappingModal({
           {models.map((model) => (
             <div className="model-mapping-row" key={model.id}>
               <div className="model-mapping-model">
-                <div className="model-mapping-model-id">{model.id}</div>
+                <div
+                  className="model-mapping-model-id model-id-clickable"
+                  title={`点击复制模型 ID：${model.id}`}
+                  onClick={() => {
+                    void copyToClipboard(model.id).then((ok) => {
+                      if (ok) {
+                        const toast = document.getElementById('toast');
+                        if (toast) {
+                          toast.textContent = `已复制模型 ID：${model.id}`;
+                          toast.classList.add('show');
+                          window.setTimeout(() => toast.classList.remove('show'), 2000);
+                        }
+                      }
+                    });
+                  }}
+                >
+                  <span>{model.id}</span>
+                  <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                </div>
                 {model.contextLength ? <div className="model-mapping-model-meta">{model.contextLength.toLocaleString()} tokens</div> : null}
               </div>
               <input

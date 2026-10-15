@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -652,6 +653,9 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("to")); raw != "" {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 			to = parsed
+			if strings.Contains(raw, "23:59:59") {
+				to = time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, to.Location()).AddDate(0, 0, 1)
+			}
 		} else if parsed, err := time.ParseInLocation("2006-01-02", raw, localNow.Location()); err == nil {
 			to = parsed.Add(24 * time.Hour)
 		}
@@ -668,10 +672,36 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snapshot := s.logs.UsageStatsRangeForKeys(now, from, to, keyIDs)
-		if s.requestLogStore != nil && len(keyIDs) > 0 && hourlyStatsTotal(snapshot.Hourly) == 0 {
-			if dbLogs := s.loadRequestLogsForStatsForKeys(from, to, keyIDs, 5000); len(dbLogs) > 0 {
-				snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+		if s.requestLogStore != nil && len(keyIDs) > 0 {
+			needRange := snapshot.Range == nil || snapshot.Range.Total.RequestCount == 0
+			needHourly := hourlyStatsTotal(snapshot.Hourly) == 0
+			needDaily := len(snapshot.Daily) == 0
+			needStatus := statusStatsTotal(snapshot.Status) == 0
+			if needRange || needHourly || needDaily || needStatus {
+				if dbLogs := s.loadRequestLogsForStatsForKeys(from, to, keyIDs, 5000); len(dbLogs) > 0 {
+					if needHourly {
+						snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+					}
+					if needDaily || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
+						snapshot.Daily = monitor.AggregateDaily(dbLogs, from, to)
+					}
+					if needStatus {
+						snapshot.Status = monitor.AggregateStatus(dbLogs, from, to)
+					}
+					if needRange || int64(len(dbLogs)) > snapshot.Range.Total.RequestCount {
+						periodLabel := from.Format("2006-01-02") + " ~ " + to.Add(-time.Nanosecond).Format("2006-01-02")
+						rStats := monitor.AggregateLogsInRange(dbLogs, from, to, periodLabel)
+						snapshot.Range = &rStats
+					}
+				}
 			}
+		}
+		if snapshot.Range != nil && snapshot.Today.Total.RequestCount < snapshot.Range.Total.RequestCount {
+			snapshot.Today.Total = snapshot.Range.Total
+			snapshot.Today.ByAPIKey = snapshot.Range.ByAPIKey
+			snapshot.Today.ByProvider = snapshot.Range.ByProvider
+			snapshot.Today.ByModel = snapshot.Range.ByModel
+			snapshot.Today.ByProtocol = snapshot.Range.ByProtocol
 		}
 		s.fillUsageKeyNames(&snapshot)
 		s.requestStatsCache.set(userCacheKey, snapshot)
@@ -685,10 +715,38 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.logs.UsageStatsRange(now, from, to)
-	if s.requestLogStore != nil && hourlyStatsTotal(snapshot.Hourly) == 0 {
-		if dbLogs := s.loadRequestLogsForStats(from, to, 5000); len(dbLogs) > 0 {
-			snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+	if s.requestLogStore != nil {
+		needRange := snapshot.Range == nil || snapshot.Range.Total.RequestCount == 0
+		needHourly := hourlyStatsTotal(snapshot.Hourly) == 0
+		needDaily := len(snapshot.Daily) == 0
+		needStatus := statusStatsTotal(snapshot.Status) == 0
+		if needRange || needHourly || needDaily || needStatus {
+			if dbLogs := s.loadRequestLogsForStats(from, to, 5000); len(dbLogs) > 0 {
+				if needHourly {
+					snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
+				}
+				if needDaily || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
+					snapshot.Daily = monitor.AggregateDaily(dbLogs, from, to)
+				}
+				if needStatus {
+					snapshot.Status = monitor.AggregateStatus(dbLogs, from, to)
+				}
+				if needRange || int64(len(dbLogs)) > snapshot.Range.Total.RequestCount {
+					periodLabel := from.Format("2006-01-02") + " ~ " + to.Add(-time.Nanosecond).Format("2006-01-02")
+					rStats := monitor.AggregateLogsInRange(dbLogs, from, to, periodLabel)
+					s.fillUsageUserBreakdown(&rStats, dbLogs, from, to)
+					snapshot.Range = &rStats
+				}
+			}
 		}
+	}
+	if snapshot.Range != nil && snapshot.Today.Total.RequestCount < snapshot.Range.Total.RequestCount {
+		snapshot.Today.Total = snapshot.Range.Total
+		snapshot.Today.ByAPIKey = snapshot.Range.ByAPIKey
+		snapshot.Today.ByProvider = snapshot.Range.ByProvider
+		snapshot.Today.ByModel = snapshot.Range.ByModel
+		snapshot.Today.ByUser = snapshot.Range.ByUser
+		snapshot.Today.ByProtocol = snapshot.Range.ByProtocol
 	}
 	s.fillUsageKeyNames(&snapshot)
 	s.fillUsageUserNames(&snapshot)
@@ -703,6 +761,51 @@ func hourlyStatsTotal(buckets []monitor.HourlyBucketStats) int64 {
 		total += b.RequestCount
 	}
 	return total
+}
+
+func statusStatsTotal(buckets []monitor.StatusBucketStats) int64 {
+	var total int64
+	for _, b := range buckets {
+		total += b.RequestCount
+	}
+	return total
+}
+
+func (s *Server) fillUsageUserBreakdown(rangeStats *monitor.PeriodStatsSnapshot, logs []monitor.RequestLog, from, to time.Time) {
+	if rangeStats == nil || len(logs) == 0 {
+		return
+	}
+	keyToUser := make(map[string]string)
+	for _, key := range s.router.State().APIKeys {
+		keyToUser[key.ID] = ownerUserIDForStats(key.OwnerUserID)
+	}
+	byUser := make(map[string]*monitor.UserDayStats)
+	for _, log := range logs {
+		if (!from.IsZero() && log.Time.Before(from)) || (!to.IsZero() && !log.Time.Before(to)) {
+			continue
+		}
+		userID := keyToUser[log.APIKeyID]
+		if userID == "" {
+			userID = legacyAdminUserID
+		}
+		stats, ok := byUser[userID]
+		if !ok {
+			stats = &monitor.UserDayStats{UserID: userID}
+			byUser[userID] = stats
+		}
+		stats.RequestCount++
+		stats.InputTokens += log.InputTokens
+		stats.OutputTokens += log.OutputTokens
+		stats.CacheTokens += log.CacheTokens
+	}
+	out := make([]monitor.UserDayStats, 0, len(byUser))
+	for _, stats := range byUser {
+		out = append(out, *stats)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].RequestCount > out[j].RequestCount
+	})
+	rangeStats.ByUser = out
 }
 
 // fillUsageUserNames resolves display names for every byUser breakdown in the

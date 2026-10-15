@@ -782,7 +782,7 @@ func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs
 		From:   from.Format(time.RFC3339),
 		To:     to.Format(time.RFC3339),
 		Daily:  daily,
-		Status: aggregateStatus(logs, from, to),
+		Status: AggregateStatus(logs, from, to),
 		Hourly: AggregateHourly(logs, from, to),
 	}
 }
@@ -855,13 +855,13 @@ func (s *Store) UsageStatsRange(now time.Time, from, to time.Time) UsageStatsSna
 	}
 }
 
-func aggregateLogsInRange(logs []RequestLog, from, to time.Time, periodLabel string) PeriodStatsSnapshot {
+func AggregateLogsInRange(logs []RequestLog, from, to time.Time, periodLabel string) PeriodStatsSnapshot {
 	total := APIKeyDayStats{APIKeyName: "全部"}
 	byKey := map[string]*APIKeyDayStats{}
 	filtered := make([]RequestLog, 0, len(logs))
 	for index := range logs {
 		log := logs[index]
-		if log.Time.Before(from) || !log.Time.Before(to) {
+		if (!from.IsZero() && log.Time.Before(from)) || (!to.IsZero() && !log.Time.Before(to)) {
 			continue
 		}
 		filtered = append(filtered, log)
@@ -900,10 +900,12 @@ func aggregateLogsInRange(logs []RequestLog, from, to time.Time, periodLabel str
 		Total:      total,
 		ByAPIKey:   byAPIKey,
 		ByProvider: aggregateByProvider(filtered, time.Time{}),
+		ByModel:    aggregateByModel(filtered, time.Time{}),
+		ByProtocol: aggregateByProtocol(filtered, time.Time{}),
 	}
 }
 
-func aggregateDaily(logs []RequestLog, from, to time.Time) []DailyRequestPoint {
+func AggregateDaily(logs []RequestLog, from, to time.Time) []DailyRequestPoint {
 	loc := from.Location()
 	byDay := map[string]*DailyRequestPoint{}
 	latencySum := map[string]int64{}
@@ -915,7 +917,7 @@ func aggregateDaily(logs []RequestLog, from, to time.Time) []DailyRequestPoint {
 	}
 	for index := range logs {
 		log := logs[index]
-		if log.Time.Before(from) || !log.Time.Before(to) {
+		if (!from.IsZero() && log.Time.Before(from)) || (!to.IsZero() && !log.Time.Before(to)) {
 			continue
 		}
 		label := log.Time.In(loc).Format("2006-01-02")
@@ -948,11 +950,11 @@ func aggregateDaily(logs []RequestLog, from, to time.Time) []DailyRequestPoint {
 	return out
 }
 
-func aggregateStatus(logs []RequestLog, from, to time.Time) []StatusBucketStats {
+func AggregateStatus(logs []RequestLog, from, to time.Time) []StatusBucketStats {
 	buckets := map[string]int64{"2xx": 0, "4xx": 0, "5xx": 0, "other": 0}
 	for index := range logs {
 		log := logs[index]
-		if log.Time.Before(from) || !log.Time.Before(to) {
+		if (!from.IsZero() && log.Time.Before(from)) || (!to.IsZero() && !log.Time.Before(to)) {
 			continue
 		}
 		switch {

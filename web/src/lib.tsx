@@ -2233,6 +2233,49 @@ export function localDateToRFC3339(date: string, endOfDay = false) {
   return `${date}${time}${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
 }
 
+/**
+ * 健壮的剪贴板复制工具，兼容 HTTPS 与非安全上下文（如局域网 / 纯 IP HTTP 访问）。
+ * 优先调用现代 navigator.clipboard.writeText；若不可用（如非安全上下文或无权限）则回退到
+ * 隐藏 textarea + document.execCommand('copy')，确保局域网、内网穿透与各端浏览器均能正常复制。
+ */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+
+  // 1. 尝试现代异步剪贴板 API（安全上下文 HTTPS / localhost 下可用）
+  if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // 现代 API 被浏览器策略拦截时，继续向下尝试 execCommand
+    }
+  }
+
+  // 2. 降级方案：创建隐藏 textarea 借助 document.execCommand('copy') 完成复制
+  try {
+    if (typeof document !== 'undefined') {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      textarea.style.opacity = '0';
+      textarea.setAttribute('readonly', '');
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (successful) return true;
+    }
+  } catch {
+    // 降级亦失败
+  }
+
+  return false;
+}
+
 /** 单日且等于本地今天 → 视为「跟随今天」，跨日后侧边栏再进页会自动滚到新的今天。 */
 export function isFollowingTodayRange(from: string, to: string, today = formatLocalISODate(new Date())) {
   return Boolean(from) && from === to && from === today;
@@ -2417,3 +2460,111 @@ export function chatgptAccountLabelFriendly(label?: string): string {
   const plan = value.slice(idx + 3);
   return plan ? `${email} · ${chatgptPlanLabel(plan)}` : email;
 }
+
+/**
+ * 智能识别模型是否具备深度思考 / 推理（Thinking / Reasoning）能力。
+ * 覆盖主流厂商的推理模型族：
+ * 1. 显式推理/思考关键词：thinking, reasoner, reasoning, thought, cot 等；
+ * 2. OpenAI：o1, o3, o4 系列（如 o1, o1-mini, o1-preview, o3-mini, o4 等）；
+ * 3. DeepSeek：deepseek-reasoner, deepseek-r1, r1 系列及各类蒸馏/微调模型（如 deepseek-ai/DeepSeek-R1-Distill-* 等）；
+ * 4. Anthropic Claude：Claude 3.7 Sonnet（首款支持 Extended Thinking）及后续 Claude 4 / 5 代的 Sonnet、Opus 与 Mythos 系列；
+ * 5. 智谱 GLM：glm-zero 系列（如 glm-zero-preview, glm-4-zero 等 Zero 推理族）、glm-4-airx；
+ * 6. 通义千问 Qwen：qwq 系列（如 qwq-32b）、qvq；
+ * 7. 月之暗面 Kimi：k1.5, kimi-k1.5 系列；
+ * 8. 其他主流专用推理模型：MiniMax-Text-01, Marco-o1 等。
+ */
+export function isThinkingModel(modelID: string): boolean {
+  if (!modelID) return false;
+  const id = modelID.toLowerCase();
+
+  // 1. 显式思考/推理词根 (thinking, reasoner, reasoning, thought, cot 等)
+  if (/(?:thinking|reasoner|reasoning|thought|\bcot\b)/i.test(id)) {
+    return true;
+  }
+
+  // 2. OpenAI o1 / o3 / o4 系列推理模型 (o1, o1-mini, o1-preview, o3, o3-mini, o4 等)
+  if (/(?:^|[-_./])o[134](?:[-_./]|$)/i.test(id)) {
+    return true;
+  }
+
+  // 3. DeepSeek R1 及其各类蒸馏 / 部署命名 (deepseek-reasoner, deepseek-r1, r1, r1-distill 等)
+  if (/(?:^|[-_./])(?:r1|deepseek-r1)(?:[-_./]|$)/i.test(id) || /deepseek-reasoner/i.test(id)) {
+    return true;
+  }
+
+  // 4. Anthropic Claude 系列 Extended Thinking 深度思考模型
+  // 从 Claude 3.7 Sonnet 引入原生深度思考，以及 4.x / 5.x 世代的 Sonnet、Opus 与 Mythos 系列
+  if (/(?:claude-)?(?:3[.-]7-sonnet|sonnet-[45]|opus-[45]|mythos)/i.test(id)) {
+    return true;
+  }
+
+  // 5. 智谱 GLM 推理模型族 (glm-zero 系列、glm-4-zero、极速推理 glm-4-airx 等)
+  if (/glm-(?:zero|4-zero|4-airx)/i.test(id) || /(?:^|[-_./])(?:glm-zero|zero-preview)(?:[-_./]|$)/i.test(id)) {
+    return true;
+  }
+
+  // 6. 阿里通义千问 QwQ / QvQ 推理模型
+  if (/(?:^|[-_./])q[wv]q(?:[-_./]|$)/i.test(id)) {
+    return true;
+  }
+
+  // 7. 月之暗面 Kimi k1.5 推理模型
+  if (/(?:^|[-_./])(?:k1\.5|kimi-k1\.5)(?:[-_./]|$)/i.test(id)) {
+    return true;
+  }
+
+  // 8. 其他知名专有推理模型
+  if (/(?:minimax-text-01|marco-o1)/i.test(id)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 智能识别模型是否具备视觉 / 多模态（Vision / Multimodal）输入能力。
+ * 1. 显式视觉/多模态关键词：vision, visual, multimodal, pixtral, omni, vl 等；
+ * 2. OpenAI：gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4.5 等；
+ * 3. Anthropic Claude：Claude 3/3.5/3.7/4/5 全系列的 sonnet, opus, haiku 均原生支持图片视觉多模态；
+ * 4. Google Gemini：全系列原生多模态；
+ * 5. 智谱 GLM：glm-4v, glm-edge-v 等视觉系列；
+ * 6. 通义千问及开源多模态：qwen-vl, qvq, internvl, minicpm-v, llama-*-vision 等。
+ */
+export function isVisionModel(modelID: string): boolean {
+  if (!modelID) return false;
+  const id = modelID.toLowerCase();
+
+  // 1. 显式视觉 / 多模态词根
+  if (/(?:vision|visual|multimodal|pixtral|omni|[-_](?:vl|vlm|4v)|[-_]v\b|internvl|minicpm-v)/i.test(id)) {
+    return true;
+  }
+
+  // 2. OpenAI 具备视觉能力的多模态模型
+  if (/(?:4o|4-turbo|4\.5)/i.test(id)) {
+    return true;
+  }
+
+  // 3. Anthropic Claude 3 及后续全系列（Sonnet, Opus, Haiku 原生均支持图像视觉多模态，排除仅文本的实验/创作型号）
+  if (/(?:claude-(?:3|4|5|sonnet|opus|haiku)|(?:sonnet|opus|haiku)-[345])/i.test(id)) {
+    if (id.includes('fable')) return false;
+    return true;
+  }
+
+  // 4. Google Gemini 全系列原生多模态
+  if (/gemini/i.test(id)) {
+    return true;
+  }
+
+  // 5. 智谱 GLM 视觉系列 (glm-4v, glm-edge-v 等)
+  if (/glm-(?:.*v|edge-v)/i.test(id)) {
+    return true;
+  }
+
+  // 6. 通义千问及各类多模态模型 (qwen-vl, qvq 等)
+  if (/(?:qwen.*vl|qvq)/i.test(id)) {
+    return true;
+  }
+
+  return false;
+}
+

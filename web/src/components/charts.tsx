@@ -1,6 +1,7 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import {
+  copyToClipboard,
   formatBytes,
   formatCompactCount,
   formatEnCompact,
@@ -1293,7 +1294,30 @@ export function UsageModelLeaderboard({
                       {item.model}
                       {isSelected ? <span className="drill-active-tag">已下钻</span> : null}
                     </span>
-                    <span className="leaderboard-share-badge font-mono">{pctOfTotal}%</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        style={{ padding: '0 6px', height: '18px', fontSize: '11px', lineHeight: '18px', opacity: 0.8 }}
+                        title={`复制模型 ID：${item.model}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void copyToClipboard(item.model).then((ok) => {
+                            if (ok) {
+                              const toast = document.getElementById('toast');
+                              if (toast) {
+                                toast.textContent = `已复制模型 ID：${item.model}`;
+                                toast.classList.add('show');
+                                window.setTimeout(() => toast.classList.remove('show'), 2000);
+                              }
+                            }
+                          });
+                        }}
+                      >
+                        复制
+                      </button>
+                      <span className="leaderboard-share-badge font-mono">{pctOfTotal}%</span>
+                    </div>
                   </div>
                   <div className="leaderboard-split-track" style={{ width: `${Math.max(12, pctOfMax)}%` }}>
                     <div

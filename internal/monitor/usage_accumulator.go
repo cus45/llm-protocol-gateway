@@ -523,6 +523,9 @@ func (s *Store) dailyStatsInRangeLocked(from, to time.Time) []DailyRequestPoint 
 
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 	for dayKey, dayStats := range s.usageByDay {
 		day, err := time.ParseInLocation("2006-01-02", dayKey, loc)
 		if err != nil || day.Before(fromDay) || !day.Before(toDay) {
@@ -568,6 +571,9 @@ func (s *Store) statusStatsInRangeLocked(from, to time.Time) []StatusBucketStats
 	buckets := map[string]int64{"2xx": 0, "4xx": 0, "5xx": 0, "other": 0}
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, from.Location())
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 	for dayKey, dayStats := range s.usageByDay {
 		day, err := time.ParseInLocation("2006-01-02", dayKey, from.Location())
 		if err != nil || day.Before(fromDay) || !day.Before(toDay) {
@@ -593,6 +599,9 @@ func mergeProtocolDays(byDay map[string]*usageDayStats, from, to time.Time) map[
 	}
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 	byProtocol := make(map[string]*ProtocolDayStats)
 	for dayKey, dayStats := range byDay {
 		day, err := time.ParseInLocation("2006-01-02", dayKey, loc)
@@ -622,6 +631,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 	}
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 
 	total := APIKeyDayStats{APIKeyName: "全部"}
 	byAPIKey := make(map[string]*APIKeyDayStats)
@@ -704,6 +716,9 @@ func mergeUsageDaysForKeys(byDay map[string]*usageDayStats, from, to time.Time, 
 	}
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 
 	total := APIKeyDayStats{APIKeyName: "全部"}
 	byAPIKey := make(map[string]*APIKeyDayStats)
@@ -767,6 +782,9 @@ func dailyStatsForKeysLocked(byDay map[string]*usageDayStats, from, to time.Time
 
 	fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
 	toDay := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+	if to.Hour() > 0 || to.Minute() > 0 || to.Second() > 0 || to.Nanosecond() > 0 {
+		toDay = toDay.AddDate(0, 0, 1)
+	}
 	for dayKey, dayStats := range byDay {
 		day, err := time.ParseInLocation("2006-01-02", dayKey, loc)
 		if err != nil || day.Before(fromDay) || !day.Before(toDay) {

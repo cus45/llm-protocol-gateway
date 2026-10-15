@@ -3299,6 +3299,51 @@ html[data-theme="dark"] .output-curl-head {
   font-family: var(--mono);
   font-weight: 600;
   color: var(--text-strong);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.model-id-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: var(--r-xs, 4px);
+  padding: 3px 6px;
+  margin: -3px -6px;
+  transition: all 0.15s ease;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.model-id-wrapper:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+.model-id-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.model-id-copy-hint {
+  font-size: 11px;
+  opacity: 0.35;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.model-id-wrapper:hover .model-id-copy-hint,
+.model-id-clickable:hover .model-id-copy-hint {
+  opacity: 1;
+  transform: scale(1.15);
+}
+.model-id-clickable {
+  cursor: pointer;
+  user-select: text;
+  -webkit-user-select: text;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.15s ease;
+}
+.model-id-clickable:hover {
+  color: var(--accent);
 }
 .models-table .model-ctx-cell {
   font-family: var(--mono);

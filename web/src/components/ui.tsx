@@ -1,6 +1,7 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { copyToClipboard } from '../lib';
 import { BadgeTone, ModalLayer, NavItemID, ThemeMode } from '../types';
 export const THEME_STORAGE_KEY = 'llm-gateway-theme';
 
@@ -260,25 +261,27 @@ export function Field({ label, value, onChange, placeholder, fullWidth }: { labe
   return <div className={`field${fullWidth ? ' field-full' : ''}`}><label>{label}</label><input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} /></div>;
 }
 
-export function CopyButton({ value, label = '复制', toastContent }: { value: string; label?: string; toastContent?: string }) {
+export function CopyButton({ value, label = '复制', toastContent, className = '' }: { value: string; label?: string; toastContent?: string; className?: string }) {
   const [copied, setCopied] = React.useState(false);
   return (
     <button
-      className={`mini-btn${copied ? ' copied' : ''}`}
+      className={`mini-btn${className ? ` ${className}` : ''}${copied ? ' copied' : ''}`}
       type="button"
       onClick={() => {
-        void navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 2000);
-          // 仅当调用方显式传入 toastContent 时，才在底部全局 toast 里展示复制的具体内容
-          // （持续 3s）；不传时保持原有行为（只有按钮自身文案变化），避免大段文本
-          // （比如“复制全部”/“复制 curl”）把底部 toast 撑爆。
-          if (toastContent !== undefined) {
-            const toast = document.getElementById('toast');
-            if (toast) {
-              toast.textContent = toastContent;
-              toast.classList.add('show');
-              window.setTimeout(() => toast.classList.remove('show'), 3000);
+        void copyToClipboard(value).then((ok) => {
+          if (ok) {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 2000);
+            // 仅当调用方显式传入 toastContent 时，才在底部全局 toast 里展示复制的具体内容
+            // （持续 3s）；不传时保持原有行为（只有按钮自身文案变化），避免大段文本
+            // （比如“复制全部”/“复制 curl”）把底部 toast 撑爆。
+            if (toastContent !== undefined) {
+              const toast = document.getElementById('toast');
+              if (toast) {
+                toast.textContent = toastContent;
+                toast.classList.add('show');
+                window.setTimeout(() => toast.classList.remove('show'), 3000);
+              }
             }
           }
         });
