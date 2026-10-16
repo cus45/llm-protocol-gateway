@@ -1296,6 +1296,44 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .detail-section .api-key-call-example { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border); }
 .detail-section .api-key-fallback-summary { gap: 10px; }
 
+/* 分区标题与右上角的操作按钮同一行：按钮不再孤零零吊在文字下面。 */
+.detail-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.detail-section-head .detail-section-title { margin-bottom: 0; }
+
+/* 故障转移链：一行一个候选，位次胶囊 + 名称 + 协议 + 锁定模型 + 在服务标记。 */
+.fallback-chain { display: grid; gap: 6px; }
+.fallback-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface);
+}
+.fallback-row.serving { border-color: var(--accent-border); background: var(--active-surface); }
+.fallback-rank {
+  flex-shrink: 0; min-width: 56px; text-align: center; padding: 2px 8px;
+  border-radius: 999px; background: var(--surface-sunken); color: var(--muted);
+  font-size: 11px; font-weight: 700; font-feature-settings: 'tnum' 1;
+}
+.fallback-row.serving .fallback-rank { background: var(--accent-soft); color: var(--accent); }
+.fallback-name {
+  min-width: 0; color: var(--text-strong); font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fallback-model { margin-left: auto; flex-shrink: 0; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.fallback-model.unset { color: var(--amber); }
+.fallback-state {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 11.5px; font-weight: 600;
+}
+.fallback-state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+.fallback-state.serving { color: var(--green); }
+.fallback-state.serving::before { background: var(--green); }
+.fallback-empty {
+  margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md);
+  background: var(--amber-soft); border: 1px solid rgba(217, 119, 6, 0.22);
+  color: var(--amber); font-size: 12px;
+}
+.fallback-active-note { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.fallback-active-note b { color: var(--text); font-family: var(--mono); font-weight: 600; }
+
 /* ----------------------------------------------------------------
    13. 模型映射
    ---------------------------------------------------------------- */
@@ -2627,6 +2665,99 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .modal-form .field-full { grid-column: 1 / -1; }
 .modal-actions { justify-content: flex-end; margin-top: 20px; }
 .modal-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 16px; }
+
+/* ---- 对话测试弹窗 ------------------------------------------------------- */
+/* 一次运行有三个结果（主对话 / Cache / Thinking），全部收在这一个弹窗里用分段
+   切换看；以前是叠三个弹窗，遮罩和滚动会互相打架。 */
+.chat-test { display: grid; gap: 16px; }
+.chat-test-config { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.chat-test-run { display: flex; align-items: center; gap: 12px; }
+.chat-test-run-note { color: var(--muted); font-size: 12px; }
+
+.chat-test-tabs {
+  display: inline-flex; gap: 2px; padding: 3px; align-self: start;
+  background: var(--surface-sunken); border: 1px solid var(--border); border-radius: var(--r-lg);
+}
+.chat-test-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: var(--control-h-sm); padding: 0 12px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+.chat-test-tab:hover { color: var(--text); }
+.chat-test-tab.active { background: var(--active-surface); color: var(--text-strong); box-shadow: var(--shadow-soft); }
+.chat-test-dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--border-strong); flex-shrink: 0; }
+.chat-test-dot.ok { background: var(--green); border-color: var(--green); }
+.chat-test-dot.fail { background: var(--red); border-color: var(--red); }
+.chat-test-dot.running { border-color: var(--accent); border-right-color: transparent; animation: chat-test-spin 0.8s linear infinite; }
+@keyframes chat-test-spin { to { transform: rotate(360deg); } }
+
+.chat-test-body { display: grid; gap: 12px; }
+.chat-test-prompt { display: grid; gap: 12px; justify-items: start; }
+.chat-test-empty {
+  padding: 22px 14px; text-align: center; color: var(--muted); font-size: 12.5px;
+  border: 1px dashed var(--border); border-radius: var(--r-lg); background: var(--surface-sunken);
+}
+.chat-test-card {
+  display: grid; gap: 10px; padding: 14px;
+  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface);
+}
+.chat-test-head { display: flex; align-items: center; gap: 10px; }
+.chat-test-head-meta { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.chat-test-facts {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  color: var(--subtle); font-size: 11.5px; font-family: var(--mono);
+}
+.chat-test-facts b { color: var(--text); font-weight: 600; }
+/* 模型说的话才是这次测试的结论：正文优先，原始报文收进折叠区。 */
+.chat-test-text {
+  max-height: 300px; overflow: auto; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-sunken); color: var(--text);
+  font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.chat-test-text.subtle { color: var(--muted); font-size: 12.5px; }
+.chat-test-error {
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: rgba(220, 38, 38, 0.07); border: 1px solid rgba(220, 38, 38, 0.22);
+  color: var(--red); font-size: 12.5px; font-family: var(--mono); overflow-wrap: anywhere;
+}
+.chat-test-reasoning { display: grid; gap: 8px; }
+.chat-test-reasoning summary, .chat-test-details summary, .chat-test-raw summary {
+  cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; list-style: none;
+}
+.chat-test-reasoning summary::-webkit-details-marker,
+.chat-test-details summary::-webkit-details-marker,
+.chat-test-raw summary::-webkit-details-marker { display: none; }
+.chat-test-reasoning summary::before, .chat-test-details summary::before, .chat-test-raw summary::before {
+  content: '▸'; display: inline-block; margin-right: 6px; transition: transform 0.13s ease;
+}
+.chat-test-reasoning[open] > summary::before, .chat-test-details[open] > summary::before, .chat-test-raw[open] > summary::before { transform: rotate(90deg); }
+.chat-test-details { display: grid; gap: 8px; }
+.chat-test-details-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
+
+.chat-test-raw {
+  display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.chat-test-raw summary { display: flex; align-items: center; gap: 10px; }
+.chat-test-raw-target {
+  flex: 1; min-width: 0; color: var(--subtle); font-family: var(--mono); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 多行字段与单行控件同一套外观，只放开高度；两档控件高度不适用于 textarea。 */
+.field textarea {
+  width: 100%; outline: none; padding: 9px 12px; box-sizing: border-box; resize: vertical;
+  min-height: 62px; border-radius: var(--r-md); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 13px; line-height: 1.5;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.field textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.field textarea::placeholder { color: var(--subtle); }
+/* select + input 并排时，.field-inline select 的 flex:1 会被同排的 width:100%
+   input 挤成 48px 的一条；这类组合显式分好两份宽度。 */
+.field-inline.grow select { flex: 0 0 128px; min-width: 128px; }
+.field-inline.grow input { flex: 1; min-width: 0; }
 
 /* ----------------------------------------------------------------
    23. 登录 / 认证 (macOS Terminal Style)

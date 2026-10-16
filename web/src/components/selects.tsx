@@ -3,6 +3,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { modelSelectOptionLabel, reportIfLooksLikeAutofill } from '../lib';
 import { Model, MultiFilterOption, SearchableModelOption } from '../types';
+import { BrandIcon } from './ui';
 export function filterModelOptions(models: Model[], queryRaw: string): SearchableModelOption[] {
   const needle = queryRaw.trim().toLowerCase();
   const options = models.map((model) => ({ id: model.id, label: modelSelectOptionLabel(model) }));
@@ -235,7 +236,8 @@ export function MultiSelectFilter({ label, options, selected, onChange, allLabel
                   }}
                 >
                   <span className={`multi-check${checked ? ' on' : ''}`}>{checked ? '✓' : ''}</span>
-                  {option.label}
+                  {option.icon ? <BrandIcon icon={option.icon} name={option.label} size={15} className="filter-option-icon" /> : null}
+                  <span className="searchable-select-option-label">{option.label}</span>
                 </button>
               );
             })}

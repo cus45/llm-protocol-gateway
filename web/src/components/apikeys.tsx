@@ -4,6 +4,7 @@ import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildA
 import { SearchableModelSelect } from './selects';
 import { APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route } from '../types';
 import { Badge, CopyButton, Modal } from './ui';
+import { ProviderLabel, providerIcon } from './provider_label';
 /** 方案命名弹窗：替代 window.prompt——嵌入式浏览器/被浏览器拦截时 prompt 会静默
  *  返回 null，表现为按钮点了没反应；应用内弹窗不依赖原生对话框。 */
 export function ProfileNameDialog({ mode, initial, busy, onSubmit, onClose }: { mode: 'create' | 'rename'; initial: string; busy: boolean; onSubmit: (name: string) => void; onClose: () => void }) {
@@ -113,6 +114,7 @@ export function ApiKeyDetailPanel({
   const profiles = keyItem.profiles || [];
   const activeProfileId = keyItem.activeProfileId || '';
   const activeProfile = profiles.find((item) => item.id === activeProfileId);
+  const primaryProvider = providers.find((item) => item.id === binding.providerId);
   const fallbackIds = keyItem.fallbackProviderIds || [];
   const fallbackModelOverrides = keyItem.fallbackModelOverrides || {};
   const activeProviderId = keyItem.activeProviderId || binding.providerId;
@@ -347,8 +349,15 @@ export function ApiKeyDetailPanel({
                 >
                   {providers.map((item) => <option key={item.id} value={item.id}>{providerOptionLabel(item)}</option>)}
                 </select>
-                <div className="hint-line">
-                  {routeProvider ? `输入协议：${protocolLabel(routeProvider.protocol)}（由 Provider 决定，不可单独修改）` : '未绑定'}
+                <div className="hint-line binding-provider-hint">
+                  {routeProvider ? (
+                    <>
+                      {/* 原生 <option> 里放不进图标，就把署名放在下拉下方：
+                          选完立刻能看到是哪个服务商、什么协议。 */}
+                      <ProviderLabel provider={routeProvider} size={15} />
+                      <span>输入协议：{protocolLabel(routeProvider.protocol)}</span>
+                    </>
+                  ) : '未绑定'}
                 </div>
               </div>
               {owners && onUpdateOwner ? (
@@ -380,27 +389,47 @@ export function ApiKeyDetailPanel({
           </div>
 
           <div className="detail-section">
-            <div className="detail-section-title">备选与故障转移</div>
-            <div className="api-key-fallback-summary">
-              <div className="hint-line">
-                当前在用：{activeProvider ? providerOptionLabel(activeProvider) : '未绑定'}
-                {usingFallback ? `（已从首选故障转移${activeFallbackModel ? ` · 模型 ${activeFallbackModel}` : ''}）` : ''}
-              </div>
-              <div className="hint-line">
-                {fallbackIds.length === 0
-                  ? '未配置备选。首选额度耗尽后将无法自动切换。'
-                  : `备选顺序：${fallbackIds.map((id, index) => {
-                    const provider = providers.find((item) => item.id === id);
-                    const model = fallbackModelOverrides[id] || '未选模型';
-                    return `${index + 1}. ${provider ? providerOptionLabel(provider) : id} → ${model}`;
-                  }).join(' ； ')}`}
-              </div>
-              <div>
-                <button className="btn" type="button" disabled={saving || !binding.providerId || providers.length < 2} onClick={() => setFallbackModalOpen(true)}>
-                  配置备选
-                </button>
-              </div>
+            <div className="detail-section-head">
+              <div className="detail-section-title">备选与故障转移</div>
+              <button className="mini-btn" type="button" disabled={saving || !binding.providerId || providers.length < 2} onClick={() => setFallbackModalOpen(true)}>
+                配置备选
+              </button>
             </div>
+            {/* 故障转移是一条链，就按链排：一行一个候选，谁在服务一眼看到底。
+                原来把整条链拼成一句「1. A → m ； 2. B → m」的纯文本，三个备选就换行成糊。 */}
+            <div className="fallback-chain">
+              <FallbackChainRow
+                rank="首选"
+                provider={primaryProvider}
+                missingLabel="未绑定"
+                modelLabel={keyItem.modelOverride || '按客户端模型'}
+                serving={!usingFallback}
+                stateLabel={usingFallback ? '已切走' : '在服务'}
+              />
+              {fallbackIds.map((id, index) => {
+                const serving = usingFallback && activeProviderId === id;
+                return (
+                  <FallbackChainRow
+                    key={id}
+                    rank={`备选 ${index + 1}`}
+                    provider={providers.find((item) => item.id === id)}
+                    missingLabel={id}
+                    modelLabel={fallbackModelOverrides[id] || '未锁定模型'}
+                    modelUnset={!fallbackModelOverrides[id]}
+                    serving={serving}
+                    stateLabel={serving ? '在服务' : undefined}
+                  />
+                );
+              })}
+            </div>
+            {fallbackIds.length === 0 ? (
+              <div className="fallback-empty">未配置备选：首选额度耗尽后，这个密钥不会自动换到别的 Provider。</div>
+            ) : null}
+            {usingFallback && activeFallbackModel ? (
+              <div className="fallback-active-note">
+                当前由备选承接，模型锁定为 <b>{activeFallbackModel}</b>
+              </div>
+            ) : null}
           </div>
         </>
       )}
@@ -500,6 +529,32 @@ export function ApiKeyDetailPanel({
           }}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * 故障转移链上的一行：排队位次、哪个 Provider、锁什么模型、现在是不是它在服务。
+ * 与「配置备选」弹窗里的条目用同一套视觉，两处看起来是同一个东西。
+ */
+function FallbackChainRow({ rank, provider, missingLabel, modelLabel, modelUnset, serving, stateLabel }: {
+  rank: string;
+  provider?: Provider;
+  missingLabel: string;
+  modelLabel: string;
+  modelUnset?: boolean;
+  serving: boolean;
+  stateLabel?: string;
+}) {
+  return (
+    <div className={`fallback-row${serving ? ' serving' : ''}`}>
+      <span className="fallback-rank">{rank}</span>
+      {provider
+        ? <ProviderLabel provider={provider} size={16} className="fallback-identity" />
+        : <span className="fallback-name missing" title={missingLabel}>{missingLabel}</span>}
+      {provider ? <Badge tone="slate">{protocolLabel(provider.protocol)}</Badge> : null}
+      <span className={`fallback-model${modelUnset ? ' unset' : ''}`}>{modelLabel}</span>
+      {stateLabel ? <span className={`fallback-state${serving ? ' serving' : ''}`}>{stateLabel}</span> : null}
     </div>
   );
 }
@@ -605,7 +660,7 @@ export function ApiKeyFallbackProvidersModal({
                         disabled={busy || saving}
                         onChange={() => toggleProvider(provider.id)}
                       />
-                      <span>{providerOptionLabel(provider)}</span>
+                      <ProviderLabel provider={provider} size={16} />
                     </label>
                     <div className="api-key-fallback-order">
                       <span className="api-key-fallback-rank">#{orderIndex + 1}</span>
@@ -651,19 +706,12 @@ export function ApiKeyFallbackProvidersModal({
                     disabled={busy || saving}
                     onChange={() => toggleProvider(provider.id)}
                   />
-                  <span>{providerOptionLabel(provider)}</span>
+                  <ProviderLabel provider={provider} size={16} />
                 </label>
               </div>
             ))}
           </div>
         )}
-        <div className="hint-line">
-          当前顺序：{orderedIds.length === 0 ? '（无）' : orderedIds.map((id, index) => {
-            const provider = providers.find((item) => item.id === id);
-            const model = (overrides[id] || '').trim() || '未选模型';
-            return `${index + 1}. ${provider ? providerOptionLabel(provider) : id} → ${model}`;
-          }).join(' ； ')}
-        </div>
         {error ? <div className="hint-line error">{error}</div> : null}
       </div>
       <div className="actions modal-actions">

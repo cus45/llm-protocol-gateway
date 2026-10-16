@@ -916,7 +916,8 @@ export type CloudflareZoneOption = { id: string; name: string };
 
 export type SearchableModelOption = { id: string; label: string };
 
-export type MultiFilterOption = { id: string; label: string };
+// icon 指向 web/public/icons 下的品牌图标名，筛选下拉里也能一眼认出服务商。
+export type MultiFilterOption = { id: string; label: string; icon?: string };
 
 export type ModalLayer = {
   id: number;

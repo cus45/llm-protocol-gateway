@@ -874,6 +874,135 @@ export function formatChatTestResponse(result: RouteTestResult) {
   return formatJsonDisplay(raw);
 }
 
+/**
+ * chatTestAnswer 把一次对话测试的响应读成「人先看的东西」：模型说了什么、想了什么、
+ * 花了多少 token。三种上游协议（OpenAI Chat / Responses / Claude）与流式回放的
+ * 形状都在这里收敛，弹窗只负责排版。
+ */
+export type ChatTestAnswer = {
+  text: string;
+  reasoning: string;
+  usage: string;
+  model: string;
+  error: string;
+  /** 响应体不是任何已知形状时为空：弹窗退回原始 JSON 视图。 */
+  parsed: boolean;
+};
+
+function chatTestUsage(usage: Record<string, unknown> | undefined | null): string {
+  if (!usage || typeof usage !== 'object') return '';
+  const num = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = (usage as Record<string, unknown>)[key];
+      if (typeof value === 'number' && value > 0) return value;
+    }
+    return 0;
+  };
+  const parts: string[] = [];
+  const input = num('prompt_tokens', 'input_tokens');
+  const output = num('completion_tokens', 'output_tokens');
+  const total = num('total_tokens');
+  if (input) parts.push(`输入 ${input}`);
+  if (output) parts.push(`输出 ${output}`);
+  if (!input && !output && total) parts.push(`共 ${total}`);
+  const cacheRead = num('cache_read_input_tokens', 'prompt_cache_hit_tokens', 'cached_tokens');
+  const cacheWrite = num('cache_creation_input_tokens');
+  if (cacheRead) parts.push(`缓存读 ${cacheRead}`);
+  if (cacheWrite) parts.push(`缓存写 ${cacheWrite}`);
+  const reasoningTokens = num('reasoning_tokens');
+  if (reasoningTokens) parts.push(`思考 ${reasoningTokens}`);
+  return parts.join(' · ');
+}
+
+// chatTestFromSSE 读流式回放：把每个 chunk 的正文与思考拼回来。
+function chatTestFromSSE(raw: string): ChatTestAnswer {
+  const text: string[] = [];
+  const reasoning: string[] = [];
+  let model = '';
+  let usage = '';
+  let sawEvent = false;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    let chunk: Record<string, unknown>;
+    try { chunk = JSON.parse(payload) as Record<string, unknown>; } catch { continue; }
+    sawEvent = true;
+    if (typeof chunk.model === 'string') model = chunk.model;
+    const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+    const delta = (choices[0] as Record<string, unknown> | undefined)?.delta as Record<string, unknown> | undefined;
+    if (delta) {
+      if (typeof delta.content === 'string') text.push(delta.content);
+      const think = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+        : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      if (think) reasoning.push(think);
+    }
+    if (chunk.type === 'content_block_delta') {
+      const part = chunk.delta as Record<string, unknown> | undefined;
+      if (part?.type === 'text_delta' && typeof part.text === 'string') text.push(part.text);
+      if (part?.type === 'thinking_delta' && typeof part.thinking === 'string') reasoning.push(part.thinking);
+    }
+    const built = chatTestUsage(chunk.usage as Record<string, unknown>);
+    if (built) usage = built;
+  }
+  if (!sawEvent) return { text: '', reasoning: '', usage: '', model: '', error: '', parsed: false };
+  return { text: text.join(''), reasoning: reasoning.join(''), usage, model, error: '', parsed: true };
+}
+
+export function chatTestAnswer(result: RouteTestResult | null): ChatTestAnswer | null {
+  if (!result) return null;
+  const raw = (result.responseBody || result.preview || '').trim();
+  if (!raw) {
+    return { text: '', reasoning: '', usage: '', model: result.model || '', error: result.error || '', parsed: false };
+  }
+  if (raw.includes('data:') && !raw.startsWith('{')) {
+    const streamed = chatTestFromSSE(raw);
+    if (streamed.parsed) return streamed;
+  }
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+  const errorNode = body.error as Record<string, unknown> | undefined;
+  const error = typeof errorNode === 'string' ? errorNode
+    : typeof errorNode?.message === 'string' ? errorNode.message
+    : typeof body.message === 'string' && !result.success ? body.message : '';
+  const answer: ChatTestAnswer = {
+    text: '', reasoning: '', usage: chatTestUsage(body.usage as Record<string, unknown>),
+    model: typeof body.model === 'string' ? body.model : (result.model || ''),
+    error: result.success ? '' : (error || result.error || ''),
+    parsed: false,
+  };
+  const choices = Array.isArray(body.choices) ? (body.choices as Record<string, unknown>[]) : [];
+  const message = choices[0]?.message as Record<string, unknown> | undefined;
+  if (message) {
+    answer.parsed = true;
+    if (typeof message.content === 'string') answer.text = message.content;
+    if (typeof message.reasoning_content === 'string') answer.reasoning = message.reasoning_content;
+  }
+  const output = (message?.output || body.output) as Record<string, unknown>[] | undefined;
+  if (Array.isArray(output)) {
+    // Responses 协议：正文在 output[] 的 message 项里。
+    for (const item of output) {
+      answer.parsed = true;
+      const parts = Array.isArray(item.content) ? (item.content as Record<string, unknown>[]) : [];
+      for (const part of parts) {
+        if (typeof part.text === 'string') answer.text += part.text;
+      }
+    }
+  }
+  const blocks = Array.isArray(body.content) ? (body.content as Record<string, unknown>[]) : [];
+  if (blocks.length) {
+    // Claude：content 是块数组，正文与思考分开。
+    answer.parsed = true;
+    for (const block of blocks) {
+      if (block.type === 'text' && typeof block.text === 'string') answer.text += block.text;
+      if (block.type === 'thinking' && typeof block.thinking === 'string') answer.reasoning += block.thinking;
+    }
+  }
+  if (typeof body.output_text === 'string') { answer.text = body.output_text; answer.parsed = true; }
+  return answer;
+}
+
 export function formatProviderCacheTestDetail(result: ProviderCacheTestResult) {
   if (result.skipped) {
     return result.summary || '该 Provider 跳过 Cache 测试';

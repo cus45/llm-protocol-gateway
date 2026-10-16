@@ -304,8 +304,12 @@ export function brandMonogram(name: string): string {
   return source.slice(0, 1) || '?';
 }
 
-export function Field({ label, value, onChange, placeholder, fullWidth }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; fullWidth?: boolean }) {
-  return <div className={`field${fullWidth ? ' field-full' : ''}`}><label>{label}</label><input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} /></div>;
+export function Field({ label, value, onChange, placeholder, fullWidth, multiline, rows = 2 }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; fullWidth?: boolean; multiline?: boolean; rows?: number }) {
+  // 多行字段（提示词一类）沿用 .field 的控件外观，只放开高度与纵向拉伸。
+  const control = multiline
+    ? <textarea value={value} placeholder={placeholder} rows={rows} onChange={(event) => onChange(event.target.value)} />
+    : <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />;
+  return <div className={`field${fullWidth ? ' field-full' : ''}`}><label>{label}</label>{control}</div>;
 }
 
 export function CopyButton({ value, label = '复制', toastContent, className = '' }: { value: string; label?: string; toastContent?: string; className?: string }) {
@@ -361,6 +365,12 @@ export let nextModalZIndex = 1100;
 
 export let modalEscapeListenerReady = false;
 
+// 背景滚动锁按"还开着几个弹窗"计数，而不是每个弹窗各自记住上一次的 overflow：
+// 叠开两个弹窗时，内层捕获到的就是 'hidden'，它关闭时把 'hidden' 原样写回去，
+// 于是全部弹窗关掉后页面再也滚不动。计数归零才解锁。
+let modalScrollLocks = 0;
+let modalScrollRestore = '';
+
 export function ensureModalEscapeListener() {
   if (modalEscapeListenerReady) return;
   modalEscapeListenerReady = true;
@@ -393,12 +403,16 @@ export function Modal({ title, description, children, onClose, size = 'default',
     };
     modalLayers.push(entry);
     // 打开期间锁定背景滚动，避免鼠标在弹窗边缘滚动时把后面的页面一起滚走。
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    modalScrollLocks += 1;
+    if (modalScrollLocks === 1) {
+      modalScrollRestore = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+    }
     return () => {
       const index = modalLayers.findIndex((item) => item.id === layer.id);
       if (index >= 0) modalLayers.splice(index, 1);
-      document.body.style.overflow = previousOverflow;
+      modalScrollLocks = Math.max(0, modalScrollLocks - 1);
+      if (modalScrollLocks === 0) document.body.style.overflow = modalScrollRestore;
     };
   }, []);
 

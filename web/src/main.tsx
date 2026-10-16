@@ -8,6 +8,8 @@ import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHit
 import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, providerAuthTypeParam, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { SubscriptionConnect } from './components/subscription';
+import { ProviderLabel, providerIcon } from './components/provider_label';
+import { ChatTestDialog, type ChatTestTab } from './components/chat_test';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { ProviderCatalogDialog } from './components/provider_catalog';
 import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
@@ -187,9 +189,9 @@ function App() {
   const [providerChatOptions, setProviderChatOptions] = useState<ProviderChatTestOptions>(defaultProviderChatTestOptions);
   const [providerAuthPreview, setProviderAuthPreview] = useState<ProviderAuthPreview | null>(null);
   const [cacheTestResult, setCacheTestResult] = useState<ProviderCacheTestResult | null>(null);
-  const [cacheTestOpen, setCacheTestOpen] = useState(false);
+
   const [thinkingTestResult, setThinkingTestResult] = useState<ProviderThinkingTestResult | null>(null);
-  const [thinkingTestOpen, setThinkingTestOpen] = useState(false);
+
   const [providerModelsOpen, setProviderModelsOpen] = useState(false);
   const [providerModelsLoading, setProviderModelsLoading] = useState(false);
   const [providerModelsResult, setProviderModelsResult] = useState<ProviderTestResult | null>(null);
@@ -2087,36 +2089,29 @@ function App() {
     };
   }
 
-  async function runChatTest() {
+  // 三项测试各自独立运行：主对话几秒就出结果，Cache 要跑两轮会话（上游慢时
+  // 半分钟以上），Thinking 又是一次请求。以前点一次全部串起来跑，弹窗看起来像
+  // 卡死了，还要靠叠三个弹窗收结果。
+  async function runChatTest(test: ChatTestTab = 'main') {
     if (!chatTestContext) {
       showToast('请先选择测试对象');
       return;
     }
     const target = chatTestContext;
-    const targetKey = `${target.kind}:${target.id}`;
+    const runKey = `${target.kind}:${target.id}:${test}`;
     let alreadyRunning = false;
     setChatTestingKeys((keys) => {
-      if (keys.includes(targetKey)) {
+      if (keys.includes(runKey)) {
         alreadyRunning = true;
         return keys;
       }
-      return [...keys, targetKey];
+      return [...keys, runKey];
     });
     if (alreadyRunning) {
-      showToast('该对象正在测试中');
+      showToast('该项正在测试中');
       return;
     }
-    const stillCurrent = () => {
-      const current = chatTestContextRef.current;
-      return !!current && current.kind === target.kind && current.id === target.id;
-    };
-    if (stillCurrent()) {
-      setChatTestResult(null);
-      setCacheTestResult(null);
-      setThinkingTestResult(null);
-      setCacheTestOpen(false);
-      setThinkingTestOpen(false);
-    }
+    const label = test === 'main' ? '对话测试' : test === 'cache' ? 'Cache 测试' : 'Thinking 测试';
     try {
       if (target.kind === 'route') {
         const response = await fetch(`${API_BASE}/__routes/${encodeURIComponent(target.id)}/test`, {
@@ -2125,84 +2120,48 @@ function App() {
           body: JSON.stringify({ model: chatTestModel.trim(), message: chatTestMessage.trim() }),
         });
         const result = await parseRouteTestResponse(response);
-        if (stillCurrent()) setChatTestResult(result);
+        setChatTestResult(result);
         showToast(result.success ? `对话测试成功：HTTP ${result.status}` : `对话测试未通过：${result.status || result.error || 'unknown'}`);
       } else {
         const providerPath = `${API_BASE}/__providers/${encodeURIComponent(target.id)}`;
-        const provider = state.providers.find((item) => item.id === target.id);
-        // ChatGPT OAuth / pure Responses providers only support the main chat-test path.
-        const supportsExtraTests = provider?.authType !== 'chatgpt_oauth'
-          && provider?.protocol !== 'openai_responses';
-        const baseBody = {
+        const path = test === 'main' ? 'chat-test' : test === 'cache' ? 'cache-test' : 'thinking-test';
+        const body: Record<string, unknown> = {
           model: chatTestModel.trim(),
           systemPrompt: providerChatOptions.systemPrompt,
           userPrompt: providerChatOptions.userPrompt,
         };
-        const thinkingBody = {
-          ...baseBody,
-          thinkingField: providerChatOptions.thinkingField,
-          thinkingValue: providerChatOptions.thinkingValue,
-        };
-        const mainResponse = await fetch(`${providerPath}/chat-test`, {
+        if (test === 'thinking') {
+          body.thinkingField = providerChatOptions.thinkingField;
+          body.thinkingValue = providerChatOptions.thinkingValue;
+        }
+        const response = await fetch(`${providerPath}/${path}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(baseBody),
+          body: JSON.stringify(body),
         });
-        const result = await parseRouteTestResponse(mainResponse);
-        if (stillCurrent()) setChatTestResult(result);
-        if (supportsExtraTests) {
-          let cacheResponse: Response | null = null;
-          let thinkingResponse: Response | null = null;
-          try {
-            [cacheResponse, thinkingResponse] = await Promise.all([
-              fetch(`${providerPath}/cache-test`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(baseBody),
-              }),
-              fetch(`${providerPath}/thinking-test`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(thinkingBody),
-              }),
-            ]);
-          } catch { /* extra tests are best-effort; the main result is authoritative */ }
-          let cacheResult: ProviderCacheTestResult | null = null;
-          let thinkingResult: ProviderThinkingTestResult | null = null;
-          if (cacheResponse) {
-            try {
-              cacheResult = await parseRouteTestResponse(cacheResponse) as ProviderCacheTestResult;
-            } catch { /* same best-effort rule */ }
-          }
-          if (thinkingResponse) {
-            try {
-              thinkingResult = await parseRouteTestResponse(thinkingResponse) as ProviderThinkingTestResult;
-            } catch { /* same best-effort rule */ }
-          }
-          if (stillCurrent()) {
-            setCacheTestResult(cacheResult);
-            setThinkingTestResult(thinkingResult);
-            setCacheTestOpen(true);
-            setThinkingTestOpen(true);
-          }
-        } else if (stillCurrent()) {
-          setCacheTestResult(null);
-          setThinkingTestResult(null);
-          setCacheTestOpen(false);
-          setThinkingTestOpen(false);
-        }
-        showToast(result.success ? `对话测试成功：HTTP ${result.status}` : `对话测试未通过：${result.status || result.error || 'unknown'}`);
+        const result = await parseRouteTestResponse(response);
+        if (test === 'main') setChatTestResult(result);
+        else if (test === 'cache') setCacheTestResult(result as ProviderCacheTestResult);
+        else setThinkingTestResult(result as ProviderThinkingTestResult);
+        showToast(result.success ? `${label}成功：HTTP ${result.status}` : `${label}未通过：${result.status || result.error || 'unknown'}`);
       }
       if (activeNav === 'traffic-tokens' && logsFetchedOnce && logsPageRef.current === 1) {
         await refreshLogs(1, undefined, undefined, { silent: true });
       }
       await Promise.all([refreshRequestStats(), refreshAppLogs()]);
     } catch (error) {
-      if (stillCurrent()) setChatTestResult({ success: false, error: String(error) });
-      showToast(`对话测试失败：${String(error)}`);
+      if (test === 'main') setChatTestResult({ success: false, error: String(error) });
+      showToast(`${label}失败：${String(error)}`);
     } finally {
-      setChatTestingKeys((keys) => keys.filter((key) => key !== targetKey));
+      setChatTestingKeys((keys) => keys.filter((key) => key !== runKey));
     }
+  }
+
+  // 换模型或换 Provider 时清掉旧结果：留着上一次的答案最容易被误读成"这个模型也能回"。
+  function clearChatTestResults() {
+    setChatTestResult(null);
+    setCacheTestResult(null);
+    setThinkingTestResult(null);
   }
 
   function openChatTestForRoute(route: Route) {
@@ -2221,21 +2180,21 @@ function App() {
     });
     setChatTestModel(defaultModel);
     setChatTestMessage('ping from UI');
-    setChatTestResult(null);
+    clearChatTestResults();
     setChatTestOpen(true);
   }
 
   function openChatTestForProvider(provider: Provider) {
     const models = state.models.filter((model) => model.providerId === provider.id);
-    const defaultModel = models[0]?.id || provider.defaultModel || '';
+    // 默认模型优先：没有默认时才退到列表第一个。两者都没有就留空，让弹窗提示
+    // 先拉模型——带着空模型名发出去只会拿到一个没意义的 400。
+    const defaultModel = provider.defaultModel || models[0]?.id || '';
     const thinkingPresets = thinkingPresetsForProtocol(provider.protocol);
     setChatTestContext({
       kind: 'provider',
       id: provider.id,
       title: `Provider 对话测试 · ${provider.name}`,
-      description: provider.authType === 'chatgpt_oauth' || provider.protocol === 'openai_responses'
-        ? '直连上游 Provider 的对话接口，验证 Provider 本身是否可用。'
-        : '直连上游 Provider 的对话接口，验证 Provider 本身是否可用。运行测试时将自动执行 Cache 与 Thinking 后台测试。',
+      description: '直连上游 Provider 的对话接口，验证 Provider 本身是否可用；Cache 与 Thinking 在下方分段里各跑各的。',
       curlLabel: '上游 curl 预览',
       endpointLabel: 'upstream',
     });
@@ -2249,8 +2208,6 @@ function App() {
     setChatTestResult(null);
     setCacheTestResult(null);
     setThinkingTestResult(null);
-    setCacheTestOpen(false);
-    setThinkingTestOpen(false);
     setChatTestOpen(true);
     if (provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || provider.authType === 'qoder_pat') return;
     void fetch(`${API_BASE}/__providers/${encodeURIComponent(provider.id)}/auth-preview`)
@@ -4095,7 +4052,12 @@ function App() {
     ? state.providers.find((item) => item.id === chatTestContext.id)
     : chatTestRoute ? state.providers.find((item) => item.id === chatTestRoute.providerId) : undefined;
   chatTestContextRef.current = chatTestContext;
-  const chatTestLoading = chatTestContext ? chatTestingKeys.includes(`${chatTestContext.kind}:${chatTestContext.id}`) : false;
+  const chatTestRunKey = chatTestContext ? `${chatTestContext.kind}:${chatTestContext.id}` : '';
+  const chatTestRunning = {
+    main: Boolean(chatTestRunKey) && chatTestingKeys.includes(`${chatTestRunKey}:main`),
+    cache: Boolean(chatTestRunKey) && chatTestingKeys.includes(`${chatTestRunKey}:cache`),
+    thinking: Boolean(chatTestRunKey) && chatTestingKeys.includes(`${chatTestRunKey}:thinking`),
+  };
   const chatTestModels = chatTestProvider ? state.models.filter((model) => model.providerId === chatTestProvider.id) : [];
   const refreshingChatTestModels = chatTestProvider ? testingProviderID === chatTestProvider.id : false;
   const chatTestBoundApiKey = chatTestContext?.kind === 'route'
@@ -4107,19 +4069,20 @@ function App() {
   const chatTestEndpointURL = chatTestContext?.kind === 'route' && chatTestRoute
     ? routeGatewayTestURL(chatTestRoute, state.endpoints)
     : chatTestProvider
-      ? resolveProviderChatURL(chatTestProvider, chatTestModel)
+      ? resolveProviderChatURL(chatTestProvider, chatTestResolvedModel)
       : API_BASE;
   const chatTestCurl = chatTestContext?.kind === 'route'
     ? buildRouteTestCurl(chatTestEndpointURL, chatTestModel, chatTestMessage, chatTestBoundApiKey?.key)
     : chatTestProvider
-      ? buildProviderChatCurl(chatTestProvider, chatTestModel, providerChatOptions, providerAuthPreview)
+      ? buildProviderChatCurl(chatTestProvider, chatTestResolvedModel, providerChatOptions, providerAuthPreview)
       : '';
-  const chatTestResultMeta = chatTestContext?.kind === 'route'
-    ? `${chatTestResult?.protocolFlow || '-'} · model=${chatTestResult?.model || '-'} · gateway=${chatTestResult?.gatewayUrl || chatTestEndpointURL}`
-    : `model=${chatTestResult?.model || chatTestResolvedModel} · upstream=${chatTestResult?.targetUrl || chatTestEndpointURL}`;
-  const chatTestResponseText = chatTestResult ? formatChatTestResponse(chatTestResult) : '';
+  // 鉴权解析不出来时提前说清楚，别等 401 再猜。
+  const chatTestAuthWarning = chatTestContext?.kind === 'provider' && chatTestProvider
+    && !['claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global'].includes(chatTestProvider.authType || '')
+    && !providerAuthPreview?.value
+    ? '未解析到 Provider 鉴权值；若使用 env: 变量，请确认网关进程环境变量已设置。'
+    : undefined;
   const providerThinkingPresets = chatTestProvider ? thinkingPresetsForProtocol(chatTestProvider.protocol) : null;
-  const providerThinkingFieldPresets = providerThinkingPresets?.fields.find((item) => item.key === providerChatOptions.thinkingField) || providerThinkingPresets?.fields[0];
   const usageToday = requestStats?.today;
   const usageMonth = requestStats?.month;
   const isExplicitLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
@@ -4328,7 +4291,7 @@ function App() {
                   ) : null}
                   <MultiSelectFilter
                     label="输入 Provider"
-                    options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider) }))}
+                    options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider), icon: providerIcon(provider) }))}
                     selected={apiKeyProviderFilter}
                     onChange={setApiKeyProviderFilter}
                     allLabel="全部 Provider"
@@ -5921,10 +5884,11 @@ function App() {
                   {modelsMenuProviders.map((provider) => (
                     <button
                       key={provider.id}
-                      className={`models-filter-chip ${modelsProviderFilter === provider.id ? 'active' : ''}`}
+                      className={`models-filter-chip with-icon ${modelsProviderFilter === provider.id ? 'active' : ''}`}
                       onClick={() => setModelsProviderFilter(provider.id)}
                     >
-                      {provider.name} ({modelsMenuSummary.get(provider.id) || 0})
+                      <ProviderLabel provider={provider} size={14} />
+                      <span className="models-filter-count">{modelsMenuSummary.get(provider.id) || 0}</span>
                     </button>
                   ))}
                 </div>
@@ -6340,7 +6304,14 @@ function App() {
                           <span className="log-source" title={trafficLogSourceTitle(log)}>{accessSourceLabel(log.accessSource)}</span>
                           <span className="log-key" title={trafficLogKeyTitle(log)}>{trafficLogKeyLabel(log)}</span>
                           <span className="log-user" title={log.userName || undefined}>{log.userName || '—'}</span>
-                          <span className="log-provider" title={log.providerId || undefined}>{trafficLogProviderLabel(log, state.providers || [])}</span>
+                          <span className="log-provider" title={log.providerId || undefined}>
+                            {(() => {
+                              const logged = (state.providers || []).find((item) => item.id === log.providerId);
+                              return logged
+                                ? <ProviderLabel provider={logged} size={14} />
+                                : <>{trafficLogProviderLabel(log, state.providers || [])}</>;
+                            })()}
+                          </span>
                           <span className="log-model">{log.model}</span>
                           <span className="log-token" title="入=总 input（含缓存命中）；出=output；缓存=cache hit">入 {log.inputTokens} · 出 {log.outputTokens} · 缓存 {log.cacheTokens || 0}</span>
                           <span className="log-latency" title={log.upstreamTtfbMs || log.gatewayOverheadMs ? `upstreamTtfb=${log.upstreamTtfbMs ?? 0}ms overhead=${log.gatewayOverheadMs ?? 0}ms prep=${log.prepMs ?? 0}ms flags=${log.timingFlags || '-'}` : undefined}>{log.ttftMs != null ? `${log.ttftMs}ms` : '—'}</span>
@@ -6909,7 +6880,7 @@ function App() {
                             disabled={selfcheckRunning}
                             onChange={() => toggleSelfcheckProvider(provider.id)}
                           />
-                          <span>{providerOptionLabel(provider)}</span>
+                          <ProviderLabel provider={provider} size={15} />
                           <Badge tone={protocolTone(provider.protocol)}>{protocolLabel(provider.protocol)}</Badge>
                         </label>
                         <div
@@ -7788,59 +7759,6 @@ function App() {
         </Modal>
       )}
 
-      {cacheTestOpen && cacheTestResult && (
-        <Modal title="Cache 测试结果" description="两轮会话：第二轮包含第一轮上下文，检查 usage 中的 cache 命中字段。" blocking={false} onClose={() => setCacheTestOpen(false)}>
-          <div className={`test-result-card ${cacheTestResult.success ? 'ok' : 'fail'}`}>
-            <div className="test-result-head">
-              <Badge tone={cacheTestResult.success ? 'green' : statusTone(cacheTestResult.status)}>{testResultBadge(cacheTestResult.success)}</Badge>
-              <span>{httpStatusLabel(cacheTestResult.status)} · {cacheTestResult.latencyMs ?? '-'}ms</span>
-            </div>
-            <div className="hint-line">{cacheTestResult.summary || 'Cache 测试完成'}</div>
-            {cacheTestResult.cacheHitTokens != null ? (
-              <div className="hint-line">prompt_cache_hit_tokens / cache_read_input_tokens: <strong>{cacheTestResult.cacheHitTokens}</strong></div>
-            ) : null}
-            {cacheTestResult.error ? <div className="hint-line error">{cacheTestResult.error}</div> : null}
-            <div className="field-label-row">
-              <label>Usage 详情</label>
-              <CopyButton value={formatProviderCacheTestDetail(cacheTestResult)} label="复制全部" />
-            </div>
-            <pre className="json-preview">{formatProviderCacheTestDetail(cacheTestResult)}</pre>
-          </div>
-          <div className="actions modal-actions">
-            <button className="btn" onClick={() => setCacheTestOpen(false)}>关闭</button>
-          </div>
-        </Modal>
-      )}
-
-      {thinkingTestOpen && thinkingTestResult && (
-        <Modal title="Thinking 测试结果" description="按协议注入 thinking 相关字段，并展示上游响应。" blocking={false} onClose={() => setThinkingTestOpen(false)}>
-          <div className={`test-result-card ${thinkingTestResult.success ? 'ok' : 'fail'}`}>
-            <div className="test-result-head">
-              <Badge tone={thinkingTestResult.success ? 'green' : statusTone(thinkingTestResult.status)}>{testResultBadge(thinkingTestResult.success)}</Badge>
-              <span>{httpStatusLabel(thinkingTestResult.status)} · {thinkingTestResult.latencyMs ?? '-'}ms</span>
-            </div>
-            {thinkingTestResult.skipped
-              ? <div className="hint-line">{thinkingTestResult.summary || '该 Provider 跳过 Thinking 测试'}</div>
-              : <div className="hint-line">字段：{thinkingTestResult.thinkingField || '-'} · 值：{thinkingTestResult.thinkingValue || '-'}</div>}
-            {thinkingTestResult.thinkingOptions?.fields?.length ? (
-              <div className="hint-line">
-                可用字段：
-                {thinkingTestResult.thinkingOptions.fields.map((field) => `${field.label} [${field.presets.join(', ')}]`).join(' · ')}
-              </div>
-            ) : null}
-            {thinkingTestResult.error ? <div className="hint-line error">{thinkingTestResult.error}</div> : null}
-            <div className="field-label-row">
-              <label>请求与响应</label>
-              <CopyButton value={formatProviderThinkingTestDetail(thinkingTestResult)} label="复制全部" />
-            </div>
-            <pre className="json-preview">{formatProviderThinkingTestDetail(thinkingTestResult)}</pre>
-          </div>
-          <div className="actions modal-actions">
-            <button className="btn" onClick={() => setThinkingTestOpen(false)}>关闭</button>
-          </div>
-        </Modal>
-      )}
-
       {providerModalOpen && (
         <Modal title={editingProviderID ? '编辑输入 Provider' : '创建输入 Provider'} description="API Key Source 可留空：留空时透传客户端 Authorization；也可直接填 sk-xxx，或填 env:VAR_NAME / literal:sk-xxx。Fallback Model 只在模型接口不可用时兜底。" onClose={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetChatGPTOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>
           <div className="form-grid modal-form">
@@ -8349,111 +8267,32 @@ function App() {
       )}
 
       {chatTestOpen && chatTestContext && (
-        <Modal title={chatTestContext.title} description={chatTestContext.description} blocking={false} onClose={() => setChatTestOpen(false)}>
-          <div className="modal-toolbar">
-            <button className="btn primary" disabled={chatTestLoading || !backendConnected} onClick={() => void runChatTest()}>{chatTestLoading ? '测试中…' : '运行测试'}</button>
-          </div>
-          <div className="form-grid modal-form">
-            <div className="field">
-              <label>测试模型</label>
-              <div className="field-inline">
-                <select value={chatTestModel} onChange={(event) => setChatTestModel(event.target.value)}>
-                  <option value="">（使用 Provider 兜底模型）</option>
-                  {chatTestModels.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
-                </select>
-                <button className="mini-btn" type="button" disabled={refreshingChatTestModels || !chatTestProvider} onClick={() => void refreshChatTestModels()}>
-                  {refreshingChatTestModels ? '刷新中…' : '刷新模型'}
-                </button>
-              </div>
-            </div>
-            {chatTestContext.kind === 'provider' ? (
-              <>
-                <Field label="系统提示词" value={providerChatOptions.systemPrompt} onChange={(value) => setProviderChatOptions((current) => ({ ...current, systemPrompt: value }))} />
-                <Field label="用户提示词" value={providerChatOptions.userPrompt} onChange={(value) => setProviderChatOptions((current) => ({ ...current, userPrompt: value }))} />
-                <div className="hint-line">
-                  {chatTestProvider?.authType === 'chatgpt_oauth' || chatTestProvider?.protocol === 'openai_responses'
-                    ? '点击「运行测试」将执行主对话测试（ChatGPT OAuth / Responses 不跑 Cache / Thinking）。'
-                    : '点击「运行测试」将同时执行主对话、Cache（两轮会话）与 Thinking 测试；后两者结果在弹窗中展示。'}
-                </div>
-                {chatTestProvider && providerThinkingPresets && chatTestProvider.authType !== 'chatgpt_oauth' && chatTestProvider.protocol !== 'openai_responses' ? (
-                  <>
-                    <div className="field">
-                      <label>Thinking 字段（{protocolLabel(chatTestProvider.protocol)}）</label>
-                      <select
-                        value={providerChatOptions.thinkingField}
-                        onChange={(event) => {
-                          const nextField = event.target.value;
-                          setProviderChatOptions((current) => ({
-                            ...current,
-                            thinkingField: nextField,
-                            thinkingValue: defaultThinkingValueForField(chatTestProvider.protocol, nextField),
-                          }));
-                        }}
-                      >
-                        {providerThinkingPresets.fields.map((field) => (
-                          <option key={field.key} value={field.key}>{field.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label>Thinking 值</label>
-                      <div className="field-inline">
-                        <select
-                          value={providerThinkingFieldPresets?.presets.includes(providerChatOptions.thinkingValue) ? providerChatOptions.thinkingValue : ''}
-                          onChange={(event) => {
-                            if (event.target.value) {
-                              setProviderChatOptions((current) => ({ ...current, thinkingValue: event.target.value }));
-                            }
-                          }}
-                        >
-                          <option value="">（自定义）</option>
-                          {(providerThinkingFieldPresets?.presets || []).map((preset) => (
-                            <option key={preset} value={preset}>{preset}</option>
-                          ))}
-                        </select>
-                        <input
-                          placeholder="输入枚举值或自定义内容"
-                          value={providerChatOptions.thinkingValue}
-                          onChange={(event) => setProviderChatOptions((current) => ({ ...current, thinkingValue: event.target.value }))}
-                        />
-                      </div>
-                      <div className="hint-line">可用枚举：{(providerThinkingFieldPresets?.presets || []).join(' · ') || '无'}</div>
-                    </div>
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <Field label="测试消息" value={chatTestMessage} onChange={setChatTestMessage} />
-            )}
-            <div className="field">
-              <div className="field-label-row">
-                <label>{chatTestContext.curlLabel}</label>
-                <CopyButton value={chatTestCurl} label="复制 curl" />
-              </div>
-              <div className="hint-line">目标 URL：{chatTestEndpointURL}</div>
-              {chatTestContext.kind === 'provider' && chatTestProvider?.authType !== 'claude_oauth' && chatTestProvider?.authType !== 'cursor_oauth' && chatTestProvider?.authType !== 'chatgpt_oauth' && chatTestProvider?.authType !== 'qoder_pat' && !providerAuthPreview?.value ? (
-                <div className="hint-line">未解析到 Provider 鉴权值；若使用 env: 变量，请确认网关进程环境变量已设置。</div>
-              ) : null}
-              <pre className="curl-preview">{chatTestCurl}</pre>
-              {chatTestContext.hintLine ? <div className="hint-line">{chatTestContext.hintLine}</div> : null}
-            </div>
-          </div>
-          <div className={`test-result-card ${chatTestResult?.success ? 'ok' : chatTestResult ? 'fail' : ''}`}>
-            {!chatTestResult ? (
-              <div className="empty-state">配置参数后点击顶部「运行测试」。</div>
-            ) : (
-              <>
-                <div className="test-result-head"><Badge tone={chatTestResult.success ? 'green' : statusTone(chatTestResult.status)}>{testResultBadge(chatTestResult.success)}</Badge><span>{httpStatusLabel(chatTestResult.status)} · {chatTestResult.latencyMs ?? '-'}ms</span></div>
-                <div className="field-label-row">
-                  <label>{chatTestResult.success ? '响应 JSON' : '诊断信息'}</label>
-                  {chatTestResponseText ? <CopyButton value={chatTestResponseText} label={chatTestResult.success ? '复制 JSON' : '复制诊断信息'} /> : null}
-                </div>
-                <pre className={`json-preview${chatTestResult.success ? ' ok' : ''}`}>{chatTestResponseText}</pre>
-                <div className="test-result-meta">{chatTestResultMeta}</div>
-              </>
-            )}
-          </div>
-        </Modal>
+        <ChatTestDialog
+          title={chatTestContext.title}
+          description={chatTestContext.description}
+          kind={chatTestContext.kind}
+          protocol={chatTestProvider?.protocol || 'openai_chat'}
+          supportsExtraTests={Boolean(chatTestProvider) && chatTestProvider?.authType !== 'chatgpt_oauth' && chatTestProvider?.protocol !== 'openai_responses'}
+          models={chatTestModels}
+          model={chatTestModel}
+          onModelChange={(value) => { setChatTestModel(value); clearChatTestResults(); }}
+          refreshingModels={refreshingChatTestModels}
+          onRefreshModels={() => void refreshChatTestModels()}
+          options={providerChatOptions}
+          onOptionsChange={(patch) => setProviderChatOptions((current) => ({ ...current, ...patch }))}
+          thinkingFields={providerThinkingPresets?.fields || []}
+          message={chatTestMessage}
+          onMessageChange={setChatTestMessage}
+          curl={chatTestCurl}
+          curlLabel={chatTestContext.curlLabel}
+          endpointURL={chatTestEndpointURL}
+          hintLine={chatTestContext.hintLine}
+          authWarning={chatTestAuthWarning}
+          running={chatTestRunning}
+          onRun={(test) => void runChatTest(test)}
+          onClose={() => setChatTestOpen(false)}
+          results={{ main: chatTestResult, cache: cacheTestResult, thinking: thinkingTestResult }}
+        />
       )}
 
       {providerModelsOpen && (
@@ -8704,7 +8543,7 @@ function App() {
               {state.providers.length === 0 ? <div className="hint-line">暂无输入 Provider。</div> : (
                 <>
                   <MultiSelectFilter
-                    options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider) }))}
+                    options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider), icon: providerIcon(provider) }))}
                     selected={userFormProviders}
                     onChange={setUserFormProviders}
                     allLabel="点击选择可用 Provider…"
