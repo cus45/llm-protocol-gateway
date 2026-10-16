@@ -208,6 +208,12 @@ func (s *Store) migrate() error {
 		// X-Domain). Empty for every other auth type.
 		{"oauth_user_id", "TEXT NOT NULL DEFAULT ''"},
 		{"oauth_domain", "TEXT NOT NULL DEFAULT ''"},
+		// oauth_json: the credential fields a newer subscription needs beyond
+		// the shared token columns (a ZCode minted key and its team project, a
+		// Trae device identity). One column serves them all, so adding a
+		// subscription no longer needs a migration of its own. Secrets live
+		// here exactly as in the token columns; nothing reads it to the client.
+		{"oauth_json", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -452,6 +458,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 	for pIndex, provider := range state.Providers {
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
 		var userID, authDomain string
+		var authJSON string
 		switch provider.AuthType {
 		case domain.AuthTypeClaudeOAuth:
 			if provider.ClaudeOAuth != nil {
@@ -495,6 +502,26 @@ func (s *Store) Save(state domain.GatewayState) error {
 				userID = provider.WorkBuddy.UserID
 				authDomain = provider.WorkBuddy.Domain
 			}
+		case domain.AuthTypeZCode:
+			if provider.ZCode != nil {
+				// The minted key is what a request is signed with, so it takes
+				// the access-token column too; the rest of the credential —
+				// which project it was minted from, what plan it bills on —
+				// rides in oauth_json, which is authoritative on load.
+				accessToken = provider.ZCode.APIKey
+				refreshToken = provider.ZCode.BizToken
+				expiresAt = provider.ZCode.ExpiresAt
+				accountLabel = provider.ZCode.AccountLabel
+				authJSON = marshalProviderCredential(provider.ZCode)
+			}
+		case domain.AuthTypeTraeCN, domain.AuthTypeTraeGlobal:
+			if provider.Trae != nil {
+				accessToken = provider.Trae.AccessToken
+				refreshToken = provider.Trae.RefreshToken
+				expiresAt = provider.Trae.ExpiresAt
+				accountLabel = provider.Trae.AccountLabel
+				authJSON = marshalProviderCredential(provider.Trae)
+			}
 		}
 		disabled := 0
 		if provider.Disabled {
@@ -515,14 +542,14 @@ func (s *Store) Save(state domain.GatewayState) error {
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
 			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
-			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
 			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
-			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain); err != nil {
+			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain, authJSON); err != nil {
 			return err
 		}
 		for mIndex, model := range provider.Models {
@@ -626,7 +653,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
 		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
-		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain
+		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json
 		FROM providers ORDER BY position, id`)
 	if err != nil {
 		return nil, err
@@ -642,10 +669,11 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var deleted int
 		var deletedAt string
 		var codingPlanProvider, teamOrganizationID, teamProjectID string
+		var authJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
 			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
-			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain); err != nil {
+			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain, &authJSON); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -714,6 +742,16 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 					UserID:       userID,
 					Domain:       authDomain,
 				}
+			}
+		case domain.AuthTypeZCode:
+			var credential domain.ZCodeCredential
+			if unmarshalProviderCredential(authJSON, &credential) {
+				p.ZCode = &credential
+			}
+		case domain.AuthTypeTraeCN, domain.AuthTypeTraeGlobal:
+			var credential domain.TraeCredential
+			if unmarshalProviderCredential(authJSON, &credential) {
+				p.Trae = &credential
 			}
 		default:
 			if accessToken != "" || refreshToken != "" {
@@ -1015,12 +1053,33 @@ func (s *Store) TouchAPIKey(id string, lastUsedAt string) error {
 	return err
 }
 
+// marshalProviderCredential renders a subscription credential for the
+// oauth_json column. A credential that cannot be encoded is stored as nothing
+// rather than as a half-written row: the sign-in then simply has to be done
+// again, instead of the gateway silently trusting a truncated session.
+func marshalProviderCredential(credential any) string {
+	raw, err := json.Marshal(credential)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// unmarshalProviderCredential reads a credential back out of oauth_json,
+// reporting whether the column held it.
+func unmarshalProviderCredential(authJSON string, dst any) bool {
+	if strings.TrimSpace(authJSON) == "" {
+		return false
+	}
+	return json.Unmarshal([]byte(authJSON), dst) == nil
+}
+
 // UpdateProviderOAuth incrementally persists just the OAuth token columns for a
 // single provider. This avoids the full-state rewrite (Save) that DELETEs and
 // re-INSERTs every provider/model/route row on the single shared connection,
 // which serialized behind and blocked request-hot-path DB writes on every
 // token refresh.
-func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain string) error {
+func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, authJSON string) error {
 	var err error
 	for attempt := 0; attempt < 8; attempt++ {
 		_, err = s.db.Exec(`UPDATE providers SET
@@ -1030,9 +1089,10 @@ func (s *Store) UpdateProviderOAuth(providerID, accessToken, refreshToken, expir
 			oauth_scope = ?,
 			oauth_account_label = ?,
 			oauth_user_id = ?,
-			oauth_domain = ?
+			oauth_domain = ?,
+			oauth_json = ?
 			WHERE id = ?`,
-			accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, providerID)
+			accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, authJSON, providerID)
 		if err == nil {
 			return nil
 		}

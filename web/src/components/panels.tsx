@@ -1,7 +1,8 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, retrySecondsLabel, useNowTick } from '../lib';
-import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, WorkBuddyUsage, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
+import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, isTraeConnectKind, isZCodeConnectKind, providerConnectKind, retrySecondsLabel, useNowTick } from '../lib';
+import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, Provider, WorkBuddyUsage, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
+import { SubscriptionUsagePanel } from './subscription';
 
 /** 最早到期的重置卡时间；无效时间为空串。 */
 function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
@@ -512,9 +513,16 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, icon, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; icon?: string; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
-  const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : isWorkBuddy ? workBuddyConnected : false;
-  const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy;
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
+  // 订阅类（ZCode / Trae）由后端返回的凭证对象决定卡片显示什么：整张 Provider 传进来
+  // 比再加六个布尔参数更省事，也不会漏掉以后新增的连接方式。
+  const connectKind = provider ? providerConnectKind(provider) : 'api_key';
+  const zcodeConnected = !!provider?.zcodeOAuth?.connected;
+  const traeConnected = !!provider?.traeOAuth?.connected;
+  const isSubscriptionOAuth = isZCodeConnectKind(connectKind) || isTraeConnectKind(connectKind);
+  const subscriptionConnected = zcodeConnected || traeConnected;
+  const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : isWorkBuddy ? workBuddyConnected : subscriptionConnected;
+  const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy || isSubscriptionOAuth;
   // Qoder 用的是 PAT 而非 OAuth，徽章文案跟着认证方式走，避免误导
   const oauthBadgeLabel = isQoderPAT ? 'PAT' : 'OAuth';
   const isUnavailable = healthStatus === 'unavailable';
@@ -564,7 +572,9 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
       {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
       {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
+      {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {/* 事实区：两列网格。地址独占一行（通常最长），其余两项一行；订阅卡没有
           密钥这一项，自动少一格，不补假字段。 */}

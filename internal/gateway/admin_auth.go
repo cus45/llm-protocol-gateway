@@ -249,7 +249,7 @@ func isUserProviderUsagePath(path string) bool {
 		return false
 	}
 	switch parts[1] {
-	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "workbuddy-oauth", "zhipu", "deepseek":
+	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "workbuddy-oauth", "zcode-oauth", "trae-oauth", "zhipu", "deepseek":
 		return parts[2] == "usage"
 	default:
 		return false

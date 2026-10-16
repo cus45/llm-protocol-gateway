@@ -58,7 +58,7 @@ const (
 
 	workBuddyPollInterval   = time.Second
 	workBuddySignInDeadline = 5 * time.Minute
-	workBuddyPendingTTL     = 15 * time.Minute
+	subscriptionPendingTTL     = 15 * time.Minute
 	// workBuddyTokenExpirySkew refreshes slightly before the token lapses.
 	workBuddyTokenExpirySkew = time.Minute
 )
@@ -201,71 +201,77 @@ func workBuddyDomain(w workBuddySite, credential domain.WorkBuddyCredential) str
 
 // ---- signing in ------------------------------------------------------------
 
-type workBuddyOAuthPending struct {
+// The three stores below are the state of an external-link sign-in, which a
+// subscription that polls for its result shares: WorkBuddy and ZCode both hand
+// the browser a page and then ask their own site until the account is ready, so
+// one "waiting / done / failed" record per provider and one status per flow
+// serves both. Named by provider id, which is what a flow belongs to.
+
+type subscriptionOAuthPending struct {
 	State     string
 	FlowID    string
 	CreatedAt time.Time
 }
 
-type workBuddyOAuthFlowStatus struct {
+type subscriptionOAuthFlowStatus struct {
 	Status    string    `json:"status"`
 	Message   string    `json:"message,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type workBuddyOAuthPendingStore struct {
+type subscriptionOAuthStore struct {
 	mu       sync.Mutex
-	pending  map[string]workBuddyOAuthPending
-	statuses map[string]workBuddyOAuthFlowStatus
+	pending  map[string]subscriptionOAuthPending
+	statuses map[string]subscriptionOAuthFlowStatus
 }
 
-func newWorkBuddyOAuthPendingStore() *workBuddyOAuthPendingStore {
-	return &workBuddyOAuthPendingStore{
-		pending:  map[string]workBuddyOAuthPending{},
-		statuses: map[string]workBuddyOAuthFlowStatus{},
+func newSubscriptionOAuthStore() *subscriptionOAuthStore {
+	return &subscriptionOAuthStore{
+		pending:  map[string]subscriptionOAuthPending{},
+		statuses: map[string]subscriptionOAuthFlowStatus{},
 	}
 }
 
-func (store *workBuddyOAuthPendingStore) put(providerID string, entry workBuddyOAuthPending) {
+func (store *subscriptionOAuthStore) put(providerID string, entry subscriptionOAuthPending) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.pending[providerID] = entry
 }
 
-func (store *workBuddyOAuthPendingStore) take(providerID string) (workBuddyOAuthPending, bool) {
+func (store *subscriptionOAuthStore) take(providerID string) (subscriptionOAuthPending, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	entry, ok := store.pending[providerID]
 	if !ok {
-		return workBuddyOAuthPending{}, false
+		return subscriptionOAuthPending{}, false
 	}
 	delete(store.pending, providerID)
-	if time.Since(entry.CreatedAt) > workBuddyPendingTTL {
-		return workBuddyOAuthPending{}, false
+	if time.Since(entry.CreatedAt) > subscriptionPendingTTL {
+		return subscriptionOAuthPending{}, false
 	}
 	return entry, true
 }
 
-func (store *workBuddyOAuthPendingStore) finish(providerID string) {
+func (store *subscriptionOAuthStore) finish(providerID string) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	delete(store.pending, providerID)
 }
 
-func (store *workBuddyOAuthPendingStore) setStatus(flowID, status, message string) {
+func (store *subscriptionOAuthStore) setStatus(flowID, status, message string) {
 	if strings.TrimSpace(flowID) == "" {
 		return
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.statuses[flowID] = workBuddyOAuthFlowStatus{
+	store.statuses[flowID] = subscriptionOAuthFlowStatus{
 		Status:    status,
 		Message:   message,
 		UpdatedAt: time.Now(),
 	}
 }
 
-func (store *workBuddyOAuthPendingStore) status(flowID string) (workBuddyOAuthFlowStatus, bool) {
+func (store *subscriptionOAuthStore) status(flowID string) (subscriptionOAuthFlowStatus, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	entry, ok := store.statuses[flowID]
@@ -446,12 +452,12 @@ func (s *Server) startWorkBuddyOAuth(providerID string, site workBuddySite) (aut
 		return "", "", err
 	}
 	flowID = hex.EncodeToString(idBytes)
-	s.pendingWorkBuddyOAuth.put(providerID, workBuddyOAuthPending{
+	s.subscriptionOAuthFlows.put(providerID, subscriptionOAuthPending{
 		State:     state.State,
 		FlowID:    flowID,
 		CreatedAt: time.Now(),
 	})
-	s.pendingWorkBuddyOAuth.setStatus(flowID, "pending", "等待浏览器授权…")
+	s.subscriptionOAuthFlows.setStatus(flowID, "pending", "等待浏览器授权…")
 	go s.pollWorkBuddyOAuthInBackground(ctx, cancel, providerID, flowID, site, state.State)
 	return resolved, flowID, nil
 }
@@ -469,8 +475,8 @@ func (s *Server) pollWorkBuddyOAuthInBackground(
 ) {
 	defer cancel()
 	fail := func(message string) {
-		s.pendingWorkBuddyOAuth.setStatus(flowID, "failed", message)
-		s.pendingWorkBuddyOAuth.finish(providerID)
+		s.subscriptionOAuthFlows.setStatus(flowID, "failed", message)
+		s.subscriptionOAuthFlows.finish(providerID)
 		s.logs.AddApp("warn", "workbuddy oauth flow failed", fmt.Sprintf("provider=%s %s", providerID, message))
 	}
 
@@ -531,8 +537,8 @@ func (s *Server) pollWorkBuddyOAuthInBackground(
 	} else {
 		s.logs.AddApp("warn", "workbuddy model sync failed", syncErr.Error())
 	}
-	s.pendingWorkBuddyOAuth.finish(providerID)
-	s.pendingWorkBuddyOAuth.setStatus(flowID, "connected", "connected")
+	s.subscriptionOAuthFlows.finish(providerID)
+	s.subscriptionOAuthFlows.setStatus(flowID, "connected", "connected")
 	s.logs.AddApp("info", "workbuddy oauth connected", fmt.Sprintf("provider=%s account=%s", providerID, credential.AccountLabel))
 }
 
@@ -947,6 +953,15 @@ func buildWorkBuddyCompletion(streamBody []byte, model string) (map[string]any, 
 // single chat.completion, and reopens it on the response so the passthrough
 // writer can read it as it would any buffered body.
 func rewriteWorkBuddyUpstreamStreamedBody(response *http.Response, model string) error {
+	return forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
+}
+
+// forcedStreamAsCompletion is the shared half of that rewrite, for every
+// upstream that only streams and answers in OpenAI's own chunk shape: buffer
+// the stream, rebuild one object with `aggregate`, and reopen the response as
+// JSON. An upstream error or a body with no events at all is passed through
+// untouched, so a failure still reaches the client as the upstream said it.
+func forcedStreamAsCompletion(response *http.Response, model string, aggregate func([]byte, string) ([]byte, error)) error {
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	response.Body.Close()
 	if err != nil {
@@ -957,7 +972,7 @@ func rewriteWorkBuddyUpstreamStreamedBody(response *http.Response, model string)
 		response.Body = io.NopCloser(bytes.NewReader(payload))
 		return nil
 	}
-	completion, err := workBuddyStreamAsCompletion(payload, model)
+	completion, err := aggregate(payload, model)
 	if err != nil {
 		response.Body = io.NopCloser(bytes.NewReader(payload))
 		return nil // forward what came back rather than inventing an error

@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { APIKey, APIKeyDayStats, AdminAuthStatus, BadgeTone, CloudflareZoneOption, GatewayState, HostDiskTemp, HostFanSpeed, HostMetrics, LegacyRequestStatsSnapshot, LogEntry, Model, NavItemID, OutputEndpoint, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderThinkingTestResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckPrefs } from './types';
+import { APIKey, APIKeyDayStats, AdminAuthStatus, BadgeTone, CloudflareZoneOption, GatewayState, HostDiskTemp, HostFanSpeed, HostMetrics, LegacyRequestStatsSnapshot, LogEntry, Model, NavItemID, OutputEndpoint, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, SubscriptionConnectKind, ProviderPreset, ProviderThinkingTestResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckPrefs } from './types';
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
   {
     id: 'tuya-azure-deployment',
@@ -1167,6 +1167,11 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
   if (provider.authType === 'qoder_pat') return 'qoder_pat';
   if (provider.authType === 'workbuddy') return 'workbuddy';
   if (provider.authType === 'workbuddy_ai') return 'workbuddy_ai';
+  if (provider.authType === 'zcode') return 'zcode';
+  if (provider.authType === 'zcode_bigmodel') return 'zcode_bigmodel';
+  if (provider.authType === 'trae_cn') return 'trae_cn';
+  if (provider.authType === 'trae_global') return 'trae_global';
+  if (provider.authType === 'opencode_zen_free') return 'opencode_zen_free';
   if (provider.selfRegistration) return 'self_register';
   return 'api_key';
 }
@@ -1175,6 +1180,36 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
 // 控制台里的展示、徽标与登录流程都走同一套分支。
 export function isWorkBuddyConnectKind(kind: ProviderConnectKind): boolean {
   return kind === 'workbuddy' || kind === 'workbuddy_ai';
+}
+
+export function isZCodeConnectKind(kind: ProviderConnectKind): boolean {
+  return kind === 'zcode' || kind === 'zcode_bigmodel';
+}
+
+export function isTraeConnectKind(kind: ProviderConnectKind): boolean {
+  return kind === 'trae_cn' || kind === 'trae_global';
+}
+
+// 需要浏览器登录的订阅：卡片与编辑器共用一套「发起 → 等待 → 已连接」流程，
+// 只是后端换了一个端点前缀。OpenCode Zen 免费档不在其中——它没有登录这一步。
+export function isSubscriptionConnectKind(kind: ProviderConnectKind): kind is SubscriptionConnectKind {
+  return kind === 'workbuddy' || kind === 'workbuddy_ai'
+    || kind === 'zcode' || kind === 'zcode_bigmodel'
+    || kind === 'trae_cn' || kind === 'trae_global';
+}
+
+// PROVIDER_AUTH_TYPES 是表单可以提交给后端的全部连接方式：白名单之外一律退回
+// api_key，避免前端多出一个 authType 时把它原样写进 Provider。
+export const PROVIDER_AUTH_TYPES = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'] as const;
+
+export function providerAuthTypeParam(value: string): string {
+  return (PROVIDER_AUTH_TYPES as readonly string[]).includes(value) ? value : 'api_key';
+}
+// subscriptionOAuthPrefix 是订阅登录那几个端点共用的路径段。
+export function subscriptionOAuthPrefix(kind: ProviderConnectKind): string {
+  if (isZCodeConnectKind(kind)) return 'zcode-oauth';
+  if (isTraeConnectKind(kind)) return 'trae-oauth';
+  return 'workbuddy-oauth';
 }
 
 // presetMatchesProvider 判断一个 Provider 是否属于目录里的某个预设，用于磁贴上
@@ -1217,6 +1252,11 @@ export function providerConnectLabel(kind: ProviderConnectKind): string {
     case 'qoder_pat': return '连接 Qoder 账号 (PAT)';
     case 'workbuddy': return '登录 WorkBuddy 账号';
     case 'workbuddy_ai': return '登录 WorkBuddy AI 账号';
+    case 'zcode': return '登录 ZCode（Z.ai 套餐）';
+    case 'zcode_bigmodel': return '登录 ZCode（智谱 BigModel 套餐）';
+    case 'trae_cn': return '登录 Trae CN 账号';
+    case 'trae_global': return '登录 Trae 国际版账号';
+    case 'opencode_zen_free': return 'OpenCode Zen 免费档（无需密钥）';
     case 'self_register': return '内网穿透自助注册（Bearer 令牌）';
     default: return 'API Key';
   }
@@ -1232,6 +1272,11 @@ export const PROVIDER_CONNECT_FILTERS: Array<{ id: '' | ProviderConnectKind; lab
   { id: 'qoder_pat', label: 'Qoder PAT' },
   { id: 'workbuddy', label: 'WorkBuddy' },
   { id: 'workbuddy_ai', label: 'WorkBuddy AI' },
+  { id: 'zcode', label: 'ZCode (Z.ai)' },
+  { id: 'zcode_bigmodel', label: 'ZCode (智谱)' },
+  { id: 'trae_cn', label: 'Trae CN' },
+  { id: 'trae_global', label: 'Trae 国际版' },
+  { id: 'opencode_zen_free', label: 'OpenCode Zen 免费' },
 ];
 
 export function buildApiKeyPatchBody(key: APIKey, patch: Partial<APIKey> = {}) {

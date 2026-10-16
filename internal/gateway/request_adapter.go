@@ -67,7 +67,7 @@ func resolveProviderChatURLWithAdapter(provider domain.Provider, model string) s
 			return applyRequestAdapterPlaceholders(tmpl, provider.BaseURL, model)
 		}
 	}
-	return resolveProviderChatURL(provider, model)
+	return resolveOpenCodeZenURL(provider, model, resolveProviderChatURL(provider, model))
 }
 
 func applyRequestAdapterHeaders(request *http.Request, provider domain.Provider, model string) {

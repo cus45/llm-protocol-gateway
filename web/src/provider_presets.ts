@@ -20,6 +20,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'sub-workbuddy', name: 'WorkBuddy 订阅', section: 'subscription', authType: 'workbuddy', protocol: 'openai_chat', baseUrl: 'https://copilot.tencent.com/v2', needsSignIn: true, website: 'https://www.codebuddy.cn', note: '腾讯 CodeBuddy 套餐 · 国内版', icon: 'workbuddy-color' },
   { id: 'sub-workbuddy-ai', name: 'WorkBuddy AI 订阅', section: 'subscription', authType: 'workbuddy_ai', protocol: 'openai_chat', baseUrl: 'https://www.workbuddy.ai/v2', needsSignIn: true, website: 'https://www.workbuddy.ai', note: '同一套 API 的国际版构建', icon: 'workbuddy-color' },
 
+  { id: 'sub-zcode', name: 'ZCode 编程套餐（Z.ai）', section: 'subscription', authType: 'zcode', protocol: 'claude', baseUrl: 'https://api.z.ai/api/anthropic', needsSignIn: true, website: 'https://zcode.z.ai', note: 'GLM Coding Plan · 登录铸造项目密钥', icon: 'zcode.png' },
+  { id: 'sub-zcode-bigmodel', name: 'ZCode 编程套餐（智谱）', section: 'subscription', authType: 'zcode_bigmodel', protocol: 'claude', baseUrl: 'https://open.bigmodel.cn/api/anthropic', needsSignIn: true, website: 'https://zcode.z.ai', note: '同一套登录，BigModel 站点的套餐与端点', icon: 'zcode.png' },
+  { id: 'sub-trae-cn', name: 'Trae CN 订阅', section: 'subscription', authType: 'trae_cn', protocol: 'openai_chat', baseUrl: 'https://trae-api-cn.mchost.guru', needsSignIn: true, website: 'https://www.trae.cn', note: '字节 Trae IDE 协议 · 含免费档', icon: 'trae' },
+  { id: 'sub-trae-global', name: 'Trae 国际版订阅', section: 'subscription', authType: 'trae_global', protocol: 'openai_chat', baseUrl: 'https://coresg-normal.trae.ai', needsSignIn: true, website: 'https://www.trae.ai', note: '同一套协议的国际部署（SG/US 随账号）', icon: 'trae' },
+  { id: 'sub-opencode-zen-free', name: 'OpenCode Zen 免费档', section: 'subscription', authType: 'opencode_zen_free', protocol: 'openai_chat', baseUrl: 'https://opencode.ai/zen/v1', website: 'https://opencode.ai/docs/zen', note: '免费模型无需密钥；填入自己的密钥可同卡访问付费模型', icon: 'opencode' },
+
   // ---- 厂商：自己的模型与密钥 ----
   { id: 'anthropic', name: 'Anthropic', section: 'vendor', authType: 'api_key', protocol: 'claude', baseUrl: 'https://api.anthropic.com', website: 'https://console.anthropic.com', keysUrl: 'https://console.anthropic.com/settings/keys', icon: 'anthropic' },
   { id: 'openai', name: 'OpenAI', section: 'vendor', authType: 'api_key', protocol: 'openai_chat', baseUrl: 'https://api.openai.com/v1', website: 'https://platform.openai.com', keysUrl: 'https://platform.openai.com/api-keys', note: 'Responses 协议同端点', icon: 'openai' },

@@ -42,9 +42,12 @@ type APIKeyStore interface {
 }
 
 // ProviderOAuthSaver persists just the OAuth token columns of one provider,
-// avoiding a full-state rewrite on every token refresh.
+// avoiding a full-state rewrite on every token refresh. authJSON carries the
+// extra credential fields a newer subscription needs (a ZCode minted key with
+// its team project, a Trae device identity); every subscription writes the
+// whole credential, so a refresh never blanks what the last write stored.
 type ProviderOAuthSaver interface {
-	UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain string) error
+	UpdateProviderOAuth(providerID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, authJSON string) error
 }
 
 type RequestLogStore interface {
@@ -77,7 +80,7 @@ type Server struct {
 	pendingClaudeOAuth      *claudeOAuthPendingStore
 	pendingCursorOAuth      *cursorOAuthPendingStore
 	pendingChatGPTOAuth     *chatgptOAuthPendingStore
-	pendingWorkBuddyOAuth   *workBuddyOAuthPendingStore
+	subscriptionOAuthFlows   *subscriptionOAuthStore
 	cursorBridge            *cursor.Bridge
 	listenAddr              string
 	requestLogRetentionDays int
@@ -130,7 +133,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		pendingClaudeOAuth:      newClaudeOAuthPendingStore(),
 		pendingCursorOAuth:      newCursorOAuthPendingStore(),
 		pendingChatGPTOAuth:     newChatGPTOAuthPendingStore(),
-		pendingWorkBuddyOAuth:   newWorkBuddyOAuthPendingStore(),
+		subscriptionOAuthFlows:   newSubscriptionOAuthStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
 		requestLogRetentionDays: 7,
@@ -317,6 +320,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/status", s.handleWorkBuddyOAuthStatus)
 	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/disconnect", s.handleWorkBuddyOAuthDisconnect)
 	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/usage", s.handleWorkBuddyUsage)
+	mux.HandleFunc("POST /__providers/{id}/zcode-oauth/start", s.handleZCodeOAuthStart)
+	mux.HandleFunc("GET /__providers/{id}/zcode-oauth/status", s.handleZCodeOAuthStatus)
+	mux.HandleFunc("POST /__providers/{id}/zcode-oauth/pause", s.handleZCodeOAuthPause)
+	mux.HandleFunc("POST /__providers/{id}/zcode-oauth/resume", s.handleZCodeOAuthResume)
+	mux.HandleFunc("GET /__providers/{id}/zcode-oauth/usage", s.handleZCodeUsage)
+	mux.HandleFunc("POST /__providers/{id}/trae-oauth/start", s.handleTraeOAuthStart)
+	mux.HandleFunc("GET /__providers/{id}/trae-oauth/status", s.handleTraeOAuthStatus)
+	mux.HandleFunc("POST /__providers/{id}/trae-oauth/pause", s.handleTraeOAuthPause)
+	mux.HandleFunc("POST /__providers/{id}/trae-oauth/resume", s.handleTraeOAuthResume)
+	mux.HandleFunc("GET /__providers/{id}/trae-oauth/usage", s.handleTraeUsage)
 	mux.HandleFunc("GET /__providers/{id}/zhipu/usage", s.handleZhipuUsage)
 	mux.HandleFunc("GET /__providers/{id}/deepseek/usage", s.handleDeepSeekBalance)
 	mux.HandleFunc("DELETE /__providers/{id}", s.handleDeleteProvider)
@@ -510,6 +523,38 @@ func redactProviderForClient(provider domain.Provider) domain.Provider {
 			UserID:    original.UserID,
 			Domain:    original.Domain,
 			Connected: strings.TrimSpace(original.AccessToken) != "" && strings.TrimSpace(original.RefreshToken) != "",
+		}
+	}
+	if provider.ZCode != nil {
+		original := provider.ZCode
+		provider.ZCode = &domain.ZCodeCredential{
+			// The key itself never leaves the server; the console sees which
+			// realm and project it was minted from, and what plan it bills on.
+			ExpiresAt:      original.ExpiresAt,
+			AccountLabel:   original.AccountLabel,
+			Site:           original.Site,
+			Base:           original.Base,
+			OrganizationID: original.OrganizationID,
+			ProjectID:      original.ProjectID,
+			Plan:           original.Plan,
+			Connected:      strings.TrimSpace(original.APIKey) != "" && !original.Disconnected,
+			Disconnected:   original.Disconnected,
+		}
+	}
+	if provider.Trae != nil {
+		original := provider.Trae
+		provider.Trae = &domain.TraeCredential{
+			ExpiresAt:    original.ExpiresAt,
+			AccountLabel: original.AccountLabel,
+			UserID:       original.UserID,
+			DeviceID:     original.DeviceID,
+			MachineID:    original.MachineID,
+			APIHost:      original.APIHost,
+			AuthHost:     original.AuthHost,
+			Region:       original.Region,
+			ChatFunction: original.ChatFunction,
+			Connected:    strings.TrimSpace(original.AccessToken) != "" && !original.Disconnected,
+			Disconnected: original.Disconnected,
 		}
 	}
 	// Regenerate curl against the real BaseURL for UI display.
@@ -2693,6 +2738,13 @@ func resolveProviderImageURL(provider domain.Provider) string {
 }
 
 func resolveProviderChatURL(provider domain.Provider, model string) string {
+	if isTraeProvider(provider) {
+		// Trae has one agent endpoint per realm and no OpenAI-style path to
+		// append to it.
+		if upstreamURL := traeChatURL(provider); upstreamURL != "" {
+			return upstreamURL
+		}
+	}
 	resolvedModel := strings.TrimSpace(model)
 	if resolvedModel == "" {
 		resolvedModel = strings.TrimSpace(provider.DefaultModel)
@@ -2762,21 +2814,42 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 	}
 	upstreamURL := resolveProviderChatURLWithAdapter(provider, resolvedModel)
 	// WorkBuddy accepts only a streaming request whose first message is the
-	// system prompt; the console asked for one JSON object, so the stream is
-	// rebuilt into one below.
+	// system prompt and OpenCode only streams its free tier; the console asked
+	// for one JSON object, so the stream is rebuilt into one below.
 	workBuddy := isWorkBuddyProvider(provider)
 	if workBuddy {
 		body, _ = prepareWorkBuddyChatBody(body)
+	}
+	zenFree := false
+	if isOpenCodeZenProvider(provider) {
+		body, zenFree = prepareOpenCodeZenChatBody(provider, body)
+	}
+	trae := isTraeProvider(provider)
+	if trae {
+		refreshed, refreshErr := s.ensureFreshTraeToken(provider)
+		if refreshErr != nil {
+			return providerChatHTTPResult{Error: refreshErr.Error(), TargetURL: upstreamURL, LatencyMs: time.Since(started).Milliseconds()}
+		}
+		provider = refreshed
+		shaped, shapeErr := traeChatBody(provider, body, traeFunctionsToTry(provider)[0])
+		if shapeErr != nil {
+			return providerChatHTTPResult{Error: shapeErr.Error(), TargetURL: upstreamURL, LatencyMs: time.Since(started).Milliseconds()}
+		}
+		body = shaped
 	}
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return providerChatHTTPResult{Error: err.Error(), TargetURL: upstreamURL, RequestBody: string(body), LatencyMs: time.Since(started).Milliseconds()}
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if workBuddy {
+	if workBuddy || zenFree || trae {
 		request.Header.Set("Accept", "text/event-stream")
 	}
 	applyProviderAuth(request, provider, r.Header.Get("Authorization"))
+	applyOpenCodeZenHeaders(request, provider, body)
+	if trae {
+		applyTraeHeaders(request, provider)
+	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	response, err := client.Do(request)
@@ -2791,6 +2864,15 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 	defer response.Body.Close()
 	if workBuddy {
 		_ = rewriteWorkBuddyUpstreamStreamedBody(response, resolvedModel)
+	}
+	if zenFree {
+		_ = rewriteOpenCodeZenUpstreamStreamedBody(response, resolvedModel)
+	}
+	if trae {
+		// Trae answers its own event stream; the console reads a chat reply, so
+		// convert it and rebuild the single object it asked for.
+		response = s.decorateTraeResponse(response, provider, resolvedModel, traeFunctionsToTry(provider)[0])
+		_ = forcedStreamAsCompletion(response, resolvedModel, workBuddyStreamAsCompletion)
 	}
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 16384))
 	return providerChatHTTPResult{
@@ -3260,7 +3342,7 @@ func (s *Server) saveState() error {
 func (s *Server) persistProviderOAuth(provider domain.Provider) error {
 	if s.providerOAuthSaver != nil {
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
-		var userID, authDomain string
+		var userID, authDomain, authJSON string
 		switch {
 		case provider.ClaudeOAuth != nil:
 			accessToken = provider.ClaudeOAuth.AccessToken
@@ -3294,10 +3376,22 @@ func (s *Server) persistProviderOAuth(provider domain.Provider) error {
 			accountLabel = provider.WorkBuddy.AccountLabel
 			userID = provider.WorkBuddy.UserID
 			authDomain = provider.WorkBuddy.Domain
+		case provider.ZCode != nil:
+			accessToken = provider.ZCode.APIKey
+			refreshToken = provider.ZCode.BizToken
+			expiresAt = provider.ZCode.ExpiresAt
+			accountLabel = provider.ZCode.AccountLabel
+			authJSON = credentialJSON(provider.ZCode)
+		case provider.Trae != nil:
+			accessToken = provider.Trae.AccessToken
+			refreshToken = provider.Trae.RefreshToken
+			expiresAt = provider.Trae.ExpiresAt
+			accountLabel = provider.Trae.AccountLabel
+			authJSON = credentialJSON(provider.Trae)
 		default:
 			return nil
 		}
-		return s.providerOAuthSaver.UpdateProviderOAuth(provider.ID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain)
+		return s.providerOAuthSaver.UpdateProviderOAuth(provider.ID, accessToken, refreshToken, expiresAt, scope, accountLabel, userID, authDomain, authJSON)
 	}
 	return s.saveState()
 }
@@ -3936,6 +4030,9 @@ func (s *Server) proxyClaudeCountTokens(r *http.Request, provider domain.Provide
 	if provider.AuthType == domain.AuthTypeCursorOAuth ||
 		provider.AuthType == domain.AuthTypeQoderPAT ||
 		isWorkBuddyProvider(provider) ||
+		isOpenCodeZenProvider(provider) ||
+		isZCodeProvider(provider) ||
+		isTraeProvider(provider) ||
 		(provider.Protocol == domain.ProtocolOpenAIChat && strings.TrimSpace(provider.BaseURL) == "") {
 		stub, _ := json.Marshal(map[string]any{"input_tokens": 1})
 		return http.StatusOK, stub, nil
@@ -4052,6 +4149,48 @@ func (s *Server) fetchProviderModels(r *http.Request, provider domain.Provider, 
 			Models:    defaultQoderModels(provider.ID),
 			Preview:   "qoder direct endpoint exposes no /models route; using the known alias list",
 		}
+	}
+
+	if isZCodeProvider(provider) {
+		site, _ := zcodeSiteForProvider(provider)
+		if provider.ZCode == nil || provider.ZCode.Disconnected {
+			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: "ZCode 尚未登录", Models: []domain.Model{}}
+		}
+		// The plan's models come from ZCode's release config, not from its
+		// Anthropic endpoint, which serves no model list.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		models, err := fetchZCodeModels(ctx, site)
+		if err != nil {
+			models = zcodeFallbackModels(provider.ID)
+		}
+		for index := range models {
+			models[index].ProviderID = provider.ID
+		}
+		return providerTestResult{Success: true, Provider: provider.ID, ModelsURL: zcodeSiteHost + zcodeConfigsPath, LatencyMs: time.Since(started).Milliseconds(), Models: models, Preview: "ZCode " + site.label + " 发布配置"}
+	}
+
+	if isTraeProvider(provider) {
+		if provider.Trae == nil || provider.Trae.Disconnected {
+			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: "Trae 尚未登录", Models: []domain.Model{}}
+		}
+		refreshed, err := s.ensureFreshTraeToken(provider)
+		if err != nil {
+			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: err.Error(), Models: []domain.Model{}}
+		}
+		site, _ := traeSiteOf(refreshed)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		models, err := s.fetchTraeModels(ctx, refreshed)
+		if err != nil {
+			// Trae answers no list for an account whose session just lapsed,
+			// and an empty card is worse than the realm's known models.
+			models = traeFallbackModels(site, provider.ID)
+		}
+		for index := range models {
+			models[index].ProviderID = provider.ID
+		}
+		return providerTestResult{Success: true, Provider: provider.ID, ModelsURL: site.api + traeModelsBatchPath, LatencyMs: time.Since(started).Milliseconds(), Models: models, Preview: site.label + " 账号的模型列表"}
 	}
 
 	if isWorkBuddyProvider(provider) {
@@ -4641,6 +4780,11 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, skipIncomingAuth bool) (int, TokenUsage, []byte, error) {
 	stream := requestBodyWantsStream(body)
+	if isTraeProvider(provider) {
+		// Trae's request and reply are its own, so the whole exchange goes
+		// through a path of its own rather than through the relay's shaping.
+		return s.proxyTraeChat(w, r, provider, model, body, skipIncomingAuth)
+	}
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
 		baseURL, refreshed, err := s.resolveCursorBridgeBaseURL(r.Context(), provider)
 		if err != nil {
@@ -4668,20 +4812,26 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 		return 0, TokenUsage{}, nil, bodyErr
 	}
 	// WorkBuddy refuses a non-stream chat ("Non-stream chat request is
-	// currently not supported"), so its upstream call always streams; a client
-	// that asked for a single JSON object gets the stream rebuilt into one
-	// before the response is written.
+	// currently not supported") and OpenCode serves its free tier to a
+	// streaming request only, so both go upstream as a stream; a client that
+	// asked for a single JSON object gets the stream rebuilt into one before
+	// the response is written.
 	workBuddy := isWorkBuddyProvider(provider)
 	if workBuddy {
 		body, _ = prepareWorkBuddyChatBody(body)
 	}
+	zenFree := false
+	if isOpenCodeZenProvider(provider) {
+		body, zenFree = prepareOpenCodeZenChatBody(provider, body)
+	}
+	forcedStream := (workBuddy || zenFree) && !stream
 	upstreamURL := resolveProviderChatURLWithAdapter(provider, model)
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if workBuddy && !stream {
+	if forcedStream {
 		request.Header.Set("Accept", "text/event-stream")
 	} else {
 		request.Header.Set("Accept", r.Header.Get("Accept"))
@@ -4691,6 +4841,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 		incomingAuth = r.Header.Get("Authorization")
 	}
 	applyProviderAuth(request, provider, incomingAuth)
+	applyOpenCodeZenHeaders(request, provider, body)
 	applyRequestAdapterHeaders(request, provider, model)
 
 	response, err := doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
@@ -4698,8 +4849,11 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 		return 0, TokenUsage{}, nil, err
 	}
 	defer response.Body.Close()
-	if workBuddy && !stream {
+	if workBuddy && forcedStream {
 		_ = rewriteWorkBuddyUpstreamStreamedBody(response, model)
+	}
+	if zenFree && forcedStream {
+		_ = rewriteOpenCodeZenUpstreamStreamedBody(response, model)
 	}
 	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
 }
@@ -5021,6 +5175,9 @@ func applyProviderAuth(request *http.Request, provider domain.Provider, incoming
 	// A WorkBuddy request is always signed by its own account, so these
 	// overwrite whatever the generic path above put in Authorization.
 	applyWorkBuddyHeaders(request, provider)
+	// A ZCode plan's key goes in the Anthropic header and the bearer both, which
+	// the generic path above only sets one of.
+	applyZCodeHeaders(request, provider)
 }
 
 func resolveProviderAuth(provider domain.Provider) string {
@@ -5041,8 +5198,23 @@ func resolveProviderAuth(provider domain.Provider) string {
 		}
 		return ""
 	}
+	// A ZCode provider's key is the one its sign-in minted, never one typed into
+	// the form, so it lives in the credential as well.
+	if isZCodeProvider(provider) {
+		if provider.ZCode != nil && !provider.ZCode.Disconnected {
+			return strings.TrimSpace(provider.ZCode.APIKey)
+		}
+		return ""
+	}
 	source := strings.TrimSpace(provider.APIKeySource)
 	if source == "" {
+		// Zen's free tier is served to OpenCode's anonymous key, so a Zen
+		// provider with no key configured still goes out authenticated. An
+		// operator who did paste one has it used instead, which is what reaches
+		// the paid models.
+		if provider.AuthType == domain.AuthTypeOpenCodeZenFree {
+			return openCodeZenAnonymousKey
+		}
 		return ""
 	}
 	if strings.HasPrefix(source, "env:") {

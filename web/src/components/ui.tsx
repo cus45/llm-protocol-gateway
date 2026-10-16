@@ -280,8 +280,11 @@ export function BrandIcon({
       </span>
     );
   }
-  const source = `/icons/${icon}.svg`;
-  if (icon.endsWith('-color')) {
+  // 图标默认是同名 SVG，用 currentColor 单色描出来；厂商只给了位图时（ZCode 只有
+  // 一张彩色 PNG）在名字里写清后缀，按彩色图直接显示——遮罩上色对位图没有意义。
+  const bitmap = icon.includes('.');
+  const source = bitmap ? `/icons/${icon}` : `/icons/${icon}.svg`;
+  if (bitmap || icon.endsWith('-color')) {
     return <img className={`brand-icon ${className}`} src={source} alt="" width={size} height={size} />;
   }
   return (

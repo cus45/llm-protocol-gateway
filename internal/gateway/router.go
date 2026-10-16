@@ -303,6 +303,9 @@ func (r *Router) AddProvider(provider domain.Provider) (domain.Provider, error) 
 		provider.AuthType != domain.AuthTypeCursorOAuth &&
 		provider.AuthType != domain.AuthTypeChatGPTOAuth &&
 		provider.AuthType != domain.AuthTypeQoderPAT &&
+		provider.AuthType != domain.AuthTypeOpenCodeZenFree &&
+		!isZCodeAuthType(provider.AuthType) &&
+		!isTraeAuthType(provider.AuthType) &&
 		!isWorkBuddyAuthType(provider.AuthType) {
 		return domain.Provider{}, fmt.Errorf("provider baseUrl is required")
 	}
@@ -398,6 +401,40 @@ func normalizeProvider(provider *domain.Provider) {
 		site, _ := workBuddySiteForAuthType(provider.AuthType)
 		if isPlaceholderBaseURL(provider.BaseURL) {
 			provider.BaseURL = site.chatBaseURL()
+		}
+	}
+	if provider.AuthType == domain.AuthTypeOpenCodeZenFree {
+		// OpenCode Zen speaks OpenAI Chat natively and needs no key for its
+		// free models, so the only thing to configure is which of its two
+		// roots to ask; the free tier is moved to the inference root per
+		// request (see resolveOpenCodeZenURL).
+		provider.Protocol = domain.ProtocolOpenAIChat
+		if isPlaceholderBaseURL(provider.BaseURL) {
+			provider.BaseURL = openCodeZenFreeBase
+		}
+	}
+	if isZCodeAuthType(provider.AuthType) {
+		// A ZCode account's key bills on its realm's Anthropic endpoint, which
+		// is the whole of what forwarding needs to know. The base URL is only
+		// defaulted — a realm moving its path is a config edit — but nothing
+		// else is: the key never comes from the form, only from the sign-in.
+		provider.Protocol = domain.ProtocolClaude
+		if isPlaceholderBaseURL(provider.BaseURL) {
+			if site, ok := zcodeSiteForAuthType(provider.AuthType); ok {
+				provider.BaseURL = site.inference
+			}
+		}
+	}
+	if isTraeAuthType(provider.AuthType) {
+		// Trae's IDE protocol is its own: one agent endpoint per realm, and a
+		// request shaped for it rather than for OpenAI Chat. The protocol is
+		// still declared as OpenAI Chat because that is what clients see; only
+		// the hop upstream is Trae's (see resolveProviderChatURL).
+		provider.Protocol = domain.ProtocolOpenAIChat
+		if isPlaceholderBaseURL(provider.BaseURL) {
+			if site, ok := traeSiteForAuthType(provider.AuthType); ok {
+				provider.BaseURL = site.api
+			}
 		}
 	}
 	if provider.AuthType == domain.AuthTypeQoderPAT {
@@ -1358,6 +1395,89 @@ func (r *Router) ClearProviderWorkBuddy(providerID string) (domain.Provider, err
 		}
 		updated := r.state.Providers[index]
 		updated.WorkBuddy = nil
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderZCode stores (or replaces) the credential a ZCode sign-in minted
+// and forces the provider into ZCode's mode: the plan's Anthropic endpoint and
+// the key that bills on it come from the credential, not from the form.
+func (r *Router) SetProviderZCode(providerID string, credential domain.ZCodeCredential) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		credentialCopy := credential
+		updated.ZCode = &credentialCopy
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// ClearProviderZCode discards a ZCode credential. The provider keeps the key it
+// minted only as long as the credential holds it, so clearing means the next
+// request has to sign in again.
+func (r *Router) ClearProviderZCode(providerID string) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		updated.ZCode = nil
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderTrae stores (or replaces) a Trae account session and forces the
+// provider into that realm's auth mode: which deployment it signs in to is the
+// connection kind, because its hosts, client catalog and billing page all
+// follow from it.
+func (r *Router) SetProviderTrae(providerID, authType string, credential domain.TraeCredential) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		updated.AuthType = authType
+		credentialCopy := credential
+		updated.Trae = &credentialCopy
+		normalizeProvider(&updated)
+		r.state.Providers[index] = updated
+		return updated, nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// ClearProviderTrae discards a Trae session; the provider keeps its
+// configuration but has to sign in again before it serves traffic.
+func (r *Router) ClearProviderTrae(providerID string) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		updated := r.state.Providers[index]
+		updated.Trae = nil
 		normalizeProvider(&updated)
 		r.state.Providers[index] = updated
 		return updated, nil

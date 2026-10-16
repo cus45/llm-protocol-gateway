@@ -5,12 +5,13 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isWorkBuddyConnectKind, loadBootSession, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, providerAuthTypeParam, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
+import { SubscriptionConnect } from './components/subscription';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { ProviderCatalogDialog } from './components/provider_catalog';
 import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
-import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache, WorkBuddyUsage } from './types';
+import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderAuthType, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache, WorkBuddyUsage } from './types';
 import { Badge, BrandIcon, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
 import { TerminalAuthGate } from './components/terminal_auth';
 function App() {
@@ -244,7 +245,7 @@ function App() {
     apiKeySource: '',
     defaultModel: '',
     defaultThinkingDepth: '',
-    authType: 'api_key' as 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai' | 'self_register',
+    authType: 'api_key' as ProviderAuthType,
     requestAdapterJSON: '',
     teamOrganizationId: '',
     teamProjectId: '',
@@ -2624,7 +2625,7 @@ function App() {
         defaultThinkingDepth: providerDraft.defaultThinkingDepth,
         authHeader: providerDraft.protocol === 'claude' ? 'x-api-key' : 'Authorization',
         authType: isClaudeOAuth ? 'claude_oauth' : isCursorOAuth ? 'cursor_oauth' : isChatGPTOAuth ? 'chatgpt_oauth' : isQoderPAT ? 'qoder_pat'
-          : providerDraft.authType === 'workbuddy' ? 'workbuddy' : providerDraft.authType === 'workbuddy_ai' ? 'workbuddy_ai' : 'api_key',
+          : providerAuthTypeParam(providerDraft.authType),
         requestAdapter,
         // 智谱团队版：两者都填才发送并触发团队端点；否则清空（走个人版）。
         teamOrganizationId: providerDraft.teamOrganizationId.trim(),
@@ -2645,7 +2646,7 @@ function App() {
       resetQoderPATFlowState();
       // OAuth 三种连接方式 / 自助注册模式：创建后不关弹窗，直接停留在编辑态，
       // 用户立刻就能点连接按钮 / 拿到注册令牌，不用再多点一次「编辑」重新进来。
-      if (wasCreate && (isSelfRegister || isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy)) {
+      if (wasCreate && (isSelfRegister || isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy || isSubscriptionConnectKind(providerDraft.authType))) {
         // 不关弹窗、留在编辑态，并且直接把"创建"和"发起授权/生成令牌"这两步
         // 接在同一次点击触发的调用链里完成，用户不用再多点一次。
         setEditingProviderID(saved.id);
@@ -4577,7 +4578,7 @@ function App() {
                   >
                     <span className="cluster-pill-label">OAuth / 账号</span>
                     <b className="cluster-pill-val">
-                      {sortedProviders.filter((p) => p.authType === 'claude_oauth' || p.authType === 'cursor_oauth' || p.authType === 'chatgpt_oauth' || p.authType === 'qoder_pat' || p.authType === 'workbuddy' || p.authType === 'workbuddy_ai').length}
+                      {sortedProviders.filter((p) => p.authType && p.authType !== 'api_key').length}
                     </b>
                   </button>
                   <div className="cluster-summary-pill" style={{ cursor: 'default' }}>
@@ -4741,6 +4742,7 @@ function App() {
                         qoderPATConnected={provider.qoderPat?.connected}
                         isWorkBuddy={isWorkBuddyConnectKind(provider.authType || 'api_key')}
                         workBuddyConnected={provider.workbuddyOAuth?.connected}
+                        provider={provider}
                         cursorBridge={provider.authType === 'cursor_oauth' ? state.cursorBridge : undefined}
                         ownerName={!isNormalUser ? providerOwnerName(provider) : undefined}
                         authorizedUserCount={!isNormalUser
@@ -7844,16 +7846,11 @@ function App() {
           <div className="form-grid modal-form">
             <Field fullWidth label="Provider 名称" value={providerDraft.name} onChange={(value) => setProviderDraft((current) => ({ ...current, name: value }))} />
             {(() => {
-              const connectLocked = providerDraft.authType === 'claude_oauth' || providerDraft.authType === 'cursor_oauth' || providerDraft.authType === 'chatgpt_oauth' || providerDraft.authType === 'qoder_pat'
-                || isWorkBuddyConnectKind(providerDraft.authType);
-              const connectValue = providerDraft.authType === 'claude_oauth' ? '登录 Claude 账号 (OAuth)'
-                : providerDraft.authType === 'cursor_oauth' ? '登录 Cursor 账号 (OAuth)'
-                : providerDraft.authType === 'chatgpt_oauth' ? '登录 ChatGPT 账号 (OAuth)'
-                : providerDraft.authType === 'qoder_pat' ? '连接 Qoder 账号 (PAT)'
-                : providerDraft.authType === 'workbuddy' ? '登录 WorkBuddy 账号'
-                : providerDraft.authType === 'workbuddy_ai' ? '登录 WorkBuddy AI 账号'
-                : providerDraft.authType === 'self_register' ? SELF_REGISTER_CONNECT_LABEL
-                : API_KEY_CONNECT_LABEL;
+              // 连接方式与它的展示文案都取自 lib 里的那一张表：目录磁贴、筛选条与
+              // 这个下拉框共用同一份标签，新增一种订阅不用再改这里。
+              const connectChoices: ProviderConnectKind[] = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'];
+              const connectLocked = providerDraft.authType !== 'api_key' && providerDraft.authType !== 'self_register';
+              const connectValue = providerConnectLabel(providerDraft.authType);
               // 自助注册类 Provider：协议只能由脚本通过 self-register 接口的
               // protocol 字段声明，控制台不提供选择/修改入口。
               // resolveProviderAuthType 已根据 selfRegistration 回填 self_register。
@@ -7866,22 +7863,18 @@ function App() {
                   <SelectField
                     fullWidth
                     label="连接方式"
-                    values={[API_KEY_CONNECT_LABEL, '登录 Claude 账号 (OAuth)', '登录 Cursor 账号 (OAuth)', '登录 ChatGPT 账号 (OAuth)', '连接 Qoder 账号 (PAT)', '登录 WorkBuddy 账号', '登录 WorkBuddy AI 账号', SELF_REGISTER_CONNECT_LABEL]}
+                    values={connectChoices.map((kind) => providerConnectLabel(kind))}
                     value={connectValue}
                     onChange={(value) => setProviderDraft((current) => {
-                      const authType = value === '登录 Claude 账号 (OAuth)' ? 'claude_oauth'
-                        : value === '登录 Cursor 账号 (OAuth)' ? 'cursor_oauth'
-                        : value === '登录 ChatGPT 账号 (OAuth)' ? 'chatgpt_oauth'
-                        : value === '连接 Qoder 账号 (PAT)' ? 'qoder_pat'
-                        : value === '登录 WorkBuddy 账号' ? 'workbuddy'
-                        : value === '登录 WorkBuddy AI 账号' ? 'workbuddy_ai'
-                        : value === SELF_REGISTER_CONNECT_LABEL ? 'self_register'
-                        : 'api_key';
+                      const picked = connectChoices[connectChoices.map((kind) => providerConnectLabel(kind)).indexOf(value)];
+                      const authType = picked ?? 'api_key';
                       const protocol = authType === 'claude_oauth' ? 'claude'
                         : authType === 'cursor_oauth' ? 'openai_chat'
                         : authType === 'chatgpt_oauth' ? 'openai_responses'
                         : authType === 'qoder_pat' ? 'openai_chat'
                         : authType === 'workbuddy' || authType === 'workbuddy_ai' ? 'openai_chat'
+                        : isZCodeConnectKind(authType) ? 'claude'
+                        : isTraeConnectKind(authType) || authType === 'opencode_zen_free' ? 'openai_chat'
                         // 自助注册：协议不在控制台选，这里只是内部占位默认值
                         // （真实协议以脚本注册时声明的为准），固定用 openai_chat。
                         : authType === 'self_register' ? 'openai_chat'
@@ -7949,6 +7942,38 @@ function App() {
                   在浏览器完成后网关自动轮询取回令牌；令牌到期自动续期，不会回传到浏览器。
                 </div>
                 <Field fullWidth label="Base URL（默认 WorkBuddy 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
+              </>
+            )}
+            {isZCodeConnectKind(providerDraft.authType) && (
+              <>
+                <div className="hint-line">
+                  ZCode 不是一种模型接口，而是登录铸造密钥：用浏览器登录 zcode.z.ai 后，网关会取回（或新建）
+                  账号默认项目里的 GLM 编程套餐密钥，之后按 Claude 协议转发到该套餐的 Anthropic 端点。
+                  密钥与业务令牌都只留在网关，不会回传到浏览器。账号没有个人套餐时会自动找团队席位。
+                </div>
+                <Field fullWidth label="Base URL（默认套餐的 Anthropic 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
+              </>
+            )}
+            {isTraeConnectKind(providerDraft.authType) && (
+              <>
+                <div className="hint-line">
+                  Trae 走 IDE 自己的协议：登录、令牌续期、模型列表与额度都由网关代为完成，客户端看到的仍是
+                  OpenAI Chat。Trae 的授权页只接受 127.0.0.1 的回调，所以请在运行网关的这台机器上点登录；
+                  网关会临时监听一个本地端口，拿到令牌后即关闭。
+                </div>
+                <Field fullWidth label="Base URL（默认该站点的模型主机，可在登录后再改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
+              </>
+            )}
+            {providerDraft.authType === 'opencode_zen_free' && (
+              <>
+                <div className="hint-line">
+                  OpenCode Zen 的免费模型（-free 结尾、big-pickle、grok-code）无需任何密钥：网关会按 OpenCode
+                  自己的客户端形状发出，并改走它的推理入口。付费模型不满足这个形状，想用的话在下面填入自己的
+                  OpenCode 密钥即可，两种模型仍可共用这一个 Provider。
+                </div>
+                <div className="hint-line">
+                  免费档只接受流式请求；客户端如果要求一次性返回，网关会在上游把流收回来拼成一条回复再返回。
+                </div>
               </>
             )}
             {providerDraft.authType === 'self_register' && (
@@ -8129,6 +8154,29 @@ function App() {
               })()}
             </div>
           )}
+          {editingProviderID && (isZCodeConnectKind(providerDraft.authType) || isTraeConnectKind(providerDraft.authType)) && (() => {
+            const record = state.providers.find((item) => item.id === editingProviderID);
+            const zcode = isZCodeConnectKind(providerDraft.authType) ? record?.zcodeOAuth : undefined;
+            const trae = isTraeConnectKind(providerDraft.authType) ? record?.traeOAuth : undefined;
+            return (
+              <SubscriptionConnect
+                providerId={editingProviderID}
+                kind={providerDraft.authType}
+                connected={zcode?.connected ?? trae?.connected}
+                accountLabel={zcode?.accountLabel ?? trae?.accountLabel}
+                plan={zcode?.plan}
+                expiresAt={zcode?.expiresAt ?? trae?.expiresAt}
+                hint={isTraeConnectKind(providerDraft.authType) ? '授权页只接受 127.0.0.1 回调：请在运行网关的这台机器上完成登录。' : undefined}
+                onConnected={async () => {
+                  await refreshState(false);
+                  await fetchProviderModels(editingProviderID, record?.name || '', true);
+                  showToast('订阅账号已连接，模型列表已同步');
+                }}
+                onPaused={() => void refreshState(false)}
+              />
+            );
+          })()}
+
           {providerDraft.protocol === 'openai_chat' && providerDraft.authType === 'qoder_pat' && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
@@ -8296,7 +8344,7 @@ function App() {
               );
             })()}
           </details>
-          <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : providerDraft.authType === 'qoder_pat' ? '创建并粘贴 Qoder 令牌' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
+          <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : providerDraft.authType === 'qoder_pat' ? '创建并粘贴 Qoder 令牌' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
         </Modal>
       )}
 

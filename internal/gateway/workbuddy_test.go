@@ -316,7 +316,7 @@ func TestWorkBuddySignInStoresAccountSession(t *testing.T) {
 	s := &Server{
 		router:                router,
 		logs:                  monitor.NewStore(),
-		pendingWorkBuddyOAuth: newWorkBuddyOAuthPendingStore(),
+		subscriptionOAuthFlows: newSubscriptionOAuthStore(),
 	}
 
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
@@ -333,7 +333,7 @@ func TestWorkBuddySignInStoresAccountSession(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		status, ok := s.pendingWorkBuddyOAuth.status(flowID)
+		status, ok := s.subscriptionOAuthFlows.status(flowID)
 		if ok && status.Status == "connected" {
 			break
 		}

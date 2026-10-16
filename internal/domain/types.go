@@ -272,6 +272,13 @@ type Provider struct {
 	// AuthType == "workbuddy" (Tencent build) and "workbuddy_ai"
 	// (international build) providers. Nil/omitted when not signed in.
 	WorkBuddy *WorkBuddyCredential `json:"workbuddyOAuth,omitempty"`
+	// ZCode holds the GLM Coding Plan credential minted through ZCode's own
+	// sign-in, for AuthType == "zcode" providers. Nil/omitted when not signed
+	// in. Secrets never reach the frontend (see redactProviderForClient).
+	ZCode *ZCodeCredential `json:"zcodeOAuth,omitempty"`
+	// Trae holds the ByteDance Trae account session for AuthType ==
+	// "trae_cn" / "trae_global" providers. Nil/omitted when not signed in.
+	Trae *TraeCredential `json:"traeOAuth,omitempty"`
 	// RequestAdapter is an optional provider-level request rewrite template
 	// (URL/headers/body/model mapping). Nil means use built-in protocol logic.
 	RequestAdapter *RequestAdapter `json:"requestAdapter,omitempty"`
@@ -416,6 +423,82 @@ type WorkBuddyCredential struct {
 	Connected bool   `json:"connected,omitempty"`
 }
 
+// ZCodeCredential is a ZCode (zcode.z.ai) subscription: the GLM Coding Plan
+// project key that sign-in minted, plus the business-site state needed to mint
+// it again and to read the plan's quota. ZCode is only a sign-in and key
+// minting service — inference goes to the plan's own Anthropic-compatible
+// endpoint, so forwarding uses the plain Claude protocol with APIKey as the
+// key. APIKey, SessionToken and BizToken are secrets and must never reach the
+// frontend (see gateway.redactProviderForClient).
+type ZCodeCredential struct {
+	// APIKey is the "<id>.<secret>" project key ZCode served or created
+	// ("zcode-api-key" for a personal plan, "zcode-team-api-key" for a team
+	// seat). It is what an inference request carries.
+	APIKey string `json:"apiKey,omitempty"`
+	// Site selects the ZCode realm: "zai" (Z.ai) or "bigmodel" (智谱).
+	Site string `json:"site,omitempty"`
+	// Base is the inference endpoint the key bills against, e.g.
+	// https://api.z.ai/api/anthropic. Empty means derive it from Site.
+	Base string `json:"base,omitempty"`
+	// BizToken authorizes the business-site calls that re-mint or re-discover
+	// the key (Z.ai sends it as a bearer, BigModel as a bare token).
+	BizToken string `json:"bizToken,omitempty"`
+	// OrganizationID / ProjectID name the team-plan project the seat was found
+	// in; empty for a personal plan. They are account identifiers, not secrets.
+	OrganizationID string `json:"organizationId,omitempty"`
+	ProjectID      string `json:"projectId,omitempty"`
+	// Plan is the display name of the subscription ("GLM Coding Pro", …).
+	Plan         string `json:"plan,omitempty"`
+	AccountLabel string `json:"accountLabel,omitempty"`
+	SessionToken string `json:"sessionToken,omitempty"`
+	ExpiresAt    string `json:"expiresAt,omitempty"` // RFC3339
+	Connected    bool   `json:"connected,omitempty"`
+	// Disconnected marks a user-initiated pause: the credential is kept so
+	// reconnecting needs no browser trip, but forwarding must refuse to use it.
+	Disconnected bool `json:"disconnected,omitempty"`
+}
+
+// TraeCredential is a Trae (ByteDance) subscription account. Trae's IDE
+// protocol is its own, so a request carries the account's Cloud-IDE-JWT plus
+// the device identity that JWT was issued for; the JWT is renewed against that
+// same device. AccessToken, RefreshToken and DevicePrivateKey are secrets and
+// must never reach the frontend (see gateway.redactProviderForClient).
+type TraeCredential struct {
+	// AccessToken is the Cloud-IDE-JWT every Trae request is signed with.
+	AccessToken  string `json:"accessToken,omitempty"`
+	RefreshToken string `json:"refreshToken,omitempty"`
+	ExpiresAt    string `json:"expiresAt,omitempty"` // RFC3339
+	AccountLabel string `json:"accountLabel,omitempty"`
+	// UserID is the account's uid, sent as x-uid on every request.
+	UserID string `json:"userId,omitempty"`
+	// ClientID is the Trae client the session was signed in as; renewals ask as
+	// the same client.
+	ClientID string `json:"clientId,omitempty"`
+	// DeviceID (19 digits) and MachineID (32 hex) are the identity created at
+	// sign-in. Trae drops requests whose device keeps changing, so every
+	// request for this account must send this same pair.
+	DeviceID  string `json:"deviceId,omitempty"`
+	MachineID string `json:"machineId,omitempty"`
+	// DevicePrivateKey / DevicePublicKey are the ECDSA P-256 pair (PEM) that a
+	// device-bound renewal signs its proof with. Trae CN requires them.
+	DevicePrivateKey string `json:"devicePrivateKey,omitempty"`
+	DevicePublicKey  string `json:"devicePublicKey,omitempty"`
+	// APIHost overrides the realm's model host when the sign-in named one
+	// (enterprise deployments, per-region hosts). AuthHost does the same for
+	// renewals. Both are validated against Trae's own domains before use.
+	APIHost  string `json:"apiHost,omitempty"`
+	AuthHost string `json:"authHost,omitempty"`
+	// Region is the Trae Global deployment ("US" or empty for Singapore);
+	// it selects the model and usage hosts. Unused for Trae CN.
+	Region string `json:"region,omitempty"`
+	// ChatFunction is the Trae agent function that answered for this account,
+	// remembered so later requests do not probe every one in turn.
+	ChatFunction string `json:"chatFunction,omitempty"`
+	Connected    bool   `json:"connected,omitempty"`
+	// Disconnected marks a user-initiated pause, as in ZCodeCredential.
+	Disconnected bool `json:"disconnected,omitempty"`
+}
+
 const (
 	AuthTypeAPIKey       = "api_key"
 	AuthTypeClaudeOAuth  = "claude_oauth"
@@ -427,6 +510,23 @@ const (
 	// and API, a different endpoint, model list and extra request headers.
 	AuthTypeWorkBuddy   = "workbuddy"
 	AuthTypeWorkBuddyAI = "workbuddy_ai"
+	// AuthTypeZCode signs in through ZCode (zcode.z.ai) to a GLM Coding Plan on
+	// Z.ai; AuthTypeZCodeBigModel signs in to the same plan on BigModel (智谱).
+	// One sign-in service, two realms: a different business API, inference
+	// endpoint and subscription page, so they are two connection kinds rather
+	// than a setting.
+	AuthTypeZCode         = "zcode"
+	AuthTypeZCodeBigModel = "zcode_bigmodel"
+	// AuthTypeTraeCN is Trae's China deployment (trae.cn) and AuthTypeTrae
+	// its international one (trae.ai). Same IDE protocol, different hosts,
+	// client catalogs, model lists and billing pages.
+	AuthTypeTraeCN     = "trae_cn"
+	AuthTypeTraeGlobal = "trae_global"
+	// AuthTypeOpenCodeZenFree is OpenCode Zen's free tier: the models Zen
+	// serves to no key at all, which it will only serve to a request that
+	// looks like OpenCode's own. No sign-in exists; the provider works as soon
+	// as it is added.
+	AuthTypeOpenCodeZenFree = "opencode_zen_free"
 )
 
 type Model struct {

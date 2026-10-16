@@ -50,7 +50,7 @@ func (s *Server) handleWorkBuddyOAuthStatus(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "flowId is required")
 		return
 	}
-	status, ok := s.pendingWorkBuddyOAuth.status(flowID)
+	status, ok := s.subscriptionOAuthFlows.status(flowID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "unknown or expired oauth flow")
 		return
@@ -74,7 +74,7 @@ func (s *Server) handleWorkBuddyOAuthDisconnect(w http.ResponseWriter, r *http.R
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to save configuration: "+err.Error())
 		return
 	}
-	s.pendingWorkBuddyOAuth.finish(providerID)
+	s.subscriptionOAuthFlows.finish(providerID)
 	s.logs.AddApp("info", "workbuddy oauth disconnected", providerID)
 	writeJSON(w, http.StatusOK, redactProviderForClient(updated))
 }

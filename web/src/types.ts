@@ -177,6 +177,53 @@ export type WorkBuddyUsage = {
   fetchedAt?: string;
 };
 
+export type ZCodeOAuthInfo = {
+  connected?: boolean;
+  /** 用户点了「暂停」：后端仍存有 ZCode 铸造的项目密钥，只是暂停转发。 */
+  disconnected?: boolean;
+  expiresAt?: string;
+  accountLabel?: string;
+  /** 账号所在的站点（zai / bigmodel），非敏感。 */
+  site?: string;
+  /** 套餐名，如 "GLM Coding Pro"。 */
+  plan?: string;
+  /** 团队席位所在的项目，非敏感。 */
+  organizationId?: string;
+  projectId?: string;
+};
+
+export type TraeOAuthInfo = {
+  connected?: boolean;
+  disconnected?: boolean;
+  expiresAt?: string;
+  accountLabel?: string;
+  /** 账号 uid（x-uid），非敏感，用于区分同站点的两个账号。 */
+  userId?: string;
+  /** 登录时建立的 device id，非敏感；Trae 按设备计数会话。 */
+  deviceId?: string;
+  /** Trae 国际版的分区（"US" 或空 = 新加坡）。 */
+  region?: string;
+};
+
+export type SubscriptionUsageWindow = {
+  name: string;
+  /** 已用百分比 0-100。 */
+  used: number;
+  amount?: number;
+  limit?: number;
+  unit?: string;
+  resetsAt?: string;
+  /** 侧路窗口（不计入套餐上限，如 ZCode 的 MCP 月额度）。 */
+  aside?: boolean;
+};
+
+export type SubscriptionUsage = {
+  plan?: string;
+  windows: SubscriptionUsageWindow[];
+  error?: string;
+  fetchedAt?: string;
+};
+
 export type QoderPATInfo = {
   connected?: boolean;
   /** 用户点了「断开连接」：令牌仍保留在后端，只是暂停转发。见 disconnected 分支 UI。 */
@@ -323,7 +370,7 @@ export type Provider = {
     createdAt?: string;
     lastSeenAt?: string;
   };
-  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai';
+  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
   // 智谱（bigmodel / z.ai）编程套餐额度查询配置：团队版需要组织 + 项目 ID，
   // 两者都填时走团队版端点（?type=2 + bigmodel-organization/-project 请求头），
   // 否则走个人版端点。均为非敏感账号标识。
@@ -335,6 +382,8 @@ export type Provider = {
   chatgptOAuth?: ChatGPTOAuthInfo;
   qoderPat?: QoderPATInfo;
   workbuddyOAuth?: WorkBuddyOAuthInfo;
+  zcodeOAuth?: ZCodeOAuthInfo;
+  traeOAuth?: TraeOAuthInfo;
   requestAdapter?: RequestAdapter;
 };
 
@@ -824,7 +873,13 @@ export type TrafficRankCache = {
   models: Record<string, number>;
 };
 
-export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai';
+export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
+
+/** 需要浏览器登录的订阅连接方式：它们共用一套「发起 → 等待 → 已连接」流程。 */
+export type SubscriptionConnectKind = 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global';
+
+/** 表单里可选的连接方式：与 ProviderConnectKind 同一集合，命名上区分提交值与展示分类。 */
+export type ProviderAuthType = ProviderConnectKind;
 
 /** 添加 Provider 目录：一个可点选的接入预设（订阅登录、厂商、中转、本机服务）。 */
 export type ProviderPresetSection = 'subscription' | 'vendor' | 'relay' | 'local';

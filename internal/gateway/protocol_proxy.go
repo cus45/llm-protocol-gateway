@@ -37,6 +37,22 @@ func resolveProviderResponsesURL(provider domain.Provider, model string) string 
 }
 
 func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, provider domain.Provider, upstreamURL string, body []byte, accept string, skipIncomingAuth bool) (*http.Response, error) {
+	if isTraeProvider(provider) {
+		// Trae is not an OpenAI endpoint: its agent function is chosen per
+		// model and its reply is Trae's own event stream. sendTraeChat shapes
+		// the request, retries the other functions when Trae says the model is
+		// served elsewhere, and hands back an OpenAI-shaped response, so every
+		// converter below sees what it already knows how to read.
+		model := chatBodyModel(body)
+		if model == "" {
+			model = strings.TrimSpace(provider.DefaultModel)
+		}
+		response, _, err := s.sendTraeChat(ctx, r, provider, model, body, skipIncomingAuth)
+		if response == nil {
+			return nil, err
+		}
+		return response, nil
+	}
 	if provider.AuthType == domain.AuthTypeChatGPTOAuth {
 		refreshed, err := s.ensureFreshChatGPTToken(provider)
 		if err != nil {
@@ -55,6 +71,11 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 		// streaming request; idempotent, so a caller that already shaped the
 		// body is unaffected.
 		body, _ = prepareWorkBuddyChatBody(body)
+	}
+	if isOpenCodeZenProvider(provider) {
+		// Zen's free tier is served to a streaming request that offers OpenCode's
+		// two tools, so the body is shaped before the URL is asked too.
+		body, _ = prepareOpenCodeZenChatBody(provider, body)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
@@ -95,6 +116,7 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 	if json.Unmarshal(body, &payload) == nil {
 		model, _ = payload["model"].(string)
 	}
+	applyOpenCodeZenHeaders(request, provider, body)
 	applyRequestAdapterHeaders(request, provider, model)
 	return doHTTPWithTiming(ctx, &http.Client{Timeout: 0}, request)
 }
@@ -359,11 +381,13 @@ type streamConverter func(http.ResponseWriter, io.Reader, string) (TokenUsage, e
 
 func (s *Server) proxyConvertedThroughChat(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, chatReq map[string]any, skipIncomingAuth bool, convert responseConverter, streamConvert streamConverter) (int, TokenUsage, []byte, error) {
 	stream, _ := chatReq["stream"].(bool)
-	// WorkBuddy refuses a non-stream chat, so it always streams upstream. The
-	// stream is rebuilt into a single chat.completion before the converter
-	// runs, so a client that asked for a non-streaming answer still gets one.
-	workBuddyForcedStream := !stream && isWorkBuddyProvider(provider)
-	if workBuddyForcedStream {
+	model = applyProviderModelMapping(provider, model)
+	// WorkBuddy refuses a non-stream chat and OpenCode serves its free tier to
+	// a streaming request only, so both always stream upstream. The stream is
+	// rebuilt into a single chat.completion before the converter runs, so a
+	// client that asked for a non-streaming answer still gets one.
+	forcedStream := !stream && (isWorkBuddyProvider(provider) || isTraeProvider(provider) || openCodeZenFreeFor(provider, model))
+	if forcedStream {
 		chatReq["stream"] = true
 	}
 	upstreamBody, err := json.Marshal(chatReq)
@@ -371,10 +395,9 @@ func (s *Server) proxyConvertedThroughChat(w http.ResponseWriter, r *http.Reques
 		return 0, TokenUsage{}, nil, err
 	}
 	accept := "application/json"
-	if stream || workBuddyForcedStream {
+	if stream || forcedStream {
 		accept = "text/event-stream"
 	}
-	model = applyProviderModelMapping(provider, model)
 	sendUpstream := func() (*http.Response, error) {
 		if provider.AuthType == domain.AuthTypeCursorOAuth {
 			baseURL, refreshed, bridgeErr := s.resolveCursorBridgeBaseURL(r.Context(), provider)
@@ -398,13 +421,13 @@ func (s *Server) proxyConvertedThroughChat(w http.ResponseWriter, r *http.Reques
 		return s.doOpenAIProviderRequest(r.Context(), r, provider, resolveProviderChatURLWithAdapter(provider, model), adaptedBody, accept, skipIncomingAuth)
 	}
 	send := sendUpstream
-	if workBuddyForcedStream {
+	if forcedStream {
 		send = func() (*http.Response, error) {
 			response, sendErr := sendUpstream()
 			if sendErr != nil || response == nil {
 				return response, sendErr
 			}
-			_ = rewriteWorkBuddyUpstreamStreamedBody(response, model)
+			_ = forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
 			return response, nil
 		}
 	}
@@ -602,6 +625,20 @@ func (s *Server) executeProtocolFlow(
 	// Same for a WorkBuddy session, whose access token is short-lived.
 	if isWorkBuddyProvider(provider) {
 		provider, err = s.ensureFreshWorkBuddyToken(provider)
+		if err != nil {
+			return 0, TokenUsage{}, nil, err
+		}
+	}
+	// A ZCode key does not rotate, so all that can be wrong is that there is
+	// none; a Trae JWT rotates on every request path and is renewed here.
+	if isZCodeProvider(provider) {
+		provider, err = ensureZCodeCredential(provider)
+		if err != nil {
+			return 0, TokenUsage{}, nil, err
+		}
+	}
+	if isTraeProvider(provider) {
+		provider, err = s.ensureFreshTraeToken(provider)
 		if err != nil {
 			return 0, TokenUsage{}, nil, err
 		}
