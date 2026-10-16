@@ -1494,6 +1494,44 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text); font-size: 12px; font-weight: 600;
 }
+/* Provider 署名：图标 + 名称，七个板块共用同一个形状，别再各写一份。 */
+.provider-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.provider-label .brand-icon { flex-shrink: 0; }
+.provider-label-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); font-size: 12.5px; font-weight: 600;
+}
+.provider-label-protocol { color: var(--subtle); font-size: 11.5px; font-family: var(--mono); }
+.provider-label.missing { color: var(--subtle); font-family: var(--mono); font-size: 11.5px; }
+
+/* 筛选下拉里的图标与文字同一基线，图标不参与换行。 */
+.searchable-select-option { display: flex; align-items: center; gap: 8px; }
+.filter-option-icon { flex-shrink: 0; }
+.searchable-select-option-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 模型列表的筛选项：图标 + 名称 + 数量，数量靠右不再混在名字里。 */
+.models-filter-chip .provider-label-name { font-size: inherit; font-weight: inherit; color: inherit; }
+.models-filter-count {
+  margin-left: 2px; padding: 0 6px; border-radius: 999px;
+  background: var(--surface-sunken); color: var(--muted);
+  font-size: 11px; font-weight: 700; font-feature-settings: "tnum" 1;
+}
+.models-filter-chip.active .models-filter-count { background: var(--surface); color: var(--accent); }
+
+/* 密钥「路由与方案」：绑定下拉下方的署名行。 */
+.binding-provider-hint {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px;
+}
+
+/* 故障转移链里的身份列占满剩余宽度，长名字截断而不是把模型挤走。 */
+.fallback-row .fallback-identity { flex: 1; min-width: 0; }
+.fallback-row .provider-label-name { font-size: 13px; }
+.fallback-name.missing {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--subtle); font-family: var(--mono); font-size: 12px;
+}
+
+
 .log-header {
   padding: 0 14px 4px;
   color: var(--subtle); font-size: 11px; font-weight: 600;

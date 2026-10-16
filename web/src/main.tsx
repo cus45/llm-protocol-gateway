@@ -5995,7 +5995,9 @@ function App() {
                                 <span className="model-id-copy-hint" aria-hidden="true">📋</span>
                               </div>
                             </td>
-                            <td>{provider ? providerOptionLabel(provider) : model.providerId}</td>
+                            <td>
+                              {provider ? <ProviderLabel provider={provider} size={15} /> : <span className="provider-label missing">{model.providerId}</span>}
+                            </td>
                             <td>
                               <div className="model-tags-row">
                                 {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
@@ -6050,7 +6052,7 @@ function App() {
                           />
                         </div>
                         <div className="provider-meta" title={provider?.name || model.providerId}>
-                          {provider ? providerOptionLabel(provider) : model.providerId}
+                          {provider ? <ProviderLabel provider={provider} size={14} /> : model.providerId}
                         </div>
                         <div className="model-tags-row">
                           {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
