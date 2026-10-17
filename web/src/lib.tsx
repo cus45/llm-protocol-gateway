@@ -295,6 +295,7 @@ export const navItems = [
   { id: 'public-access', label: '公网访问' },
   { id: 'traffic-tokens', label: 'API 日志' },
   { id: 'alerts', label: '告警' },
+  { id: 'quota-keeper', label: '额度保活' },
   { id: 'users', label: '用户管理' },
   { id: 'self-check', label: '自检' },
   { id: 'machine', label: '机器状态' },
@@ -306,13 +307,13 @@ export const coreNavIDs: NavItemID[] = ['input-providers', 'api-keys'];
 
 // 侧边栏导航分组：组内所有项都被角色过滤掉时，整组（含组标题）不渲染。
 export const navGroups: Array<{ label: string; ids: NavItemID[] }> = [
-  { label: '核心配置', ids: ['input-providers', 'api-keys', 'output-providers'] },
+  { label: '核心配置', ids: ['input-providers', 'api-keys', 'output-providers', 'quota-keeper'] },
   { label: '数据洞察', ids: ['models-menu', 'usage-stats', 'traffic-tokens'] },
   { label: '系统管理', ids: ['public-access', 'alerts', 'users', 'self-check', 'machine', 'settings'] },
 ];
 
 // 普通用户仅可访问的页面（其余仅管理员可见）
-export const userAllowedNavIDs: NavItemID[] = ['input-providers', 'models-menu', 'api-keys', 'traffic-tokens', 'usage-stats'];
+export const userAllowedNavIDs: NavItemID[] = ['input-providers', 'models-menu', 'api-keys', 'traffic-tokens', 'usage-stats', 'quota-keeper'];
 
 // 侧边栏收起状态持久化 key（独立于主题，避免互相覆盖）
 export const SIDEBAR_STORAGE_KEY = 'llm-gateway-sidebar';

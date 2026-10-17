@@ -17,7 +17,7 @@ import (
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 type Store struct {
 	path   string
@@ -228,6 +228,9 @@ func (s *Store) migrate() error {
 	}
 	if err := ensureAlertsTable(tx); err != nil {
 		return fmt.Errorf("migrate alerts: %w", err)
+	}
+	if err := ensureQuotaKeeperTables(tx); err != nil {
+		return fmt.Errorf("migrate scheduled_tasks: %w", err)
 	}
 	if err := addColumnIfMissing(tx, "api_keys", "model_aliases", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate: %w", err)

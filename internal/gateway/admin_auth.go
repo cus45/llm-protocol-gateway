@@ -169,6 +169,11 @@ func isUserAllowedPath(method, path string) bool {
 	if isUserProviderManagementPath(method, path) {
 		return true
 	}
+	// 额度保活：用户可以维护自己的定时任务（数据级隔离在 quota_keeper_api.go 里
+	// 按 OwnerUserID 判定，别人的任务一律 404）。
+	if isUserQuotaPath(method, path) {
+		return true
+	}
 	// Read-only OAuth quota panels on the Providers page (no CRUD / test).
 	if method == http.MethodGet && isUserProviderUsagePath(path) {
 		return true
@@ -176,6 +181,36 @@ func isUserAllowedPath(method, path string) bool {
 	// Static UI assets and SPA pages are served by the same handler chain.
 	if !strings.HasPrefix(path, "/__") && method == http.MethodGet {
 		return true
+	}
+	return false
+}
+
+// isUserQuotaPath matches the 额度保活 endpoints a normal user may call. Every
+// one of them is safe to reach because the handlers themselves scope the data:
+// a task owned by somebody else answers 404, and a provider that was never
+// granted to the caller is refused on create/update.
+func isUserQuotaPath(method, path string) bool {
+	if path == "/__quota-tasks" {
+		return method == http.MethodGet || method == http.MethodPost
+	}
+	if !strings.HasPrefix(path, "/__quota-tasks/") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/__quota-tasks/"), "/")
+	if strings.TrimSpace(parts[0]) == "" {
+		return false
+	}
+	if parts[0] == "preview" {
+		return len(parts) == 1 && method == http.MethodPost
+	}
+	switch len(parts) {
+	case 1:
+		return method == http.MethodPatch || method == http.MethodDelete
+	case 2:
+		if parts[1] == "run" {
+			return method == http.MethodPost
+		}
+		return parts[1] == "runs" && method == http.MethodGet
 	}
 	return false
 }

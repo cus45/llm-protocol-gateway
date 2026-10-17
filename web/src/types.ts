@@ -923,3 +923,52 @@ export type ModalLayer = {
   id: number;
   onClose: () => void;
 };
+
+// 额度保活（quota keeper）：定时对选中的 Provider 发一次极短的对话请求，把
+// 上游那扇「第一次请求开始计时、5 小时后重置」的窗口钉在用户挑的小时上。
+export type ScheduleMode = 'daily_times' | 'every_hours' | 'every_minutes';
+
+export type ScheduledTask = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  ownerUserId?: string;
+  mode: ScheduleMode;
+  /** "HH:MM" 按这个 IANA 时区解释；空 = 网关所在时区（旧任务的默认）。 */
+  timeZone?: string;
+  /** daily_times 用，"HH:MM" 列表。 */
+  times?: string[];
+  /** 滚动策略用：every_hours 是小时，every_minutes 是分钟。 */
+  interval: number;
+  /** 滚动策略的起点，留空 = 任务创建时间。 */
+  anchorAt?: string;
+  providerIds: string[];
+  /** 按 provider 固定探测模型，留空用 provider 自己的默认模型。 */
+  modelOverrides?: Record<string, string>;
+  /** 静默窗口分钟数；负数 = 不做静默判断，每次都发。 */
+  quietMinutes: number;
+  probePrompt?: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  createdAt?: string;
+};
+
+export type ScheduledTaskRun = {
+  id: number;
+  taskId: string;
+  providerId: string;
+  batchId: string;
+  firedAt: string;
+  outcome: 'fired' | 'skipped' | 'failed';
+  status?: number;
+  latencyMs?: number;
+  model?: string;
+  reason?: string;
+};
+
+export type QuotaPreviewFire = { at: string; daily: string; clock: string };
+
+export type QuotaTaskPage = {
+  tasks: ScheduledTask[];
+  recentRuns: ScheduledTaskRun[];
+};

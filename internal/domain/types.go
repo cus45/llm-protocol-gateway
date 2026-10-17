@@ -728,6 +728,103 @@ type CursorBridgeRuntime struct {
 	CheckedAt string `json:"checkedAt,omitempty"`
 }
 
+// Quota-keeper ("额度保活") scheduled tasks.
+//
+// The reason these exist: a Claude-style subscription meter starts a rolling
+// window only when a request actually arrives, and resets it five hours later.
+// A day spent not chatting therefore does not spend a window at all, so the
+// first request the next morning is still inside yesterday's window and the
+// user burns two days' allowance in one afternoon. A scheduled probe anchors
+// the window at a chosen hour instead, and the rest of the day's resets can be
+// inferred from that anchor.
+
+// ScheduleMode selects how a task decides its next firing time.
+type ScheduleMode string
+
+const (
+	// ScheduleDailyTimes fires at each HH:MM in Times, every day.
+	ScheduleDailyTimes ScheduleMode = "daily_times"
+	// ScheduleEveryHours rolls forward from AnchorAt in fixed hour steps,
+	// which is the shape of a five-hour window: anchor once at 09:00 and the
+	// task keeps re-anchoring at 14:00, 19:00, …
+	ScheduleEveryHours ScheduleMode = "every_hours"
+	// ScheduleEveryMinutes rolls forward from AnchorAt in fixed minute steps,
+	// for anyone who wants a tighter cadence than an hour.
+	ScheduleEveryMinutes ScheduleMode = "every_minutes"
+)
+
+// ScheduledTask is one keep-alive job: a schedule, the providers it pokes, and
+// the model each provider should answer with.
+type ScheduledTask struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Enabled     bool         `json:"enabled"`
+	OwnerUserID string       `json:"ownerUserId,omitempty"`
+	Mode        ScheduleMode `json:"mode"`
+	// TimeZone is the IANA zone the daily clock list is read against, e.g.
+	// "Asia/Shanghai". Empty means the server's own zone — but a gateway on a
+	// US VPS and a user in Beijing then disagree about what "09:00" means, which
+	// is exactly how this field came to exist.
+	TimeZone string `json:"timeZone,omitempty"`
+	// Times are "HH:MM" strings, used by ScheduleDailyTimes.
+	Times []string `json:"times,omitempty"`
+	// Interval is the step for the rolling modes: hours for ScheduleEveryHours,
+	// minutes for ScheduleEveryMinutes.
+	Interval int `json:"interval"`
+	// AnchorAt is where the rolling modes start counting from (RFC3339). Empty
+	// means the task's creation time, so saving a task at 09:07 with a 5-hour
+	// interval fires at 14:07, 19:07, … without the user doing arithmetic.
+	AnchorAt string `json:"anchorAt,omitempty"`
+	// ProviderIDs are poked in order on every firing.
+	ProviderIDs []string `json:"providerIds"`
+	// ModelOverrides pins the model per provider id; empty means the provider's
+	// own default.
+	ModelOverrides map[string]string `json:"modelOverrides,omitempty"`
+	// QuietMinutes is the anti-self-sabotage window: a provider used within the
+	// last QuietMinutes is skipped, because firing then would only push its
+	// reset further out. Zero falls back to the default.
+	QuietMinutes int `json:"quietMinutes"`
+	// ProbePrompt is the throwaway message. Short on purpose: one request per
+	// provider per firing is the entire cost of the feature.
+	ProbePrompt string `json:"probePrompt,omitempty"`
+	// LastRunAt / NextRunAt are RFC3339; NextRunAt is recomputed after every
+	// firing so a restart cannot double-fire a slot that already ran.
+	LastRunAt string `json:"lastRunAt,omitempty"`
+	NextRunAt string `json:"nextRunAt,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+// ScheduledTaskRun is one provider's outcome inside one firing of a task. A
+// firing writes one row per provider, so the console can show "3 家成功、1 家跳过"
+// and the reason for a skip.
+type ScheduledTaskRun struct {
+	ID         int64  `json:"id"`
+	TaskID     string `json:"taskId"`
+	ProviderID string `json:"providerId"`
+	// BatchID groups the rows of a single firing.
+	BatchID   string `json:"batchId"`
+	FiredAt   string `json:"firedAt"`
+	Outcome   string `json:"outcome"` // fired | skipped | failed
+	Status    int    `json:"status,omitempty"`
+	LatencyMs int64  `json:"latencyMs,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+const (
+	QuotaRunFired   = "fired"
+	QuotaRunSkipped = "skipped"
+	QuotaRunFailed  = "failed"
+	// DefaultQuotaQuietMinutes is how recently a provider must have been used
+	// for a scheduled probe to stand down.
+	DefaultQuotaQuietMinutes = 60
+	// DefaultQuotaProbePrompt is the throwaway message.
+	DefaultQuotaProbePrompt = "ping"
+	// QuotaMissGraceMinutes bounds how late a firing may still be worth
+	// running after the gateway was down through it.
+	QuotaMissGraceMinutes = 10
+)
+
 type MetricsSnapshot struct {
 	Requests       int64   `json:"requests"`
 	SuccessRate    float64 `json:"successRate"`

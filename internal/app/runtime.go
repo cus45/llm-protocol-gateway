@@ -302,6 +302,7 @@ func (rt *Runtime) Start(cfg Config) error {
 		server.StartChatGPTTokenBackgroundRefresh(context.Background())
 		server.StartProviderFailoverRecovery(context.Background())
 		server.StartUserActivityFlush(context.Background())
+		server.StartQuotaKeeper(context.Background())
 		server.BackfillClaudeOAuthAccountLabels()
 		server.BackfillQoderAccountLabels()
 		server.StartCursorModelBackgroundRefresh(context.Background())

@@ -10,6 +10,7 @@ import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, D
 import { SubscriptionConnect } from './components/subscription';
 import { ProviderLabel, providerIcon } from './components/provider_label';
 import { ChatTestDialog, type ChatTestTab } from './components/chat_test';
+import { QuotaKeeperPanel } from './components/quota_keeper';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { ProviderCatalogDialog } from './components/provider_catalog';
 import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
@@ -6680,6 +6681,10 @@ function App() {
               )}
             </div>
           </section>
+          )}
+
+          {activeNav === 'quota-keeper' && (
+            <QuotaKeeperPanel providers={state.providers} isAdmin={!isNormalUser} />
           )}
 
           {activeNav === 'users' && !isNormalUser && (

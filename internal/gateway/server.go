@@ -76,11 +76,12 @@ type Server struct {
 	requestLogBatcher       *requestLogBatcher
 	usageDailyStore         UsageDailyStore
 	alertStore              AlertStore
+	scheduledTaskStore      ScheduledTaskStore
 	tunnels                 *tunnel.Manager
 	pendingClaudeOAuth      *claudeOAuthPendingStore
 	pendingCursorOAuth      *cursorOAuthPendingStore
 	pendingChatGPTOAuth     *chatgptOAuthPendingStore
-	subscriptionOAuthFlows   *subscriptionOAuthStore
+	subscriptionOAuthFlows  *subscriptionOAuthStore
 	cursorBridge            *cursor.Bridge
 	listenAddr              string
 	requestLogRetentionDays int
@@ -124,6 +125,16 @@ type Server struct {
 	// hostMetrics samples CPU load/temp only while the admin homepage is
 	// polling /__host-metrics; the loop auto-stops when clients go idle.
 	hostMetrics *hostMetricsSampler
+
+	// Quota keeper ("额度保活", see quota_keeper.go). The three fields below are
+	// runtime-only: in-flight claims stop a task or provider from being probed
+	// twice, and quotaLastProbeAt remembers probes this loop sent (they never
+	// reach request_logs, so the quiet window cannot read them from the table).
+	quotaKeeperMu      sync.Mutex
+	quotaTaskInFlight  map[string]bool
+	quotaProbeInFlight map[string]bool
+	quotaLastProbeAt   map[string]time.Time
+	quotaLastPruneAt   time.Time
 }
 
 func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *Server {
@@ -133,7 +144,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		pendingClaudeOAuth:      newClaudeOAuthPendingStore(),
 		pendingCursorOAuth:      newCursorOAuthPendingStore(),
 		pendingChatGPTOAuth:     newChatGPTOAuthPendingStore(),
-		subscriptionOAuthFlows:   newSubscriptionOAuthStore(),
+		subscriptionOAuthFlows:  newSubscriptionOAuthStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
 		requestLogRetentionDays: 7,
@@ -172,6 +183,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		}
 		if users, ok := stateSaver[0].(UserStore); ok {
 			server.userStore = users
+		}
+		if tasks, ok := stateSaver[0].(ScheduledTaskStore); ok {
+			server.scheduledTaskStore = tasks
 		}
 	}
 	return server
@@ -353,6 +367,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /__users/{id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /__users/{id}", s.handleDeleteUser)
 	mux.HandleFunc("POST /__users/{id}/reset-password", s.handleResetUserPassword)
+	mux.HandleFunc("GET /__quota-tasks", s.handleListScheduledTasks)
+	mux.HandleFunc("POST /__quota-tasks", s.handleCreateScheduledTask)
+	mux.HandleFunc("POST /__quota-tasks/preview", s.handlePreviewScheduledTask)
+	mux.HandleFunc("PATCH /__quota-tasks/{id}", s.handleUpdateScheduledTask)
+	mux.HandleFunc("DELETE /__quota-tasks/{id}", s.handleDeleteScheduledTask)
+	mux.HandleFunc("POST /__quota-tasks/{id}/run", s.handleRunScheduledTask)
+	mux.HandleFunc("GET /__quota-tasks/{id}/runs", s.handleListScheduledTaskRuns)
 	mux.HandleFunc("GET /__selfcheck/tools", s.handleSelfcheckTools)
 	mux.HandleFunc("POST /__selfcheck", s.handleSelfcheckStart)
 	mux.HandleFunc("GET /__selfcheck/{jobId}", s.handleSelfcheckStatus)

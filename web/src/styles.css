@@ -5510,3 +5510,149 @@ html[data-theme="dark"] .pivot-entity-card:hover {
 }
 .provider-tile:hover .brand-icon.mask { background-color: var(--accent-strong); }
 .provider-tile.have { border-color: var(--accent-border); }
+
+/* ----------------------------------------------------------------
+   38. 额度保活 (Quota Keeper)
+   ---------------------------------------------------------------- */
+.quota-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+}
+.quota-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--shadow-soft);
+}
+.quota-card.paused { background: var(--surface-sunken); }
+.quota-card-head { display: flex; align-items: center; gap: 8px; }
+.quota-card-title {
+  flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quota-switch {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; cursor: pointer;
+  color: var(--muted); font-size: 11.5px; font-weight: 600;
+}
+/* 管理员看得到所有用户的任务，需要一眼分清是谁建的。 */
+.quota-owner {
+  flex-shrink: 0; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  color: var(--muted); font-size: 11px; font-weight: 600;
+}
+.quota-switch input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+
+.quota-clock-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.quota-clock-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: var(--control-h-sm); padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-sunken); color: var(--text);
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+}
+.quota-clock-chip.wide { border-radius: var(--r-md); }
+.quota-card.paused .quota-clock-chip { color: var(--muted); }
+button.quota-clock-chip.removable { cursor: pointer; }
+button.quota-clock-chip.removable:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+.quota-chip-x { color: var(--subtle); font-size: 13px; line-height: 1; }
+.quota-clock-note { color: var(--subtle); font-size: 11.5px; }
+
+/* 下次触发是这一屏唯一的重要数字：字号与等宽都拉高，其它行退回说明文字。 */
+.quota-next {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  padding: 9px 11px; border-radius: var(--r-md);
+  background: var(--surface-sunken); border: 1px solid var(--border);
+}
+.quota-next-label { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+.quota-next-value { color: var(--text-strong); font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.quota-next-countdown { color: var(--accent); font-size: 12px; font-weight: 600; font-feature-settings: "tnum" 1; }
+.quota-next-reset { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+
+.quota-providers { display: flex; flex-wrap: wrap; gap: 6px; }
+.quota-provider {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 3px 9px 3px 7px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-soft);
+}
+.quota-provider.missing { border-style: dashed; color: var(--amber); }
+.quota-provider-model {
+  max-width: 148px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-family: var(--mono); font-size: 11px;
+}
+.quota-facts {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  color: var(--subtle); font-size: 11.5px;
+}
+.quota-facts b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+.quota-facts-warn b { color: var(--red); }
+
+/* 卡片高度不齐时操作条钉在底部，三张卡的按钮才在一条线上。 */
+.quota-card-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border); }
+.quota-run-hint { margin-left: auto; color: var(--subtle); font-size: 11.5px; }
+
+.quota-runs { display: grid; gap: 1px; border-top: 1px solid var(--border); padding-top: 8px; }
+.quota-run-row {
+  display: grid; grid-template-columns: 56px 66px minmax(96px, auto) 1fr; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: var(--r-xs); color: var(--muted); font-size: 11.5px;
+}
+.quota-run-row:hover { background: var(--surface-sunken); }
+.quota-run-time { font-family: var(--mono); font-size: 11px; color: var(--subtle); }
+.quota-run-detail {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11px;
+}
+.quota-run-row.failed .quota-run-detail { color: var(--red); }
+
+.quota-error {
+  margin-bottom: 12px; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--red-soft); border: 1px solid rgba(220, 38, 38, 0.24);
+  color: var(--red); font-size: 12.5px; overflow-wrap: anywhere;
+}
+
+/* 编辑器：分区竖排，字段仍用 .field 的控件规格。 */
+.quota-editor { display: grid; gap: 16px; }
+.quota-section { display: grid; gap: 10px; }
+.quota-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quota-section-title { margin: 0; font-size: 12.5px; font-weight: 700; color: var(--text-strong); letter-spacing: 0.01em; }
+.quota-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.quota-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+.quota-modes {
+  display: inline-flex; gap: 2px; padding: 3px; align-self: start;
+  background: var(--surface-sunken); border: 1px solid var(--border); border-radius: var(--r-lg);
+}
+.quota-mode {
+  height: var(--control-h-sm); padding: 0 14px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.quota-mode:hover { color: var(--text); }
+.quota-mode.active { background: var(--active-surface); color: var(--text-strong); box-shadow: var(--shadow-soft); }
+
+.quota-times { display: grid; gap: 10px; }
+.quota-times-input input { flex: 0 0 120px; min-width: 0; font-family: var(--mono); }
+
+.quota-provider-rows { display: grid; gap: 8px; }
+.quota-provider-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-soft);
+}
+.quota-provider-row .provider-label { flex: 1; min-width: 0; }
+.quota-model-field { margin: 0; }
+.quota-model-field select { min-width: 190px; max-width: 260px; }
+
+.quota-preview { display: grid; gap: 1px; }
+.quota-preview-row {
+  display: grid; grid-template-columns: 96px 64px 16px 1fr; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: var(--r-xs); font-family: var(--mono); font-size: 12px;
+}
+.quota-preview-row:hover { background: var(--surface-sunken); }
+.quota-preview-day { color: var(--subtle); }
+.quota-preview-clock { color: var(--text-strong); font-weight: 700; }
+.quota-preview-arrow { color: var(--border-strong); }
+.quota-preview-reset { color: var(--muted); }
+
+.quota-editor-foot { display: flex; align-items: center; gap: 10px; padding-top: 4px; }
+.quota-editor-foot .quota-hint { margin-left: auto; }
+
+html[data-theme="dark"] .quota-clock-chip,
+html[data-theme="dark"] .quota-next { background: var(--surface-strong); }

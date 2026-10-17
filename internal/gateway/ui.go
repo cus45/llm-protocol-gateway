@@ -22,6 +22,7 @@ var uiNavPaths = map[string]struct{}{
 	"/public-access":    {},
 	"/traffic-tokens":   {},
 	"/alerts":           {},
+	"/quota-keeper":     {},
 	"/users":            {},
 	"/self-check":       {},
 	"/machine":          {},

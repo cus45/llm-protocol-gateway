@@ -241,6 +241,18 @@ func TestIsUserAllowedPathProviderUsage(t *testing.T) {
 		{http.MethodPatch, "/__providers/export", true},
 		{http.MethodPost, "/__routes", true},
 		{http.MethodPatch, "/__routes/r1", false},
+		// 额度保活：普通用户可维护自己的定时任务（归属与 Provider 授权在
+		// quota_keeper_api.go 内校验，别人的任务一律 404）。
+		{http.MethodGet, "/__quota-tasks", true},
+		{http.MethodPost, "/__quota-tasks", true},
+		{http.MethodPost, "/__quota-tasks/preview", true},
+		{http.MethodGet, "/__quota-tasks/preview", false},
+		{http.MethodPatch, "/__quota-tasks/q1", true},
+		{http.MethodDelete, "/__quota-tasks/q1", true},
+		{http.MethodPost, "/__quota-tasks/q1/run", true},
+		{http.MethodGet, "/__quota-tasks/q1/runs", true},
+		{http.MethodPost, "/__quota-tasks/q1/runs", false},
+		{http.MethodDelete, "/__quota-tasks/q1/run", false},
 		{http.MethodGet, "/__state", true},
 		{http.MethodGet, "/__apikeys/abc/profiles", true},
 	}
