@@ -295,9 +295,7 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
           <div>
             <h2 className="panel-title">额度保活</h2>
             <p className="panel-desc">
-              订阅额度的窗口只在有请求进来时才开始计时：整天不用，窗口不会走，第二天第一次请求仍落在昨天的窗口里。
-              这里按你指定的时间自动发一条极短的对话，把窗口钉在固定的小时上，当天的重置时间就能顺着推出来
-              （例如 09:00 → 14:00 → 19:00）。一个任务可以包含多个 Provider，探测消息只有一两个词，成本可以忽略。
+              按指定时间自动向上游发一条极短的探测对话，把订阅额度窗口钉在固定小时上，让重置时间可预测（例如 09:00 → 14:00 → 19:00）。建议只放订阅类 Provider，探测成本可忽略。
             </p>
           </div>
           <button type="button" className="btn primary" onClick={() => setEditor({ draft: emptyDraft() })}>

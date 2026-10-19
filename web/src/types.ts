@@ -551,6 +551,8 @@ export type LogEntry = {
   routeId: string;
   providerId: string;
   model: string;
+  /** 上游实际收到的推理设置：medium / adaptive / enabled·8000，未设置为空。 */
+  reasoningEffort?: string;
   action: string;
   protocolFlow: string;
   path: string;
@@ -558,6 +560,8 @@ export type LogEntry = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens?: number;
+  /** 缓存写入（cache_creation），已含在 inputTokens 内，单独展示因为单价不同。 */
+  cacheWriteTokens?: number;
   latencyMs: number;
   ttftMs?: number;
   prepMs?: number;

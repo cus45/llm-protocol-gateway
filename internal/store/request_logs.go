@@ -62,11 +62,11 @@ func (s *Store) AppendRequestLogs(logs []monitor.RequestLog) error {
 // batched insert paths so the column list can only ever drift in one place.
 const requestLogInsertSQL = `INSERT INTO request_logs (
 	time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-	status, input_tokens, output_tokens, cache_tokens, latency_ms, ttft_ms,
+	status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
 	prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
-	client_host, client_ip, access_source,
+	client_host, client_ip, access_source, reasoning_effort,
 	error_description, request_body, response_body
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 func requestLogInsertArgs(log monitor.RequestLog) []any {
 	return []any{
@@ -83,6 +83,7 @@ func requestLogInsertArgs(log monitor.RequestLog) []any {
 		log.InputTokens,
 		log.OutputTokens,
 		log.CacheTokens,
+		log.CacheWriteTokens,
 		log.LatencyMillis,
 		log.TTFTMillis,
 		log.PrepMillis,
@@ -95,6 +96,7 @@ func requestLogInsertArgs(log monitor.RequestLog) []any {
 		log.ClientHost,
 		log.ClientIP,
 		log.AccessSource,
+		log.ReasoningEffort,
 		log.ErrorDescription,
 		log.RequestBody,
 		log.ResponseBody,
@@ -262,9 +264,9 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 	offset := (page - 1) * pageSize
 	args = append(args, pageSize, offset)
 	selectCols := `id, time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-		status, input_tokens, output_tokens, cache_tokens, latency_ms, ttft_ms,
+		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
 		prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
-		client_host, client_ip, access_source,
+		client_host, client_ip, access_source, reasoning_effort,
 		error_description`
 	if query.IncludeBodies {
 		selectCols += `, request_body, response_body`
@@ -300,9 +302,9 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 // ok is false if the id does not exist.
 func (s *Store) RequestLogByID(id int64) (monitor.RequestLog, bool, error) {
 	row := s.reader().QueryRow(`SELECT id, time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-		status, input_tokens, output_tokens, cache_tokens, latency_ms, ttft_ms,
+		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
 		prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
-		client_host, client_ip, access_source,
+		client_host, client_ip, access_source, reasoning_effort,
 		error_description, request_body, response_body
 		FROM request_logs WHERE id = ?`, id)
 	item, err := scanRequestLog(row)
@@ -319,7 +321,7 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 	var item monitor.RequestLog
 	var timeValue string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64
-	var timingFlags, clientHost, clientIP, accessSource sql.NullString
+	var timingFlags, clientHost, clientIP, accessSource, reasoning sql.NullString
 	if err := rows.Scan(
 		&item.ID,
 		&timeValue,
@@ -335,6 +337,7 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 		&item.InputTokens,
 		&item.OutputTokens,
 		&item.CacheTokens,
+		&item.CacheWriteTokens,
 		&item.LatencyMillis,
 		&ttft,
 		&prep,
@@ -347,13 +350,14 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 		&clientHost,
 		&clientIP,
 		&accessSource,
+		&reasoning,
 		&item.ErrorDescription,
 		&item.RequestBody,
 		&item.ResponseBody,
 	); err != nil {
 		return monitor.RequestLog{}, err
 	}
-	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource)
+	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource, reasoning)
 	return item, nil
 }
 
@@ -361,7 +365,7 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 	var item monitor.RequestLog
 	var timeValue string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64
-	var timingFlags, clientHost, clientIP, accessSource sql.NullString
+	var timingFlags, clientHost, clientIP, accessSource, reasoning sql.NullString
 	if err := rows.Scan(
 		&item.ID,
 		&timeValue,
@@ -377,6 +381,7 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 		&item.InputTokens,
 		&item.OutputTokens,
 		&item.CacheTokens,
+		&item.CacheWriteTokens,
 		&item.LatencyMillis,
 		&ttft,
 		&prep,
@@ -389,11 +394,12 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 		&clientHost,
 		&clientIP,
 		&accessSource,
+		&reasoning,
 		&item.ErrorDescription,
 	); err != nil {
 		return monitor.RequestLog{}, err
 	}
-	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource)
+	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource, reasoning)
 	return item, nil
 }
 
@@ -401,7 +407,7 @@ func applyRequestLogScan(
 	item *monitor.RequestLog,
 	timeValue string,
 	ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64,
-	timingFlags, clientHost, clientIP, accessSource sql.NullString,
+	timingFlags, clientHost, clientIP, accessSource, reasoning sql.NullString,
 ) {
 	parsed, parseErr := time.Parse(time.RFC3339Nano, timeValue)
 	if parseErr != nil {
@@ -443,6 +449,9 @@ func applyRequestLogScan(
 	if accessSource.Valid {
 		item.AccessSource = accessSource.String
 	}
+	if reasoning.Valid {
+		item.ReasoningEffort = reasoning.String
+	}
 }
 
 func ensureRequestLogsTable(tx *sql.Tx) error {
@@ -461,6 +470,7 @@ func ensureRequestLogsTable(tx *sql.Tx) error {
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		latency_ms INTEGER NOT NULL DEFAULT 0,
 		ttft_ms INTEGER NOT NULL DEFAULT 0,
 		client_host TEXT NOT NULL DEFAULT '',
@@ -488,6 +498,8 @@ func ensureRequestLogsTable(tx *sql.Tx) error {
 		{"client_host", "TEXT NOT NULL DEFAULT ''"},
 		{"client_ip", "TEXT NOT NULL DEFAULT ''"},
 		{"access_source", "TEXT NOT NULL DEFAULT ''"},
+		{"reasoning_effort", "TEXT NOT NULL DEFAULT ''"},
+		{"cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := addColumnIfMissing(tx, "request_logs", col.name, col.def); err != nil {
 			return fmt.Errorf("request_logs.%s: %w", col.name, err)

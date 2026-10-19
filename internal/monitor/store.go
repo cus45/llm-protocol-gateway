@@ -17,19 +17,24 @@ type RequestLog struct {
 	APIKeyName string    `json:"apiKeyName,omitempty"`
 	// UserName is a transient display field resolved at query time from the
 	// owning API key's user id (not persisted). Renames reflect immediately.
-	UserName      string `json:"userName,omitempty"`
-	RouteID       string `json:"routeId"`
-	ProviderID    string `json:"providerId"`
-	Model         string `json:"model"`
-	Action        string `json:"action"`
-	ProtocolFlow  string `json:"protocolFlow"`
-	Path          string `json:"path"`
-	Status        int    `json:"status"`
-	InputTokens   int64  `json:"inputTokens"` // prompt total (inclusive of cache)
-	OutputTokens  int64  `json:"outputTokens"`
-	CacheTokens   int64  `json:"cacheTokens"` // cache-read/hit portion only
-	LatencyMillis int64  `json:"latencyMs"`
-	TTFTMillis    int64  `json:"ttftMs,omitempty"`
+	UserName   string `json:"userName,omitempty"`
+	RouteID    string `json:"routeId"`
+	ProviderID string `json:"providerId"`
+	Model      string `json:"model"`
+	// ReasoningEffort labels the thinking/reasoning setting the upstream
+	// actually received: an OpenAI-style effort ("medium"), a Claude thinking
+	// mode ("adaptive" / "enabled·8000"), or "" when the request carried none.
+	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
+	Action           string `json:"action"`
+	ProtocolFlow     string `json:"protocolFlow"`
+	Path             string `json:"path"`
+	Status           int    `json:"status"`
+	InputTokens      int64  `json:"inputTokens"` // prompt total (inclusive of cache)
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheTokens      int64  `json:"cacheTokens"`                // cache-read/hit portion only
+	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"` // cache-creation portion, billed inside input
+	LatencyMillis    int64  `json:"latencyMs"`
+	TTFTMillis       int64  `json:"ttftMs,omitempty"`
 	// Observational latency breakdown (ms). Zero means unset / unavailable.
 	PrepMillis            int64  `json:"prepMs,omitempty"`
 	PreUpstreamMillis     int64  `json:"preUpstreamMs,omitempty"`

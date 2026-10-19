@@ -16,6 +16,10 @@ type TokenUsage struct {
 	InputTokens  int64
 	OutputTokens int64
 	CacheTokens  int64
+	// CacheWriteTokens is the cache_creation half: already folded into
+	// InputTokens (it is billed input), but the console shows the split because
+	// a cache write costs several times a cache read.
+	CacheWriteTokens int64
 }
 
 // normalizeClaudeUsageFields converts Anthropic usage fields into the gateway's
@@ -27,9 +31,10 @@ func normalizeClaudeUsageFields(inputTokens, outputTokens, cacheReadTokens, cach
 		totalInput = 0
 	}
 	return TokenUsage{
-		InputTokens:  totalInput,
-		OutputTokens: outputTokens,
-		CacheTokens:  cacheReadTokens,
+		InputTokens:      totalInput,
+		OutputTokens:     outputTokens,
+		CacheTokens:      cacheReadTokens,
+		CacheWriteTokens: cacheCreationTokens,
 	}
 }
 
@@ -104,9 +109,10 @@ func parseOpenAIUsageJSON(body []byte) TokenUsage {
 	cacheCreation := int64FromAny(usage["cache_creation_input_tokens"])
 	cacheMiss := int64FromAny(usage["prompt_cache_miss_tokens"])
 	return TokenUsage{
-		InputTokens:  normalizeInclusiveInputTokens(promptTokens, cacheRead, cacheCreation, cacheMiss),
-		OutputTokens: int64FromAny(usage["completion_tokens"]),
-		CacheTokens:  cacheRead,
+		InputTokens:      normalizeInclusiveInputTokens(promptTokens, cacheRead, cacheCreation, cacheMiss),
+		OutputTokens:     int64FromAny(usage["completion_tokens"]),
+		CacheTokens:      cacheRead,
+		CacheWriteTokens: cacheCreation,
 	}
 }
 
@@ -207,6 +213,9 @@ func parseClaudeUsageFromSSE(body []byte) TokenUsage {
 						if parsed.CacheTokens > 0 {
 							usage.CacheTokens = parsed.CacheTokens
 						}
+						if parsed.CacheWriteTokens > 0 {
+							usage.CacheWriteTokens = parsed.CacheWriteTokens
+						}
 						if parsed.OutputTokens > usage.OutputTokens {
 							usage.OutputTokens = parsed.OutputTokens
 						}
@@ -219,6 +228,9 @@ func parseClaudeUsageFromSSE(body []byte) TokenUsage {
 				if parsed.InputTokens > 0 || parsed.CacheTokens > 0 {
 					usage.InputTokens = parsed.InputTokens
 					usage.CacheTokens = parsed.CacheTokens
+					if parsed.CacheWriteTokens > 0 {
+						usage.CacheWriteTokens = parsed.CacheWriteTokens
+					}
 				}
 				if parsed.OutputTokens > 0 {
 					usage.OutputTokens = parsed.OutputTokens

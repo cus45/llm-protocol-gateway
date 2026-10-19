@@ -552,7 +552,7 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       </div>
       <div className="provider-badges">
         {providerDisabled ? <Badge tone="red">已禁用</Badge> : null}
-        <Badge tone={tone}>{protocol}</Badge>
+        <Badge tone="slate">{protocol}</Badge>
         {showOAuthBadge ? (
           <Badge tone={oauthConnected ? 'green' : 'amber'}>{oauthBadgeLabel}{oauthConnected ? ' 已连接' : ' 未连接'}</Badge>
         ) : (
@@ -576,31 +576,31 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
-      {/* 事实区：两列网格。地址独占一行（通常最长），其余两项一行；订阅卡没有
-          密钥这一项，自动少一格，不补假字段。 */}
+      {/* 事实区：两行。地址独占一行（通常最长），密钥 / 默认 / 模型 挤进一行；
+          订阅卡没有密钥这一项，自动少一格，不补假字段。 */}
       <div className="provider-facts">
-        <div className="provider-fact wide">
+        <span className="provider-fact" title={url}>
           <span className="provider-fact-label">地址</span>
-          <span className="provider-fact-value" title={url}>
+          <span className="provider-fact-value">
             {url}{isCursorOAuth && cursorBridge?.port ? ` · :${cursorBridge.port}` : ''}
           </span>
-        </div>
-        {keyMask ? (
-          <div className="provider-fact">
-            <span className="provider-fact-label">密钥</span>
-            <span className="provider-fact-value" title={keyMask}>{keyMask}</span>
-          </div>
-        ) : null}
-        <div className="provider-fact">
-          <span className="provider-fact-label">默认</span>
-          <span className="provider-fact-value" title={defaultModel || undefined}>{defaultModel || '未设置'}</span>
-        </div>
-        <div className="provider-fact">
-          <span className="provider-fact-label">模型</span>
-          <span className="provider-fact-value" title={modelCount != null && modelCount > 0 ? undefined : '点下方「获取模型」拉取'}>
-            {modelCount != null && modelCount > 0 ? `${modelCount} 个` : '未获取'}
+        </span>
+        <span className="provider-fact-group">
+          {keyMask ? (
+            <span className="provider-fact" title={keyMask}>
+              <span className="provider-fact-label">密钥</span>
+              <span className="provider-fact-value">{keyMask}</span>
+            </span>
+          ) : null}
+          <span className="provider-fact" title={defaultModel || undefined}>
+            <span className="provider-fact-label">默认</span>
+            <span className="provider-fact-value">{defaultModel || '未设置'}</span>
           </span>
-        </div>
+          <span className="provider-fact" title={modelCount != null && modelCount > 0 ? undefined : '点下方「获取模型」拉取'}>
+            <span className="provider-fact-label">模型</span>
+            <span className="provider-fact-value">{modelCount != null && modelCount > 0 ? `${modelCount} 个` : '未获取'}</span>
+          </span>
+        </span>
       </div>
       <div className="provider-foot" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
         <div className="provider-foot-meta">

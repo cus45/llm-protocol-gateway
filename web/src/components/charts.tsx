@@ -261,7 +261,6 @@ export function UsageDonutChart({
           <div className="usage-section-title">{title}</div>
           {subtitle ? <div className="usage-section-subtitle">{subtitle}</div> : null}
         </div>
-        {onSelect ? <span className="donut-interactive-hint">点击可下钻过滤</span> : null}
       </div>
 
       {filtered.length === 0 ? (
@@ -879,10 +878,9 @@ export function UsageHourlyDistribution({
           <div className="usage-section-subtitle">
             {totalInLogs > 0
               ? `调用高峰时段：${String(peakHourIndex).padStart(2, '0')}:00 ~ ${String(peakHourIndex + 1).padStart(2, '0')}:00（${hourlyCounts[peakHourIndex].requests} 次，占 ${((hourlyCounts[peakHourIndex].requests / totalInLogs) * 100).toFixed(0)}%）`
-              : '分析 24 小时各时段请求密度与潮汐流量分布'}
+              : '各时段请求密度分布'}
           </div>
         </div>
-        <span className="donut-interactive-hint">24h 峰值热力</span>
       </div>
 
       <div className="hourly-bars-track">
@@ -1255,13 +1253,12 @@ export function UsageModelLeaderboard({
         <div>
           <div className="usage-section-title">{title}</div>
           <div className="usage-section-subtitle">
-            Top 10 核心模型消耗 · 输入 Prompt vs 输出 Completion 细分
+            Top 10 模型消耗
           </div>
         </div>
         <div className="usage-leaderboard-legend">
           <span className="prompt-legend"><i />输入 Prompt</span>
           <span className="completion-legend"><i />输出 Completion</span>
-          {onSelectModel ? <span className="donut-interactive-hint">点击模型可下钻</span> : null}
         </div>
       </div>
 
@@ -1369,7 +1366,6 @@ export function UsageBarChart({
     <div className="usage-chart-card">
       <div className="usage-section-title-row">
         <div className="usage-section-title">{title}</div>
-        {onSelect ? <span className="donut-interactive-hint">点击可下钻</span> : null}
       </div>
       {items.length === 0 ? (
         <div className="empty-state compact">暂无数据</div>
@@ -1469,9 +1465,6 @@ export function UsageCacheHitRate({
                 : '暂无 Prompt 缓存数据'}
           </div>
         </div>
-        <span className={`donut-interactive-hint ${hasCache ? 'hit' : ''}`}>
-          {hasCache ? `省流 ${hitRatePct.toFixed(0)}%` : '未命中'}
-        </span>
       </div>
 
       <div className="cache-analytics-grid">

@@ -1133,7 +1133,7 @@ func isClientCanceled(r *http.Request, err error) bool {
 }
 
 func (s *Server) recordRequestLog(started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, requestBody, responseBody []byte) {
-	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, 0, "", "", "", nil, requestBody, responseBody)
+	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, 0, "", "", "", nil, "", requestBody, responseBody)
 }
 
 func (s *Server) recordRequestLogFromRequest(r *http.Request, started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, requestBody, responseBody []byte) {
@@ -1151,10 +1151,16 @@ func (s *Server) recordRequestLogFromRequestTTFT(r *http.Request, started time.T
 		accessSource = classifyAccessSource(clientHost, s.router.State().PublicAccess.PublicBaseURL)
 		timing = requestTimingFrom(r.Context())
 	}
-	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, ttftMs, clientHost, clientIP, accessSource, timing, requestBody, responseBody)
+	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, ttftMs, clientHost, clientIP, accessSource, timing, reasoningEffortFrom(r.Context()), requestBody, responseBody)
 }
 
-func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, ttftMs int64, clientHost, clientIP, accessSource string, timing *requestTiming, requestBody, responseBody []byte) {
+// recordRequestLogEx stores one request. `reasoning` is the depth the gateway
+// injected, if any; when it is empty the label is read off the request body so a
+// client-specified effort still lands in the log.
+func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, ttftMs int64, clientHost, clientIP, accessSource string, timing *requestTiming, reasoning string, requestBody, responseBody []byte) {
+	if reasoning == "" {
+		reasoning = requestReasoningLabel(requestBody)
+	}
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		usage = EstimateTokenUsage(requestBody, responseBody)
 	}
@@ -1184,6 +1190,7 @@ func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey,
 		RouteID:               routeID,
 		ProviderID:            providerID,
 		Model:                 model,
+		ReasoningEffort:       reasoning,
 		Action:                action,
 		ProtocolFlow:          protocolFlow,
 		Path:                  path,
@@ -1191,6 +1198,7 @@ func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey,
 		InputTokens:           usage.InputTokens,
 		OutputTokens:          usage.OutputTokens,
 		CacheTokens:           usage.CacheTokens,
+		CacheWriteTokens:      usage.CacheWriteTokens,
 		LatencyMillis:         latency,
 		TTFTMillis:            ttftMs,
 		PrepMillis:            prepMs,
@@ -3558,6 +3566,10 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req = map[string]any{}
 	}
+	// Stash the client's own setting now: the logged body is truncated for
+	// anything as large as a Claude Code prompt, so the log cannot recover it
+	// later. A route/key default overwrites this further down.
+	r = withReasoningEffort(r, reasoningLabelFromMap(req))
 
 	route, err := s.router.ActiveOpenAIChatRoute()
 	var matchedKey domain.APIKey
@@ -3614,6 +3626,7 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	requestDepth, requestHasDepth := req["reasoning_effort"].(string)
 	if depth := s.router.ResolveThinkingDepth(route, thinkingOverride, requestHasDepth, requestDepth); depth != "" {
 		req["reasoning_effort"] = depth
+		r = withReasoningEffort(r, depth)
 	}
 	if stream && decision.Action == "pass_through" && decision.InputProtocol == domain.ProtocolOpenAIChat {
 		req["stream_options"] = map[string]any{"include_usage": true}
@@ -3666,6 +3679,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req = map[string]any{}
 	}
+	r = withReasoningEffort(r, reasoningLabelFromMap(req))
 	// A client may carry a compaction token (minted by our own
 	// handleOpenAIResponsesCompact) back into a normal request's input array;
 	// expand it into a plain message before anything downstream sees it — see
@@ -3728,6 +3742,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	req["model"] = model
 	if depth := s.router.ResolveThinkingDepth(route, thinkingOverride, false, ""); depth != "" {
 		req["reasoning"] = map[string]any{"effort": depth}
+		r = withReasoningEffort(r, depth)
 	}
 	var usage TokenUsage
 	var responseLog []byte
@@ -3866,6 +3881,7 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req = map[string]any{}
 	}
+	r = withReasoningEffort(r, reasoningLabelFromMap(req))
 
 	var route domain.Route
 	var matchedKey domain.APIKey

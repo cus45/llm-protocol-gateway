@@ -201,28 +201,28 @@ export function ApiKeyDetailPanel({
           className={`api-key-detail-tab ${detailTab === 'connect' ? 'active' : ''}`}
           onClick={() => setDetailTab('connect')}
         >
-          接入指南 (Connect)
+          接入指南
         </button>
         <button
           type="button"
           className={`api-key-detail-tab ${detailTab === 'routing' ? 'active' : ''}`}
           onClick={() => setDetailTab('routing')}
         >
-          路由与方案 (Routing)
+          路由与方案
         </button>
         <button
           type="button"
           className={`api-key-detail-tab ${detailTab === 'params' ? 'active' : ''}`}
           onClick={() => setDetailTab('params')}
         >
-          模型与参数 (Parameters)
+          模型与参数
         </button>
         <button
           type="button"
           className={`api-key-detail-tab ${detailTab === 'all' ? 'active' : ''}`}
           onClick={() => setDetailTab('all')}
         >
-          全部展开 (All)
+          全部
         </button>
       </div>
 
@@ -234,7 +234,7 @@ export function ApiKeyDetailPanel({
               <label>一键复制客户端配置</label>
             </div>
             <div className="hint-line">
-              仅显示与当前输出协议匹配的客户端。点击后复制到剪贴板，并弹窗预览配置路径与内容；可在弹窗内切换内网 / 公网域名。
+              仅显示与当前输出协议匹配的客户端；点击复制并预览配置，弹窗内可切换内网 / 公网域名。
             </div>
             <div className="api-key-client-config-actions">
               {clientConfigsForProtocol(route?.outputProtocol).map((client) => (

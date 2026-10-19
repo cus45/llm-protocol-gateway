@@ -5,12 +5,13 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, actionLabel, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, providerAuthTypeParam, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel, trafficLogSourceTitle, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, providerAuthTypeParam, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogProviderLabel, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { SubscriptionConnect } from './components/subscription';
 import { ProviderLabel, providerIcon } from './components/provider_label';
 import { ChatTestDialog, type ChatTestTab } from './components/chat_test';
 import { QuotaKeeperPanel } from './components/quota_keeper';
+import { TrafficLogTable } from './components/traffic_log';
 import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
 import { ProviderCatalogDialog } from './components/provider_catalog';
 import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
@@ -1655,15 +1656,6 @@ function App() {
       showToast(`更新失败：${String(error)}`);
     } finally {
       setSaving(false);
-    }
-  }
-
-  function accessSourceLabel(source?: string) {
-    switch (source) {
-      case 'lan': return '局域网';
-      case 'public': return '公网';
-      case 'local': return '本机';
-      default: return source || '—';
     }
   }
 
@@ -4484,73 +4476,6 @@ function App() {
                   </div>
                 ) : null}
               </div>
-              {sortedProviders.length > 0 ? (
-                <div className="cluster-summary-bar">
-                  <button
-                    type="button"
-                    className={`cluster-summary-pill ${providersStatusFilter === 'all' ? 'active' : ''}`}
-                    onClick={() => setProvidersStatusFilter('all')}
-                    title="点击筛选全部 Provider"
-                  >
-                    <span className="cluster-pill-label">接入总量</span>
-                    <b className="cluster-pill-val">{sortedProviders.length}</b>
-                  </button>
-                  <button
-                    type="button"
-                    className={`cluster-summary-pill ok ${providersStatusFilter === 'healthy' ? 'active' : ''}`}
-                    onClick={() => setProvidersStatusFilter(providersStatusFilter === 'healthy' ? 'all' : 'healthy')}
-                    title="点击筛选运行健康的 Provider"
-                  >
-                    <i className="status-dot ok" />
-                    <span className="cluster-pill-label">运行健康</span>
-                    <b className="cluster-pill-val">
-                      {sortedProviders.filter((p) => !p.disabled && (p.healthStatus === 'healthy' || p.healthStatus === 'unchecked')).length}
-                    </b>
-                  </button>
-                  {sortedProviders.some((p) => !p.disabled && p.healthStatus === 'unavailable') ? (
-                    <button
-                      type="button"
-                      className={`cluster-summary-pill err ${providersStatusFilter === 'unavailable' ? 'active' : ''}`}
-                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'unavailable' ? 'all' : 'unavailable')}
-                      title="点击筛选异常待试的 Provider"
-                    >
-                      <i className="status-dot err" />
-                      <span className="cluster-pill-label">异常待试</span>
-                      <b className="cluster-pill-val">
-                        {sortedProviders.filter((p) => !p.disabled && p.healthStatus === 'unavailable').length}
-                      </b>
-                    </button>
-                  ) : null}
-                  {sortedProviders.some((p) => !!p.disabled) ? (
-                    <button
-                      type="button"
-                      className={`cluster-summary-pill disabled ${providersStatusFilter === 'disabled' ? 'active' : ''}`}
-                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'disabled' ? 'all' : 'disabled')}
-                      title="点击筛选已停用的 Provider"
-                    >
-                      <span className="cluster-pill-label">已停用</span>
-                      <b className="cluster-pill-val">
-                        {sortedProviders.filter((p) => !!p.disabled).length}
-                      </b>
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`cluster-summary-pill oauth ${providersStatusFilter === 'oauth' ? 'active' : ''}`}
-                    onClick={() => setProvidersStatusFilter(providersStatusFilter === 'oauth' ? 'all' : 'oauth')}
-                    title="点击筛选 OAuth / 账号授权的 Provider"
-                  >
-                    <span className="cluster-pill-label">OAuth / 账号</span>
-                    <b className="cluster-pill-val">
-                      {sortedProviders.filter((p) => p.authType && p.authType !== 'api_key').length}
-                    </b>
-                  </button>
-                  <div className="cluster-summary-pill" style={{ cursor: 'default' }}>
-                    <span className="cluster-pill-label">关联密钥</span>
-                    <b className="cluster-pill-val">{(state.apiKeys || []).length}</b>
-                  </div>
-                </div>
-              ) : null}
               <div className="providers-filter-toolbar">
                 <div className="models-search-row">
                   {/* Chrome 会无视 autoComplete="off"（尤其同页存在密码框时），把这类
@@ -4583,6 +4508,38 @@ function App() {
                   <div className="hint-line error">正则无效，已回退为普通包含匹配：{providersSearch.error}</div>
                 ) : null}
                 <div className="models-filter-group">
+                  {sortedProviders.some((p) => !p.disabled && p.healthStatus === 'unavailable') ? (
+                    <button
+                      type="button"
+                      className={`models-filter-chip ${providersStatusFilter === 'unavailable' ? 'active' : ''}`}
+                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'unavailable' ? 'all' : 'unavailable')}
+                      title="仅看异常待试的 Provider"
+                    >
+                      <span>异常待试</span>
+                      <span className="models-filter-chip-count">({sortedProviders.filter((p) => !p.disabled && p.healthStatus === 'unavailable').length})</span>
+                    </button>
+                  ) : null}
+                  {sortedProviders.some((p) => !!p.disabled) ? (
+                    <button
+                      type="button"
+                      className={`models-filter-chip ${providersStatusFilter === 'disabled' ? 'active' : ''}`}
+                      onClick={() => setProvidersStatusFilter(providersStatusFilter === 'disabled' ? 'all' : 'disabled')}
+                      title="仅看已停用的 Provider"
+                    >
+                      <span>已停用</span>
+                      <span className="models-filter-chip-count">({sortedProviders.filter((p) => !!p.disabled).length})</span>
+                    </button>
+                  ) : null}
+                  {providersStatusFilter !== 'all' ? (
+                    <button
+                      type="button"
+                      className="models-filter-chip"
+                      onClick={() => setProvidersStatusFilter('all')}
+                      title="清除状态筛选"
+                    >
+                      <span>清除状态</span>
+                    </button>
+                  ) : null}
                   {(() => {
                     // 只列真的配了的连接方式：0 个的胶囊筛出来是空列表，留着只是噪音。
                     const counts = new Map<string, number>();
@@ -4814,7 +4771,7 @@ function App() {
                           </div>
                           <span className="output-card-path">{endpoint.basePath}</span>
                         </div>
-                        <Badge tone={protocolTone(endpoint.protocol)}>{protocolLabel(endpoint.protocol)}</Badge>
+                        <Badge tone="slate">{protocolLabel(endpoint.protocol)}</Badge>
                       </div>
 
                       <div className="output-card-desc">{desc}</div>
@@ -5014,8 +4971,6 @@ function App() {
                         label="区间总请求"
                         value={String(intervalRequests)}
                         note={requestStats?.range?.period || usageToday?.date || '—'}
-                        badge="⚡ 业务吞吐"
-                        badgeTone="blue"
                         sparkline={sparkRequests}
                         sparklineColor="#38bdf8"
                       />
@@ -5023,8 +4978,6 @@ function App() {
                         label="区间总 Token"
                         value={formatTokenCount(intervalInputTokens + intervalOutputTokens)}
                         note={`输入 ${formatTokenCount(intervalInputTokens)} · 输出 ${formatTokenCount(intervalOutputTokens)}`}
-                        badge="算力峰值"
-                        badgeTone="purple"
                         sparkline={sparkTokens}
                         sparklineColor="#6366f1"
                       />
@@ -5034,8 +4987,6 @@ function App() {
                         note={normCacheHits > 0
                           ? `命中率 ${normCacheHitRate.toFixed(1)}% · 省流 ${formatTokenCount(normCacheHits)}`
                           : (normPromptTotal > 0 ? `Prompt ${formatTokenCount(normPromptTotal)} · 无缓存加速` : '暂无缓存记录')}
-                        badge={normCacheHits > 0 ? `省流 ${normCacheHitRate.toFixed(0)}%` : '未命中'}
-                        badgeTone={normCacheHits > 0 ? 'green' : undefined}
                         sparkline={sparkCache}
                         sparklineColor="#10b981"
                       />
@@ -5043,8 +4994,6 @@ function App() {
                         label="平均往返延迟"
                         value={intervalAvgLatency != null && intervalAvgLatency > 0 ? `${intervalAvgLatency} ms` : '—'}
                         note={intervalAvgTTFT != null && intervalAvgTTFT > 0 ? `网关耗时 · 首字延迟 ~${intervalAvgTTFT}ms` : '网关整体平均往返耗时'}
-                        badge="APM 监控"
-                        badgeTone="amber"
                         sparkline={sparkLatencies}
                         sparklineColor="#f59e0b"
                       />
@@ -5052,15 +5001,11 @@ function App() {
                         label="请求成功率"
                         value={intervalSuccessRate != null ? `${intervalSuccessRate.toFixed(1)}%` : (intervalRequests > 0 ? '100%' : '—')}
                         note={totalStatusRequests > 0 ? `2xx 正常响应 (${success2xx}/${totalStatusRequests} 次)` : '2xx 正常响应占比'}
-                        badge="可用性"
-                        badgeTone={intervalSuccessRate == null || intervalSuccessRate >= 99 ? 'green' : (intervalSuccessRate >= 90 ? 'amber' : 'red')}
                       />
                       <Metric
                         label="本月总用量"
                         value={`${usageMonth?.total.requestCount ?? 0} 次`}
                         note={`月度算力 ${formatTokenCount((usageMonth?.total.inputTokens ?? 0) + (usageMonth?.total.outputTokens ?? 0))} · ${usageMonth?.period || '本月'}`}
-                        badge="月度大盘"
-                        badgeTone="blue"
                       />
                     </div>
 
@@ -5259,7 +5204,7 @@ function App() {
                             {/* 行 1：业务潮汐活跃度 与 全网健康度 (双栏配对) */}
                             <div className="overview-ops-row">
                               <UsageHourlyDistribution
-                                title="24 小时全天候调用活跃度分布（潮汐流量热力）"
+                                title="24 小时活跃分布"
                                 items={requestStats?.hourly}
                                 logs={logs}
                               />
@@ -5272,7 +5217,7 @@ function App() {
                             {/* 行 2：三列等高结构分布 (Provider 份额 + 协议转换 + Prompt 缓存深度分析) */}
                             <div className="overview-distribution-row">
                               <UsageDonutChart
-                                title={`Provider 算力与流量份额（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
+                                title={`Provider 份额（${usageMetricDimension === 'tokens' ? 'Token' : '请求'}）`}
                                 subtitle="各上游服务商推理算力占比"
                                 formatValue={usageMetricDimension === 'tokens' ? formatCompactCount : undefined}
                                 items={(requestStats?.range?.byProvider || usageToday?.byProvider || []).map((item) => ({
@@ -5294,7 +5239,7 @@ function App() {
                                 }))}
                               />
                               <UsageCacheHitRate
-                                title="Prompt 缓存加速与省流分析"
+                                title="Prompt 缓存省流"
                                 input={requestStats?.range?.total.inputTokens ?? usageToday?.total.inputTokens ?? 0}
                                 cache={requestStats?.range?.total.cacheTokens ?? usageToday?.total.cacheTokens ?? 0}
                               />
@@ -5374,9 +5319,6 @@ function App() {
                               void refreshRequestStats(date, date);
                             }}
                           />
-                          <p className="hint-line">
-                            统计网关实际转发的请求体与响应体字节数（业务吞吐），已采用平滑面积曲线与双纵轴科学缩放呈现。
-                          </p>
                         </div>
                       </>
                     )}
@@ -5387,7 +5329,7 @@ function App() {
               {usageViewTab === 'models' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                   <UsageModelLeaderboard
-                    title="模型用量深度排行榜（输入 Prompt vs 输出 Completion 拆分）"
+                    title="模型用量排行"
                     items={requestStats?.range?.byModel || usageToday?.byModel || []}
                     onSelectModel={(m) => setUsageDrill({ type: 'model', value: m, label: m })}
                     selectedModel={usageDrill?.type === 'model' ? usageDrill.value : undefined}
@@ -5775,12 +5717,8 @@ function App() {
                   </div>
                 ) : null}
                 <div className="hint-line">
-                  四种操作分别是：购买域名（custom_domain）开 / 关，免费随机域名（random_tunnel）开 / 关。
-                  底层只有一条隧道，开启某一种即切换到该模式；关闭未在运行的那一种是无副作用的空操作。
-                </div>
-                <div className="hint-line">
-                  安全限制：该接口只在本机 / 局域网可用，公网域名调用一律 403 —— 令牌泄露也不会让外网有人替你开关公网。
-                  代价是关掉公网后要重新打开，必须回到本机或局域网操作。
+                  操作：购买域名（custom_domain）与免费随机域名（random_tunnel）各自开关，底层只有一条隧道。
+                  安全限制：接口只在本机 / 局域网可用，公网调用一律 403；关掉公网后需回本机重新打开。
                 </div>
                 <div className="field field-full">
                   <label>调用示例（把 {'<令牌>'} 换成上面复制到的值）</label>
@@ -6007,9 +5945,9 @@ function App() {
                                 {!isThinking && !isVision && !isLongContext ? <span style={{ color: 'var(--muted)', fontSize: 12 }}>-</span> : null}
                               </div>
                             </td>
-                            <td><Badge tone={protocolTone(model.protocol)}>{protocolLabel(model.protocol)}</Badge></td>
+                            <td><Badge tone="slate">{protocolLabel(model.protocol)}</Badge></td>
                             <td className="model-ctx-cell">{model.contextLength.toLocaleString()}</td>
-                            <td><Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge></td>
+                            <td><Badge tone="slate">{model.inMenu ? '菜单' : '隐藏'}</Badge></td>
                             <td style={{ textAlign: 'right' }}>
                               <CopyButton
                                 value={model.id}
@@ -6043,7 +5981,7 @@ function App() {
                               {model.id}
                               <span className="model-id-copy-hint" aria-hidden="true">📋</span>
                             </span>
-                            <Badge tone={model.inMenu ? 'green' : 'slate'}>{model.inMenu ? '菜单' : '隐藏'}</Badge>
+                            <Badge tone="slate">{model.inMenu ? '菜单' : '隐藏'}</Badge>
                           </div>
                           <CopyButton
                             value={model.id}
@@ -6281,61 +6219,11 @@ function App() {
                   </div>
                 ) : (
                   <>
-                    <div className="log-header traffic-log-header">
-                      <span>时间</span>
-                      <span>状态</span>
-                      <span>来源</span>
-                      <span>密钥</span>
-                      <span>用户</span>
-                      <span>输入 Provider</span>
-                      <span>模型</span>
-                      <span>Token</span>
-                      <span>TTFT</span>
-                      <span>耗时</span>
-                      <span />
-                    </div>
-                    {displayedLogs.map((log) => (
-                      <div
-                        className={`log-row${isTrafficLogError(log) ? ' error' : ''}`}
-                        key={trafficLogMatchKey(log)}
-                        onClick={() => void openTrafficLogDetail(log)}
-                        title="点击查看请求链路 APM 耗时分解与完整报文"
-                      >
-                        <div className={`log-row-main traffic-log-row clickable${isTrafficLogError(log) ? ' has-error' : ''}`}>
-                          <span className="log-time">{new Date(log.time).toLocaleString()}</span>
-                          <Badge tone={statusTone(log.status)}>{log.status}</Badge>
-                          <span className="log-source" title={trafficLogSourceTitle(log)}>{accessSourceLabel(log.accessSource)}</span>
-                          <span className="log-key" title={trafficLogKeyTitle(log)}>{trafficLogKeyLabel(log)}</span>
-                          <span className="log-user" title={log.userName || undefined}>{log.userName || '—'}</span>
-                          <span className="log-provider" title={log.providerId || undefined}>
-                            {(() => {
-                              const logged = (state.providers || []).find((item) => item.id === log.providerId);
-                              return logged
-                                ? <ProviderLabel provider={logged} size={14} />
-                                : <>{trafficLogProviderLabel(log, state.providers || [])}</>;
-                            })()}
-                          </span>
-                          <span className="log-model">{log.model}</span>
-                          <span className="log-token" title="入=总 input（含缓存命中）；出=output；缓存=cache hit">入 {log.inputTokens} · 出 {log.outputTokens} · 缓存 {log.cacheTokens || 0}</span>
-                          <span className="log-latency" title={log.upstreamTtfbMs || log.gatewayOverheadMs ? `upstreamTtfb=${log.upstreamTtfbMs ?? 0}ms overhead=${log.gatewayOverheadMs ?? 0}ms prep=${log.prepMs ?? 0}ms flags=${log.timingFlags || '-'}` : undefined}>{log.ttftMs != null ? `${log.ttftMs}ms` : '—'}</span>
-                          <span className="log-latency">{log.latencyMs}ms</span>
-                          <button
-                            className={`mini-btn ${isTrafficLogError(log) ? 'danger' : ''}`}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void openTrafficLogDetail(log);
-                            }}
-                            title={isTrafficLogError(log) ? '查看错误原因与链路诊断' : '查看完整耗时与请求审计'}
-                          >
-                            {isTrafficLogError(log) ? '排错' : '审计'}
-                          </button>
-                        </div>
-                        <div className="log-row-sub" title={`${log.protocolFlow} · ${log.path}`}>
-                          {trafficLogProviderLabel(log, state.providers || [])} · {actionLabel(log.action)} · {log.protocolFlow} · {log.path}{log.errorDescription ? ` · ${log.errorDescription}` : ''}
-                        </div>
-                      </div>
-                    ))}
+                    <TrafficLogTable
+                      logs={displayedLogs}
+                      providers={state.providers || []}
+                      onOpen={(log) => void openTrafficLogDetail(log)}
+                    />
                     <div className="hint-line" style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                       <span>
                         共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
@@ -6361,9 +6249,8 @@ function App() {
                 <div>
                   <h2 className="panel-title">告警</h2>
                   <p className="panel-desc">
-                    检测 API 密钥是否被多方同时使用（疑似泄露）：窗口内独立 IP 数超阈值，或同一时刻多个 IP 的请求真实重叠。
-                    仅告警，不会禁用密钥或限流，不影响下游正常使用。
-                    检测基于请求日志（默认保留 {requestLogRetentionDays} 天），每 2 分钟扫描一次。
+                    检测 API 密钥是否被多方同时使用（疑似泄露）：窗口内独立 IP 数超阈值，或同一时刻多个 IP 的请求真实重叠；仅告警，不影响下游使用。
+                    每 2 分钟扫描一次，基于请求日志（保留 {requestLogRetentionDays} 天）。
                   </p>
                 </div>
               </div>
@@ -6464,52 +6351,32 @@ function App() {
               <div className="panel-header">
                 <div>
                   <h2 className="panel-title">监控覆盖</h2>
-                  <p className="panel-desc">当前已实现与规划中的检测规则。规划中的规则尚未生效，仅用于标记后续迭代方向。</p>
+                  <p className="panel-desc">已实现的检测规则与后续规划。</p>
                 </div>
               </div>
-              <div className="model-grid">
+              <div className="alert-rule-list">
                 {[
                   {
                     name: '单密钥多 IP',
                     enabled: alertSettings?.multiIpEnabled ?? false,
-                    planned: false,
-                    desc: `窗口内同一密钥的独立 IP 数达到阈值即告警。当前：${alertSettings?.multiIpWindowMinutes ?? 10} 分钟 / ${alertSettings?.multiIpThreshold ?? 5} 个 IP。`,
+                    desc: `窗口内同一密钥的独立 IP 数达到阈值即告警 · 当前 ${alertSettings?.multiIpWindowMinutes ?? 10} 分钟 / ${alertSettings?.multiIpThreshold ?? 5} 个 IP`,
                   },
                   {
                     name: '并发时间重叠',
                     enabled: alertSettings?.concurrentIpEnabled ?? false,
-                    planned: false,
-                    desc: `同一时刻有多个不同 IP 的请求同时在飞行中即告警（当前阈值 ${alertSettings?.concurrentIpThreshold ?? 4} 个）。请求区间真实重叠，本人切换网络只会产生先后请求，故几乎无误报。`,
-                  },
-                  {
-                    name: '地理 / ASN 跳变',
-                    enabled: false,
-                    planned: true,
-                    desc: '相邻请求的 IP 归属地或运营商在物理上不可能的时间内发生跳变。需接入 IP 归属库。',
-                  },
-                  {
-                    name: '用量突增',
-                    enabled: false,
-                    planned: true,
-                    desc: 'token / 请求数相对历史基线暴涨。能覆盖泄露者走同一代理池出口、IP 数不超阈值的情况。',
-                  },
-                  {
-                    name: '首见新 IP 提醒',
-                    enabled: false,
-                    planned: true,
-                    desc: '学习历史 IP 基线，出现从未见过的 IP 时单独提醒一次。灵敏度更高但初期噪音较多。',
+                    desc: `同一时刻多个不同 IP 的请求同时在飞行中即告警 · 当前阈值 ${alertSettings?.concurrentIpThreshold ?? 4} 个`,
                   },
                 ].map((rule) => (
-                  <div className="model-card compact" key={rule.name}>
-                    <div className="provider-top">
-                      <div className="provider-name">{rule.name}</div>
-                      <Badge tone={rule.planned ? 'slate' : rule.enabled ? 'green' : 'amber'}>
-                        {rule.planned ? '规划中' : rule.enabled ? '已启用' : '已关闭'}
-                      </Badge>
-                    </div>
-                    <div className="provider-meta">{rule.desc}</div>
+                  <div className="alert-rule-row" key={rule.name}>
+                    <span className="alert-rule-name">{rule.name}</span>
+                    <Badge tone={rule.enabled ? 'green' : 'slate'}>{rule.enabled ? '已启用' : '已关闭'}</Badge>
+                    <span className="alert-rule-desc">{rule.desc}</span>
                   </div>
                 ))}
+                <div className="alert-rule-row planned">
+                  <span className="alert-rule-name">规划中</span>
+                  <span className="alert-rule-desc">地理 / ASN 跳变 · 用量突增 · 首见新 IP 提醒（尚未生效）</span>
+                </div>
               </div>
             </div>
 
@@ -6791,7 +6658,7 @@ function App() {
                 <div>
                   <h2 className="panel-title">自检</h2>
                   <p className="panel-desc">
-                    对勾选的输入 Provider，并行用 OpenCode（Chat）、Codex（Responses）、Claude CLI 走局域网网关探测，并校验回答内容是否像「1+1=2」。每个 Provider 可单独选择模型，选择会永久记在本机。
+                    对勾选的输入 Provider 并行走局域网网关探测（OpenCode / Codex / Claude CLI），并校验回答内容；每个 Provider 可单独选择模型，选择会永久记在本机。
                   </p>
                 </div>
                 <button
@@ -6888,7 +6755,7 @@ function App() {
                             onChange={() => toggleSelfcheckProvider(provider.id)}
                           />
                           <ProviderLabel provider={provider} size={15} />
-                          <Badge tone={protocolTone(provider.protocol)}>{protocolLabel(provider.protocol)}</Badge>
+                          <Badge tone="slate">{protocolLabel(provider.protocol)}</Badge>
                         </label>
                         <div
                           className="selfcheck-provider-model"
@@ -7002,7 +6869,7 @@ function App() {
               <div>
                 <h2 className="panel-title">机器状态</h2>
                 <p className="panel-desc">
-                  网关所在主机的实时运行指标（仅管理员可见）。页面打开时每 5 秒拉取一次，离开本页后服务端自动停止采样。
+                  网关所在主机的实时运行指标（仅管理员可见）；页面打开时每 5 秒拉取一次，离开后自动停止采样。
                 </p>
               </div>
               <div className="panel-header-actions">
@@ -7023,7 +6890,7 @@ function App() {
                   ? `load ${hostMetrics.load1.toFixed(2)} / ${hostMetrics.load5.toFixed(2)} / ${hostMetrics.load15.toFixed(2)} · ${hostMetrics.cpuCount} 核`
                   : '读取中…'}
               />
-              <MachineMetric label="CPU 温度" value={hostTemp.value} note={hostTemp.note} />
+              {hostTemp.value !== '—' ? <MachineMetric label="CPU 温度" value={hostTemp.value} note={hostTemp.note} /> : null}
               {hostMetrics?.fans && hostMetrics.fans.length > 0 ? (
                 hostMetrics.fans.map((fan, index, list) => (
                   <MachineMetric
@@ -7034,25 +6901,23 @@ function App() {
                     note={fanSpeedNote(fan)}
                   />
                 ))
-              ) : hostMetrics ? (
-                <MachineMetric label="风扇转速" value="—" note="未检测到风扇（或本机无风扇）" />
               ) : null}
-              <MachineMetric
-                label="内存占用"
-                value={hostMetrics?.memAvailable ? `${(hostMetrics.memPercent ?? 0).toFixed(0)}%` : '—'}
-                percent={hostMetrics?.memAvailable ? hostMetrics.memPercent : undefined}
-                note={hostMetrics?.memAvailable
-                  ? `${formatBytes(hostMetrics.memUsed)} / ${formatBytes(hostMetrics.memTotal)}${hostMetrics.swapUsed ? ` · 交换 ${formatBytes(hostMetrics.swapUsed)}` : ''}`
-                  : '本机未提供内存指标'}
-              />
-              <MachineMetric
-                label="磁盘占用"
-                value={hostMetrics?.diskAvailable ? `${(hostMetrics.diskPercent ?? 0).toFixed(0)}%` : '—'}
-                percent={hostMetrics?.diskAvailable ? hostMetrics.diskPercent : undefined}
-                note={hostMetrics?.diskAvailable
-                  ? `${formatBytes(hostMetrics.diskUsed)} / ${formatBytes(hostMetrics.diskTotal)} · 根分区`
-                  : '本机未提供磁盘指标'}
-              />
+              {hostMetrics?.memAvailable ? (
+                <MachineMetric
+                  label="内存占用"
+                  value={`${(hostMetrics.memPercent ?? 0).toFixed(0)}%`}
+                  percent={hostMetrics.memPercent}
+                  note={`${formatBytes(hostMetrics.memUsed)} / ${formatBytes(hostMetrics.memTotal)}${hostMetrics.swapUsed ? ` · 交换 ${formatBytes(hostMetrics.swapUsed)}` : ''}`}
+                />
+              ) : null}
+              {hostMetrics?.diskAvailable ? (
+                <MachineMetric
+                  label="磁盘占用"
+                  value={`${(hostMetrics.diskPercent ?? 0).toFixed(0)}%`}
+                  percent={hostMetrics.diskPercent}
+                  note={`${formatBytes(hostMetrics.diskUsed)} / ${formatBytes(hostMetrics.diskTotal)} · 根分区`}
+                />
+              ) : null}
               {hostMetrics?.diskTemps && hostMetrics.diskTemps.length > 0 ? (
                 hostMetrics.diskTemps.map((disk, index, list) => (
                   <MachineMetric
@@ -7062,24 +6927,35 @@ function App() {
                     note={diskTempNote(disk)}
                   />
                 ))
-              ) : hostMetrics ? (
-                <MachineMetric label="硬盘温度" value="—" note="未检测到（需安装 smartctl）" />
               ) : null}
-              <MachineMetric
-                label="网络下行"
-                value={hostMetrics?.netRateReady ? formatRate(hostMetrics.netRxRate) : '—'}
-                note={hostMetrics?.netAvailable
-                  ? `累计接收 ${formatBytes(hostMetrics.netRxBytes)} · ${hostMetrics.netInterfaces ?? 0} 个物理网卡`
-                  : '本机未提供网卡计数'}
-              />
-              <MachineMetric
-                label="网络上行"
-                value={hostMetrics?.netRateReady ? formatRate(hostMetrics.netTxRate) : '—'}
-                note={hostMetrics?.netAvailable
-                  ? `累计发送 ${formatBytes(hostMetrics.netTxBytes)}${hostMetrics.netRateReady ? '' : ' · 速率需两次采样'}`
-                  : '本机未提供网卡计数'}
-              />
+              {hostMetrics?.netAvailable ? (
+                <MachineMetric
+                  label="网络下行"
+                  value={hostMetrics.netRateReady ? formatRate(hostMetrics.netRxRate) : '—'}
+                  note={`累计接收 ${formatBytes(hostMetrics.netRxBytes)} · ${hostMetrics.netInterfaces ?? 0} 个物理网卡`}
+                />
+              ) : null}
+              {hostMetrics?.netAvailable ? (
+                <MachineMetric
+                  label="网络上行"
+                  value={hostMetrics.netRateReady ? formatRate(hostMetrics.netTxRate) : '—'}
+                  note={`累计发送 ${formatBytes(hostMetrics.netTxBytes)}${hostMetrics.netRateReady ? '' : ' · 速率需两次采样'}`}
+                />
+              ) : null}
             </div>
+            {hostMetrics ? (() => {
+              const missing = [
+                hostTemp.value === '—' ? 'CPU 温度' : null,
+                !(hostMetrics.fans && hostMetrics.fans.length > 0) ? '风扇转速' : null,
+                !hostMetrics.memAvailable ? '内存占用' : null,
+                !hostMetrics.diskAvailable ? '磁盘占用' : null,
+                !(hostMetrics.diskTemps && hostMetrics.diskTemps.length > 0) ? '硬盘温度' : null,
+                !hostMetrics.netAvailable ? '网络速率' : null,
+              ].filter(Boolean);
+              return missing.length > 0 ? (
+                <div className="hint-line">本机未提供的指标已隐藏：{missing.join(' / ')}</div>
+              ) : null;
+            })() : null}
 
             <div className="card panel">
               <div className="panel-header">
@@ -7315,22 +7191,30 @@ function App() {
               <span>{trafficLogKeyLabel(trafficLogDetail)} · {trafficLogProviderLabel(trafficLogDetail, state.providers || [])} · 路由: {trafficLogDetail.routeId} · 模型: {trafficLogDetail.model}</span>
             </div>
 
-            {/* 状态解读横幅 (尤其在 4xx/5xx/499 时给出清晰排错指引) */}
-            <div className={`log-status-banner ${isTrafficLogError(trafficLogDetail) ? 'error' : trafficLogDetail.status === 499 ? 'warning' : 'ok'}`}>
-              <div className="log-status-banner-title">
-                <strong>{statusInfo.title}</strong>
-                <span className="log-status-banner-desc">{statusInfo.description}</span>
-              </div>
-              {trafficLogDetail.errorDescription ? (
-                <div className="log-status-banner-error">
-                  <strong>错误摘要：</strong>
-                  <code>{trafficLogDetail.errorDescription}</code>
+            {/* 状态解读横幅：异常/499 时完整展开（含错误摘要与排错建议）；
+                正常请求压成一行次要说明，别让大绿框占掉弹窗的第一屏。 */}
+            {isTrafficLogError(trafficLogDetail) || trafficLogDetail.status === 499 ? (
+              <div className={`log-status-banner ${isTrafficLogError(trafficLogDetail) ? 'error' : 'warning'}`}>
+                <div className="log-status-banner-title">
+                  <strong>{statusInfo.title}</strong>
+                  <span className="log-status-banner-desc">{statusInfo.description}</span>
                 </div>
-              ) : null}
-              <div className="log-status-banner-hint">
-                <span style={{ opacity: 0.85 }}>排错建议：</span>{statusInfo.hint}
+                {trafficLogDetail.errorDescription ? (
+                  <div className="log-status-banner-error">
+                    <strong>错误摘要：</strong>
+                    <code>{trafficLogDetail.errorDescription}</code>
+                  </div>
+                ) : null}
+                <div className="log-status-banner-hint">
+                  <span style={{ opacity: 0.85 }}>排错建议：</span>{statusInfo.hint}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="log-status-line">
+                <strong>{statusInfo.title}</strong>
+                <span>{statusInfo.description}</span>
+              </div>
+            )}
 
             {/* KPI 指标卡片 */}
             <div className="log-audit-metrics">
@@ -7359,8 +7243,8 @@ function App() {
                 <b>{trafficLogDetail.outputTokens}</b>
               </div>
               <div className="log-audit-chip">
-                <span>缓存 Token</span>
-                <b>{trafficLogDetail.cacheTokens ?? 0}</b>
+                <span>缓存读取</span>
+                <b>{trafficLogDetail.cacheTokens ?? 0}{trafficLogDetail.cacheWriteTokens ? ` · 写 ${trafficLogDetail.cacheWriteTokens}` : ''}</b>
               </div>
               <div className="log-audit-chip">
                 <span>客户端来源</span>
