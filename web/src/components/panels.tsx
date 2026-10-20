@@ -4,6 +4,7 @@ import {
     API_BASE,
     chatgptPlanLabel,
     checkinReport,
+    creditsExpiryHint,
     cursorBridgeStatusLabel,
     cursorBridgeTone,
     flowBadgeTone,
@@ -16,11 +17,13 @@ import {
     OAUTH_USAGE_STORAGE_PREFIX,
     providerConnectKind,
     retrySecondsLabel,
+    resetHint,
     useNowTick
 } from '../lib';
 import {
     BadgeTone,
     ChatGPTOAuthUsageReport,
+    ChatGPTResetConsumeResult,
     ChatGPTResetCredit,
     ClaudeOAuthUsageBucket,
     ClaudeOAuthUsageReport,
@@ -29,6 +32,7 @@ import {
     DeepSeekBalanceReport,
     Provider,
     SubscriptionCheckin,
+    TimeHint,
     WorkBuddyUsage,
     ZhipuUsageBucket,
     ZhipuUsageReport
@@ -45,6 +49,14 @@ function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
     if (!earliest || value < earliest) earliest = value;
   }
   return earliest;
+}
+
+function showPanelToast(text: string, duration = 3000) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = text;
+  toast.classList.add('show');
+  window.setTimeout(() => toast.classList.remove('show'), duration);
 }
 
 export function RouteCard({ active, name, tone, status, meta, flow, onClick, onTest, onEdit, onClone, onDelete }: { active?: boolean; name: string; tone: BadgeTone; status: string; meta: string; flow: string[]; onClick: () => void; onTest: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
@@ -267,14 +279,38 @@ export function UsagePanelShell({ panelClass, compact, subtitle, title, planName
 /** 单个额度桶：标签 + 百分比（随用量变色）+ 进度条 + 重置时间。
  *  tone class 直接挂在行上（替代旧 :has() 选择器，兼容旧浏览器）。
  *  compact 下格子窄，重置时间省去“重置 ”前缀只留时间戳（完整文案保留在 title）。 */
-export function UsageBucketRow({ label, percent, note, compact }: { label: string; percent: number; note?: string; compact?: boolean }) {
+/**
+ * TimeLine 渲染一行时间：绝对时刻和「还有多久」拆成两段，窄卡片先截前者——
+ * 「2 小时后」比「10月29日 23:45」更能决定要不要现在用这个账号。
+ */
+export function TimeLine({ hint, className = 'claude-usage-reset', compact }: { hint: TimeHint; className?: string; compact?: boolean }) {
+  if (hint.passed || !hint.when || !hint.relative) {
+    return <div className={`${className}${hint.passed ? ' passed' : ''}`} title={hint.title}>{hint.text}</div>;
+  }
+  return (
+    <div className={`${className} usage-time`} title={hint.title}>
+      {/* 紧凑卡片里进度条下面那一行就是重置时间，前缀词让位给时刻本身 */}
+      {!compact && hint.label ? <span className="time-label">{hint.label}</span> : null}
+      <span className="time-when">{hint.when}</span>
+      <span className="time-relative">· {hint.relative}</span>
+    </div>
+  );
+}
+
+export function UsageBucketRow({ label, percent, note, reset, compact }: {
+  label: string;
+  percent: number;
+  note?: string;
+  /** 窗口什么时候重新开始（厂商没给就不渲染这一行，不编一个时间）。 */
+  reset?: TimeHint | null;
+  compact?: boolean;
+}) {
   const tone = claudeUsageFillTone(percent);
   const noteText = note || '';
-  const displayNote = compact ? noteText.replace(/^重置\s*/, '') : noteText;
   return (
     <div
       className={`claude-usage-row ${tone}`}
-      title={noteText ? `${label} ${percent.toFixed(0)}% · ${noteText}` : `${label} ${percent.toFixed(0)}%`}
+      title={[`${label} ${percent.toFixed(0)}%`, noteText, reset?.title].filter(Boolean).join(' · ')}
     >
       <div className="claude-usage-head">
         <span>{label}</span>
@@ -283,7 +319,8 @@ export function UsageBucketRow({ label, percent, note, compact }: { label: strin
       <div className="claude-usage-track">
         <div className={`claude-usage-fill ${tone}`} style={{ width: `${percent}%` }} />
       </div>
-      <div className="claude-usage-reset">{displayNote}</div>
+      {noteText ? <div className="claude-usage-reset">{noteText}</div> : null}
+      {reset ? <TimeLine hint={reset} compact={compact} /> : null}
     </div>
   );
 }
@@ -318,7 +355,7 @@ export function ClaudeOAuthUsagePanel({ providerId, connected, compact, subtitle
               key={key}
               label={label}
               percent={Math.min(100, Math.max(0, bucket?.utilization ?? 0))}
-              note={bucket?.resets_at ? `重置 ${formatClaudeUsageResetAt(bucket.resets_at)}` : ''}
+              reset={resetHint(bucket?.resets_at)}
               compact={compact}
             />
           ))}
@@ -365,12 +402,24 @@ export function ZhipuUsagePanel({ providerId, compact, subtitle }: { providerId:
               key={key}
               label={label}
               percent={Math.min(100, Math.max(0, bucket?.utilization ?? 0))}
-              note={bucket?.resets_at ? `重置 ${formatClaudeUsageResetAt(bucket.resets_at)}` : ''}
+              reset={resetHint(bucket?.resets_at)}
               compact={compact}
             />
           ))}
         </div>
       )}
+      {report?.available && report.resets ? (
+        <div className="zhipu-reset-credits" title="重置卡在智谱 / Z.ai 官方页面使用，网关只读展示">
+          <span>重置卡</span>
+          <span>
+            可用 {report.resets.count} 张
+            {report.resets.fiveHour ? ` · 5 小时 ${report.resets.fiveHour} 张` : ''}
+            {report.resets.weekly ? ` · 每周 ${report.resets.weekly} 张` : ''}
+            {report.resets.earliest ? ` · 最早到期 ${formatClaudeUsageResetAt(report.resets.earliest)}` : ''}
+          </span>
+          <span className="zhipu-reset-credits-hint">到 bigmodel.cn / z.ai 使用</span>
+        </div>
+      ) : null}
     </UsagePanelShell>
   );
 }
@@ -464,7 +513,8 @@ export function CursorOAuthUsagePanel({ providerId, connected, compact, subtitle
               key={`${bucket.label}-${index}`}
               label={bucket.label}
               percent={Math.min(100, Math.max(0, bucket.utilization ?? 0))}
-              note={bucket.resetsAt ? `重置 ${formatClaudeUsageResetAt(bucket.resetsAt)}` : (bucket.detail || '')}
+              note={bucket.detail || ''}
+              reset={resetHint(bucket.resetsAt)}
               compact={compact}
             />
           ))}
@@ -479,10 +529,74 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
     Boolean(connected),
     `/__providers/${encodeURIComponent(providerId)}/chatgpt-oauth/usage`,
   );
+  const [consuming, setConsuming] = React.useState(false);
+  const [consumeError, setConsumeError] = React.useState('');
 
   if (!connected) return null;
 
   const buckets = report?.buckets || [];
+
+  const useResetCredit = async () => {
+    if (consuming) return;
+    const credits = report?.resetCredits?.credits || [];
+    const earliest = resetCreditEarliestExpiry(credits);
+    const prompt = [
+      '确定使用 1 张 ChatGPT 重置卡？',
+      '',
+      `本次会使用最早到期的一张${earliest ? `（${formatClaudeUsageResetAt(earliest)}）` : ''}。`,
+      `账号：${subtitle || providerId}`,
+      '重置后当前额度窗口会立即重新开始，操作不可撤销。',
+    ].join('\n');
+    if (!window.confirm(prompt)) return;
+    setConsuming(true);
+    setConsumeError('');
+    try {
+      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerId)}/chatgpt-oauth/reset-credits/consume`, {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = data && typeof data === 'object' && 'error' in data
+          ? String((data as { error?: { message?: string } }).error?.message || '')
+          : '';
+        throw new Error(message || `HTTP ${response.status}`);
+      }
+      const result = data as ChatGPTResetConsumeResult;
+      showPanelToast(
+        result.code === 'reset'
+          ? `重置成功：${result.windowsReset || 1} 个额度窗口已重新开始`
+          : result.code === 'nothing_to_reset'
+            ? '当前没有已使用的额度窗口，重置卡未消耗'
+            : result.code === 'no_credit'
+              ? '账户没有可用的重置卡'
+              : result.code === 'already_redeemed' || result.code === 'already_used'
+                ? '这张重置卡已被使用'
+                : `重置结果：${result.code || '未知'}`,
+      );
+      await refresh();
+    } catch (error) {
+      setConsumeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setConsuming(false);
+    }
+  };
+
+  const consumeButton = (
+    <button
+      type="button"
+      className="mini-btn chatgpt-reset-consume-btn"
+      disabled={consuming}
+      title="使用最早到期的一张重置卡，立即重新开始当前额度窗口"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void useResetCredit();
+      }}
+    >
+      {consuming ? '重置中…' : '使用重置卡'}
+    </button>
+  );
 
   return (
     <UsagePanelShell panelClass="chatgpt-usage-panel" compact={compact} subtitle={subtitle} title="ChatGPT Codex 额度" planName={chatgptPlanLabel(report?.planName)} stateMessage={report?.available ? report.message : undefined} loading={loading} fetchedAt={report?.fetchedAt} onRefresh={refresh}>
@@ -499,20 +613,24 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
               key={`${bucket.label}-${index}`}
               label={bucket.label}
               percent={Math.min(100, Math.max(0, bucket.utilization ?? 0))}
-              note={bucket.resetsAt ? `重置 ${formatClaudeUsageResetAt(bucket.resetsAt)}` : (bucket.detail || '')}
+              note={bucket.detail || ''}
+              reset={resetHint(bucket.resetsAt)}
               compact={compact}
             />
           ))}
         </div>
       )}
-      {report?.available && report.resetCredits ? (() => {
+      {report?.available && report.resetCredits && (report.resetCredits.availableCount > 0 || (report.resetCredits.credits?.length || 0) > 0) ? (() => {
         const credits = report.resetCredits.credits || [];
         const summary = (
           <>
             <span>重置卡</span>
-            <span>
-              可用 {report.resetCredits.availableCount} 张
-              {credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(credits))}` : ''}
+            <span className="chatgpt-reset-credits-actions">
+              <span className="chatgpt-reset-credits-count">
+                可用 {report.resetCredits.availableCount} 张
+                {credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(credits))}` : ''}
+              </span>
+              {consumeButton}
             </span>
           </>
         );
@@ -536,6 +654,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
         );
         // 明细折进摘要行：一张卡 3 条就把整张 Provider 卡撑高 100 多 px，同排卡被
         // 跟着拉伸。没有明细可看时不渲染折叠控件，避免出现一个点开是空的箭头。
+        const errorRow = consumeError ? <div className="chatgpt-reset-consume-error">{consumeError}</div> : null;
         return credits.length > 0 ? (
           <details
             className="chatgpt-reset-credits expandable"
@@ -544,11 +663,13 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
           >
             <summary className="chatgpt-reset-credits-head">{summary}</summary>
             {list}
+            {errorRow}
           </details>
         ) : (
           <div className="chatgpt-reset-credits" title="官方发放的限流重置卡，用一张可重置 5 小时 / 7 天额度窗口">
             <div className="chatgpt-reset-credits-head">{summary}</div>
             {list}
+            {errorRow}
           </div>
         );
       })() : null}
@@ -556,7 +677,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete, layout = 'card' }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void; layout?: 'card' | 'list' }) {
   // 订阅类（ZCode / Trae）由后端返回的凭证对象决定卡片显示什么：整张 Provider 传进来
   // 比再加六个布尔参数更省事，也不会漏掉以后新增的连接方式。
   const connectKind = provider ? providerConnectKind(provider) : 'api_key';
@@ -576,6 +697,83 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
     ? ` · :${cursorBridge.port}${cursorBridge.message ? ` · ${cursorBridge.message}` : ''}`
     : (cursorBridge?.message ? ` · ${cursorBridge.message}` : '');
   const subtitleText = subtitle || providerId;
+  // 卡片与列表共用同一份额度面板和操作按钮，列表只是换一种排版承载它们。
+  const usagePanels = (
+    <>
+      {/* 额度是运营上最该一眼看到的数字，放在徽章之后、事实区之前当视觉锚点。 */}
+      {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
+      {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
+      {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
+      {isQoderConnectKind(connectKind) && qoderPATConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Qoder 积分" /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+    </>
+  );
+  const providerActions = (
+    <div className="provider-actions">
+      <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button>
+      <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
+      {!readOnly ? (
+        <>
+          <button className="icon-btn" onClick={onEdit} title="编辑 Provider">编辑</button>
+          <MoreMenu
+            label="更多操作"
+            items={[
+              { label: '克隆', onClick: onClone },
+              ...(onToggleEnabled ? [{ label: providerDisabled ? '启用' : '禁用', onClick: onToggleEnabled }] : []),
+              ...(onToggleRTK ? [{ label: provider?.rtkCompress ? '关闭 RTK 压缩' : '开启 RTK 压缩', onClick: onToggleRTK }] : []),
+              { label: '删除', danger: true, onClick: onDelete },
+            ]}
+          />
+        </>
+      ) : null}
+    </div>
+  );
+  if (layout === 'list') {
+    return (
+      <div className={`provider-list-row${active ? ' active' : ''}${selected ? ' selected' : ''}${providerDisabled ? ' provider-disabled' : ''}`} onClick={onClick} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') onClick(); }}>
+        {selectable ? (
+          <label className="provider-list-check" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+            <input type="checkbox" checked={!!selected} onChange={onToggleSelect} aria-label={`选择 ${name}`} />
+          </label>
+        ) : <span className="provider-list-check" />}
+        <span className="provider-list-icon"><BrandIcon icon={icon} name={name} size={18} /></span>
+        <div className="provider-list-id">
+          <div className="provider-list-title">
+            <span className="provider-list-name" title={name}>{name}</span>
+            <span className="provider-list-sub" title={subtitleText}>{subtitleText}</span>
+          </div>
+          <div className="provider-list-badges">
+            {providerDisabled ? <Badge tone="red">已禁用</Badge> : null}
+            {provider?.rtkCompress ? (
+              <span title="RTK 工具输出压缩已开启：转发前过滤 tool_result 里的命令输出">
+                <Badge tone="green">RTK</Badge>
+              </span>
+            ) : null}
+            <Badge tone="slate">{protocol}</Badge>
+            {showOAuthBadge ? (
+              <Badge tone={oauthConnected ? 'green' : 'amber'}>{oauthBadgeLabel}{oauthConnected ? ' 已连接' : ' 未连接'}</Badge>
+            ) : (
+              <Badge tone={healthTone(healthStatus)}>{healthStatusLabel(healthStatus)}</Badge>
+            )}
+          </div>
+        </div>
+        <div className="provider-list-quota" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+          {usagePanels}
+        </div>
+        <div className="provider-list-metrics">
+          <span title={`已获取 ${modelCount ?? 0} 个可用模型`}><b>{modelCount ?? 0}</b> 模型</span>
+          <span title={`${usedCount} 个 API Key 引用`}><b>{usedCount}</b> Keys</span>
+        </div>
+        <div className="provider-list-actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+          {providerActions}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`provider-card clickable ${active ? 'active' : ''} ${selected ? 'selected' : ''} ${providerDisabled ? 'provider-disabled' : ''}`} onClick={onClick} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') onClick(); }}>
       <div className="provider-head">
@@ -616,42 +814,25 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
           </span>
         ) : null}
       </div>
-      {/* 额度是运营上最该一眼看到的数字，放在徽章之后、事实区之前当视觉锚点。 */}
-      {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
-      {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
-      {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
-      {isQoderConnectKind(connectKind) && qoderPATConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Qoder 积分" /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
-      {/* 事实区：两行。地址独占一行（通常最长），密钥 / 默认 / 模型 挤进一行；
-          订阅卡没有密钥这一项，自动少一格，不补假字段。 */}
-      <div className="provider-facts">
-        <span className="provider-fact" title={url}>
-          <span className="provider-fact-label">地址</span>
-          <span className="provider-fact-value">
-            {url}{isCursorOAuth && cursorBridge?.port ? ` · :${cursorBridge.port}` : ''}
-          </span>
-        </span>
-        <span className="provider-fact-group">
-          {keyMask ? (
-            <span className="provider-fact" title={keyMask}>
-              <span className="provider-fact-label">密钥</span>
-              <span className="provider-fact-value">{keyMask}</span>
+      {usagePanels}
+      {/* 只留已配置的关键字段：默认模型与模型数量。地址/密钥是编辑期的配置项，
+          放在卡片上既占行又没人看；未设置的字段整行省略，不再满屏「未设置」。 */}
+      {defaultModel || (modelCount != null && modelCount > 0) ? (
+        <div className="provider-card-meta">
+          {defaultModel ? (
+            <span className="provider-card-meta-item" title={`默认模型：${defaultModel}`}>
+              <span className="provider-card-meta-label">默认模型</span>
+              <span className="provider-card-meta-value">{defaultModel}</span>
             </span>
           ) : null}
-          <span className="provider-fact" title={defaultModel || undefined}>
-            <span className="provider-fact-label">默认</span>
-            <span className="provider-fact-value">{defaultModel || '未设置'}</span>
-          </span>
-          <span className="provider-fact" title={modelCount != null && modelCount > 0 ? undefined : '点下方「获取模型」拉取'}>
-            <span className="provider-fact-label">模型</span>
-            <span className="provider-fact-value">{modelCount != null && modelCount > 0 ? `${modelCount} 个` : '未获取'}</span>
-          </span>
-        </span>
-      </div>
+          {modelCount != null && modelCount > 0 ? (
+            <span className="provider-card-meta-item" title={`已获取 ${modelCount} 个可用模型`}>
+              <span className="provider-card-meta-label">模型</span>
+              <span className="provider-card-meta-value">{modelCount} 个</span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="provider-foot" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
         <div className="provider-foot-meta">
           <span><b>{usedCount}</b> 个 API Key</span>
@@ -660,37 +841,17 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
             <button
               type="button"
               className="provider-foot-link"
-              title="查看/管理有权限使用该 Provider 的用户（仅管理员）"
+              title="查看/管理可使用该 Provider 的普通用户（管理员始终可用全部 Provider）"
               onClick={() => onShowUsers()}
             >
-              <b>{authorizedUserCount}</b> 个用户
+              {authorizedUserCount > 0 ? <><b>{authorizedUserCount}</b> 个授权用户</> : '仅管理员可用'}
             </button>
           ) : null}
         </div>
-        {!readOnly ? (
-          <div className="provider-actions">
-            <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button>
-            <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
-            <button className="icon-btn" onClick={onEdit} title="编辑 Provider">编辑</button>
-            <MoreMenu
-              label="更多操作"
-              items={[
-                { label: '克隆', onClick: onClone },
-                ...(onToggleEnabled ? [{ label: providerDisabled ? '启用' : '禁用', onClick: onToggleEnabled }] : []),
-                ...(onToggleRTK ? [{ label: provider?.rtkCompress ? '关闭 RTK 压缩' : '开启 RTK 压缩', onClick: onToggleRTK }] : []),
-                { label: '删除', danger: true, onClick: onDelete },
-              ]}
-            />
-          </div>
-        ) : (
-          // 只读（管理员授权给普通用户的 Provider）也允许获取模型与对话测试；
-          // 编辑/删除等管理操作保持隐藏。后端 requireProviderOwnerForUser 会对
-          // 授权用户放行 test/chat-test（authorized users 视同可测试）。
-          <div className="provider-actions">
-            <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button>
-            <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
-          </div>
-        )}
+        {/* 只读（管理员授权给普通用户的 Provider）也允许获取模型与对话测试；
+            编辑/删除等管理操作保持隐藏。后端 requireProviderOwnerForUser 会对
+            授权用户放行 test/chat-test（authorized users 视同可测试）。 */}
+        {providerActions}
       </div>
     </div>
   );
@@ -708,6 +869,8 @@ export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }
   const [checkinOverride, setCheckinOverride] = React.useState<SubscriptionCheckin | null>(null);
   React.useEffect(() => { setCheckinOverride(null); }, [providerId]);
   const checkin = checkinOverride || report?.checkin;
+  // 哪批积分先过期：厂商报了日期才写这一行
+  const expiry = creditsExpiryHint(report?.windows);
 
   // 签到是账号接口上的另一件事，额度读不出来时它仍要留在原地。
   const hasWindows = Boolean(report) && !report?.error && (report?.windows.length ?? 0) > 0;
@@ -739,11 +902,14 @@ export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }
               label={window.name}
               percent={Math.min(100, Math.max(0, window.used))}
               note={`${window.amount.toFixed(0)} / ${window.limit.toFixed(0)} ${window.unit}`}
+              reset={resetHint(window.resetsAt)}
               compact={compact}
             />
           ))}
         </div>
       )}
+      {/* 哪批积分先过期：厂商报了日期才写这一行 */}
+      {expiry ? <TimeLine hint={expiry} className="subscription-expiry" /> : null}
       {checkin?.supported ? <CheckinRow providerId={providerId} view={checkin} onChange={setCheckinOverride} /> : null}
     </UsagePanelShell>
   );

@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -240,27 +243,39 @@ func fetchChatGPTOAuthResetCredits(ctx context.Context, provider domain.Provider
 // fetchChatGPTOAuthResetCreditsAt queries the reset-card endpoint. Failures are
 // non-fatal: the usage panel simply omits the section.
 func fetchChatGPTOAuthResetCreditsAt(ctx context.Context, provider domain.Provider, url string) *ChatGPTResetCredits {
-	if provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.AccessToken) == "" {
+	raw, err := readChatGPTOAuthResetCredits(ctx, provider, url)
+	if err != nil {
 		return nil
+	}
+	return buildChatGPTResetCredits(raw)
+}
+
+func readChatGPTOAuthResetCredits(ctx context.Context, provider domain.Provider, url string) (chatgptResetCreditsResponse, error) {
+	var raw chatgptResetCreditsResponse
+	if provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.AccessToken) == "" {
+		return raw, errors.New("missing oauth access token")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return raw, err
 	}
 	applyChatGPTCodexHeaders(req, provider)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil
+		return raw, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
+		return raw, fmt.Errorf("reset credits: %s", shortHTTPError(resp.StatusCode, body))
 	}
-	var raw chatgptResetCreditsResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil
+		return raw, err
 	}
+	return raw, nil
+}
+
+func buildChatGPTResetCredits(raw chatgptResetCreditsResponse) *ChatGPTResetCredits {
 	out := &ChatGPTResetCredits{AvailableCount: raw.AvailableCount}
 	for _, credit := range raw.Credits {
 		id := strings.TrimSpace(credit.ID)
@@ -289,6 +304,113 @@ func fetchChatGPTOAuthResetCreditsAt(ctx context.Context, provider domain.Provid
 		out.AvailableCount = len(out.Credits)
 	}
 	return out
+}
+
+// ChatGPTResetConsumeResult is the vendor's answer to spending a reset card:
+// its code and how many usage windows started again.
+type ChatGPTResetConsumeResult struct {
+	Code         string `json:"code"`
+	WindowsReset int    `json:"windowsReset,omitempty"`
+}
+
+// earliestChatGPTResetCredit picks the card that expires first, as Codex does,
+// so one that would last longer is never spent before it. A card without an
+// expiry sorts after all dated ones.
+func earliestChatGPTResetCredit(credits []ChatGPTResetCredit) (ChatGPTResetCredit, bool) {
+	var chosen ChatGPTResetCredit
+	var chosenAt time.Time
+	found := false
+	for _, credit := range credits {
+		if strings.TrimSpace(credit.ID) == "" {
+			continue
+		}
+		at := parseChatGPTResetExpiry(credit.ExpiresAt)
+		switch {
+		case !found:
+			chosen, chosenAt, found = credit, at, true
+		case !at.IsZero() && (chosenAt.IsZero() || at.Before(chosenAt)):
+			chosen, chosenAt = credit, at
+		}
+	}
+	return chosen, found
+}
+
+func parseChatGPTResetExpiry(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func consumeChatGPTOAuthResetCredit(ctx context.Context, provider domain.Provider, creditID, redeemID string) (ChatGPTResetConsumeResult, error) {
+	return consumeChatGPTOAuthResetCreditAt(ctx, provider, chatgptOAuthResetCreditsURL+"/consume", creditID, redeemID)
+}
+
+// consumeChatGPTOAuthResetCreditAt spends one reset card; redeemID is the
+// idempotency key, so retrying the same call never spends twice.
+func consumeChatGPTOAuthResetCreditAt(ctx context.Context, provider domain.Provider, url, creditID, redeemID string) (ChatGPTResetConsumeResult, error) {
+	var out ChatGPTResetConsumeResult
+	if provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.AccessToken) == "" {
+		return out, errors.New("missing oauth access token")
+	}
+	creditID = strings.TrimSpace(creditID)
+	if creditID == "" {
+		return out, errors.New("missing reset credit id")
+	}
+	body, err := json.Marshal(map[string]string{"credit_id": creditID, "redeem_request_id": redeemID})
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	applyChatGPTCodexHeaders(req, provider)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return out, fmt.Errorf("ChatGPT reset: %s", shortHTTPError(resp.StatusCode, respBody))
+	}
+	var wire struct {
+		Code         string `json:"code"`
+		WindowsReset int    `json:"windows_reset"`
+	}
+	if err := json.Unmarshal(respBody, &wire); err != nil || strings.TrimSpace(wire.Code) == "" {
+		return out, errors.New("ChatGPT reset: empty response")
+	}
+	return ChatGPTResetConsumeResult{Code: strings.TrimSpace(wire.Code), WindowsReset: wire.WindowsReset}, nil
+}
+
+func newChatGPTResetRedeemID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
+}
+
+func shortHTTPError(status int, body []byte) string {
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return http.StatusText(status)
+	}
+	if r := []rune(msg); len(r) > 300 {
+		msg = string(r[:300]) + "…"
+	}
+	return msg
 }
 
 func fetchChatGPTOAuthUsage(ctx context.Context, provider domain.Provider) (ChatGPTOAuthUsageReport, error) {

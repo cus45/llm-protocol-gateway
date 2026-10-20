@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,6 +95,37 @@ func TestAggregateByModelRanksByTokenUsage(t *testing.T) {
 	}
 	if stats[1].RequestCount != 2 || modelUsageTotalTokens(stats[1]) != 180 {
 		t.Fatalf("unexpected opus stats: %+v", stats[1])
+	}
+}
+
+func TestMergeModelDayStatsFoldsProviderPinnedIDs(t *testing.T) {
+	items := []ModelDayStats{
+		{Model: "qoder-cn/dfmodel", RequestCount: 3, InputTokens: 100, OutputTokens: 20, CacheTokens: 5},
+		{Model: "dfmodel", RequestCount: 2, InputTokens: 40, OutputTokens: 10, CacheTokens: 1},
+		{Model: "claude-opus-4-8", RequestCount: 1, InputTokens: 10, OutputTokens: 5},
+	}
+	catalog := map[string]string{"dfmodel": "dfmodel", "claude-opus-4-8": "claude-opus-4-8"}
+	canonical := func(model string) string {
+		if _, ok := catalog[model]; ok {
+			return model
+		}
+		if i := strings.LastIndex(model, "/"); i > 0 {
+			if _, ok := catalog[model[i+1:]]; ok {
+				return model[i+1:]
+			}
+		}
+		return model
+	}
+
+	merged := MergeModelDayStats(items, canonical)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 rows after folding, got %d: %+v", len(merged), merged)
+	}
+	if merged[0].Model != "dfmodel" || merged[0].RequestCount != 5 || merged[0].InputTokens != 140 || merged[0].OutputTokens != 30 || merged[0].CacheTokens != 6 {
+		t.Fatalf("unexpected folded row: %+v", merged[0])
+	}
+	if merged[1].Model != "claude-opus-4-8" {
+		t.Fatalf("unexpected second row: %+v", merged[1])
 	}
 }
 

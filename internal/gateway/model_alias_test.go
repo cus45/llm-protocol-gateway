@@ -108,6 +108,41 @@ func TestResolveConsumerModelFallsBackToDefaultWhenNotInProviderModels(t *testin
 	}
 }
 
+func TestResolveConsumerModelStripsProviderPinnedPrefix(t *testing.T) {
+	router := NewRouter(domain.GatewayState{
+		Providers: []domain.Provider{{
+			ID:           "qoder-cn-账号",
+			DefaultModel: "dfmodel",
+			Models:       []domain.Model{{ID: "dfmodel"}, {ID: "qwen/qwen3-coder"}},
+		}},
+		Routes: []domain.Route{{ID: "r1", ProviderID: "qoder-cn-账号"}},
+	})
+	route := domain.Route{ID: "r1", ProviderID: "qoder-cn-账号"}
+
+	model, logModel := resolveConsumerModel(router, route, domain.APIKey{}, true, "qoder-cn/dfmodel")
+	if model != "dfmodel" {
+		t.Fatalf("provider-pinned prefix should resolve to the catalog id, got %q", model)
+	}
+	if logModel != "qoder-cn/dfmodel -> dfmodel" {
+		t.Fatalf("logModel=%q", logModel)
+	}
+
+	model, logModel = resolveConsumerModel(router, route, domain.APIKey{}, true, "qwen/qwen3-coder")
+	if model != "qwen/qwen3-coder" || logModel != "qwen/qwen3-coder" {
+		t.Fatalf("a slash model the provider lists must pass through, got model=%q logModel=%q", model, logModel)
+	}
+
+	model, _ = resolveConsumerModel(router, route, domain.APIKey{}, true, "other/dfmodel")
+	if model != "dfmodel" {
+		t.Fatalf("unknown namespace should still resolve to the listed tail, got %q", model)
+	}
+
+	model, _ = resolveConsumerModel(router, route, domain.APIKey{}, true, "other/unknown")
+	if model != "dfmodel" {
+		t.Fatalf("unresolvable request should fall back to the default, got %q", model)
+	}
+}
+
 func TestErrorMessageFromValueUsesBodyDump(t *testing.T) {
 	msg, errType := errorMessageFromValue(map[string]any{"code": "DeploymentNotFound", "detail": "model missing"}, "")
 	if msg != "model missing" {

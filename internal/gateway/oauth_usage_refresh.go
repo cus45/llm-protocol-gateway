@@ -199,6 +199,9 @@ func (s *Server) refreshZhipuUsageHoldingLock(providerID string) {
 	if err != nil {
 		return
 	}
+	if report.resetsError != "" {
+		s.logs.AddApp("info", "zhipu reset list unread", "provider="+providerID+" "+report.resetsError)
+	}
 	// Cache both success and "unsupported" so we don't keep hammering 按量 keys.
 	if report.Available || report.Unsupported {
 		s.oauthUsageCache.set("zhipu:"+providerID, report)

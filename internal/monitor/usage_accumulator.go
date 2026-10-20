@@ -90,6 +90,7 @@ type UsageEvent struct {
 
 type usageDayStats struct {
 	total       APIKeyDayStats
+	byKey       map[string]*usageDayStats
 	byAPIKey    map[string]*APIKeyDayStats
 	byProvider  map[string]*ProviderDayStats
 	byModel     map[string]*ModelDayStats
@@ -107,6 +108,7 @@ type usageDayStats struct {
 func newUsageDayStats() *usageDayStats {
 	return &usageDayStats{
 		total:      APIKeyDayStats{APIKeyName: "全部"},
+		byKey:      make(map[string]*usageDayStats),
 		byAPIKey:   make(map[string]*APIKeyDayStats),
 		byProvider: make(map[string]*ProviderDayStats),
 		byModel:    make(map[string]*ModelDayStats),
@@ -196,9 +198,10 @@ func (s *Store) EnqueueUsage(event UsageEvent) {
 }
 
 // ApplyUsageEventSync applies one usage event immediately (startup rebuild / tests).
-func (s *Store) ApplyUsageEventSync(event UsageEvent) {
+func (s *Store) ApplyUsageEventSync(event UsageEvent) UsagePersistDelta {
 	delta := s.applyUsageEventLocked(event)
 	s.persistUsageDelta(delta)
+	return delta
 }
 
 func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
@@ -269,7 +272,9 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 		modelStats.CacheTokens += cacheTokens
 	}
 
-	outputProtocol := strings.TrimSpace(event.OutputProtocol)
+	event.OutputProtocol = strings.TrimSpace(event.OutputProtocol)
+	recordKeyUsage(day, keyID, event, inputTokens, cacheTokens)
+	outputProtocol := event.OutputProtocol
 	if outputProtocol != "" {
 		protoStats, ok := day.byProtocol[outputProtocol]
 		if !ok {
@@ -739,6 +744,8 @@ func mergeUsageDaysForKeys(byDay map[string]*usageDayStats, from, to time.Time, 
 			total.InputTokens += stats.InputTokens
 			total.OutputTokens += stats.OutputTokens
 			total.CacheTokens += stats.CacheTokens
+			total.RxBytes += stats.RxBytes
+			total.TxBytes += stats.TxBytes
 
 			out, ok := byAPIKey[id]
 			if !ok {
@@ -750,6 +757,8 @@ func mergeUsageDaysForKeys(byDay map[string]*usageDayStats, from, to time.Time, 
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.RxBytes += stats.RxBytes
+			out.TxBytes += stats.TxBytes
 		}
 	}
 	return total, byAPIKey

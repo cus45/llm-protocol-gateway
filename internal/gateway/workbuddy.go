@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1532,6 +1533,32 @@ func forcedStreamAsCompletion(response *http.Response, model string, aggregate f
 
 // ---- models ----------------------------------------------------------------
 
+// workBuddyModelDetail is one model in the product config. Credits is the
+// multiple WorkBuddy's picker shows ("x0.03", "0" or a number); Promotions
+// carries the limited-time discounts the picker badges (限时免费, 夜间折扣).
+type workBuddyModelDetail struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	MaxInputTokens  int    `json:"maxInputTokens"`
+	MaxOutputTokens int    `json:"maxOutputTokens"`
+	Credits         any    `json:"credits"`
+}
+
+type workBuddyPromotion struct {
+	Kind     string   `json:"kind"`
+	ModelIDs []string `json:"modelIds"`
+	Enabled  *bool    `json:"enabled"`
+	Schedule struct {
+		ValidFrom  string            `json:"validFrom"`
+		ValidUntil string            `json:"validUntil"`
+		Daily      []json.RawMessage `json:"daily"`
+	} `json:"schedule"`
+	Discount *struct {
+		DiscountedCredits any `json:"discountedCredits"`
+		Factor            any `json:"factor"`
+	} `json:"discount"`
+}
+
 // workBuddyProductConfig is the plan's product config: its agents and each
 // model's details. Which product answers goes by the User-Agent — WorkBuddy
 // sends "CLI/<version> WorkBuddy/<version>", and a bare WorkBuddy/<version>
@@ -1541,11 +1568,8 @@ type workBuddyProductConfig struct {
 		Name   string   `json:"name"`
 		Models []string `json:"models"`
 	} `json:"agents"`
-	Models []struct {
-		ID              string `json:"id"`
-		MaxInputTokens  int    `json:"maxInputTokens"`
-		MaxOutputTokens int    `json:"maxOutputTokens"`
-	} `json:"models"`
+	Models     []workBuddyModelDetail `json:"models"`
+	Promotions []workBuddyPromotion   `json:"modelPromotions"`
 }
 
 // fetchWorkBuddyModels asks the plan's product config for the models its CLI
@@ -1595,8 +1619,10 @@ func fetchWorkBuddyModels(ctx context.Context, site workBuddySite, credential do
 				if detail.ID != id {
 					continue
 				}
+				model.Name = detail.Name
 				model.ContextLength = detail.MaxInputTokens
 				model.MaxOutputTokens = detail.MaxOutputTokens
+				model.Free, model.Rate, model.RateWas = workBuddyModelPrice(detail, envelope.Data.Promotions, time.Now())
 				break
 			}
 			out = append(out, model)
@@ -1606,6 +1632,153 @@ func fetchWorkBuddyModels(ctx context.Context, site workBuddySite, credential do
 		out[index].ProviderID = ""
 	}
 	return out, nil
+}
+
+// workBuddyCreditsSuffix is the unit WorkBuddy appends to a credits value.
+var workBuddyCreditsSuffix = regexp.MustCompile(`\s+credits?$`)
+
+// workBuddyCredits reads a credits value the way WorkBuddy prints it: "x0.03",
+// "0.5 credits", 0. A rate it can't read (or none, or negative) is not a price,
+// and the model shows no badge rather than a made-up one.
+func workBuddyCredits(value any) (float64, bool) {
+	text, isText := value.(string)
+	if isText {
+		text = strings.ToLower(strings.TrimSpace(text))
+		text = workBuddyCreditsSuffix.ReplaceAllString(text, "")
+		text = strings.TrimPrefix(text, "x")
+		if text == "" {
+			return 0, false
+		}
+		value = text
+	} else if value == nil {
+		return 0, false
+	}
+	rate, ok := workBuddyJSONNumber(value)
+	if !ok || rate < 0 {
+		return 0, false
+	}
+	return rate, true
+}
+
+func workBuddyJSONNumber(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, false
+		}
+		return typed, true
+	case string:
+		number, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+			return 0, false
+		}
+		return number, true
+	}
+	return 0, false
+}
+
+// workBuddyDiscount reads a promotion's price: its discountedCredits ("0.50x"),
+// else the factor times the model's own credits.
+func workBuddyDiscount(p workBuddyPromotion, base float64, baseOK bool) (float64, bool) {
+	if p.Discount == nil {
+		return 0, false
+	}
+	said := p.Discount.DiscountedCredits
+	if text, ok := said.(string); ok {
+		text = strings.TrimSpace(text)
+		text = strings.TrimSuffix(strings.TrimSuffix(text, "x"), "X")
+		said = text
+	}
+	if rate, ok := workBuddyCredits(said); ok {
+		return rate, true
+	}
+	factor, ok := workBuddyJSONNumber(p.Discount.Factor)
+	if !ok || factor < 0 || !baseOK {
+		return 0, false
+	}
+	return base * factor, true
+}
+
+// workBuddyPromotionRunning says whether a promotion is on now: enabled and
+// inside validFrom..validUntil. A missing or unparseable bound is ignored, the
+// way the picker treats it.
+func workBuddyPromotionRunning(p workBuddyPromotion, now time.Time) bool {
+	if p.Enabled != nil && !*p.Enabled {
+		return false
+	}
+	if from, err := time.Parse(time.RFC3339, p.Schedule.ValidFrom); err == nil && from.After(now) {
+		return false
+	}
+	if until, err := time.Parse(time.RFC3339, p.Schedule.ValidUntil); err == nil && !until.After(now) {
+		return false
+	}
+	return true
+}
+
+// workBuddyModelPrice mirrors magpie's priceOf: a discount that only runs some
+// hours of the day (夜间免费) keeps its full price in the list, because a list
+// asked for at night would otherwise read "free" all day; a whole-day discount
+// becomes the price with the old one as the struck-through RateWas.
+func workBuddyModelPrice(detail workBuddyModelDetail, promotions []workBuddyPromotion, now time.Time) (free bool, rate, rateWas float64) {
+	base, baseOK := workBuddyCredits(detail.Credits)
+	var mine []workBuddyPromotion
+	for _, promotion := range promotions {
+		if promotion.Kind != "discount" || !workBuddyPromotionRunning(promotion, now) {
+			continue
+		}
+		for _, id := range promotion.ModelIDs {
+			if id == detail.ID {
+				mine = append(mine, promotion)
+				break
+			}
+		}
+	}
+	hourly := false
+	for _, promotion := range mine {
+		if len(promotion.Schedule.Daily) > 0 {
+			hourly = true
+			break
+		}
+	}
+	if hourly {
+		nightFree := false
+		for _, promotion := range mine {
+			if promotion.Discount == nil || len(promotion.Schedule.Daily) == 0 {
+				continue
+			}
+			if discounted, ok := workBuddyDiscount(promotion, base, baseOK); ok && discounted == 0 {
+				nightFree = true
+				break
+			}
+		}
+		if !baseOK || (base == 0 && nightFree) {
+			return false, 0, 0
+		}
+		return false, base, 0
+	}
+	best := math.Inf(1)
+	found := false
+	for _, promotion := range mine {
+		if promotion.Discount == nil {
+			continue
+		}
+		discounted, ok := workBuddyDiscount(promotion, base, baseOK)
+		if !ok || (found && discounted >= best) {
+			continue
+		}
+		best, found = discounted, true
+	}
+	if found {
+		rateWas = 0
+		if baseOK && base > best {
+			rateWas = base
+		}
+		return best == 0, best, rateWas
+	}
+	if !baseOK {
+		return false, 0, 0
+	}
+	return base == 0, base, 0
 }
 
 // syncWorkBuddyModels stores the plan's live model list on the provider,
@@ -1668,6 +1841,13 @@ type workBuddyQuotaWin struct {
 	Amount float64 `json:"amount"`
 	Limit  float64 `json:"limit"`
 	Unit   string  `json:"unit"`
+	// ResetsAt is when the window starts again (a team account's cycle).
+	ResetsAt string `json:"resetsAt,omitempty"`
+	// RunsOutAt/RunsOut are when the soonest of what is left is lost and how
+	// much: a personal account's credits come in batches that each end on their
+	// own day, so they can expire before the cycle resets.
+	RunsOutAt string  `json:"runsOutAt,omitempty"`
+	RunsOut   float64 `json:"runsOut,omitempty"`
 }
 
 // workBuddyNumber reads a capacity the billing API sends as a JSON string
@@ -1699,54 +1879,4 @@ func workBuddyAccountHeaders(site workBuddySite, credential domain.WorkBuddyCred
 		"X-Product":     "SaaS",
 		"X-IDE-Type":    "WorkBuddy",
 	}
-}
-
-// workBuddyQuotaFor reads an account's credit allowance from its resource
-// summary, and from the enterprise meter when the summary grants no packages
-// (a team account's credits only live there).
-func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) workBuddyQuota {
-	quota := workBuddyQuota{User: credential.AccountLabel, Windows: []workBuddyQuotaWin{}}
-	headers := workBuddyAccountHeaders(site, credential)
-	// The resource-summary meter has no /v2 gateway prefix: WorkBuddy asks it
-	// at /billing/meter/... on both desktop and web.
-	var summary struct {
-		Packages   []struct{ CycleTotalCapacity, CycleUsedCapacity workBuddyNumber } `json:"Packages"`
-		IsPaidUser bool                                                              `json:"IsPaidUser"`
-	}
-	if err := workBuddyCall(ctx, http.MethodPost, site.api()+"/billing/meter/get-user-resource-summary", headers, map[string]any{}, &summary); err != nil {
-		quota.Error = err.Error()
-		return quota
-	}
-	if summary.IsPaidUser {
-		quota.Plan = "Pro"
-	} else {
-		quota.Plan = "Free"
-	}
-	var total, used float64
-	for _, pkg := range summary.Packages {
-		total += float64(pkg.CycleTotalCapacity)
-		used += float64(pkg.CycleUsedCapacity)
-	}
-	if total > 0 {
-		quota.Windows = append(quota.Windows, workBuddyQuotaWin{
-			Name: "Credits", Used: 100 * used / total, Amount: used, Limit: total, Unit: "credits",
-		})
-		quota.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-		return quota
-	}
-	var enterprise struct {
-		Credit   workBuddyNumber `json:"credit"`
-		LimitNum workBuddyNumber `json:"limitNum"`
-	}
-	if err := workBuddyCall(ctx, http.MethodPost, site.api()+"/billing/meter/get-enterprise-user-usage", headers, map[string]any{}, &enterprise); err == nil {
-		if limit := float64(enterprise.LimitNum); limit > 0 {
-			quota.Plan = "Enterprise"
-			quota.Windows = append(quota.Windows, workBuddyQuotaWin{
-				Name: "Credits", Used: 100 * float64(enterprise.Credit) / limit,
-				Amount: float64(enterprise.Credit), Limit: limit, Unit: "credits",
-			})
-		}
-	}
-	quota.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-	return quota
 }

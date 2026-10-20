@@ -31,7 +31,8 @@ import {
   SelfcheckCaseResult,
   SelfcheckPrefs,
   SubscriptionCheckin,
-  SubscriptionConnectKind
+  SubscriptionConnectKind,
+  TimeHint
 } from './types';
 
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
@@ -368,6 +369,27 @@ export function readStoredSidebarCollapsed(): boolean {
 export function writeStoredSidebarCollapsed(collapsed: boolean) {
   try {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? '1' : '0');
+  } catch {
+    // ignore
+  }
+}
+
+// Provider 卡片密度：纯本机视觉偏好，换账号不重置，和主题一样按浏览器记忆。
+export type ProviderCardDensity = 'standard' | 'compact';
+
+const PROVIDER_DENSITY_STORAGE_KEY = 'llm-gateway-provider-density';
+
+export function readStoredProviderDensity(): ProviderCardDensity {
+  try {
+    return localStorage.getItem(PROVIDER_DENSITY_STORAGE_KEY) === 'compact' ? 'compact' : 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+export function writeStoredProviderDensity(density: ProviderCardDensity) {
+  try {
+    localStorage.setItem(PROVIDER_DENSITY_STORAGE_KEY, density);
   } catch {
     // ignore
   }
@@ -1104,16 +1126,6 @@ export function testResultBadge(success?: boolean) {
   return success ? '成功' : '失败 / 跳过';
 }
 
-// 卡片上只展示密钥掩码；完整值仅在编辑弹窗可见（编辑权限已限创建人/管理员）。
-export function maskApiKeySource(source?: string): string {
-  const value = (source || '').trim();
-  if (!value) return '透传客户端 Authorization';
-  if (value.startsWith('env:')) return value;
-  const raw = value.startsWith('literal:') ? value.slice('literal:'.length) : value;
-  if (raw.length <= 8) return '••••••';
-  return `${raw.slice(0, 4)}••••${raw.slice(-4)}`;
-}
-
 // selfRegistrationEndpointSpec 描述每种协议下，用户自建服务需要实现的接口
 // 形状：路径、上游协议名称，以及一句话的关键格式提示（供生成 Prompt 使用）。
 // 「连接方式」下拉框里代表自助注册模式的选项文案；三种协议共用同一个选项
@@ -1260,8 +1272,83 @@ export function retrySecondsLabel(nextRetryAt: string | undefined, nowMs: number
   return seconds > 0 ? `${minutes}分${seconds}秒后重试` : `${minutes}分钟后重试`;
 }
 
-// useNowTick re-renders every second so retry countdowns stay live between
-// the 5s /__state polls, without needing per-provider timers.
+/**
+ * 额度窗口的重置时刻，与积分的到期时刻，写成一行。
+ *
+ * 说法照 magpie：今天只给钟点，明天给「明天」，本周内（周一起算）给「周四」，
+ * 再远才给「11月6日」；后面缀一句还有多久。时刻已经过去就不再给相对时间——
+ * 一张写着「3 小时后」的卡，如果那个时间其实早过了，比不写更误导人。
+ */
+export function clockLabel(at: Date, now: Date = new Date()): string {
+  const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  const dayOnly = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((dayOnly(at) - dayOnly(now)) / 86_400_000);
+  if (days <= 0) return time;
+  if (days === 1) return `明天 ${time}`;
+  if (days <= 6 - ((now.getDay() + 6) % 7)) return `${at.toLocaleDateString('zh-CN', { weekday: 'short' })} ${time}`;
+  return `${at.getMonth() + 1}月${at.getDate()}日 ${time}`;
+}
+
+export function untilLabel(at: Date, now: Date = new Date()): string {
+  const minutes = Math.max(1, Math.round((at.getTime() - now.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes} 分钟后`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} 小时后`;
+  return `${Math.round(hours / 24)} 天后`;
+}
+
+function parseTimeHint(value: string): Date | null {
+  if (!value) return null;
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+// resetHint 是窗口那一行「重置 明天 15:39 · 20 小时后」。厂商没给重置时间时返回
+// null，卡片就不写这一行，而不是编一个。
+export function resetHint(resetsAt: string | undefined, now: Date = new Date(), label = '重置'): TimeHint | null {
+  const at = parseTimeHint(resetsAt || '');
+  if (!at) return null;
+  const full = at.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  if (at.getTime() <= now.getTime()) {
+    return { text: `${label}时间已过`, title: `${label}时间已过（${full}）`, passed: true };
+  }
+  const when = clockLabel(at, now);
+  const relative = untilLabel(at, now);
+  return { text: `${label} ${when} · ${relative}`, title: `${label}：${full}`, passed: false, when, relative, label };
+}
+
+// creditsExpiryHint 从一组窗口里挑出最早作废的那批，写成一行。
+export function creditsExpiryHint(windows: Array<{ runsOutAt?: string; runsOut?: number; unit?: string }> | undefined,
+  now: Date = new Date()): TimeHint | null {
+  const first = [...(windows || [])]
+    .filter((window) => window.runsOutAt && (window.runsOut ?? 0) > 0)
+    .sort((left, right) => Date.parse(left.runsOutAt!) - Date.parse(right.runsOutAt!))[0];
+  if (!first) return null;
+  return runsOutHint(first.runsOutAt, first.runsOut ?? 0, first.unit || '', now);
+}
+
+/**
+ * runsOutHint 是「18.04 积分 将于 11月6日 15:39 过期 · 17 天后」：窗口自己的重置
+ * 之外，还剩的这些会在更早的时候作废（WorkBuddy 的积分是按批发的，每批各有一个
+ * 到期日）。厂商没说就不写，说了但已经过了也不写——那批已经不在余额里了。
+ */
+export function runsOutHint(runsOutAt: string | undefined, amount: number, unit: string, now: Date = new Date()): TimeHint | null {
+  const at = parseTimeHint(runsOutAt || '');
+  if (!at || at.getTime() <= now.getTime() || !(amount > 0)) return null;
+  const count = Number.isInteger(amount) ? String(amount) : amount.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  const full = at.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const when = `${count}${unit ? ` ${unit}` : ''} 将于 ${clockLabel(at, now)} 过期`;
+  const relative = untilLabel(at, now);
+  return {
+    text: `${when} · ${relative}`,
+    title: `${count}${unit ? ` ${unit}` : ''} 在 ${full} 作废`,
+    passed: false,
+    when,
+    relative,
+  };
+}
+
+// useNowTick re-renders every second so retry countdowns stay live between// the 5s /__state polls, without needing per-provider timers.
 export function useNowTick(enabled: boolean, intervalMs = 1000): number {
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
@@ -2707,7 +2794,12 @@ export function pickUsageXTickIndexes(count: number) {
   if (count <= 10) return Array.from({ length: count }, (_, i) => i);
   const step = Math.max(1, Math.ceil(count / 8));
   const indexes = new Set<number>([0, count - 1]);
-  for (let i = 0; i < count; i += step) indexes.add(i);
+  for (let i = 0; i < count; i += step) {
+    // The last endpoint already has a label; skip regular ticks that would
+    // stack right next to it.
+    if (count - 1 - i < step) break;
+    indexes.add(i);
+  }
   return [...indexes].sort((a, b) => a - b);
 }
 

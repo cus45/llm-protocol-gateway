@@ -602,9 +602,13 @@ func (r *Router) AddAPIKey(key domain.APIKey) (domain.APIKey, error) {
 	key.ModelAliases = normalizeModelAliases(key.ModelAliases)
 	key.ThinkingDepthOverride = strings.TrimSpace(key.ThinkingDepthOverride)
 	key.MaxOutputTokens = normalizeMaxOutputTokens(key.MaxOutputTokens)
+	preferredProviderID := ""
+	if route, ok := r.routeLocked(key.RouteID); ok {
+		preferredProviderID = route.ProviderID
+	}
 	key.FallbackProviderIDs = normalizeFallbackProviderIDs(key.FallbackProviderIDs, "")
 	key.FallbackModelOverrides = normalizeFallbackModelOverrides(key.FallbackProviderIDs, key.FallbackModelOverrides)
-	if err := validateFallbackModelOverrides(key.FallbackProviderIDs, key.FallbackModelOverrides); err != nil {
+	if err := r.validateFallbackModelOverridesLocked(preferredProviderID, key.FallbackProviderIDs, key.FallbackModelOverrides); err != nil {
 		return domain.APIKey{}, err
 	}
 	key.ActiveProviderID = strings.TrimSpace(key.ActiveProviderID)
@@ -673,14 +677,14 @@ func (r *Router) UpdateAPIKey(keyID string, patch domain.APIKey) (domain.APIKey,
 			} else {
 				updated.FallbackModelOverrides = normalizeFallbackModelOverrides(updated.FallbackProviderIDs, updated.FallbackModelOverrides)
 			}
-			if err := validateFallbackModelOverrides(updated.FallbackProviderIDs, updated.FallbackModelOverrides); err != nil {
+			if err := r.validateFallbackModelOverridesLocked(preferredProviderID, updated.FallbackProviderIDs, updated.FallbackModelOverrides); err != nil {
 				return domain.APIKey{}, err
 			}
 		} else {
 			updated.FallbackProviderIDs = normalizeFallbackProviderIDs(updated.FallbackProviderIDs, preferredProviderID)
 			if patch.FallbackModelOverrides != nil {
 				updated.FallbackModelOverrides = normalizeFallbackModelOverrides(updated.FallbackProviderIDs, patch.FallbackModelOverrides)
-				if err := validateFallbackModelOverrides(updated.FallbackProviderIDs, updated.FallbackModelOverrides); err != nil {
+				if err := r.validateFallbackModelOverridesLocked(preferredProviderID, updated.FallbackProviderIDs, updated.FallbackModelOverrides); err != nil {
 					return domain.APIKey{}, err
 				}
 			} else {
@@ -1007,13 +1011,43 @@ func normalizeFallbackModelOverrides(fallbackIDs []string, overrides map[string]
 	return out
 }
 
-func validateFallbackModelOverrides(fallbackIDs []string, overrides map[string]string) error {
+// validateFallbackModelOverridesLocked requires a fixed model only for backups
+// that speak a different protocol than the primary: those cannot reuse the
+// request's model id and need one from their own catalog. Same-protocol
+// backups inherit the request model, so an empty override is valid.
+// Caller must hold r.mu.
+func (r *Router) validateFallbackModelOverridesLocked(preferredProviderID string, fallbackIDs []string, overrides map[string]string) error {
 	for _, id := range fallbackIDs {
-		if overrides == nil || strings.TrimSpace(overrides[id]) == "" {
-			return fmt.Errorf("fallback provider %q requires a fixed model override", id)
+		if overrides != nil && strings.TrimSpace(overrides[id]) != "" {
+			continue
+		}
+		if r.fallbackModelRequiredLocked(preferredProviderID, id) {
+			return fmt.Errorf("fallback provider %q requires a fixed model override (different protocol from the primary provider)", id)
 		}
 	}
 	return nil
+}
+
+// fallbackModelRequiredLocked reports whether a backup must pin its own model.
+// Unknown or deleted providers fall back to "required" so a broken chain never
+// silently forwards a model the backup may not recognize. Caller must hold r.mu.
+func (r *Router) fallbackModelRequiredLocked(preferredProviderID, fallbackProviderID string) bool {
+	preferred, ok := r.providerLocked(strings.TrimSpace(preferredProviderID))
+	if !ok {
+		return true
+	}
+	fallback, ok := r.providerLocked(strings.TrimSpace(fallbackProviderID))
+	if !ok {
+		return true
+	}
+	return fallback.Protocol != preferred.Protocol
+}
+
+// fallbackModelRequired is the runtime (lock-taking) form used by failover.
+func (r *Router) fallbackModelRequired(preferredProviderID, fallbackProviderID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.fallbackModelRequiredLocked(preferredProviderID, fallbackProviderID)
 }
 
 func sanitizeActiveProviderID(activeID, preferredProviderID string, fallbacks []string) string {

@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
-import {API_BASE, subscriptionOAuthPrefix} from '../lib';
+import {API_BASE, creditsExpiryHint, resetHint, subscriptionOAuthPrefix} from '../lib';
 import type {ProviderConnectKind, SubscriptionCheckin, SubscriptionUsage} from '../types';
-import {CheckinRow, UsageBucketRow, UsagePanelShell, useOAuthUsageReport} from './panels';
+import {CheckinRow, TimeLine, UsageBucketRow, UsagePanelShell, useOAuthUsageReport} from './panels';
 import {CopyButton} from './ui';
 
 /**
@@ -179,6 +179,8 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
   const [checkinOverride, setCheckinOverride] = useState<SubscriptionCheckin | null>(null);
   useEffect(() => { setCheckinOverride(null); }, [providerId]);
   const checkin = checkinOverride || report?.checkin;
+  // 账号级的那一行时间：Qoder 报套餐有效期，WorkBuddy 那类按批发积分的报哪批先到期。
+  const expiry = resetHint(report?.until, new Date(), '套餐有效期至') || creditsExpiryHint(report?.windows);
 
   // 紧凑卡片本来只在该账号报出额度时才出现；签到是厂商账号接口上的另一件事，
   // 额度读不出来时它也得留在原地，否则开关连同状态一起消失。
@@ -214,11 +216,15 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
               note={window.limit != null && window.limit > 0
                 ? `${(window.amount ?? 0).toFixed(0)} / ${window.limit.toFixed(0)}${window.unit ? ` ${window.unit}` : ''}`
                 : undefined}
+              reset={resetHint(window.resetsAt)}
               compact={compact}
             />
           ))}
         </div>
       )}
+      {/* 厂商另给的账号级时间：Qoder 报套餐有效期，WorkBuddy 报哪一批积分先过期。
+          没有就不写这一行。 */}
+      {expiry ? <TimeLine hint={expiry} className="subscription-expiry" /> : null}
       {checkin?.supported ? (
         <CheckinRow providerId={providerId} view={checkin} onChange={setCheckinOverride} />
       ) : null}

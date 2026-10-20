@@ -49,6 +49,13 @@ type ZhipuUsageReport struct {
 	Level       string            `json:"level,omitempty"` // plan level from data.level
 	FiveHour    *ZhipuUsageBucket `json:"five_hour,omitempty"`
 	Weekly      *ZhipuUsageBucket `json:"weekly,omitempty"`
+	// Resets is the plan's reset cards, read-only: they are spent on the
+	// vendor's own page.
+	Resets *ZhipuResetCredits `json:"resets,omitempty"`
+
+	// resetsError says why the reset list couldn't be read; kept off the wire
+	// and logged so a silently missing section can be told from an empty one.
+	resetsError string
 }
 
 func isZhipuNoCodingPlanMessage(msg string) bool {

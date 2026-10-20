@@ -989,7 +989,10 @@ func TestFetchWorkBuddyModelsReadsCLIAgentConfig(t *testing.T) {
 		}
 		fmt.Fprint(w, `{"code":0,"data":{
 			"agents":[{"name":"ide","models":["ignored-model"]},{"name":"cli","models":["glm-5.3","auto"]}],
-			"models":[{"id":"glm-5.3","maxInputTokens":1000000,"maxOutputTokens":32000}]}}`)
+			"models":[
+				{"id":"glm-5.3","name":"GLM-5.3","maxInputTokens":1000000,"maxOutputTokens":32000,"credits":"x1.00"},
+				{"id":"auto","maxInputTokens":200000,"maxOutputTokens":16000,"credits":"0"}],
+			"modelPromotions":[{"kind":"discount","modelIds":["glm-5.3"],"discount":{"discountedCredits":"0.50x"}}]}}`)
 	}))
 	defer server.Close()
 	pointWorkBuddyAt(t, server.URL, server.URL)
@@ -1005,13 +1008,124 @@ func TestFetchWorkBuddyModelsReadsCLIAgentConfig(t *testing.T) {
 	if models[0].ID != "glm-5.3" || models[0].ContextLength != 1_000_000 || models[0].MaxOutputTokens != 32_000 {
 		t.Fatalf("first model = %+v", models[0])
 	}
+	if models[0].Name != "GLM-5.3" {
+		t.Fatalf("first model name = %q, want the upstream display name", models[0].Name)
+	}
+	if models[0].Rate != 0.5 || models[0].RateWas != 1 || models[0].Free {
+		t.Fatalf("first model price = free:%v rate:%v was:%v, want the 0.5 discount off 1", models[0].Free, models[0].Rate, models[0].RateWas)
+	}
 	if models[1].ID != "auto" || models[1].ContextLength == 0 {
 		t.Fatalf("second model = %+v, want auto with a fallback context window", models[1])
+	}
+	if !models[1].Free || models[1].Rate != 0 {
+		t.Fatalf("second model price = free:%v rate:%v, want free", models[1].Free, models[1].Rate)
 	}
 	for _, model := range models {
 		if model.Protocol != domain.ProtocolOpenAIChat {
 			t.Fatalf("%s protocol = %s", model.ID, model.Protocol)
 		}
+	}
+}
+
+func TestWorkBuddyModelPrice(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	enabled, disabled := true, false
+	cases := []struct {
+		name     string
+		detail   workBuddyModelDetail
+		promos   []workBuddyPromotion
+		wantFree bool
+		wantRate float64
+		wantWas  float64
+	}{
+		{
+			name:     "credits 写法 x0.03",
+			detail:   workBuddyModelDetail{ID: "m", Credits: "x0.03"},
+			wantRate: 0.03,
+		},
+		{
+			name:     "credits 带单位",
+			detail:   workBuddyModelDetail{ID: "m", Credits: "0.5 credits"},
+			wantRate: 0.5,
+		},
+		{
+			name:     "免费模型",
+			detail:   workBuddyModelDetail{ID: "m", Credits: "x0.00"},
+			wantFree: true,
+		},
+		{
+			name:   "没有价格就不猜",
+			detail: workBuddyModelDetail{ID: "m", Credits: ""},
+		},
+		{
+			name:   "整天折扣给出折后价与原价",
+			detail: workBuddyModelDetail{ID: "m", Credits: 2.0},
+			promos: []workBuddyPromotion{{Kind: "discount", ModelIDs: []string{"m"}, Enabled: &enabled, Discount: &struct {
+				DiscountedCredits any "json:\"discountedCredits\""
+				Factor            any "json:\"factor\""
+			}{Factor: 0.5}}},
+			wantRate: 1,
+			wantWas:  2,
+		},
+		{
+			name:   "限时免费按 free 报",
+			detail: workBuddyModelDetail{ID: "m", Credits: "x1.00"},
+			promos: []workBuddyPromotion{{Kind: "discount", ModelIDs: []string{"m"}, Discount: &struct {
+				DiscountedCredits any "json:\"discountedCredits\""
+				Factor            any "json:\"factor\""
+			}{DiscountedCredits: "0.00x"}}},
+			wantFree: true,
+			wantWas:  1,
+		},
+		{
+			name:   "夜间免费白天仍报全价",
+			detail: workBuddyModelDetail{ID: "m", Credits: "x1.00"},
+			promos: []workBuddyPromotion{func() workBuddyPromotion {
+				p := workBuddyPromotion{Kind: "discount", ModelIDs: []string{"m"}, Discount: &struct {
+					DiscountedCredits any "json:\"discountedCredits\""
+					Factor            any "json:\"factor\""
+				}{DiscountedCredits: "0.00x"}}
+				p.Schedule.Daily = []json.RawMessage{json.RawMessage(`{"start":"23:00","end":"08:00"}`)}
+				return p
+			}()},
+			wantRate: 1,
+		},
+		{
+			name:   "停用与过期的促销不算",
+			detail: workBuddyModelDetail{ID: "m", Credits: "x1.00"},
+			promos: []workBuddyPromotion{
+				{Kind: "discount", ModelIDs: []string{"m"}, Enabled: &disabled, Discount: &struct {
+					DiscountedCredits any "json:\"discountedCredits\""
+					Factor            any "json:\"factor\""
+				}{DiscountedCredits: "0.00x"}},
+				func() workBuddyPromotion {
+					p := workBuddyPromotion{Kind: "discount", ModelIDs: []string{"m"}, Enabled: &enabled, Discount: &struct {
+						DiscountedCredits any "json:\"discountedCredits\""
+						Factor            any "json:\"factor\""
+					}{DiscountedCredits: "0.00x"}}
+					p.Schedule.ValidUntil = "2026-10-20T00:00:00Z"
+					return p
+				}(),
+			},
+			wantRate: 1,
+		},
+		{
+			name:   "别的模型的促销不串号",
+			detail: workBuddyModelDetail{ID: "m", Credits: "x0.8"},
+			promos: []workBuddyPromotion{{Kind: "discount", ModelIDs: []string{"other"}, Discount: &struct {
+				DiscountedCredits any "json:\"discountedCredits\""
+				Factor            any "json:\"factor\""
+			}{DiscountedCredits: "0.00x"}}},
+			wantRate: 0.8,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			free, rate, was := workBuddyModelPrice(tc.detail, tc.promos, now)
+			if free != tc.wantFree || rate != tc.wantRate || was != tc.wantWas {
+				t.Fatalf("price = free:%v rate:%v was:%v, want free:%v rate:%v was:%v", free, rate, was, tc.wantFree, tc.wantRate, tc.wantWas)
+			}
+		})
 	}
 }
 
@@ -1078,7 +1192,11 @@ func TestWorkBuddyQuotaReadsCreditPackages(t *testing.T) {
 		switch r.URL.Path {
 		case "/billing/meter/get-user-resource-summary":
 			fmt.Fprint(w, `{"code":0,"data":{"IsPaidUser":true,"Packages":[
-				{"CycleTotalCapacity":"3300","CycleUsedCapacity":"438.88"}]}}`)
+				{"PackageCode":"TCACA_code_002_AkiJS3ZHF5","CycleTotalCapacity":"3300","CycleUsedCapacity":"438.88"}]}}`)
+		case "/billing/meter/get-user-resource-paid-packages", "/billing/meter/get-user-resource-free-packages":
+			// A personal account's credits come in dated batches, so the quota
+			// read opens that door too; here the account has none listed.
+			fmt.Fprint(w, `{"code":0,"data":{"Accounts":[]}}`)
 		default:
 			t.Errorf("unexpected quota endpoint %s", r.URL.Path)
 		}

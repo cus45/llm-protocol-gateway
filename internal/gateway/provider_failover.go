@@ -619,13 +619,18 @@ func (s *Server) executeProtocolFlowWithFailover(
 			if matchedKey.FallbackModelOverrides != nil {
 				override = strings.TrimSpace(matchedKey.FallbackModelOverrides[providerID])
 			}
-			if override == "" {
+			// 同协议备选沿用请求模型；跨协议备选必须锁定自己的模型，否则把
+			// 上游 A 的模型名发给协议不同的上游 B 只会换来一个 400。
+			if override == "" && s.router.fallbackModelRequired(route.ProviderID, providerID) {
 				s.logs.AddApp("warn", "provider failover skipped missing model override", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, providerID))
 				continue
 			}
-			attemptKey.ModelOverride = override
+			if override != "" {
+				attemptKey.ModelOverride = override
+			}
 		}
-		if resolved, _ := resolveConsumerModel(s.router, route, attemptKey, true, requestModel); strings.TrimSpace(resolved) != "" {
+		attemptProvider, _ := s.router.ProviderByID(providerID)
+		if resolved, _ := resolveConsumerModelOnProvider(attemptProvider, attemptKey, true, requestModel); strings.TrimSpace(resolved) != "" {
 			attemptModel = resolved
 		}
 		attemptReq := cloneRequestMap(req)

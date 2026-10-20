@@ -136,6 +136,13 @@ IP 被 GFW 识别，和请求频率无关。如需降频，可调大 `providerFa
 下一个备选；前置 Provider 恢复后由 5.3 的回切逻辑自动切回。链路见
 `executeProtocolFlowWithFailover`（`internal/gateway/provider_failover.go`）。
 
+备选模型规则按协议区分：
+
+- **与主 Provider 同协议**：无需指定模型，请求里的模型名原样带给备选；若备选的模型目录里
+  没有该模型且配置了 `defaultModel`，会用备选自己的默认模型兜底。
+- **与主 Provider 跨协议**：必须在 `fallbackModelOverrides` 里为该备选锁定一个模型，
+  否则保存会被拒绝；运行时若配置缺失也会跳过该备选，避免把 A 上游的模型名发给 B 上游。
+
 ---
 
 ## 7. 自注册（Self-Registration）——为轮转 URL 的自建后端准备

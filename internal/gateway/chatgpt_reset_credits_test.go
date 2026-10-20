@@ -61,3 +61,87 @@ func TestChatGPTResetCreditsJSONShape(t *testing.T) {
 		t.Fatalf("unexpected report: %#v", report)
 	}
 }
+
+func TestEarliestChatGPTResetCreditPicksSoonestExpiry(t *testing.T) {
+	credits := []ChatGPTResetCredit{
+		{ID: "never", ExpiresAt: ""},
+		{ID: "late", ExpiresAt: "2026-11-01T00:00:00Z"},
+		{ID: "soon", ExpiresAt: "2026-10-04T01:02:06Z"},
+	}
+	credit, ok := earliestChatGPTResetCredit(credits)
+	if !ok || credit.ID != "soon" {
+		t.Fatalf("got %#v ok=%v", credit, ok)
+	}
+	if _, ok := earliestChatGPTResetCredit(nil); ok {
+		t.Fatal("no credits must report not found")
+	}
+}
+
+func TestConsumeChatGPTOAuthResetCredit(t *testing.T) {
+	var gotMethod, gotPath, gotAuth, gotAccount string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{"code":"reset","windows_reset":2}`))
+	}))
+	defer server.Close()
+
+	provider := domain.Provider{
+		AuthType: domain.AuthTypeChatGPTOAuth,
+		ChatGPTOAuth: &domain.ChatGPTOAuthCredential{
+			AccessToken:      "token",
+			ChatGPTAccountID: "acct_1",
+		},
+	}
+	out, err := consumeChatGPTOAuthResetCreditAt(context.Background(), provider, server.URL+"/consume", "cr-1", "redeem-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/consume" {
+		t.Fatalf("method=%q path=%q", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer token" || gotAccount != "acct_1" {
+		t.Fatalf("auth=%q account=%q", gotAuth, gotAccount)
+	}
+	if gotBody["credit_id"] != "cr-1" || gotBody["redeem_request_id"] != "redeem-1" {
+		t.Fatalf("body=%#v", gotBody)
+	}
+	if out.Code != "reset" || out.WindowsReset != 2 {
+		t.Fatalf("out=%#v", out)
+	}
+}
+
+func TestConsumeChatGPTOAuthResetCreditErrors(t *testing.T) {
+	provider := domain.Provider{
+		ChatGPTOAuth: &domain.ChatGPTOAuthCredential{AccessToken: "token"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"detail":"slow down"}`))
+	}))
+	defer server.Close()
+	if _, err := consumeChatGPTOAuthResetCreditAt(context.Background(), provider, server.URL, "cr-1", "redeem-1"); err == nil {
+		t.Fatal("non-2xx must be an error")
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer empty.Close()
+	if _, err := consumeChatGPTOAuthResetCreditAt(context.Background(), provider, empty.URL, "cr-1", "redeem-1"); err == nil {
+		t.Fatal("a response without a code must be an error")
+	}
+}
+
+func TestNewChatGPTResetRedeemIDIsUUIDv4(t *testing.T) {
+	id, err := newChatGPTResetRedeemID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(id) != 36 || id[14] != '4' || (id[19] != '8' && id[19] != '9' && id[19] != 'a' && id[19] != 'b') {
+		t.Fatalf("not a v4 uuid: %q", id)
+	}
+}

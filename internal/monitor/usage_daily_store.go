@@ -29,6 +29,7 @@ type UsageDayBuckets struct {
 	ByProvider  map[string]ProviderDayStats
 	ByModel     map[string]ModelDayStats
 	ByUser      map[string]UserDayStats
+	ByKey       map[string]UsageDayBuckets
 	ByProtocol  map[string]ProtocolDayStats
 	Status2xx   int64
 	Status4xx   int64

@@ -43,6 +43,18 @@ func resolveAPIKeyModelAlias(aliases map[string]string, requestModel string) (st
 }
 
 func resolveConsumerModel(router *Router, route domain.Route, key domain.APIKey, gatewayKeyMatched bool, rawRequestModel string) (model string, logModel string) {
+	provider, err := router.ProviderForRoute(route)
+	if err != nil {
+		provider = domain.Provider{}
+	}
+	return resolveConsumerModelOnProvider(provider, key, gatewayKeyMatched, rawRequestModel)
+}
+
+// resolveConsumerModelOnProvider resolves the model for one attempt against the
+// provider that will actually receive it. Failover reuses the request model for
+// same-protocol backups, so mappings and defaults must come from that backup
+// rather than from the route's preferred provider.
+func resolveConsumerModelOnProvider(provider domain.Provider, key domain.APIKey, gatewayKeyMatched bool, rawRequestModel string) (model string, logModel string) {
 	clientModel := strings.TrimSpace(rawRequestModel)
 	working := resolveClaudeModelAlias(clientModel)
 	mapped := false
@@ -51,25 +63,30 @@ func resolveConsumerModel(router *Router, route domain.Route, key domain.APIKey,
 	}
 	override := ""
 	if gatewayKeyMatched {
-		override = key.ModelOverride
+		override = strings.TrimSpace(key.ModelOverride)
 	}
 	// Resolution order:
 	// APIKey.ModelOverride → APIKey.modelAliases → provider.requestAdapter.modelMapping
 	// → if not in provider.Models use DefaultModel → else clientModel
-	model = router.ResolveModel(route, override, working)
-	if override == "" {
-		if provider, err := router.ProviderForRoute(route); err == nil {
-			if !mapped {
-				mappedModel := applyProviderModelMapping(provider, model)
-				if mappedModel != model {
-					model = mappedModel
-					mapped = true
-				}
-			} else {
-				model = applyProviderModelMapping(provider, model)
+	model = override
+	if model == "" {
+		model = working
+	}
+	if model == "" {
+		model = strings.TrimSpace(provider.DefaultModel)
+	}
+	if override == "" && provider.ID != "" {
+		if !mapped {
+			mappedModel := applyProviderModelMapping(provider, model)
+			if mappedModel != model {
+				model = mappedModel
+				mapped = true
 			}
-			model = applyProviderModelFallback(provider, model)
+		} else {
+			model = applyProviderModelMapping(provider, model)
 		}
+		model = stripProviderModelPrefix(provider, model)
+		model = applyProviderModelFallback(provider, model)
 	}
 	if model == "" {
 		model = "request-model-not-set"
@@ -114,6 +131,26 @@ func providerHasModel(provider domain.Provider, model string) bool {
 		}
 	}
 	return false
+}
+
+// stripProviderModelPrefix drops a provider namespace a client pinned to the
+// model id ("qoder-cn/dfmodel"), the way route aliases are written. Models a
+// provider genuinely names with a slash are kept: the full id wins, and only a
+// tail the provider itself lists is accepted as the real model.
+func stripProviderModelPrefix(provider domain.Provider, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || len(provider.Models) == 0 || providerHasModel(provider, model) {
+		return model
+	}
+	i := strings.LastIndex(model, "/")
+	if i <= 0 || i == len(model)-1 {
+		return model
+	}
+	tail := strings.TrimSpace(model[i+1:])
+	if tail == "" || !providerHasModel(provider, tail) {
+		return model
+	}
+	return tail
 }
 
 // applyProviderModelFallback uses DefaultModel when the resolved model is not

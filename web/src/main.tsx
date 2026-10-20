@@ -70,7 +70,6 @@ import {
     logLevelValues,
     LOGS_PAGE_SIZE,
     mapFromTrafficRanks,
-    maskApiKeySource,
     modelAlias,
     modelsForSelfcheckProvider,
     navGroups,
@@ -99,6 +98,7 @@ import {
     qoderDefaultBaseURL,
     readConnectResponse,
     readSelfcheckPrefs,
+    readStoredProviderDensity,
     readStoredSidebarCollapsed,
     readUICache,
     reportIfLooksLikeAutofill,
@@ -121,6 +121,7 @@ import {
     userAllowedNavIDs,
     USERS_TABLE_GRID,
     writeSelfcheckPrefs,
+    writeStoredProviderDensity,
     writeStoredSidebarCollapsed,
     writeUICache
 } from './lib';
@@ -495,6 +496,12 @@ function App() {
   const [modelsViewMode, setModelsViewMode] = useState<'grid' | 'table'>('grid');
   const [providersSearchQuery, setProvidersSearchQuery] = useState('');
   const [providersConnectFilter, setProvidersConnectFilter] = useState<'' | ProviderConnectKind>('');  const [providersStatusFilter, setProvidersStatusFilter] = useState<'all' | 'healthy' | 'unavailable' | 'disabled' | 'oauth'>('all');
+  // 卡片密度只影响本机视觉，持久化在 localStorage（与主题/侧边栏一致）。
+  const [providerCardDensity, setProviderCardDensity] = useState(readStoredProviderDensity);
+  const chooseProviderDensity = (next: 'standard' | 'compact') => {
+    setProviderCardDensity(next);
+    writeStoredProviderDensity(next);
+  };
 
   const selectedRoute = useMemo(
     () => state.routes.find((route) => route.id === selectedRouteID) || state.routes[0],
@@ -918,7 +925,7 @@ function App() {
         }
         if (auth && (!auth.requireAuth || auth.authenticated)) {
           void refreshState(false);
-          void refreshRequestStats();
+          void refreshRequestStats(undefined, undefined, { silent: true });
         }
       })();
     };
@@ -1046,9 +1053,9 @@ function App() {
         setUsageTo(today);
         usageRangeRef.current = { from: today, to: today };
       }
-      void refreshRequestStats(today, today);
+      void refreshRequestStats(today, today, { silent: Boolean(requestStats) });
     } else {
-      void refreshRequestStats(usageRangeRef.current.from, usageRangeRef.current.to);
+      void refreshRequestStats(usageRangeRef.current.from, usageRangeRef.current.to, { silent: Boolean(requestStats) });
     }
   }, [activeNav]);
 
@@ -1113,13 +1120,6 @@ function App() {
   // 筛选项（后端也只对 admin 生效），不需要拉取。
   useEffect(() => {
     if (activeNav !== 'traffic-tokens') return;
-    if (authStatus?.role === 'user') return;
-    void refreshConsoleUsers();
-  }, [activeNav, authStatus?.role]);
-
-  // 输入 Provider 页要给每个 Provider 标注创建者，同样需要用户列表解析用户名。
-  useEffect(() => {
-    if (activeNav !== 'input-providers') return;
     if (authStatus?.role === 'user') return;
     void refreshConsoleUsers();
   }, [activeNav, authStatus?.role]);
@@ -1867,11 +1867,13 @@ function App() {
     }
   }
 
-  async function refreshRequestStats(from = usageRangeRef.current.from, to = usageRangeRef.current.to) {
+  async function refreshRequestStats(from = usageRangeRef.current.from, to = usageRangeRef.current.to, opts?: { silent?: boolean }) {
     const version = ++usageRequestVersion.current;
     const scope = uiCacheScope(authStatusRef.current);
-    setUsageLoading(true);
-    setUsageError('');
+    if (!opts?.silent) {
+      setUsageLoading(true);
+      setUsageError('');
+    }
     try {
       // 容错：开始时间晚于结束时间时自动交换，避免后端返回空区间
       if (from && to && from > to) [from, to] = [to, from];
@@ -1888,9 +1890,9 @@ function App() {
         writeUICache(scope, `stats:${from}:${to}`, snapshot);
       }
     } catch {
-      if (version === usageRequestVersion.current && scope === uiCacheScope(authStatusRef.current)) setUsageError('用量刷新失败，请稍后重试。');
+      if (!opts?.silent && version === usageRequestVersion.current && scope === uiCacheScope(authStatusRef.current)) setUsageError('用量刷新失败，请稍后重试。');
     } finally {
-      if (version === usageRequestVersion.current) setUsageLoading(false);
+      if (!opts?.silent && version === usageRequestVersion.current) setUsageLoading(false);
     }
   }
 
@@ -4711,6 +4713,24 @@ function App() {
                   {providersSearchQuery.trim() ? (
                     <button className="mini-btn" type="button" onClick={() => setProvidersSearchQuery('')}>清除</button>
                   ) : null}
+                  <div className="view-mode-toggle provider-density-toggle" role="group" aria-label="Provider 卡片密度">
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${providerCardDensity === 'standard' ? 'active' : ''}`}
+                      title="标准卡片：信息更宽松"
+                      onClick={() => chooseProviderDensity('standard')}
+                    >
+                      标准
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${providerCardDensity === 'compact' ? 'active' : ''}`}
+                      title="紧凑列表：一行一个 Provider，只看额度、模型数与 Key 数"
+                      onClick={() => chooseProviderDensity('compact')}
+                    >
+                      紧凑
+                    </button>
+                  </div>
                 </div>
                 {providersSearch.error ? (
                   <div className="hint-line error">正则无效，已回退为普通包含匹配：{providersSearch.error}</div>
@@ -4828,7 +4848,17 @@ function App() {
               ) : filteredProviders.length === 0 ? (
                 <div className="empty-state">没有匹配的 Provider，请调整检索词或连接方式过滤。</div>
               ) : (
-                <div className="provider-card-grid">
+                <div className={providerCardDensity === 'compact' ? 'provider-list' : 'provider-card-grid'}>
+                  {providerCardDensity === 'compact' ? (
+                    <div className="provider-list-head" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span>Provider</span>
+                      <span>额度</span>
+                      <span>模型 / Keys</span>
+                      <span className="provider-list-head-actions">操作</span>
+                    </div>
+                  ) : null}
                   {filteredProviders.map((provider) => {
                     const usedCount = (state.apiKeys || []).filter((key) => (
                       apiKeyReferencesProvider(key, state.routes, provider.id)
@@ -4836,6 +4866,7 @@ function App() {
                     return (
                       <ProviderCard
                         key={provider.id}
+                        layout={providerCardDensity === 'compact' ? 'list' : 'card'}
                         active={selectedProvider?.id === provider.id}
                         selected={selectedExportProviderIDs.includes(provider.id)}
                         name={provider.name}
@@ -4843,7 +4874,6 @@ function App() {
                         protocol={protocolLabel(provider.protocol)}
                         tone={protocolTone(provider.protocol)}
                         url={provider.authType === 'claude_oauth' ? 'api.anthropic.com' : provider.authType === 'cursor_oauth' ? '本地 gRPC Bridge' : provider.authType === 'chatgpt_oauth' ? 'chatgpt.com/codex' : provider.baseUrl}
-                        keyMask={provider.authType === 'api_key' || !provider.authType ? maskApiKeySource(provider.apiKeySource) : undefined}
                         defaultModel={provider.defaultModel}
                         modelCount={(provider.models || []).length}
                         usedCount={usedCount}
@@ -4872,7 +4902,7 @@ function App() {
                         cursorBridge={provider.authType === 'cursor_oauth' ? state.cursorBridge : undefined}
                         ownerName={!isNormalUser ? providerOwnerName(provider) : undefined}
                         authorizedUserCount={!isNormalUser
-                          ? consoleUsers.filter((user) => user.role !== 'admin' && (user.allowedProviderIds || []).includes(provider.id)).length
+                          ? consoleUsers.filter((user) => user.role !== 'admin' && (user.id === provider.ownerUserId || (user.allowedProviderIds || []).includes(provider.id))).length
                           : undefined}
                         onShowUsers={!isNormalUser
                           ? () => { setProviderUsersModalID(provider.id); void refreshConsoleUsers(); }
@@ -5029,6 +5059,7 @@ function App() {
             <UsagePage
               stats={requestStats}
               providers={state.providers || []}
+              models={state.models || []}
               isNormalUser={isNormalUser}
               from={usageFrom}
               to={usageTo}
@@ -5051,6 +5082,22 @@ function App() {
                 setLogsProviderFilter(type === 'provider' ? value : '');
                 setLogsApiKeyName('');
                 setLogsStatusFilter('all');
+                setLogsPage(1);
+                setLogsOwnerFilter('');
+                goToPage('traffic-tokens');
+              }}
+              onOpenLogs={(filters) => {
+                setLogsFrom(usageFrom);
+                setLogsTo(usageTo);
+                setLogsKeyword(filters.keyword || '');
+                setLogsUsageTarget(filters.model
+                  ? { type: 'model', value: filters.model, label: filters.model }
+                  : filters.apiKeyId
+                    ? { type: 'apiKey', value: filters.apiKeyId, label: filters.apiKeyName || filters.apiKeyId }
+                    : null);
+                setLogsProviderFilter(filters.provider || '');
+                setLogsApiKeyName('');
+                setLogsStatusFilter((filters.status as 'all' | '2xx' | '4xx' | '5xx') || 'all');
                 setLogsPage(1);
                 setLogsOwnerFilter('');
                 goToPage('traffic-tokens');
@@ -5557,7 +5604,7 @@ function App() {
                                 title={`点击复制模型 ID：${model.id}`}
                                 onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
                               >
-                                {model.id}
+                                <span className="model-id-text">{model.id}</span>
                                 <span className="model-id-copy-hint" aria-hidden="true">📋</span>
                               </span>
                               {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
@@ -7813,7 +7860,7 @@ function App() {
       )}
 
       {providerModelsOpen && (
-        <Modal title={`获取模型 · ${providerModelsName}`} description="从 Provider 上游 /models 接口拉取可用模型列表，并更新健康状态。" onClose={() => setProviderModelsOpen(false)}>
+        <Modal size="wide" title={`获取模型 · ${providerModelsName}`} description="从 Provider 上游 /models 接口拉取可用模型列表，并更新健康状态。" onClose={() => setProviderModelsOpen(false)}>
           {providerModelsLoading ? (
             <div className="empty-state">正在从上游获取模型列表…</div>
           ) : !providerModelsResult ? (
@@ -7824,42 +7871,69 @@ function App() {
                 <div className="test-result-head">
                   <Badge tone={providerModelsResult.success ? 'green' : statusTone(providerModelsResult.status)}>{providerModelsResult.success ? '成功' : '失败'}</Badge>
                   <span>{httpStatusLabel(providerModelsResult.status)} · {providerModelsResult.latencyMs ?? '-'}ms · {providerModelsResult.models.length} 个模型</span>
+                  {(() => {
+                    const provider = state.providers.find((item) => item.id === providerModelsID);
+                    return provider ? <span className="test-result-provider"><ProviderLabel provider={provider} size={14} /></span> : null;
+                  })()}
                 </div>
                 {providerModelsResult.error ? <div className="test-result-body">{providerModelsResult.error}</div> : null}
                 {providerModelsResult.preview ? <div className="test-result-body">{providerModelsResult.preview}</div> : null}
                 <div className="test-result-meta">modelsUrl={providerModelsResult.modelsUrl || '-'}</div>
               </div>
-              {providerModelsResult.models.length > 0 ? (
-                <div className="model-list" style={{ marginTop: 14 }}>
-                  {providerModelsResult.models.map((model) => (
-                    <div className="route-card" key={model.id}>
-                      <div className="route-top">
-                        <div className="model-id-main">
-                          <div
-                            className="route-name model-id-clickable"
-                            title={`点击复制模型 ID：${model.id}`}
-                            onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
-                            style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                          >
-                            <span>{model.id}</span>
-                            <span className="model-id-copy-hint" aria-hidden="true" style={{ fontSize: 12 }}>📋</span>
-                          </div>
-                          {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <ModelPriceTags model={model} />
-                          <Badge tone="slate">{model.contextLength ? `${model.contextLength} 上下文` : '模型'}</Badge>
-                          <CopyButton
-                            value={model.id}
-                            label="复制"
-                            toastContent={`已复制模型 ID：${model.id}`}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
+              {providerModelsResult.models.length > 0 ? (() => {
+                const fetchedModels = providerModelsResult.models;
+                const freeCount = fetchedModels.filter(isFreeModel).length;
+                const ratedCount = fetchedModels.filter((model) => !isFreeModel(model) && (model.rate || 0) > 0).length;
+                const longestContext = Math.max(0, ...fetchedModels.map((model) => model.contextLength || 0));
+                return <>
+                  <div className="fetched-model-summary">
+                    <span><b>{fetchedModels.length}</b> 个模型</span>
+                    {freeCount > 0 ? <span className="is-free"><b>{freeCount}</b> 免费</span> : null}
+                    {ratedCount > 0 ? <span className="is-rated"><b>{ratedCount}</b> 按倍率计费</span> : null}
+                    <span>最长上下文 <b>{longestContext.toLocaleString()}</b></span>
+                    <span className="fetched-model-summary-hint">点击模型 ID 即可复制</span>
+                  </div>
+                  <div className="models-table-wrap fetched-models-wrap">
+                    <table className="models-table fetched-models-table">
+                      <thead>
+                        <tr><th>模型</th><th>价格</th><th>上下文</th><th>最大输出</th><th style={{ textAlign: 'right' }}>操作</th></tr>
+                      </thead>
+                      <tbody>
+                        {fetchedModels.map((model) => {
+                          const hasPrice = isFreeModel(model) || (model.rate || 0) > 0;
+                          return (
+                            <tr key={model.id}>
+                              <td className="model-id-cell">
+                                <div
+                                  className="model-id-wrapper"
+                                  title={`点击复制模型 ID：${model.id}`}
+                                  onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                                >
+                                  <span className="model-id-text">{model.id}</span>
+                                  <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                                </div>
+                                {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
+                                {model.contextLength || model.maxOutputTokens ? (
+                                  <span className="fetched-model-inline-meta">
+                                    {model.contextLength ? <span>上下文 {model.contextLength.toLocaleString()}</span> : null}
+                                    {model.maxOutputTokens ? <span>输出 {model.maxOutputTokens.toLocaleString()}</span> : null}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td><div className="model-tags-row">{hasPrice ? <ModelPriceTags model={model} /> : <span className="fetched-model-empty">—</span>}</div></td>
+                              <td className="model-ctx-cell">{model.contextLength ? model.contextLength.toLocaleString() : '—'}</td>
+                              <td className="model-ctx-cell">{model.maxOutputTokens ? model.maxOutputTokens.toLocaleString() : '—'}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                <CopyButton value={model.id} label="复制" toastContent={`已复制模型 ID：${model.id}`} />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>;
+              })() : (
                 <div className="empty-state">未获取到模型。可检查 Provider Base URL、鉴权或上游 /models 接口。</div>
               )}
             </>

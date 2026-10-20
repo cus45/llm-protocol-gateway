@@ -287,6 +287,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__settings/paths", s.handleSettingsPaths)
 	mux.HandleFunc("GET /__logs", s.handleLogs)
 	mux.HandleFunc("GET /__request-stats", s.handleRequestStats)
+	mux.HandleFunc("GET /__usage-analysis", s.handleUsageAnalysis)
 	mux.HandleFunc("GET /__rtk/stats", s.handleRTKStats)
 	mux.HandleFunc("GET /__app/logs", s.handleAppLogs)
 	// UI 诊断日志：浏览器端关键事件上报（见 ui_log.go 的背景说明）。
@@ -356,6 +357,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__providers/{id}/chatgpt-oauth/complete", s.handleChatGPTOAuthComplete)
 	mux.HandleFunc("POST /__providers/{id}/chatgpt-oauth/disconnect", s.handleChatGPTOAuthDisconnect)
 	mux.HandleFunc("GET /__providers/{id}/chatgpt-oauth/usage", s.handleChatGPTOAuthUsage)
+	mux.HandleFunc("POST /__providers/{id}/chatgpt-oauth/reset-credits/consume", s.handleChatGPTOAuthResetConsume)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/complete", s.handleQoderPATComplete)
 	mux.HandleFunc("GET /__providers/{id}/qoder-pat/status", s.handleQoderPATStatus)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/disconnect", s.handleQoderPATDisconnect)
@@ -781,7 +783,7 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	localNow := now.Local()
 	from := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, localNow.Location())
-	to := from.Add(24 * time.Hour)
+	to := from.AddDate(0, 0, 1)
 	if raw := strings.TrimSpace(r.URL.Query().Get("from")); raw != "" {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 			from = parsed
@@ -796,10 +798,14 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 				to = time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, to.Location()).AddDate(0, 0, 1)
 			}
 		} else if parsed, err := time.ParseInLocation("2006-01-02", raw, localNow.Location()); err == nil {
-			to = parsed.Add(24 * time.Hour)
+			to = parsed.AddDate(0, 0, 1)
 		}
 	}
 	cacheKey := from.Format(time.RFC3339) + "|" + to.Format(time.RFC3339)
+	// Hourly buckets only exist in the in-memory log ring (recent 500 after a
+	// restart). Ranges inside retention are recomputed from complete persisted
+	// logs; longer ranges use every retained log and only report hourly coverage.
+	hourlyCoveredByRetention := to.Sub(from) <= time.Duration(s.RequestLogRetentionDays())*24*time.Hour
 	identity := s.requestIdentity(r)
 	if !identity.isAdmin() {
 		// Per-user stats: computed from own keys only; cached per user.
@@ -812,22 +818,31 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 		}
 		snapshot := s.logs.UsageStatsRangeForKeys(now, from, to, keyIDs)
 		if s.requestLogStore != nil && len(keyIDs) > 0 {
-			needRange := snapshot.Range == nil || snapshot.Range.Total.RequestCount == 0
-			needHourly := hourlyStatsTotal(snapshot.Hourly) == 0
+			rangeTotal := int64(0)
+			if snapshot.Range != nil {
+				rangeTotal = snapshot.Range.Total.RequestCount
+			}
+			needRange := snapshot.Range == nil || rangeTotal == 0
+			hourlyTotal := hourlyStatsTotal(snapshot.Hourly)
+			needHourly := hourlyTotal == 0 || hourlyTotal < rangeTotal
 			needDaily := len(snapshot.Daily) == 0
 			needStatus := statusStatsTotal(snapshot.Status) == 0
 			if needRange || needHourly || needDaily || needStatus {
-				if dbLogs := s.loadRequestLogsForStatsForKeys(from, to, keyIDs, 5000); len(dbLogs) > 0 {
+				if dbLogs := s.loadRequestLogsForStatsForKeys(from, to, keyIDs, requestStatsLogLimit); len(dbLogs) > 0 {
+					logsComplete := len(dbLogs) < requestStatsLogLimit
+					// Beyond retention the logs cover only part of the range, so they may
+					// fill hourly but must never replace the permanent totals.
+					backfillTotals := needHourly && hourlyCoveredByRetention && logsComplete
 					if needHourly {
 						snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
 					}
-					if needDaily || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
-						snapshot.Daily = monitor.AggregateDaily(dbLogs, from, to)
+					if needDaily || backfillTotals || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
+						snapshot.Daily = mergeDailyTrafficBytes(monitor.AggregateDaily(dbLogs, from, to), snapshot.Daily)
 					}
-					if needStatus {
+					if needStatus || backfillTotals {
 						snapshot.Status = monitor.AggregateStatus(dbLogs, from, to)
 					}
-					if needRange || int64(len(dbLogs)) > snapshot.Range.Total.RequestCount {
+					if needRange || backfillTotals || (!needHourly && int64(len(dbLogs)) > rangeTotal) {
 						periodLabel := from.Format("2006-01-02") + " ~ " + to.Add(-time.Nanosecond).Format("2006-01-02")
 						rStats := monitor.AggregateLogsInRange(dbLogs, from, to, periodLabel)
 						snapshot.Range = &rStats
@@ -835,6 +850,7 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		s.normalizeUsageModelIdentities(&snapshot)
 		s.fillUsageKeyNames(&snapshot)
 		s.requestStatsCache.set(userCacheKey, snapshot)
 		w.Header().Set("Cache-Control", "private, max-age=5")
@@ -848,22 +864,31 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot := s.logs.UsageStatsRange(now, from, to)
 	if s.requestLogStore != nil {
-		needRange := snapshot.Range == nil || snapshot.Range.Total.RequestCount == 0
-		needHourly := hourlyStatsTotal(snapshot.Hourly) == 0
+		rangeTotal := int64(0)
+		if snapshot.Range != nil {
+			rangeTotal = snapshot.Range.Total.RequestCount
+		}
+		needRange := snapshot.Range == nil || rangeTotal == 0
+		hourlyTotal := hourlyStatsTotal(snapshot.Hourly)
+		needHourly := hourlyTotal == 0 || hourlyTotal < rangeTotal
 		needDaily := len(snapshot.Daily) == 0
 		needStatus := statusStatsTotal(snapshot.Status) == 0
 		if needRange || needHourly || needDaily || needStatus {
-			if dbLogs := s.loadRequestLogsForStats(from, to, 5000); len(dbLogs) > 0 {
+			if dbLogs := s.loadRequestLogsForStats(from, to, requestStatsLogLimit); len(dbLogs) > 0 {
+				logsComplete := len(dbLogs) < requestStatsLogLimit
+				// Beyond retention the logs cover only part of the range, so they may
+				// fill hourly but must never replace the permanent totals.
+				backfillTotals := needHourly && hourlyCoveredByRetention && logsComplete
 				if needHourly {
 					snapshot.Hourly = monitor.AggregateHourly(dbLogs, from, to)
 				}
-				if needDaily || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
-					snapshot.Daily = monitor.AggregateDaily(dbLogs, from, to)
+				if needDaily || backfillTotals || (len(snapshot.Daily) == 1 && snapshot.Daily[0].RequestCount == 0) {
+					snapshot.Daily = mergeDailyTrafficBytes(monitor.AggregateDaily(dbLogs, from, to), snapshot.Daily)
 				}
-				if needStatus {
+				if needStatus || backfillTotals {
 					snapshot.Status = monitor.AggregateStatus(dbLogs, from, to)
 				}
-				if needRange || int64(len(dbLogs)) > snapshot.Range.Total.RequestCount {
+				if needRange || backfillTotals || (!needHourly && int64(len(dbLogs)) > rangeTotal) {
 					periodLabel := from.Format("2006-01-02") + " ~ " + to.Add(-time.Nanosecond).Format("2006-01-02")
 					rStats := monitor.AggregateLogsInRange(dbLogs, from, to, periodLabel)
 					s.fillUsageUserBreakdown(&rStats, dbLogs, from, to)
@@ -872,11 +897,31 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.normalizeUsageModelIdentities(&snapshot)
 	s.fillUsageKeyNames(&snapshot)
 	s.fillUsageUserNames(&snapshot)
 	s.requestStatsCache.set(cacheKey, snapshot)
 	w.Header().Set("Cache-Control", "private, max-age=5")
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+// mergeDailyTrafficBytes keeps the permanent byte counters when a day's
+// request/token numbers are recomputed from request logs, which do not store
+// payload sizes.
+func mergeDailyTrafficBytes(points, stored []monitor.DailyRequestPoint) []monitor.DailyRequestPoint {
+	traffic := make(map[string][2]int64, len(stored))
+	for _, point := range stored {
+		if point.RxBytes > 0 || point.TxBytes > 0 {
+			traffic[point.Date] = [2]int64{point.RxBytes, point.TxBytes}
+		}
+	}
+	for i := range points {
+		if bytes, ok := traffic[points[i].Date]; ok {
+			points[i].RxBytes = bytes[0]
+			points[i].TxBytes = bytes[1]
+		}
+	}
+	return points
 }
 
 func hourlyStatsTotal(buckets []monitor.HourlyBucketStats) int64 {
@@ -1012,15 +1057,18 @@ func (s *Server) loadRequestLogsForStatsForKeys(from, to time.Time, keyIDs []str
 // after upgrade, then the fast bucket-load path resumes on later startups.
 const (
 	usageBucketSchemaSettingKey = "usageDailyBucketSchema"
-	usageBucketSchemaVersion    = "2" // v2 adds the output_protocol dimension
+	usageBucketSchemaVersion    = "3" // v3 persists per-key dimensions and timing/status
 )
 
 // RebuildUsageStats loads persisted daily aggregates (kept permanently), or
-// rebuilds only the window still covered by request-log retention when the
-// bucket schema changed / recent aggregates drift from logs.
+// backfills key dimensions from complete retained log days on schema upgrades.
+// Permanent totals are never replaced with a truncated request-log sample.
 func (s *Server) RebuildUsageStats() {
 	retention := s.RequestLogRetentionDays()
-	logSince := time.Now().AddDate(0, 0, -retention)
+	cutoff := time.Now().AddDate(0, 0, -retention)
+	// The retention boundary may already be a partial day. Rebuild only whole
+	// retained days so upgrading cannot replace a permanent day with partial logs.
+	logSince := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, cutoff.Location()).AddDate(0, 0, 1)
 
 	settings, _ := s.usageDailyStore.(interface {
 		Setting(string) string
@@ -1032,24 +1080,40 @@ func (s *Server) RebuildUsageStats() {
 		days, last, err := s.usageDailyStore.LoadUsageSince(time.Time{})
 		if err != nil {
 			s.logs.AddApp("warn", "load usage daily aggregates failed", err.Error())
-		} else if !needsBackfill && len(days) > 0 && s.usageDailyAggregatesMatchLogs(days, logSince) {
+			return
+		} else if !needsBackfill && len(days) > 0 {
 			s.logs.ResetUsageStats()
 			s.logs.BootstrapUsageDays(days, last)
 			return
 		}
-		// Only clear the still-retained detail window, then replay logs into it.
-		// Older daily aggregates are permanent and must survive rebuilds.
-		if err := s.usageDailyStore.ClearUsageSince(logSince); err != nil {
-			s.logs.AddApp("warn", "clear recent usage daily aggregates failed", err.Error())
+		// Read all source logs before any database mutation. Retained logs may
+		// lack bytes or old requests, so existing permanent totals stay authoritative.
+		if len(days) == 0 {
+			logSince = time.Time{}
+		}
+		deltas, replayErr := s.rebuildUsageStatsFromLogs(logSince, monitor.NewStore())
+		backfill, ok := s.usageDailyStore.(interface {
+			BackfillUsageKeyDimensions(time.Time, []monitor.UsagePersistDelta) error
+		})
+		if replayErr != nil || !ok {
+			s.logs.ResetUsageStats()
+			s.logs.BootstrapUsageDays(days, last)
+			s.logs.AddApp("warn", "usage dimension backfill unavailable", fmt.Sprint(replayErr))
+			return
+		}
+		if err := backfill.BackfillUsageKeyDimensions(logSince, deltas); err != nil {
+			s.logs.ResetUsageStats()
+			s.logs.BootstrapUsageDays(days, last)
+			s.logs.AddApp("warn", "usage dimension backfill failed", err.Error())
+			return
 		}
 		preserved, preservedLast, loadErr := s.usageDailyStore.LoadUsageSince(time.Time{})
-		s.logs.ResetUsageStats()
 		if loadErr != nil {
-			s.logs.AddApp("warn", "reload preserved usage daily aggregates failed", loadErr.Error())
-		} else if len(preserved) > 0 {
-			s.logs.BootstrapUsageDays(preserved, preservedLast)
+			s.logs.AddApp("warn", "reload usage daily aggregates failed", loadErr.Error())
+			return
 		}
-		s.rebuildUsageStatsFromLogs(logSince)
+		s.logs.ResetUsageStats()
+		s.logs.BootstrapUsageDays(preserved, preservedLast)
 		if settings != nil {
 			if err := settings.SetSetting(usageBucketSchemaSettingKey, usageBucketSchemaVersion); err != nil {
 				s.logs.AddApp("warn", "persist usage bucket schema version failed", err.Error())
@@ -1058,49 +1122,14 @@ func (s *Server) RebuildUsageStats() {
 		return
 	}
 
-	s.rebuildUsageStatsFromLogs(logSince)
-}
-
-func (s *Server) usageDailyAggregatesMatchLogs(days map[string]monitor.UsageDayBuckets, logSince time.Time) bool {
-	sinceDay := logSince.Local().Format("2006-01-02")
-	var agg int64
-	for day, buckets := range days {
-		if day < sinceDay {
-			continue
-		}
-		agg += buckets.Total.RequestCount
-	}
-	if agg == 0 {
-		return false
-	}
-	counter, ok := s.usageDailyStore.(interface {
-		CountRequestLogs() (int64, error)
-	})
-	if !ok {
-		return true
-	}
-	logCount, err := counter.CountRequestLogs()
-	if err != nil || logCount == 0 {
-		return true
-	}
-	// Allow small drift from retention pruning vs loaded window.
-	if agg > logCount {
-		return false
-	}
-	return agg >= logCount-5
-}
-
-func (s *Server) rebuildUsageStatsFromLogs(since time.Time) {
 	s.logs.ResetUsageStats()
-	logs := s.logs.List(memoryLogCap)
-	if s.requestLogStore != nil {
-		if all := s.loadRequestLogsForStats(since, time.Now().Add(24*time.Hour), memoryLogCap); len(all) > len(logs) {
-			logs = all
-		}
+	if _, err := s.rebuildUsageStatsFromLogs(time.Time{}, s.logs); err != nil {
+		s.logs.AddApp("warn", "rebuild usage from logs failed", err.Error())
 	}
-	if len(logs) == 0 {
-		return
-	}
+}
+
+func (s *Server) rebuildUsageStatsFromLogs(since time.Time, target *monitor.Store) ([]monitor.UsagePersistDelta, error) {
+	var deltas []monitor.UsagePersistDelta
 	state := s.router.State()
 	keysByID := make(map[string]domain.APIKey, len(state.APIKeys))
 	keysByName := make(map[string]domain.APIKey, len(state.APIKeys))
@@ -1110,13 +1139,16 @@ func (s *Server) rebuildUsageStatsFromLogs(since time.Time) {
 			keysByName[strings.ToLower(name)] = key
 		}
 	}
-	for _, log := range logs {
+	replay := func(log monitor.RequestLog) {
+		if !since.IsZero() && log.Time.Before(since) {
+			return
+		}
 		resolved := resolveRequestLogModelForUsage(s.router, log, keysByID, keysByName)
 		usageUserID := ""
 		if key, ok := lookupLogAPIKey(log, keysByID, keysByName); ok {
 			usageUserID = ownerUserIDForStats(key.OwnerUserID)
 		}
-		s.logs.ApplyUsageEventSync(monitor.UsageEvent{
+		deltas = append(deltas, target.ApplyUsageEventSync(monitor.UsageEvent{
 			Time:           log.Time,
 			APIKeyID:       log.APIKeyID,
 			APIKeyName:     log.APIKeyName,
@@ -1130,11 +1162,37 @@ func (s *Server) rebuildUsageStatsFromLogs(since time.Time) {
 			CacheTokens:    log.CacheTokens,
 			LatencyMs:      log.LatencyMillis,
 			TTFTMs:         log.TTFTMillis,
-		})
+		}))
 	}
+	if s.requestLogStore == nil {
+		for _, log := range s.logs.List(memoryLogCap) {
+			replay(log)
+		}
+		return deltas, nil
+	}
+	s.FlushRequestLogs()
+	until := time.Now().AddDate(0, 0, 1)
+	for page := 1; ; page++ {
+		result, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{From: since, To: until, Page: page, PageSize: 500, Status: "all"})
+		if err != nil {
+			return nil, err
+		}
+		for _, log := range result.Items {
+			replay(log)
+		}
+		if len(result.Items) < 500 || page*500 >= result.Total {
+			break
+		}
+	}
+	return deltas, nil
 }
 
 const memoryLogCap = 50000
+
+// requestStatsLogLimit bounds the request-log scan used to complete stats for
+// ranges inside the retention window. Hitting the cap means the scan was
+// truncated, so totals must keep using the permanent daily buckets.
+const requestStatsLogLimit = 5000
 
 // 请求/响应体日志截断上限（字节）。
 //   - 2xx 正常请求：只留精简体，够定位模型/参数即可，避免正常流量把库撑大。
@@ -1172,7 +1230,7 @@ func isClientCanceled(r *http.Request, err error) bool {
 }
 
 func (s *Server) recordRequestLog(started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, requestBody, responseBody []byte) {
-	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, 0, "", "", "", nil, "", requestBody, responseBody)
+	s.recordRequestLogEx(nil, started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, 0, "", "", "", nil, "", requestBody, responseBody)
 }
 
 func (s *Server) recordRequestLogFromRequest(r *http.Request, started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, requestBody, responseBody []byte) {
@@ -1190,13 +1248,13 @@ func (s *Server) recordRequestLogFromRequestTTFT(r *http.Request, started time.T
 		accessSource = classifyAccessSource(clientHost, s.router.State().PublicAccess.PublicBaseURL)
 		timing = requestTimingFrom(r.Context())
 	}
-	s.recordRequestLogEx(started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, ttftMs, clientHost, clientIP, accessSource, timing, reasoningEffortFrom(r.Context()), requestBody, responseBody)
+	s.recordRequestLogEx(r, started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, ttftMs, clientHost, clientIP, accessSource, timing, reasoningEffortFrom(r.Context()), requestBody, responseBody)
 }
 
 // recordRequestLogEx stores one request. `reasoning` is the depth the gateway
 // injected, if any; when it is empty the label is read off the request body so a
 // client-specified effort still lands in the log.
-func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, ttftMs int64, clientHost, clientIP, accessSource string, timing *requestTiming, reasoning string, requestBody, responseBody []byte) {
+func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedKey domain.APIKey, gatewayKeyMatched bool, routeID, providerID, model, action, protocolFlow, path string, status int, usage TokenUsage, ttftMs int64, clientHost, clientIP, accessSource string, timing *requestTiming, reasoning string, requestBody, responseBody []byte) {
 	if reasoning == "" {
 		reasoning = requestReasoningLabel(requestBody)
 	}
@@ -1226,6 +1284,7 @@ func (s *Server) recordRequestLogEx(started time.Time, matchedKey domain.APIKey,
 	}
 	entry := monitor.RequestLog{
 		Time:                  started,
+		Analysis:              captureRequestAnalysis(r, matchedKey.ID, requestBody),
 		RouteID:               routeID,
 		ProviderID:            providerID,
 		Model:                 model,
@@ -2640,6 +2699,62 @@ func (s *Server) handleChatGPTOAuthUsage(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, report)
 }
 
+// handleChatGPTOAuthResetConsume spends the account's soonest-expiring
+// rate-limit reset card, starting its current usage windows again. The vendor
+// picks nothing on its own, so no_credit is returned as a normal outcome.
+func (s *Server) handleChatGPTOAuthResetConsume(w http.ResponseWriter, r *http.Request) {
+	providerID := r.PathValue("id")
+	if !s.requireProviderAccessForUser(w, r, providerID) {
+		return
+	}
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if provider.AuthType != domain.AuthTypeChatGPTOAuth || provider.ChatGPTOAuth == nil || strings.TrimSpace(provider.ChatGPTOAuth.RefreshToken) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "provider is not connected with ChatGPT OAuth")
+		return
+	}
+	if provider.Disabled {
+		writeOpenAIError(w, http.StatusBadRequest, "provider disabled")
+		return
+	}
+	refreshed, err := s.ensureFreshChatGPTToken(provider)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	raw, err := readChatGPTOAuthResetCredits(r.Context(), refreshed, chatgptOAuthResetCreditsURL)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "读取重置卡失败："+err.Error())
+		return
+	}
+	credit, ok := earliestChatGPTResetCredit(buildChatGPTResetCredits(raw).Credits)
+	if !ok {
+		writeJSON(w, http.StatusOK, ChatGPTResetConsumeResult{Code: "no_credit"})
+		return
+	}
+	redeemID, err := newChatGPTResetRedeemID()
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	result, err := consumeChatGPTOAuthResetCredit(r.Context(), refreshed, credit.ID, redeemID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if result.Code == "reset" {
+		// The cached snapshot still shows the old windows; drop it so the panel
+		// reads the account afresh on its next poll.
+		s.oauthUsageCache.invalidate("chatgpt:" + providerID)
+		go s.refreshChatGPTOAuthUsage(providerID)
+		s.logs.AddApp("info", "chatgpt reset credit used", fmt.Sprintf("provider=%s windows=%d", providerID, result.WindowsReset))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // handleZhipuUsage returns Zhipu (智谱 / bigmodel) coding-plan quota for an
 // api_key provider whose BaseURL points at bigmodel.cn or z.ai. When the
 // provider carries a team organization + project ID, the team-plan endpoint
@@ -2696,6 +2811,9 @@ func (s *Server) handleZhipuUsage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusOK, ZhipuUsageReport{Available: false, Error: err.Error()})
 		return
+	}
+	if report.resetsError != "" {
+		s.logs.AddApp("info", "zhipu reset list unread", "provider="+providerID+" "+report.resetsError)
 	}
 	// Cache success + unsupported (非编程套餐) so card polling stays quiet.
 	if report.Available || report.Unsupported {
@@ -2770,10 +2888,23 @@ func fetchZhipuUsageForProvider(ctx context.Context, provider domain.Provider, a
 	org := strings.TrimSpace(provider.TeamOrganizationID)
 	project := strings.TrimSpace(provider.TeamProjectID)
 	team := strings.EqualFold(strings.TrimSpace(provider.CodingPlanProvider), "zhipu_team")
+	base := zhipuQuotaBase(provider.BaseURL)
+	var report ZhipuUsageReport
+	var err error
 	if team || (org != "" && project != "") {
-		return fetchZhipuTeamUsage(ctx, apiKey, org, project)
+		report, err = fetchZhipuTeamUsage(ctx, apiKey, org, project)
+		base, team = "https://open.bigmodel.cn", true
+	} else {
+		report, err = fetchZhipuUsage(ctx, provider.BaseURL, apiKey)
 	}
-	return fetchZhipuUsage(ctx, provider.BaseURL, apiKey)
+	if err == nil && report.Available {
+		var resetsErr error
+		report.Resets, resetsErr = fetchZhipuResets(ctx, base, apiKey, org, project, team)
+		if resetsErr != nil {
+			report.resetsError = resetsErr.Error()
+		}
+	}
+	return report, err
 }
 
 func (s *Server) lockOAuthUsageFetch(key string) func() {

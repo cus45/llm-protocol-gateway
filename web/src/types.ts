@@ -167,6 +167,11 @@ export type WorkBuddyUsageWindow = {
   amount: number;
   limit: number;
   unit: string;
+  /** 团队版周期的重置时刻。 */
+  resetsAt?: string;
+  /** 还剩的这些积分什么时候作废（个人版按批发，每批一个到期日）。 */
+  runsOutAt?: string;
+  runsOut?: number;
 };
 
 export type WorkBuddyUsage = {
@@ -214,6 +219,9 @@ export type SubscriptionUsageWindow = {
   limit?: number;
   unit?: string;
   resetsAt?: string;
+  /** 还剩的这些什么时候作废（WorkBuddy 的积分按批发，每批一个到期日）。 */
+  runsOutAt?: string;
+  runsOut?: number;
   /** 侧路窗口（不计入套餐上限，如 ZCode 的 MCP 月额度）。 */
   aside?: boolean;
 };
@@ -221,14 +229,31 @@ export type SubscriptionUsageWindow = {
 export type SubscriptionUsage = {
   plan?: string;
   windows: SubscriptionUsageWindow[];
+  /** 账号级时间：Qoder 报套餐有效期到什么时候。 */
+  until?: string;
   error?: string;
   fetchedAt?: string;
   checkin?: SubscriptionCheckin;
 };
 
+/**
+ * 一行时间提示：整句文案、完整时刻的 title、「其实已经过了」，以及拆开的两段
+ * ——绝对时刻可以被窄卡片截掉，「还有多久」是更该留下的那半句。
+ */
+export type TimeHint = {
+  text: string;
+  title: string;
+  passed: boolean;
+  /** 「明天 01:45」这一半：绝对时刻，窄卡片先截它。 */
+  when?: string;
+  /** 「2 小时后」这一半，比绝对时刻更该留下。 */
+  relative?: string;
+  /** 前缀词（「重置」）。紧凑卡片省掉它，行下的位置已经说明它是重置。 */
+  label?: string;
+};
+
 /** 一次签到的结果。day 是北京日，网关算好，浏览器不再按时区猜「今天」。 */
-export type CheckinRecord = {
-  day?: string;
+export type CheckinRecord = {  day?: string;
   at?: string;
   outcome?: 'claimed' | 'done' | 'ineligible' | 'inactive' | 'failed' | 'own-app';
   credit?: number;
@@ -283,6 +308,13 @@ export type ZhipuUsageBucket = {
   resets_at?: string;
 };
 
+export type ZhipuResetCredits = {
+  count: number;
+  fiveHour?: number;
+  weekly?: number;
+  earliest?: string;
+};
+
 export type ZhipuUsageReport = {
   available: boolean;
   unsupported?: boolean;
@@ -291,6 +323,8 @@ export type ZhipuUsageReport = {
   level?: string;
   five_hour?: ZhipuUsageBucket;
   weekly?: ZhipuUsageBucket;
+  /** 重置卡只读展示：使用要去智谱 / Z.ai 官方页面。 */
+  resets?: ZhipuResetCredits;
 };
 
 /** DeepSeek 余额：金额为十进制字符串，保持原样不转 number 以免丢精度。 */
@@ -346,6 +380,11 @@ export type ChatGPTResetCredits = {
   availableCount: number;
   applicable?: number;
   credits?: ChatGPTResetCredit[];
+};
+
+export type ChatGPTResetConsumeResult = {
+  code: string;
+  windowsReset?: number;
 };
 
 export type ChatGPTOAuthUsageReport = {
@@ -580,7 +619,14 @@ export type GatewayState = {
   cursorBridge?: CursorBridgeRuntime;
 };
 
+export type RequestAnalysis = {
+  sessionId?: string; stream: boolean; captured: boolean; messages: number; tools: number; toolResults: number;
+  systemBytes: number; messageBytes: number; toolBytes: number;
+};
+export type UsageAnalysisResponse = { items: LogEntry[]; total: number; from: string; to: string; retentionDays: number };
+
 export type LogEntry = {
+  analysis?: RequestAnalysis;
   id?: number;
   time: string;
   apiKeyId?: string;

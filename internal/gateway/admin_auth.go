@@ -153,7 +153,7 @@ func (s *Server) withAdminAuth(next http.Handler) http.Handler {
 // Data-level isolation (own keys only) is enforced inside each handler.
 func isUserAllowedPath(method, path string) bool {
 	switch path {
-	case "/__state", "/__logs", "/__request-stats", "/__apikeys", "/__auth/password", "/__ui-log":
+	case "/__state", "/__logs", "/__request-stats", "/__usage-analysis", "/__apikeys", "/__auth/password", "/__ui-log":
 		return true
 	}
 	if strings.HasPrefix(path, "/__apikeys/") {

@@ -86,11 +86,92 @@ func (s *Store) ApplyUsageDeltas(deltas []monitor.UsagePersistDelta) error {
 	return tx.Commit()
 }
 
+// BackfillUsageKeyDimensions preserves permanent totals and byte counters while
+// replacing only dimensions recoverable from retained request logs.
+func (s *Store) BackfillUsageKeyDimensions(since time.Time, deltas []monitor.UsagePersistDelta) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	sinceDay := since.Local().Format("2006-01-02")
+	rows, err := tx.Query(`SELECT day, request_count FROM usage_daily_buckets WHERE bucket_type = 'total'`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	counts := map[string]int64{}
+	for _, delta := range deltas {
+		counts[delta.Day]++
+	}
+	for rows.Next() {
+		var day string
+		var count int64
+		if err := rows.Scan(&day, &count); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[day] = true
+		if day >= sinceDay && counts[day] != count {
+			// A partial log day cannot safely replace existing key dimensions.
+			delete(counts, day)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for day := range counts {
+		if day < sinceDay {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM usage_daily_buckets WHERE day = ? AND bucket_type IN ('key_provider', 'key_model', 'key_protocol')`, day); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE usage_daily_buckets SET status_2xx=0, status_4xx=0, status_5xx=0, status_other=0, latency_sum=0, ttft_sum=0, ttft_count=0 WHERE day = ? AND bucket_type='api_key'`, day); err != nil {
+			return err
+		}
+	}
+	for _, delta := range deltas {
+		if _, complete := counts[delta.Day]; !complete || delta.Day < sinceDay {
+			continue
+		}
+		if !existing[delta.Day] {
+			if err := applyUsageDeltaTx(tx, delta); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := upsertUsageKeyDimensionsTx(tx, delta); err != nil {
+			return err
+		}
+		var s2, s4, s5, other, ttftCount int64
+		switch delta.StatusClass {
+		case "2xx":
+			s2 = 1
+		case "4xx":
+			s4 = 1
+		case "5xx":
+			s5 = 1
+		default:
+			other = 1
+		}
+		if delta.TTFTMs > 0 {
+			ttftCount = 1
+		}
+		if _, err := tx.Exec(`UPDATE usage_daily_buckets SET status_2xx=status_2xx+?, status_4xx=status_4xx+?, status_5xx=status_5xx+?, status_other=status_other+?, latency_sum=latency_sum+?, ttft_sum=ttft_sum+?, ttft_count=ttft_count+? WHERE day=? AND bucket_type='api_key' AND bucket_id=?`, s2, s4, s5, other, delta.LatencyMs, delta.TTFTMs, ttftCount, delta.Day, delta.KeyID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func applyUsageDeltaTx(tx *sql.Tx, delta monitor.UsagePersistDelta) error {
 	if err := upsertUsageBucket(tx, delta.Day, "total", "", "", delta, true); err != nil {
 		return err
 	}
-	if err := upsertUsageBucket(tx, delta.Day, "api_key", delta.KeyID, delta.KeyName, delta, false); err != nil {
+	if err := upsertUsageBucket(tx, delta.Day, "api_key", delta.KeyID, delta.KeyName, delta, true); err != nil {
 		return err
 	}
 	if err := upsertUsageBucket(tx, delta.Day, "provider", delta.ProviderID, "", delta, false); err != nil {
@@ -106,6 +187,22 @@ func applyUsageDeltaTx(tx *sql.Tx, delta monitor.UsagePersistDelta) error {
 	}
 	if delta.OutputProtocol != "" {
 		if err := upsertUsageBucket(tx, delta.Day, "output_protocol", delta.OutputProtocol, "", delta, false); err != nil {
+			return err
+		}
+	}
+	return upsertUsageKeyDimensionsTx(tx, delta)
+}
+
+func upsertUsageKeyDimensionsTx(tx *sql.Tx, delta monitor.UsagePersistDelta) error {
+	for _, dimension := range []struct{ kind, id string }{{"key_provider", delta.ProviderID}, {"key_model", delta.Model}, {"key_protocol", delta.OutputProtocol}} {
+		if dimension.id == "" {
+			continue
+		}
+		identity, err := json.Marshal([]string{delta.KeyID, dimension.id})
+		if err != nil {
+			return err
+		}
+		if err := upsertUsageBucket(tx, delta.Day, dimension.kind, string(identity), "", delta, false); err != nil {
 			return err
 		}
 	}
@@ -201,6 +298,7 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 		dayBuckets, ok := out[day]
 		if !ok {
 			dayBuckets = monitor.UsageDayBuckets{
+				ByKey:      make(map[string]monitor.UsageDayBuckets),
 				ByAPIKey:   make(map[string]monitor.APIKeyDayStats),
 				ByProvider: make(map[string]monitor.ProviderDayStats),
 				ByModel:    make(map[string]monitor.ModelDayStats),
@@ -230,6 +328,41 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 			stats.APIKeyID = bucketID
 			stats.APIKeyName = bucketName
 			dayBuckets.ByAPIKey[bucketID] = stats
+			child := dayBuckets.ByKey[bucketID]
+			child.Total = stats
+			child.Status2xx = s2xx
+			child.Status4xx = s4xx
+			child.Status5xx = s5xx
+			child.StatusOther = sOther
+			child.LatencySum = latSum
+			child.TTFTSum = ttftSum
+			child.TTFTCount = ttftCount
+			dayBuckets.ByKey[bucketID] = child
+		case "key_provider", "key_model", "key_protocol":
+			var identity []string
+			if err := json.Unmarshal([]byte(bucketID), &identity); err != nil || len(identity) != 2 {
+				return nil, nil, fmt.Errorf("invalid usage key dimension %q", bucketID)
+			}
+			child := dayBuckets.ByKey[identity[0]]
+			id := identity[1]
+			switch bucketType {
+			case "key_provider":
+				if child.ByProvider == nil {
+					child.ByProvider = make(map[string]monitor.ProviderDayStats)
+				}
+				child.ByProvider[id] = monitor.ProviderDayStats{ProviderID: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+			case "key_model":
+				if child.ByModel == nil {
+					child.ByModel = make(map[string]monitor.ModelDayStats)
+				}
+				child.ByModel[id] = monitor.ModelDayStats{Model: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+			case "key_protocol":
+				if child.ByProtocol == nil {
+					child.ByProtocol = make(map[string]monitor.ProtocolDayStats)
+				}
+				child.ByProtocol[id] = monitor.ProtocolDayStats{Protocol: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+			}
+			dayBuckets.ByKey[identity[0]] = child
 		case "provider":
 			dayBuckets.ByProvider[bucketID] = monitor.ProviderDayStats{
 				ProviderID:   bucketID,

@@ -36,19 +36,20 @@ type RequestLog struct {
 	LatencyMillis    int64  `json:"latencyMs"`
 	TTFTMillis       int64  `json:"ttftMs,omitempty"`
 	// Observational latency breakdown (ms). Zero means unset / unavailable.
-	PrepMillis            int64  `json:"prepMs,omitempty"`
-	PreUpstreamMillis     int64  `json:"preUpstreamMs,omitempty"`
-	UpstreamTTFBMillis    int64  `json:"upstreamTtfbMs,omitempty"`
-	GatewayOverheadMillis int64  `json:"gatewayOverheadMs,omitempty"`
-	ConvertOutMillis      int64  `json:"convertOutMs,omitempty"`
-	PostMillis            int64  `json:"postMs,omitempty"`
-	TimingFlags           string `json:"timingFlags,omitempty"`
-	ClientHost            string `json:"clientHost,omitempty"`
-	ClientIP              string `json:"clientIp,omitempty"`
-	AccessSource          string `json:"accessSource,omitempty"` // lan | public | local
-	ErrorDescription      string `json:"errorDescription,omitempty"`
-	RequestBody           string `json:"requestBody,omitempty"`
-	ResponseBody          string `json:"responseBody,omitempty"`
+	PrepMillis            int64           `json:"prepMs,omitempty"`
+	PreUpstreamMillis     int64           `json:"preUpstreamMs,omitempty"`
+	UpstreamTTFBMillis    int64           `json:"upstreamTtfbMs,omitempty"`
+	GatewayOverheadMillis int64           `json:"gatewayOverheadMs,omitempty"`
+	ConvertOutMillis      int64           `json:"convertOutMs,omitempty"`
+	PostMillis            int64           `json:"postMs,omitempty"`
+	TimingFlags           string          `json:"timingFlags,omitempty"`
+	ClientHost            string          `json:"clientHost,omitempty"`
+	ClientIP              string          `json:"clientIp,omitempty"`
+	AccessSource          string          `json:"accessSource,omitempty"` // lan | public | local
+	ErrorDescription      string          `json:"errorDescription,omitempty"`
+	RequestBody           string          `json:"requestBody,omitempty"`
+	ResponseBody          string          `json:"responseBody,omitempty"`
+	Analysis              RequestAnalysis `json:"analysis"`
 }
 
 const (
@@ -301,6 +302,9 @@ func (s *Store) BootstrapUsageDays(days map[string]UsageDayBuckets, last *Reques
 	defer s.mu.Unlock()
 	for dayKey, buckets := range days {
 		day := newUsageDayStats()
+		for id, child := range buckets.ByKey {
+			day.byKey[id] = usageDayFromBuckets(child)
+		}
 		day.total = buckets.Total
 		day.total.APIKeyName = "全部"
 		day.status2xx = buckets.Status2xx
@@ -536,6 +540,31 @@ func sortModelDayStats(byModel map[string]*ModelDayStats) []ModelDayStats {
 	return out
 }
 
+// MergeModelDayStats folds model rows through canonical, combines the rows
+// that land on the same id, and keeps the ranking order used elsewhere.
+func MergeModelDayStats(items []ModelDayStats, canonical func(string) string) []ModelDayStats {
+	if canonical == nil || len(items) == 0 {
+		return items
+	}
+	byModel := make(map[string]*ModelDayStats, len(items))
+	for _, item := range items {
+		key := canonical(item.Model)
+		if key == "" {
+			key = item.Model
+		}
+		stats, ok := byModel[key]
+		if !ok {
+			stats = &ModelDayStats{Model: key}
+			byModel[key] = stats
+		}
+		stats.RequestCount += item.RequestCount
+		stats.InputTokens += item.InputTokens
+		stats.OutputTokens += item.OutputTokens
+		stats.CacheTokens += item.CacheTokens
+	}
+	return sortModelDayStats(byModel)
+}
+
 // OutputProtocolFromFlow extracts the client-facing (output) protocol from a
 // request log's protocol_flow, which is stored as "<provider> -> <output>"
 // (e.g. "Claude -> OpenAI Responses"). Returns "" for rejected/unknown flows.
@@ -728,8 +757,8 @@ func (s *Store) UsageStats(now time.Time) UsageStatsSnapshot {
 // in-memory request-log ring buffer. Using only s.logs made "today" look right
 // while "yesterday" under-counted once older rows aged out of memory.
 //
-// ByProvider / ByModel / Status are still best-effort from in-memory logs
-// because day buckets do not store those dimensions per API key.
+// Provider, model, protocol, status and timing use persisted per-key day
+// dimensions. Only hourly details depend on retained request logs.
 func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs []string) UsageStatsSnapshot {
 	localNow := now.Local()
 	dayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, localNow.Location())
@@ -756,7 +785,25 @@ func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs
 	daily := dailyStatsForKeysLocked(s.usageByDay, from, to, keySet)
 	lastRequest := lastUsageRequestForKeysLocked(s.lastUsageRequest, s.logs, keySet, dayStart)
 
-	// Provider/model/status lack per-key day buckets; fall back to memory logs.
+	selectedDays := keyDimensionDays(s.usageByDay, keySet)
+	keyPeriodDimensions(selectedDays, dayStart, dayStart.AddDate(0, 0, 1), &todayPeriod)
+	keyPeriodDimensions(selectedDays, monthStart, time.Time{}, &month)
+	keyPeriodDimensions(selectedDays, from, to, &rangeStats)
+	selectedStore := &Store{usageByDay: selectedDays}
+	status := selectedStore.statusStatsInRangeLocked(from, to)
+	for i := range daily {
+		if day := selectedDays[daily[i].Date]; day != nil && daily[i].RequestCount > 0 {
+			samples := day.status2xx + day.status4xx + day.status5xx + day.statusOther
+			if samples > 0 {
+				daily[i].AvgLatencyMs = day.latencySum / samples
+			}
+			if day.ttftCount > 0 {
+				daily[i].AvgTTFTMs = day.ttftSum / day.ttftCount
+			}
+		}
+	}
+
+	// Hourly details remain bounded by request-log retention.
 	logs := make([]RequestLog, 0)
 	if len(keySet) > 0 {
 		for _, item := range s.logs {
@@ -772,17 +819,11 @@ func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs
 		Total:       todayPeriod.Total,
 		LastRequest: lastRequest,
 		ByAPIKey:    todayPeriod.ByAPIKey,
-		ByProvider:  aggregateByProvider(filterLogsInRange(logs, dayStart, dayStart.Add(24*time.Hour)), time.Time{}),
-		ByModel:     aggregateByModel(filterLogsInRange(logs, dayStart, dayStart.Add(24*time.Hour)), time.Time{}),
+		ByProvider:  todayPeriod.ByProvider,
+		ByModel:     todayPeriod.ByModel,
 		ByUser:      todayPeriod.ByUser,
-		ByProtocol:  aggregateByProtocol(filterLogsInRange(logs, dayStart, dayStart.Add(24*time.Hour)), time.Time{}),
+		ByProtocol:  todayPeriod.ByProtocol,
 	}
-	month.ByProvider = aggregateByProvider(filterLogsInRange(logs, monthStart, time.Time{}), time.Time{})
-	month.ByModel = aggregateByModel(filterLogsInRange(logs, monthStart, time.Time{}), time.Time{})
-	month.ByProtocol = aggregateByProtocol(filterLogsInRange(logs, monthStart, time.Time{}), time.Time{})
-	rangeStats.ByProvider = aggregateByProvider(filterLogsInRange(logs, from, to), time.Time{})
-	rangeStats.ByModel = aggregateByModel(filterLogsInRange(logs, from, to), time.Time{})
-	rangeStats.ByProtocol = aggregateByProtocol(filterLogsInRange(logs, from, to), time.Time{})
 
 	return UsageStatsSnapshot{
 		Today:  today,
@@ -791,7 +832,7 @@ func (s *Store) UsageStatsRangeForKeys(now time.Time, from, to time.Time, keyIDs
 		From:   from.Format(time.RFC3339),
 		To:     to.Format(time.RFC3339),
 		Daily:  daily,
-		Status: AggregateStatus(logs, from, to),
+		Status: status,
 		Hourly: AggregateHourly(logs, from, to),
 	}
 }

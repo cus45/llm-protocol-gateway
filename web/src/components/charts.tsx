@@ -14,11 +14,14 @@ import {
     DailyRequestPoint,
     HourlyBucketStats,
     LogEntry,
+    Model,
     Provider,
     RequestStatsSnapshot,
     RTKStatsDailyPoint,
     StatusBucketStats
 } from '../types';
+import {resolveProviderIcon} from '../provider_presets';
+import {BrandIcon} from './ui';
 
 /** 通用经典调色板（支持暗黑与浅色模式） */
 export const CHART_PALETTE = [
@@ -245,12 +248,13 @@ export function UsageDonutChart({
     const adjustedEnd = Math.max(adjustedStart, end - gap / 2);
 
     const path = describeDonutSlice(cx, cy, rInner, rOuter, adjustedStart, adjustedEnd);
+    const pct = fraction * 100;
 
     return {
       item,
       idx,
       fraction,
-      pctStr: `${(fraction * 100).toFixed(1)}%`,
+      pctStr: pct > 0 && pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`,
       color,
       path,
       isHovered,
@@ -839,10 +843,12 @@ export function UsageHourlyDistribution({
   title = '24 小时全天候调用活跃度分布',
   logs = [],
   items,
+  rangeRequests,
 }: {
   title?: string;
   logs?: LogEntry[];
   items?: HourlyBucketStats[];
+  rangeRequests?: number;
 }) {
   const [hoveredHour, setHoveredHour] = React.useState<number | null>(null);
 
@@ -875,6 +881,7 @@ export function UsageHourlyDistribution({
   const peakHourIndex = hourlyCounts.reduce((maxI, h, i, arr) => (h.requests > arr[maxI].requests ? i : maxI), 0);
   const totalInLogs = hourlyCounts.reduce((s, h) => s + h.requests, 0);
   const totalTokens = hourlyCounts.reduce((s, h) => s + h.tokens, 0);
+  const partialDetail = rangeRequests != null && rangeRequests > 0 && rangeRequests !== totalInLogs;
 
   return (
     <div className="usage-chart-card usage-hourly-card">
@@ -883,7 +890,7 @@ export function UsageHourlyDistribution({
           <div className="usage-section-title">{title}</div>
           <div className="usage-section-subtitle">
             {totalInLogs > 0
-              ? `调用高峰时段：${String(peakHourIndex).padStart(2, '0')}:00 ~ ${String(peakHourIndex + 1).padStart(2, '0')}:00（${hourlyCounts[peakHourIndex].requests} 次，占 ${((hourlyCounts[peakHourIndex].requests / totalInLogs) * 100).toFixed(0)}%）`
+              ? `调用高峰时段：${String(peakHourIndex).padStart(2, '0')}:00 ~ ${String(peakHourIndex + 1).padStart(2, '0')}:00（${hourlyCounts[peakHourIndex].requests} 次，占明细 ${((hourlyCounts[peakHourIndex].requests / totalInLogs) * 100).toFixed(0)}%）`
               : '各时段请求密度分布'}
           </div>
         </div>
@@ -929,9 +936,11 @@ export function UsageHourlyDistribution({
           </>
         ) : (
           <>
-            <span>累计：<b>{totalInLogs}</b> 次请求</span>
+            <span>明细累计：<b>{totalInLogs.toLocaleString()}</b> 次请求</span>
             <span><b>{formatTokenCount(totalTokens)}</b> tokens</span>
-            <span style={{ marginLeft: 'auto', color: 'var(--subtle)', fontSize: '11px' }}>悬停查看各时段峰值</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--subtle)', fontSize: '11px' }}>
+              {partialDetail ? `区间总量 ${rangeRequests!.toLocaleString()} 次，小时分布取自保留期内明细` : '悬停查看各时段峰值'}
+            </span>
           </>
         )}
       </div>
@@ -966,11 +975,23 @@ export function UsageDailyTrafficLines({
 
   const rxValues = points.map((p) => p.rxBytes || 0);
   const txValues = points.map((p) => p.txBytes || 0);
-  const rxMax = Math.max(1, ...rxValues);
-  const txMax = Math.max(1, ...txValues);
+  const inputValues = points.map((p) => p.inputTokens || 0);
+  const outputValues = points.map((p) => p.outputTokens || 0);
+  const hasTraffic = rxValues.some((v) => v > 0) || txValues.some((v) => v > 0);
+  // Byte counters only exist for requests recorded after the traffic metric
+  // shipped. Fall back to token flow so historical ranges stay meaningful.
+  const tokenMode = !hasTraffic && (inputValues.some((v) => v > 0) || outputValues.some((v) => v > 0));
+  const primaryValues = tokenMode ? inputValues : rxValues;
+  const secondaryValues = tokenMode ? outputValues : txValues;
+  const primaryMax = Math.max(1, ...primaryValues);
+  const secondaryMax = Math.max(1, ...secondaryValues);
 
-  const totalRx = rxValues.reduce((s, v) => s + v, 0);
-  const totalTx = txValues.reduce((s, v) => s + v, 0);
+  const totalPrimary = primaryValues.reduce((s, v) => s + v, 0);
+  const totalSecondary = secondaryValues.reduce((s, v) => s + v, 0);
+
+  const formatSeries = tokenMode ? formatTokenCount : formatBytes;
+  const seriesLabel = tokenMode ? '输入 Token' : '接收流量 Rx';
+  const secondaryLabel = tokenMode ? '输出 Token' : '发送流量 Tx';
 
   const xTickIndexes = pickUsageXTickIndexes(points.length);
 
@@ -979,18 +1000,16 @@ export function UsageDailyTrafficLines({
     return padLeft + (i / (points.length - 1)) * plotWidth;
   };
 
-  const yRx = (v: number) => height - padBottom - (v / rxMax) * plotHeight;
-  const yTx = (v: number) => height - padBottom - (v / txMax) * plotHeight;
+  const yPrimary = (v: number) => height - padBottom - (v / primaryMax) * plotHeight;
+  const ySecondary = (v: number) => height - padBottom - (v / secondaryMax) * plotHeight;
 
-  const rxPoints = points.map((_, i) => ({ x: xAt(i), y: yRx(rxValues[i]) }));
-  const rxLine = createSmoothPath(rxPoints);
-  const rxArea = createAreaPath(rxPoints, height - padBottom);
+  const primaryPoints = points.map((_, i) => ({ x: xAt(i), y: yPrimary(primaryValues[i]) }));
+  const primaryLine = createSmoothPath(primaryPoints);
+  const primaryArea = createAreaPath(primaryPoints, height - padBottom);
 
-  const txPoints = points.map((_, i) => ({ x: xAt(i), y: yTx(txValues[i]) }));
-  const txLine = createSmoothPath(txPoints);
-  const txArea = createAreaPath(txPoints, height - padBottom);
-
-  const hasTraffic = rxValues.some((v) => v > 0) || txValues.some((v) => v > 0);
+  const secondaryPoints = points.map((_, i) => ({ x: xAt(i), y: ySecondary(secondaryValues[i]) }));
+  const secondaryLine = createSmoothPath(secondaryPoints);
+  const secondaryArea = createAreaPath(secondaryPoints, height - padBottom);
 
   function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1008,26 +1027,28 @@ export function UsageDailyTrafficLines({
     <div className="usage-chart-card usage-traffic-card">
       <div className="usage-combo-header">
         <div>
-          <div className="usage-combo-title">{title}</div>
+          <div className="usage-combo-title">{tokenMode ? '按日 Token 流向趋势（输入 vs 输出）' : title}</div>
           <div className="usage-combo-subtitle">
-            区间网络吞吐：接收 {formatBytes(totalRx)} · 发送 {formatBytes(totalTx)} · 合计 {formatBytes(totalRx + totalTx)}
+            {tokenMode
+              ? `区间 Token：输入 ${formatTokenCount(totalPrimary)} · 输出 ${formatTokenCount(totalSecondary)} · 合计 ${formatTokenCount(totalPrimary + totalSecondary)}（历史区间未记录字节吞吐）`
+              : `区间网络吞吐：接收 ${formatBytes(totalPrimary)} · 发送 ${formatBytes(totalSecondary)} · 合计 ${formatBytes(totalPrimary + totalSecondary)}`}
           </div>
         </div>
 
         <div className="usage-month-bars-legend">
           <span className="usage-month-legend-item">
-            <i className="legend-line traffic-rx" /> 接收流量 Rx（左轴）
+            <i className="legend-line traffic-rx" /> {seriesLabel}（左轴）
           </span>
           <span className="usage-month-legend-item">
-            <i className="legend-line traffic-tx" /> 发送流量 Tx（右轴）
+            <i className="legend-line traffic-tx" /> {secondaryLabel}（右轴）
           </span>
         </div>
       </div>
 
       {points.length === 0 ? (
         <div className="empty-state compact">暂无流量数据</div>
-      ) : !hasTraffic ? (
-        <div className="empty-state compact">暂无流量数据（网关转发请求后将自动记录字节吞吐）</div>
+      ) : !hasTraffic && !tokenMode ? (
+        <div className="empty-state compact">暂无业务数据（网关转发请求后将自动记录 Token 与字节吞吐）</div>
       ) : (
         <div className="usage-combo-plot-wrap">
           <svg
@@ -1072,7 +1093,7 @@ export function UsageDailyTrafficLines({
                     fontWeight="600"
                     fontFamily="var(--font-mono, monospace)"
                   >
-                    {formatBytes(rxMax * ratio, 1)}
+                    {formatSeries(primaryMax * ratio)}
                   </text>
                   <text
                     x={width - padRight + 8}
@@ -1083,7 +1104,7 @@ export function UsageDailyTrafficLines({
                     fontWeight="600"
                     fontFamily="var(--font-mono, monospace)"
                   >
-                    {formatBytes(txMax * ratio, 1)}
+                    {formatSeries(secondaryMax * ratio)}
                   </text>
                 </g>
               );
@@ -1098,11 +1119,11 @@ export function UsageDailyTrafficLines({
               strokeWidth="1"
             />
 
-            {totalRx > 0 && (
+            {totalPrimary > 0 && (
               <>
-                <path d={rxArea} fill="url(#rx-area-gradient)" pointerEvents="none" />
+                <path d={primaryArea} fill="url(#rx-area-gradient)" pointerEvents="none" />
                 <path
-                  d={rxLine}
+                  d={primaryLine}
                   fill="none"
                   stroke="#0ea5e9"
                   strokeWidth="2.2"
@@ -1113,11 +1134,11 @@ export function UsageDailyTrafficLines({
               </>
             )}
 
-            {totalTx > 0 && (
+            {totalSecondary > 0 && (
               <>
-                <path d={txArea} fill="url(#tx-area-gradient)" pointerEvents="none" />
+                <path d={secondaryArea} fill="url(#tx-area-gradient)" pointerEvents="none" />
                 <path
-                  d={txLine}
+                  d={secondaryLine}
                   fill="none"
                   stroke="#10b981"
                   strokeWidth="2.2"
@@ -1129,26 +1150,26 @@ export function UsageDailyTrafficLines({
             )}
 
             {points.map((p, i) => {
-              const rx = rxValues[i];
-              const tx = txValues[i];
+              const primary = primaryValues[i];
+              const secondary = secondaryValues[i];
               const isHovered = hoverIndex === i;
               const isSelected = selectedDay === p.date;
               return (
                 <g key={`dots-${p.date}`}>
-                  {rx > 0 && (
+                  {primary > 0 && (
                     <circle
                       cx={xAt(i)}
-                      cy={yRx(rx)}
+                      cy={yPrimary(primary)}
                       r={isHovered || isSelected ? 5 : 2.8}
                       fill="#0ea5e9"
                       stroke="var(--surface)"
                       strokeWidth="1.8"
                     />
                   )}
-                  {tx > 0 && (
+                  {secondary > 0 && (
                     <circle
                       cx={xAt(i)}
-                      cy={yTx(tx)}
+                      cy={ySecondary(secondary)}
                       r={isHovered || isSelected ? 5 : 2.8}
                       fill="#10b981"
                       stroke="var(--surface)"
@@ -1203,17 +1224,19 @@ export function UsageDailyTrafficLines({
               </div>
               <div className="combo-tooltip-body">
                 <div className="tooltip-stat-row">
-                  <span className="tooltip-label text-rx">接收 (Rx)：</span>
-                  <span className="tooltip-val font-mono">{formatBytes(activePoint.rxBytes)}</span>
+                  <span className="tooltip-label text-rx">{tokenMode ? '输入 Token：' : '接收 (Rx)：'}</span>
+                  <span className="tooltip-val font-mono">{tokenMode ? formatTokenCount(activePoint.inputTokens || 0) : formatBytes(activePoint.rxBytes)}</span>
                 </div>
                 <div className="tooltip-stat-row">
-                  <span className="tooltip-label text-tx">发送 (Tx)：</span>
-                  <span className="tooltip-val font-mono">{formatBytes(activePoint.txBytes)}</span>
+                  <span className="tooltip-label text-tx">{tokenMode ? '输出 Token：' : '发送 (Tx)：'}</span>
+                  <span className="tooltip-val font-mono">{tokenMode ? formatTokenCount(activePoint.outputTokens || 0) : formatBytes(activePoint.txBytes)}</span>
                 </div>
                 <div className="tooltip-stat-row">
-                  <span className="tooltip-label">合计吞吐：</span>
+                  <span className="tooltip-label">{tokenMode ? '合计 Token：' : '合计吞吐：'}</span>
                   <span className="tooltip-val font-mono font-bold">
-                    {formatBytes((activePoint.rxBytes || 0) + (activePoint.txBytes || 0))}
+                    {tokenMode
+                      ? formatTokenCount((activePoint.inputTokens || 0) + (activePoint.outputTokens || 0))
+                      : formatBytes((activePoint.rxBytes || 0) + (activePoint.txBytes || 0))}
                   </span>
                 </div>
               </div>
@@ -1231,6 +1254,9 @@ export function UsageDailyTrafficLines({
 export function UsageModelLeaderboard({
   title = '模型深度用量排行',
   items,
+  metric = 'tokens',
+  models = [],
+  providers = [],
   onSelectModel,
   selectedModel,
 }: {
@@ -1242,16 +1268,21 @@ export function UsageModelLeaderboard({
     outputTokens: number;
     cacheTokens: number;
   }>;
+  metric?: 'tokens' | 'requests';
+  models?: Model[];
+  providers?: Provider[];
   onSelectModel?: (model: string) => void;
   selectedModel?: string;
 }) {
-  const sorted = [...items]
-    .filter((m) => m.model && m.model !== '_unknown')
-    .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens))
-    .slice(0, 10);
-
-  const maxTokens = Math.max(1, ...sorted.map((m) => m.inputTokens + m.outputTokens));
-  const totalTokens = sorted.reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0);
+  const providerByID = new Map(providers.map((provider) => [provider.id, provider]));
+  const modelByID = new Map(models.map((model) => [model.id, model]));
+  const visible = items.filter((m) => m.model && m.model !== '_unknown');
+  const valueOf = (item: { requestCount: number; inputTokens: number; outputTokens: number }) =>
+    metric === 'tokens' ? item.inputTokens + item.outputTokens : item.requestCount;
+  const sorted = [...visible].sort((a, b) => valueOf(b) - valueOf(a)).slice(0, 10);
+  const maxValue = Math.max(1, ...sorted.map(valueOf));
+  const totalValue = visible.reduce((sum, m) => sum + valueOf(m), 0);
+  const covered = totalValue ? sorted.reduce((sum, m) => sum + valueOf(m), 0) / totalValue * 100 : 0;
 
   return (
     <div className="usage-chart-card usage-leaderboard-card">
@@ -1259,12 +1290,18 @@ export function UsageModelLeaderboard({
         <div>
           <div className="usage-section-title">{title}</div>
           <div className="usage-section-subtitle">
-            Top 10 模型消耗
+            Top 10 · 占全部 {metric === 'tokens' ? 'Token' : '请求'} 的 {covered.toFixed(1)}%
           </div>
         </div>
         <div className="usage-leaderboard-legend">
-          <span className="prompt-legend"><i />输入 Prompt</span>
-          <span className="completion-legend"><i />输出 Completion</span>
+          {metric === 'tokens' ? (
+            <>
+              <span className="prompt-legend"><i />输入 Prompt</span>
+              <span className="completion-legend"><i />输出 Completion</span>
+            </>
+          ) : (
+            <span className="requests-legend"><i />请求次数</span>
+          )}
         </div>
       </div>
 
@@ -1273,12 +1310,16 @@ export function UsageModelLeaderboard({
       ) : (
         <div className="usage-leaderboard-list">
           {sorted.map((item, index) => {
+            const value = valueOf(item);
+            const pctOfMax = (value / maxValue) * 100;
+            const pctOfTotal = totalValue > 0 ? (value / totalValue) * 100 : 0;
             const sum = item.inputTokens + item.outputTokens;
-            const pctOfMax = (sum / maxTokens) * 100;
-            const pctOfTotal = totalTokens > 0 ? ((sum / totalTokens) * 100).toFixed(1) : '0';
             const inputPct = sum > 0 ? (item.inputTokens / sum) * 100 : 50;
             const outputPct = sum > 0 ? (item.outputTokens / sum) * 100 : 50;
             const isSelected = selectedModel === item.model;
+            const model = modelByID.get(item.model);
+            const provider = model ? providerByID.get(model.providerId) : undefined;
+            const alias = model?.name && model.name !== model.id ? model.name : '';
 
             return (
               <div
@@ -1293,15 +1334,20 @@ export function UsageModelLeaderboard({
                 </div>
                 <div className="leaderboard-model-info">
                   <div className="leaderboard-model-name-row">
-                    <span className="leaderboard-model-name">
-                      {item.model}
+                    <span className="leaderboard-model-name-block">
+                      {provider ? (
+                        <span className="leaderboard-provider-icon" title={provider.name}>
+                          <BrandIcon icon={resolveProviderIcon(provider)} name={provider.name} size={15} />
+                        </span>
+                      ) : null}
+                      <span className="leaderboard-model-name">{item.model}</span>
+                      {alias ? <span className="leaderboard-model-alias" title={alias}>{alias}</span> : null}
                       {isSelected ? <span className="drill-active-tag">已下钻</span> : null}
                     </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div className="leaderboard-row-actions">
                       <button
                         type="button"
-                        className="mini-btn"
-                        style={{ padding: '0 6px', height: '18px', fontSize: '11px', lineHeight: '18px', opacity: 0.8 }}
+                        className="mini-btn leaderboard-copy-btn"
                         title={`复制模型 ID：${item.model}`}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1319,28 +1365,47 @@ export function UsageModelLeaderboard({
                       >
                         复制
                       </button>
-                      <span className="leaderboard-share-badge font-mono">{pctOfTotal}%</span>
+                      <span className="leaderboard-share-badge font-mono" title={`占区间${metric === 'tokens' ? ' Token' : '请求次数'}的 ${pctOfTotal.toFixed(1)}%`}>
+                        {pctOfTotal.toFixed(1)}%
+                      </span>
                     </div>
                   </div>
-                  <div className="leaderboard-split-track" style={{ width: `${Math.max(12, pctOfMax)}%` }}>
-                    <div
-                      className="split-fill input"
-                      style={{ width: `${inputPct}%` }}
-                      title={`输入: ${formatTokenCount(item.inputTokens)}`}
-                    />
-                    <div
-                      className="split-fill output"
-                      style={{ width: `${outputPct}%` }}
-                      title={`输出: ${formatTokenCount(item.outputTokens)}`}
-                    />
+                  <div className={`leaderboard-split-track${metric === 'requests' ? ' is-requests' : ''}`} style={{ width: `${Math.max(12, pctOfMax)}%` }}>
+                    {metric === 'tokens' ? (
+                      <>
+                        <div
+                          className="split-fill input"
+                          style={{ width: `${inputPct}%` }}
+                          title={`输入: ${formatTokenCount(item.inputTokens)}`}
+                        />
+                        <div
+                          className="split-fill output"
+                          style={{ width: `${outputPct}%` }}
+                          title={`输出: ${formatTokenCount(item.outputTokens)}`}
+                        />
+                      </>
+                    ) : (
+                      <div className="split-fill requests" style={{ width: '100%' }} title={`${item.requestCount} 次请求`} />
+                    )}
                   </div>
                 </div>
                 <div className="leaderboard-stats-col">
-                  <span className="leaderboard-token-total font-mono">{formatTokenCount(sum)} tokens</span>
-                  <span className="leaderboard-token-meta font-mono">
-                    入 {formatTokenCount(item.inputTokens)} · 出 {formatTokenCount(item.outputTokens)}
-                    {item.cacheTokens > 0 ? ` · 缓 ${formatTokenCount(item.cacheTokens)}` : ''} · {item.requestCount} 次
-                  </span>
+                  {metric === 'tokens' ? (
+                    <>
+                      <span className="leaderboard-token-total font-mono">{formatTokenCount(sum)} tokens</span>
+                      <span className="leaderboard-token-meta font-mono">
+                        入 {formatTokenCount(item.inputTokens)} · 出 {formatTokenCount(item.outputTokens)}
+                        {item.cacheTokens > 0 ? ` · 缓 ${formatTokenCount(item.cacheTokens)}` : ''} · {item.requestCount} 次
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="leaderboard-token-total font-mono">{item.requestCount.toLocaleString()} 次</span>
+                      <span className="leaderboard-token-meta font-mono">
+                        {formatTokenCount(sum)} Token · 均 {formatTokenCount(Math.round(sum / Math.max(1, item.requestCount)))} / 次
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             );
@@ -1422,7 +1487,7 @@ export function UsageStatusChart({
 }) {
   const total = Math.max(0, items.reduce((sum, item) => sum + item.requestCount, 0));
   const success2xx = items.find((i) => i.class === '2xx')?.requestCount || 0;
-  const successRate = total > 0 ? ((success2xx / total) * 100).toFixed(1) : '100.0';
+  const successRate = total > 0 ? `${((success2xx / total) * 100).toFixed(1)}%` : '—';
 
   const chartItems = items.map((it) => ({
     label: it.class,

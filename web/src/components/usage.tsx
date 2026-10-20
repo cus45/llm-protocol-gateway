@@ -1,12 +1,22 @@
-import {useMemo, useState} from 'react';
-import type {DailyRequestPoint, Provider, RequestStatsSnapshot, RTKStatsResponse} from '../types';
-import {formatBytes, formatLocalISODate, formatTokenCount, normalizePromptTokenStats, providerUsageLabel} from '../lib';
-import {downloadCSV} from './charts';
+import {useState, type ReactNode} from 'react';
+import type {Model, Provider, RequestStatsSnapshot, RTKStatsResponse} from '../types';
+import {formatBytes, formatCompactCount, formatLocalISODate, formatTokenCount, normalizePromptTokenStats, providerUsageLabel} from '../lib';
+import {
+  downloadCSV,
+  Metric,
+  RTKSavingsChart,
+  UsageComboTrendChart,
+  UsageDailyTrafficLines,
+  UsageDonutChart,
+  UsageHourlyDistribution,
+  UsageModelLeaderboard,
+  UsageStatusChart,
+} from './charts';
 import './usage.css';
+import {ContextAnalysisPanel, RequestAnalysisPanel, useUsageAnalysis, type LogFilters} from './usage_analysis';
+import {PerformanceAnalysisPanel} from './usage_performance';
 
-type Dimension = 'models' | 'providers' | 'keys' | 'protocols' | 'users';
 type Metric = 'tokens' | 'requests';
-type UsageRow = { id: string; name: string; requestCount: number; inputTokens: number; outputTokens: number; cacheTokens: number };
 type LogTarget = { type: 'model' | 'provider' | 'apiKey'; value: string; label: string };
 
 function csvCell(value: string | number) {
@@ -18,8 +28,8 @@ function exportUsage(stats: RequestStatsSnapshot, from: string, to: string) {
   const period = stats.range;
   const lines: (string | number)[][] = [
     ['统计区间', from, to],
-    ['日期', '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token', '接收字节', '发送字节'],
-    ...(stats.daily || []).map(d => [d.date, d.requestCount, d.inputTokens, d.outputTokens, d.cacheTokens, d.rxBytes || 0, d.txBytes || 0]),
+    ['日期', '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token', '接收字节', '发送字节', '平均耗时 ms', '平均首字 ms'],
+    ...(stats.daily || []).map(d => [d.date, d.requestCount, d.inputTokens, d.outputTokens, d.cacheTokens, d.rxBytes || 0, d.txBytes || 0, d.avgLatencyMs || 0, d.avgTtftMs || 0]),
   ];
   for (const [name, rows] of [
     ['模型', (period?.byModel || []).map(r => ({ ...r, name: r.model }))],
@@ -34,127 +44,232 @@ function exportUsage(stats: RequestStatsSnapshot, from: string, to: string) {
   downloadCSV(`gateway-usage-${from}-to-${to}.csv`, lines.map(row => row.map(csvCell).join(',')).join('\r\n'));
 }
 
-function Stat({ label, value, note }: { label: string; value: string; note: string }) {
-  return <div className="usage-stat"><span>{label}</span><strong>{value}</strong><small>{note}</small></div>;
+function RankBars({ title, subtitle, items, formatValue, toggle }: { title: string; subtitle: string; items: Array<{ label: string; value: number }>; formatValue?: (value: number) => string; toggle?: ReactNode }) {
+  const max = Math.max(1, ...items.map(item => item.value));
+  return <div className="usage-chart-card usage-rank-bars-card">
+    <div className="usage-section-title-row">
+      <div><div className="usage-section-title">{title}</div><div className="usage-section-subtitle">{subtitle}</div></div>
+      {toggle}
+    </div>
+    {items.length === 0 ? <div className="empty-state compact">当前区间暂无数据</div> : <div className="usage-bar-list">
+      {items.map((item, index) => <div className="usage-bar-row" key={`${item.label}-${index}`}>
+        <span className="usage-bar-rank">#{index + 1}</span>
+        <span className="usage-bar-label" title={item.label}>{item.label}</span>
+        <div className="usage-bar-track"><div className="usage-bar-fill" style={{ width: `${(item.value / max) * 100}%` }} /></div>
+        <span className="usage-bar-value font-mono">{formatValue ? formatValue(item.value) : item.value.toLocaleString()}</span>
+      </div>)}
+    </div>}
+  </div>;
 }
 
-function DailyTrend({ points, metric }: { points: DailyRequestPoint[]; metric: Metric }) {
-  const [focused, setFocused] = useState<number | null>(null);
-  const [table, setTable] = useState(false);
-  const values = points.map(d => metric === 'requests' ? d.requestCount : d.inputTokens + d.outputTokens);
-  const max = Math.max(2, ...values);
-  const active = focused == null ? undefined : points[focused];
-  const width = 900, height = 190, left = 58, right = 14, top = 16, bottom = 30;
-  const plotWidth = width - left - right, plotHeight = height - top - bottom;
-  const step = plotWidth / Math.max(points.length, 1);
-  const valueLabel = metric === 'requests' ? '请求数' : 'Token';
-  return <section className="usage-block">
-    <div className="usage-block-head"><h3>每日趋势</h3><button className="mini-btn" type="button" onClick={() => setTable(!table)} aria-pressed={table}>{table ? '查看图表' : '查看数据'}</button></div>
-    {points.length === 0 ? <p className="usage-empty">当前区间暂无趋势数据</p> : table ? <div className="usage-table-wrap"><table className="usage-data-table"><thead><tr><th>日期</th><th>请求数</th><th>输入</th><th>输出</th><th>缓存读取</th></tr></thead><tbody>{points.map(d => <tr key={d.date}><td>{d.date}</td><td>{d.requestCount.toLocaleString()}</td><td>{d.inputTokens.toLocaleString()}</td><td>{d.outputTokens.toLocaleString()}</td><td>{d.cacheTokens.toLocaleString()}</td></tr>)}</tbody></table></div> : <>
-      <div className="usage-trend-readout" aria-live="polite">{active ? <><b>{active.date}</b><span>{values[focused!].toLocaleString()} {valueLabel}</span><span>缓存读取 {formatTokenCount(active.cacheTokens)}</span></> : <span>{valueLabel} · 悬停或使用键盘查看每日数值</span>}</div>
-      <div className="usage-trend-scroll"><svg className="usage-trend-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`每日${valueLabel}趋势，可切换数据表查看完整数值`}>
-        {[0, 0.5, 1].map(t => <g key={t}><line x1={left} x2={width - right} y1={top + plotHeight * t} y2={top + plotHeight * t} className="usage-gridline" /><text x={left - 10} y={top + plotHeight * t + 4} textAnchor="end">{formatTokenCount(Math.round(max * (1 - t)))}</text></g>)}
-        {points.map((d, i) => {
-          const x = left + step * (i + 0.5), barHeight = plotHeight * values[i] / max;
-          return <g key={d.date} tabIndex={0} role="button" aria-label={`${d.date}，${values[i].toLocaleString()} ${valueLabel}`} onMouseEnter={() => setFocused(i)} onMouseLeave={() => setFocused(null)} onFocus={() => setFocused(i)} onBlur={() => setFocused(null)}>
-            <title>{`${d.date}：${values[i].toLocaleString()} ${valueLabel}`}</title>
-            <rect x={left + step * i} y={top} width={step} height={plotHeight} fill="transparent" />
-            <rect className={`usage-trend-bar${focused === i ? ' is-active' : ''}`} x={x - Math.min(20, step * 0.55) / 2} y={top + plotHeight - barHeight} width={Math.min(20, step * 0.55)} height={barHeight} rx={3} />
-            {(i === 0 || i === points.length - 1 || (points.length > 4 && i % Math.ceil(points.length / 6) === 0)) && <text x={x} y={height - 7} textAnchor="middle">{d.date.slice(5)}</text>}
-          </g>;
-        })}
-      </svg></div>
-    </>}
-  </section>;
+function PulseStrip({ stats, todayMismatch }: { stats: RequestStatsSnapshot; todayMismatch: boolean }) {
+  const today = stats.today;
+  const month = stats.month;
+  const last = today.lastRequest;
+  const rx = (stats.daily || []).reduce((n, d) => n + (d.rxBytes || 0), 0);
+  const tx = (stats.daily || []).reduce((n, d) => n + (d.txBytes || 0), 0);
+  return <div className="usage-pulse-strip">
+    <div className="usage-pulse-item">
+      <span>今日{todayMismatch ? ` · 网关日期 ${today.date}` : ` · ${today.date}`}</span>
+      <b>{today.total.requestCount.toLocaleString()} 次</b>
+      <small>{formatTokenCount(today.total.inputTokens + today.total.outputTokens)} Token</small>
+    </div>
+    <div className="usage-pulse-item">
+      <span>本月 · {month.period}</span>
+      <b>{month.total.requestCount.toLocaleString()} 次</b>
+      <small>{formatTokenCount(month.total.inputTokens + month.total.outputTokens)} Token</small>
+    </div>
+    <div className="usage-pulse-item">
+      <span>区间流量</span>
+      {rx + tx > 0 ? <><b>接收 {formatBytes(rx)}</b><small>发送 {formatBytes(tx)}</small></> : <><b>—</b><small>新请求开始记录收发字节</small></>}
+    </div>
+    <div className="usage-pulse-item">
+      <span>最近一次请求</span>
+      {last ? <><b className="usage-pulse-ellipsis" title={last.model}>{last.model}</b><small>{new Date(last.time).toLocaleTimeString()} · HTTP {last.status}{last.apiKeyName ? ` · ${last.apiKeyName}` : ''}</small></> : <><b>—</b><small>今日暂无请求</small></>}
+    </div>
+  </div>;
 }
 
-function UsageDetails({ stats, providers, isNormalUser, metric, onNavigateLogs }: { stats: RequestStatsSnapshot | null; providers: Provider[]; isNormalUser: boolean; metric: Metric; onNavigateLogs: (target: LogTarget) => void }) {
-  const [dimension, setDimension] = useState<Dimension>('models');
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(0);
-  const groups = useMemo(() => {
-    const range = stats?.range;
-    return {
-      models: (range?.byModel || []).map(r => ({ ...r, id: r.model, name: r.model })),
-      providers: (range?.byProvider || []).map(r => ({ ...r, id: r.providerId, name: providerUsageLabel(r.providerId, providers) })),
-      keys: (range?.byApiKey || []).map(r => ({ ...r, id: r.apiKeyId, name: r.apiKeyName || r.apiKeyId || '未绑定密钥' })),
-      protocols: (range?.byProtocol || []).map(r => ({ ...r, id: r.protocol, name: r.protocol })),
-      users: isNormalUser ? [] : (range?.byUser || []).map(r => ({ ...r, id: r.userId, name: r.userName || r.userId || '未绑定用户' })),
-    } satisfies Record<Dimension, UsageRow[]>;
-  }, [stats, providers, isNormalUser]);
-  const selectedDimension = isNormalUser && dimension === 'users' ? 'models' : dimension;
-  const allRows = groups[selectedDimension];
-  const amount = (r: UsageRow) => metric === 'requests' ? r.requestCount : r.inputTokens + r.outputTokens;
-  const total = allRows.reduce((sum, r) => sum + amount(r), 0);
-  const rows = [...allRows].filter(r => `${r.name} ${r.id}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) => amount(b) - amount(a) || a.name.localeCompare(b.name));
-  const currentPage = Math.min(page, Math.max(0, Math.ceil(rows.length / 15) - 1));
-  const tabs: { id: Dimension; label: string }[] = [{ id: 'models', label: '模型' }, { id: 'providers', label: 'Provider' }, { id: 'keys', label: 'API 密钥' }, { id: 'protocols', label: '输出协议' }, ...(!isNormalUser ? [{ id: 'users' as const, label: '用户' }] : [])];
-  return <section className="usage-block">
-    <div className="usage-block-head"><h3>用量明细</h3><input className="usage-search" type="search" value={search} onChange={e => { setSearch(e.target.value); setPage(0); }} placeholder="搜索名称或 ID" aria-label="搜索用量明细" /></div>
-    <div className="usage-detail-tabs" role="tablist" aria-label="用量分类">{tabs.map(t => <button type="button" role="tab" aria-selected={selectedDimension === t.id} className={selectedDimension === t.id ? 'active' : ''} key={t.id} onClick={() => { setDimension(t.id); setPage(0); }}>{t.label}<small>{groups[t.id].length}</small></button>)}</div>
-    <div className="usage-table-wrap"><table className="usage-data-table usage-entities"><thead><tr><th>名称</th><th>请求数</th><th>输入 Token</th><th>输出 Token</th><th>缓存读取</th><th>{metric === 'requests' ? '请求' : 'Token'}占比</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>
-      {rows.slice(currentPage * 15, (currentPage + 1) * 15).map(r => {
-        const percent = total > 0 ? amount(r) / total * 100 : 0;
-        const type = selectedDimension === 'models' ? 'model' : selectedDimension === 'providers' ? 'provider' : selectedDimension === 'keys' ? 'apiKey' : null;
-        return <tr key={r.id}><td><span className="usage-entity-name" title={`${r.name}\n${r.id}`}>{r.name}</span></td><td>{r.requestCount.toLocaleString()}</td><td title={r.inputTokens.toLocaleString()}>{formatTokenCount(r.inputTokens)}</td><td title={r.outputTokens.toLocaleString()}>{formatTokenCount(r.outputTokens)}</td><td title={r.cacheTokens.toLocaleString()}>{formatTokenCount(r.cacheTokens)}</td><td><div className="usage-share"><span>{percent.toFixed(1)}%</span><i><b style={{ width: `${percent}%` }} /></i></div></td><td>{type && r.id && r.id !== '_anonymous' ? <button className="mini-btn" type="button" onClick={() => onNavigateLogs({ type, value: r.id, label: r.name })}>查看日志</button> : null}</td></tr>;
-      })}
-      {!rows.length && <tr><td colSpan={7} className="usage-empty">{search ? '没有匹配的记录' : '当前区间暂无该分类用量'}</td></tr>}
-    </tbody></table></div>
-    <div className="usage-table-foot"><span>共 {rows.length} 项 · 输入包含缓存读取，缓存不重复计入总 Token</span>{rows.length > 15 && <div><button className="mini-btn" type="button" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>上一页</button><span>{currentPage + 1} / {Math.ceil(rows.length / 15)}</span><button className="mini-btn" type="button" disabled={(currentPage + 1) * 15 >= rows.length} onClick={() => setPage(currentPage + 1)}>下一页</button></div>}</div>
-  </section>;
-}
-
-function CompressionUsage({ stats, days, onDaysChange, providers }: { stats: RTKStatsResponse | null; days: number; onDaysChange: (days: number) => void; providers: Provider[] }) {
-  return <section className="usage-block">
-    <div className="usage-block-head"><div><h3>RTK 压缩</h3><p>工具输出的文本估算，独立统计区间。</p></div><div className="usage-segments">{[{ days: 7, label: '7 天' }, { days: 30, label: '30 天' }, { days: 90, label: '90 天' }, { days: 0, label: '全部' }].map(r => <button key={r.days} type="button" aria-pressed={days === r.days} className={days === r.days ? 'active' : ''} onClick={() => onDaysChange(r.days)}>{r.label}</button>)}</div></div>
-    <div className="usage-stats-strip"><Stat label="节省 Token" value={formatTokenCount(stats?.savedTokens || 0)} note={`压缩率 ${(stats?.savedPercent || 0).toFixed(1)}%`} /><Stat label="原始输出" value={formatTokenCount(stats?.originalTokens || 0)} note={`压缩后 ${formatTokenCount(stats?.compressedTokens || 0)}`} /><Stat label="压缩命令" value={(stats?.commands || 0).toLocaleString()} note={`节省 ${formatBytes(Math.max(0, (stats?.originalBytes || 0) - (stats?.compressedBytes || 0)))}`} /></div>
-    {stats && !stats.available && <p className="usage-note">当前主机未检测到 RTK，已有历史记录仍会保留。</p>}
-    {!stats && <p className="usage-empty">暂无压缩统计</p>}
-    {!!stats?.daily.length && <details className="usage-compression-days"><summary>每日压缩明细 · {stats.daily.length} 天</summary><div className="usage-table-wrap"><table className="usage-data-table"><thead><tr><th>日期</th><th>命令</th><th>原始 Token</th><th>压缩后</th><th>节省 Token</th></tr></thead><tbody>{stats.daily.map(d => <tr key={d.date}><td>{d.date}</td><td>{d.commands.toLocaleString()}</td><td>{formatTokenCount(d.originalTokens)}</td><td>{formatTokenCount(d.compressedTokens)}</td><td>{formatTokenCount(d.savedTokens)}</td></tr>)}</tbody></table></div></details>}
-    {!!stats?.byProvider?.length && <div className="usage-compression-providers">{stats.byProvider.map(p => <div key={p.providerId}><span>{providerUsageLabel(p.providerId, providers)}</span><b>{formatTokenCount(p.savedTokens)} Token</b><small>节省 {p.savedPercent.toFixed(1)}%</small></div>)}</div>}
-  </section>;
-}
-
-export function UsagePage({ stats, providers, isNormalUser, from, to, loading, error, fetchedAt, onRangeChange, onRefresh, onNavigateLogs, rtkStats, rtkDays, onRTKDaysChange }: {
-  stats: RequestStatsSnapshot | null; providers: Provider[]; isNormalUser: boolean; from: string; to: string; loading: boolean; error: string; fetchedAt: Date | null;
-  onRangeChange: (from: string, to: string) => void; onRefresh: () => void; onNavigateLogs: (target: LogTarget) => void;
-  rtkStats: RTKStatsResponse | null; rtkDays: number; onRTKDaysChange: (days: number) => void;
+function Overview({ stats, providers, models, isNormalUser, metric }: {
+  stats: RequestStatsSnapshot; providers: Provider[]; models: Model[]; isNormalUser: boolean; metric: Metric;
 }) {
-  const [tab, setTab] = useState<'requests' | 'compression'>('requests');
-  const [metric, setMetric] = useState<Metric>('tokens');
-  const range = stats?.range;
+  const [rankTab, setRankTab] = useState<'keys' | 'users'>('keys');
+  const range = stats.range;
   const total = range?.total;
-  const daily = stats?.daily || [];
+  const daily = stats.daily || [];
+  const hasTrafficBytes = daily.some(d => (d.rxBytes || 0) + (d.txBytes || 0) > 0);
   const requests = total?.requestCount || 0;
   const input = total?.inputTokens || 0, output = total?.outputTokens || 0;
   const cache = normalizePromptTokenStats(input, total?.cacheTokens || 0);
-  const statusTotal = (stats?.status || []).reduce((n, s) => n + s.requestCount, 0);
-  const successful = stats?.status?.find(s => s.class === '2xx')?.requestCount || 0;
+  const statusTotal = (stats.status || []).reduce((n, s) => n + s.requestCount, 0);
+  const successful = stats.status?.find(s => s.class === '2xx')?.requestCount || 0;
+  const successRate = statusTotal > 0 ? successful / statusTotal * 100 : null;
   const measured = daily.filter(d => (d.avgLatencyMs || 0) > 0);
   const latencyCount = measured.reduce((n, d) => n + d.requestCount, 0);
   const avgLatency = latencyCount ? Math.round(measured.reduce((n, d) => n + (d.avgLatencyMs || 0) * d.requestCount, 0) / latencyCount) : null;
+  const ttftCount = daily.filter(d => (d.avgTtftMs || 0) > 0).reduce((n, d) => n + d.requestCount, 0);
+  const avgTtft = ttftCount ? Math.round(daily.reduce((n, d) => n + (d.avgTtftMs || 0) * ((d.avgTtftMs || 0) > 0 ? d.requestCount : 0), 0) / ttftCount) : null;
+  const todayMismatch = stats.today.date !== formatLocalISODate(new Date());
+  const rangeDays = daily.length || 1;
+  const activeDays = daily.filter(d => d.requestCount > 0).length;
+  const sparkRequests = daily.map(d => d.requestCount || 0);
+  const sparkTokens = daily.map(d => (d.inputTokens || 0) + (d.outputTokens || 0));
+  const sparkCache = daily.map(d => d.cacheTokens || 0);
+  const sparkLatency = daily.map(d => Math.round(d.avgLatencyMs || 0));
+  const sparkTtft = daily.map(d => Math.round(d.avgTtftMs || 0));
+  const providerItems = (range?.byProvider || []).map(p => ({ label: providerUsageLabel(p.providerId, providers), value: metric === 'tokens' ? p.inputTokens + p.outputTokens : p.requestCount }));
+  const protocolItems = (range?.byProtocol || []).map(p => ({ label: p.protocol, value: metric === 'tokens' ? p.inputTokens + p.outputTokens : p.requestCount }));
+  const activeModels = (range?.byModel || []).filter(m => m.requestCount > 0).length;
+  const activeProviders = (range?.byProvider || []).filter(p => p.requestCount > 0).length;
+  const topModel = [...(range?.byModel || [])].sort((a, b) => b.requestCount - a.requestCount)[0];
+  const topModelShare = topModel && requests ? topModel.requestCount / requests * 100 : null;
+  const keyItems = (range?.byApiKey || []).slice(0, 8).map(k => ({ label: k.apiKeyName || k.apiKeyId || '未命名密钥', value: metric === 'tokens' ? k.inputTokens + k.outputTokens : k.requestCount }));
+  const userItems = (range?.byUser || []).slice(0, 8).map(u => ({ label: u.userName || u.userId || '未绑定用户', value: metric === 'tokens' ? u.inputTokens + u.outputTokens : u.requestCount }));
+  const successBadge = successRate == null ? undefined : successRate >= 99 ? '健康' : successRate >= 95 ? '注意' : '异常';
+  const successTone = successRate == null ? 'blue' : successRate >= 99 ? 'green' : successRate >= 95 ? 'amber' : 'red';
+  return <>
+    <div className="usage-metric-grid">
+      <Metric label="区间请求" value={requests.toLocaleString()} note={`覆盖 ${rangeDays} 天 · 活跃 ${activeDays} 天 · 日均 ${Math.round(requests / rangeDays).toLocaleString()} 次`} sparkline={sparkRequests} sparklineColor="#38bdf8" />
+      <Metric label="区间总 Token" value={formatTokenCount(input + output)} note={`输入 ${formatTokenCount(input)} · 输出 ${formatTokenCount(output)}`} sparkline={sparkTokens} sparklineColor="#6366f1" />
+      <Metric label="Prompt 缓存命中" value={input > 0 ? `${cache.hitRatePct.toFixed(1)}%` : '—'} note={cache.cacheHits > 0 ? `缓存读取 ${formatTokenCount(cache.cacheHits)} · 占输入 ${cache.hitRatePct.toFixed(0)}%` : '当前区间未触发 Prompt Cache'} sparkline={sparkCache} sparklineColor="#10b981" />
+      <Metric label="平均往返耗时" value={avgLatency == null ? '—' : `${avgLatency.toLocaleString()} ms`} note={avgLatency == null ? '当前区间暂无耗时样本' : '按请求加权 · 含上游与网关耗时'} sparkline={sparkLatency} sparklineColor="#f59e0b" />
+      <Metric label="平均首字耗时" value={avgTtft == null ? '—' : `${avgTtft.toLocaleString()} ms`} note={avgTtft == null ? '当前区间暂无首字样本' : '按日加权 · 非流式请求按总耗时计入'} sparkline={sparkTtft} sparklineColor="#a855f7" />
+      <Metric label="请求成功率" value={successRate == null ? '—' : `${successRate.toFixed(1)}%`} note={statusTotal ? `2xx ${successful.toLocaleString()} / ${statusTotal.toLocaleString()} 次` : '当前区间暂无状态记录'} badge={successBadge} badgeTone={successTone} />
+    </div>
+    <PulseStrip stats={stats} todayMismatch={todayMismatch} />
+    <div className="usage-charts-full">
+      <UsageComboTrendChart title={`用量与性能走势 · ${range?.period || ''}`} points={daily} />
+    </div>
+    <div className="overview-ops-row">
+      <UsageHourlyDistribution title="24 小时活跃分布" items={stats.hourly} rangeRequests={requests} />
+      <UsageStatusChart title="状态码与健康度分布" items={stats.status || []} />
+    </div>
+    <div className="overview-distribution-row">
+      <UsageDonutChart title={`Provider 份额（${metric === 'tokens' ? 'Token' : '请求'}）`} subtitle="各上游服务商承载占比" items={providerItems} formatValue={metric === 'tokens' ? formatCompactCount : undefined} />
+      <UsageDonutChart title={`输出协议分布（${metric === 'tokens' ? 'Token' : '请求'}）`} subtitle="网关输出协议转换份额" items={protocolItems} formatValue={metric === 'tokens' ? formatCompactCount : undefined} />
+      <div className="usage-chart-card usage-profile-card">
+        <div className="usage-section-title-row"><div><div className="usage-section-title">请求画像</div><div className="usage-section-subtitle">区间内每次调用的平均消耗与集中度</div></div></div>
+        <dl className="usage-facts usage-profile-facts">
+          <div><dt>每次请求 Token</dt><dd>{requests ? formatTokenCount(Math.round((input + output) / requests)) : '—'}</dd></div>
+          <div><dt>每次输入 / 输出</dt><dd>{requests ? `${formatTokenCount(Math.round(input / requests))} / ${formatTokenCount(Math.round(output / requests))}` : '—'}</dd></div>
+          <div><dt>输出 / 输入</dt><dd>{input ? `${(output / input * 100).toFixed(1)}%` : '—'}</dd></div>
+          <div><dt>Top 模型请求占比</dt><dd title={topModel?.model}>{topModelShare == null ? '—' : `${topModelShare.toFixed(1)}%`}</dd></div>
+          <div><dt>活跃模型</dt><dd>{activeModels}</dd></div>
+          <div><dt>活跃 Provider</dt><dd>{activeProviders}</dd></div>
+        </dl>
+      </div>
+    </div>
+    <div className="overview-rankings-row">
+      <UsageModelLeaderboard title="核心模型用量排行" items={range?.byModel || []} metric={metric} models={models} providers={providers} />
+      <RankBars
+        title={rankTab === 'keys' ? 'API 密钥消耗排行' : '用户消耗排行'}
+        subtitle={metric === 'tokens' ? '按 Token 消耗 Top 8' : '按请求次数 Top 8'}
+        items={rankTab === 'keys' ? keyItems : userItems}
+        formatValue={metric === 'tokens' ? formatCompactCount : undefined}
+        toggle={<div className="usage-segments usage-rank-toggle">
+          <button type="button" className={rankTab === 'keys' ? 'active' : ''} onClick={() => setRankTab('keys')}>密钥</button>
+          {!isNormalUser && <button type="button" className={rankTab === 'users' ? 'active' : ''} onClick={() => setRankTab('users')}>用户</button>}
+        </div>}
+      />
+    </div>
+    {hasTrafficBytes && <div className="usage-charts-full">
+      <UsageDailyTrafficLines title="按日业务流量（上行接收 vs 下行发送）" points={daily} />
+    </div>}
+  </>;
+}
+
+function CompressionUsage({ stats, days, onDaysChange, providers }: { stats: RTKStatsResponse | null; days: number; onDaysChange: (days: number) => void; providers: Provider[] }) {
+  return <section className="usage-block usage-rtk-block">
+    <div className="usage-block-head"><div><h3>RTK 工具输出压缩</h3><p>统计网关转发前压缩过的命令输出，时间窗与概览区间相互独立。</p></div><div className="usage-segments">{[{ days: 7, label: '7 天' }, { days: 30, label: '30 天' }, { days: 90, label: '90 天' }, { days: 0, label: '全部' }].map(r => <button key={r.days} type="button" aria-pressed={days === r.days} className={days === r.days ? 'active' : ''} onClick={() => onDaysChange(r.days)}>{r.label}</button>)}</div></div>
+    <div className="usage-rtk-summary">
+      <div className="usage-rtk-hero"><span>已节省 Token</span><b>{formatTokenCount(stats?.savedTokens || 0)}</b><small>平均压缩率 {(stats?.savedPercent || 0).toFixed(1)}%</small></div>
+      <dl className="usage-facts">
+        <div><dt>原始输出</dt><dd>{formatTokenCount(stats?.originalTokens || 0)}</dd></div>
+        <div><dt>压缩后</dt><dd>{formatTokenCount(stats?.compressedTokens || 0)}</dd></div>
+        <div><dt>压缩命令</dt><dd>{(stats?.commands || 0).toLocaleString()}</dd></div>
+        <div><dt>平均每条节省</dt><dd>{stats?.commands ? formatTokenCount(Math.round((stats.savedTokens || 0) / stats.commands)) : '—'}</dd></div>
+        <div><dt>字节节省</dt><dd>{formatBytes(Math.max(0, (stats?.originalBytes || 0) - (stats?.compressedBytes || 0)))}</dd></div>
+      </dl>
+    </div>
+    {stats && !stats.available && <p className="usage-note">当前主机未检测到 RTK，已有历史记录仍会保留。</p>}
+    {!stats && <p className="usage-empty">暂无压缩统计</p>}
+    {!!stats?.daily.length && <><div className="usage-chart-legend"><span><i style={{background: 'var(--usage-category-1)'}} />压缩节省</span><span><i style={{background: 'var(--usage-category-2)'}} />压缩后发送</span></div><RTKSavingsChart points={stats.daily} /></>}
+    {!!stats?.byProvider?.length && <div className="usage-compression-providers">{stats.byProvider.map(p => <div key={p.providerId}><span>{providerUsageLabel(p.providerId, providers)}</span><b>{formatTokenCount(p.savedTokens)} Token</b><small>{p.commands.toLocaleString()} 条命令 · 节省 {p.savedPercent.toFixed(1)}%</small></div>)}</div>}
+  </section>;
+}
+
+type Tab = 'overview' | 'requests' | 'context' | 'performance' | 'rtk';
+
+export function UsagePage({ stats, providers, models, isNormalUser, from, to, loading, error, fetchedAt, onRangeChange, onRefresh, onNavigateLogs, onOpenLogs, rtkStats, rtkDays, onRTKDaysChange }: {
+  stats: RequestStatsSnapshot | null; providers: Provider[]; models: Model[]; isNormalUser: boolean; from: string; to: string; loading: boolean; error: string; fetchedAt: Date | null;
+  onRangeChange: (from: string, to: string) => void; onRefresh: () => void; onNavigateLogs: (target: LogTarget) => void; onOpenLogs: (filters: LogFilters) => void;
+  rtkStats: RTKStatsResponse | null; rtkDays: number; onRTKDaysChange: (days: number) => void;
+}) {
+  const [tab, setTab] = useState<Tab>('overview');
+  const [metric, setMetric] = useState<Metric>('tokens');
   const today = formatLocalISODate(new Date());
-  const currentTab = isNormalUser ? 'requests' : tab;
+  const analysisTab = tab === 'requests' || tab === 'context' || tab === 'performance';
+  const analysis = useUsageAnalysis(from, to, analysisTab);
   const matchesRange = !stats?.from || (formatLocalISODate(new Date(stats.from)) === from && formatLocalISODate(new Date(new Date(stats.to || stats.from).getTime() - 1)) === to);
   const ready = !!stats && matchesRange;
+  const tabs: { id: Tab; name: string; note: string }[] = [
+    {id: 'overview', name: '概览', note: '总量、趋势与来源'},
+    {id: 'requests', name: '请求', note: '调用明细与耗时'},
+    {id: 'context', name: '上下文', note: '输入与缓存结构'},
+    {id: 'performance', name: '性能', note: '模型与上游效率'},
+    ...(!isNormalUser ? [{id: 'rtk' as Tab, name: 'RTK', note: '工具输出压缩'}] : []),
+  ];
   function preset(days: number) {
     const start = new Date();
     start.setDate(start.getDate() - days + 1);
     onRangeChange(formatLocalISODate(start), today);
   }
+  function refreshAll() {
+    onRefresh();
+    if (analysisTab) analysis.reload();
+  }
+  const exportButton = ready && tab === 'overview' ? <button className="mini-btn" type="button" onClick={() => exportUsage(stats!, from, to)}>导出 CSV 报表</button> : null;
+  const syncing = loading || analysis.refreshing;
   return <section className="section-full usage-page"><div className="card panel">
-    <div className="panel-header"><div><h2 className="panel-title">用量</h2><p className="panel-desc">请求、Token 与缓存，按区间查看。</p></div><div className="usage-header-actions"><span>{loading ? '更新中…' : fetchedAt ? `更新于 ${fetchedAt.toLocaleTimeString()}` : ''}</span><button className="mini-btn" type="button" disabled={loading} onClick={onRefresh}>刷新</button>{ready && currentTab === 'requests' && <button className="mini-btn" type="button" onClick={() => exportUsage(stats!, from, to)}>导出 CSV</button>}</div></div>
-    {!isNormalUser && <div className="usage-page-tabs"><button type="button" className={currentTab === 'requests' ? 'active' : ''} aria-pressed={currentTab === 'requests'} onClick={() => setTab('requests')}>请求用量</button><button type="button" className={currentTab === 'compression' ? 'active' : ''} aria-pressed={currentTab === 'compression'} onClick={() => setTab('compression')}>RTK 压缩</button></div>}
-    {currentTab === 'compression' ? <CompressionUsage stats={rtkStats} days={rtkDays} onDaysChange={onRTKDaysChange} providers={providers} /> : <>
-      <div className="usage-toolbar"><div className="usage-segments">{[1, 7, 30].map(days => { const start = new Date(); start.setDate(start.getDate() - days + 1); return <button key={days} type="button" className={from === formatLocalISODate(start) && to === today ? 'active' : ''} onClick={() => preset(days)}>{days === 1 ? '今天' : `${days} 天`}</button>; })}</div><div className="usage-date-inputs"><input type="date" aria-label="用量开始日期" value={from} max={to} onChange={e => { if (e.target.value) onRangeChange(e.target.value, to); }} /><span>至</span><input type="date" aria-label="用量结束日期" value={to} min={from} max={today} onChange={e => { if (e.target.value) onRangeChange(from, e.target.value); }} /></div><div className="usage-segments usage-metric-switch">{(['tokens', 'requests'] as const).map(m => <button key={m} type="button" aria-pressed={metric === m} className={metric === m ? 'active' : ''} onClick={() => setMetric(m)}>{m === 'tokens' ? 'Token' : '请求数'}</button>)}</div></div>
-      {error && <p className="usage-error" role="alert">{error}</p>}
-      {!ready ? <div className="usage-empty">{loading ? '正在读取所选区间…' : '所选区间暂无可用统计，请刷新重试。'}</div> : <div aria-busy={loading} className={loading ? 'usage-content is-loading' : 'usage-content'}>
-        <div className="usage-stats-strip"><Stat label="总请求" value={requests.toLocaleString()} note={from === to ? from : `${from} 至 ${to}`} /><Stat label="总 Token" value={formatTokenCount(input + output)} note={`输入 ${formatTokenCount(input)} · 输出 ${formatTokenCount(output)}`} /><Stat label="缓存命中率" value={input > 0 ? `${cache.hitRatePct.toFixed(1)}%` : '—'} note={`缓存读取 ${formatTokenCount(cache.cacheHits)} Token`} /><Stat label="请求成功率" value={statusTotal > 0 ? `${(successful / statusTotal * 100).toFixed(1)}%` : '—'} note={statusTotal ? `2xx ${successful.toLocaleString()} / ${statusTotal.toLocaleString()}` : '暂无状态记录'} /></div>
-        <DailyTrend points={daily} metric={metric} />
-        <div className="usage-health-line"><span>平均请求耗时 <b>{avgLatency == null ? '—' : `${avgLatency.toLocaleString()} ms`}</b></span><span>接收 <b>{formatBytes(daily.reduce((n, d) => n + (d.rxBytes || 0), 0))}</b></span><span>发送 <b>{formatBytes(daily.reduce((n, d) => n + (d.txBytes || 0), 0))}</b></span>{(stats.status || []).map(s => <span key={s.class}>{s.class} <b>{s.requestCount.toLocaleString()}</b></span>)}</div>
-        <UsageDetails stats={stats} providers={providers} isNormalUser={isNormalUser} metric={metric} onNavigateLogs={onNavigateLogs} />
-        <p className="usage-note">统计网关记录的请求。账户订阅额度在 Provider 页面查看；日志明细受保留天数限制。</p>
-      </div>}
-    </>}
+    <div className="panel-header usage-hero-header">
+      <div>
+        <h2 className="panel-title">用量统计</h2>
+        <p className="panel-desc">按区间汇总请求、Token、缓存与性能；概览汇总永久保留，请求、上下文与性能明细受日志保留天数限制。</p>
+      </div>
+      <div className="usage-header-actions">
+        <span className={`usage-sync-state${syncing ? ' is-syncing' : ''}`}>{syncing ? <><i className="live-dot" aria-hidden="true" />更新中…</> : fetchedAt ? `更新于 ${fetchedAt.toLocaleTimeString()}` : ''}</span>
+        {exportButton}
+        <button className="mini-btn" type="button" disabled={loading} onClick={refreshAll}>刷新</button>
+      </div>
+    </div>
+    <div className="usage-page-tabs" role="tablist" aria-label="用量模块">{tabs.map(t => <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}><span>{t.name}</span><small>{t.note}</small></button>)}</div>
+    {tab !== 'rtk' && <div className="usage-toolbar">
+      <div className="usage-segments">{[{ days: 1, label: '今天' }, { days: 7, label: '7 天' }, { days: 30, label: '30 天' }, { days: 90, label: '90 天' }].map(item => {
+        const start = new Date(); start.setDate(start.getDate() - item.days + 1);
+        const active = from === formatLocalISODate(start) && to === today;
+        return <button key={item.days} type="button" className={active ? 'active' : ''} onClick={() => preset(item.days)}>{item.label}</button>;
+      })}</div>
+      <div className="usage-date-inputs"><input type="date" aria-label="用量开始日期" value={from} max={to} onChange={e => { if (e.target.value) onRangeChange(e.target.value, to); }} /><span>至</span><input type="date" aria-label="用量结束日期" value={to} min={from} max={today} onChange={e => { if (e.target.value) onRangeChange(from, e.target.value); }} /></div>
+      <div className="usage-toolbar-spacer" />
+      <div className="usage-segments usage-metric-switch" hidden={tab !== 'overview'}>
+        <button type="button" aria-pressed={metric === 'tokens'} className={metric === 'tokens' ? 'active' : ''} onClick={() => setMetric('tokens')}>Token 份额</button>
+        <button type="button" aria-pressed={metric === 'requests'} className={metric === 'requests' ? 'active' : ''} onClick={() => setMetric('requests')}>请求份额</button>
+      </div>
+    </div>}
+    {error && <p className="usage-error" role="alert">{error}</p>}
+    {!ready ? <div className="usage-empty">{loading ? '正在读取所选区间…' : '所选区间暂无可用统计，请刷新重试。'}</div> : <div aria-busy={syncing} className="usage-content">
+      {tab === 'overview' && <Overview stats={stats!} providers={providers} models={models} isNormalUser={isNormalUser} metric={metric} />}
+      {tab === 'rtk' && <div className="usage-rtk-tab"><CompressionUsage stats={rtkStats} days={rtkDays} onDaysChange={onRTKDaysChange} providers={providers} /></div>}
+      {analysisTab && <>
+        <div className="usage-scope-note">
+          <b>明细来自保留日志：当前保留 {analysis.data?.retentionDays || '—'} 天。</b>
+          <span>{analysis.data ? `所选区间可分析 ${analysis.data.total.toLocaleString()} 次调用。` : '正在读取分析明细…'} 概览的每日汇总永久保留，不受保留期影响。</span>
+          {analysis.fetchedAt && <small>分析明细更新于 {analysis.fetchedAt.toLocaleTimeString()}</small>}
+        </div>
+        {analysis.error && <p className="usage-error" role="alert">分析明细加载失败：{analysis.error}</p>}
+        {(analysis.loading || analysis.stale) ? <div className="usage-empty">正在读取分析明细…</div> : tab === 'requests' ? <RequestAnalysisPanel rows={analysis.data?.items || []} providers={providers} onOpenLogs={onOpenLogs} /> : tab === 'context' ? <ContextAnalysisPanel rows={analysis.data?.items || []} providers={providers} /> : <PerformanceAnalysisPanel rows={analysis.data?.items || []} providers={providers} onNavigateLogs={onNavigateLogs} />}
+      </>}
+      <p className="usage-note">统计网关记录的请求。账户订阅额度在 Provider 页面查看；请求、上下文与性能明细受日志保留天数限制，升级前已过期日志的分类与状态可能不完整。RTK 压缩统计按自己的时间窗独立计算。</p>
+    </div>}
   </div></section>;
 }
