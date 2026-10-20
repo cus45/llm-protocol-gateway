@@ -303,6 +303,7 @@ func (rt *Runtime) Start(cfg Config) error {
 		server.StartProviderFailoverRecovery(context.Background())
 		server.StartUserActivityFlush(context.Background())
 		server.StartQuotaKeeper(context.Background())
+		server.StartDailyCheckin(context.Background())
 		server.BackfillClaudeOAuthAccountLabels()
 		server.BackfillQoderAccountLabels()
 		server.StartCursorModelBackgroundRefresh(context.Background())

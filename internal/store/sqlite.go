@@ -217,6 +217,10 @@ func (s *Store) migrate() error {
 		// rtk_compress: provider-level switch for gateway-side tool-result
 		// compression (see domain.Provider.RTKCompress).
 		{"rtk_compress", "INTEGER NOT NULL DEFAULT 0"},
+		// checkin_enabled: the per-subscription daily check-in switch (see
+		// domain.Provider.CheckinEnabled). Off by default, so no existing
+		// install starts pressing 签到 on its accounts.
+		{"checkin_enabled", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -237,6 +241,9 @@ func (s *Store) migrate() error {
 	}
 	if err := ensureQuotaKeeperTables(tx); err != nil {
 		return fmt.Errorf("migrate scheduled_tasks: %w", err)
+	}
+	if err := ensureCheckinTable(tx); err != nil {
+		return fmt.Errorf("migrate checkins: %w", err)
 	}
 	if err := addColumnIfMissing(tx, "api_keys", "model_aliases", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
@@ -277,6 +284,20 @@ func (s *Store) migrate() error {
 	// a request still names the model by id — and empty for every vendor whose
 	// model id is already its label.
 	if err := addColumnIfMissing(tx, "models", "display_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	// free / rate / rate_was: what the upstream charges for this model, read
+	// from its own listing (Qoder publishes a credits multiple per model, and a
+	// 0 that is really a running discount). Zero across every vendor that gives
+	// no per-model price, which is why the console hides the badges instead of
+	// showing 0×.
+	if err := addColumnIfMissing(tx, "models", "free", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	if err := addColumnIfMissing(tx, "models", "rate", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	if err := addColumnIfMissing(tx, "models", "rate_was", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS users (
@@ -552,6 +573,10 @@ func (s *Store) Save(state domain.GatewayState) error {
 		if provider.RTKCompress {
 			rtkCompress = 1
 		}
+		checkinEnabled := 0
+		if provider.CheckinEnabled {
+			checkinEnabled = 1
+		}
 		selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt := "", "", "", ""
 		if provider.SelfRegistration != nil {
 			selfRegTokenHash = provider.SelfRegistration.TokenHash
@@ -566,13 +591,15 @@ func (s *Store) Save(state domain.GatewayState) error {
 		if _, err := tx.Exec(`INSERT INTO providers
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
 			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
+			 checkin_enabled,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
 			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled, rtkCompress,
+			checkinEnabled,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
 			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain, authJSON); err != nil {
 			return err
@@ -582,10 +609,15 @@ func (s *Store) Save(state domain.GatewayState) error {
 			if model.InMenu {
 				inMenu = 1
 			}
+			modelFree := 0
+			if model.Free {
+				modelFree = 1
+			}
 			if _, err := tx.Exec(`INSERT INTO models
-				(provider_id, id, protocol, context_length, in_menu, position, display_name)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				provider.ID, model.ID, string(model.Protocol), model.ContextLength, inMenu, mIndex, model.Name); err != nil {
+				(provider_id, id, protocol, context_length, in_menu, position, display_name, free, rate, rate_was)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				provider.ID, model.ID, string(model.Protocol), model.ContextLength, inMenu, mIndex, model.Name,
+				modelFree, model.Rate, model.RateWas); err != nil {
 				return err
 			}
 		}
@@ -668,6 +700,9 @@ func (s *Store) Save(state domain.GatewayState) error {
 	if err := setSetting(tx, "providerRequestAdapters", string(adapterRaw)); err != nil {
 		return err
 	}
+	if err := pruneCheckins(tx); err != nil {
+		return err
+	}
 	if err := s.markInitialized(tx); err != nil {
 		return err
 	}
@@ -677,6 +712,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
 		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
+		checkin_enabled,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json
 		FROM providers ORDER BY position, id`)
@@ -689,7 +725,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var protocol string
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
 		var userID, authDomain string
-		var disabled, rtkCompress int
+		var disabled, rtkCompress, checkinEnabled int
 		var selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt string
 		var deleted int
 		var deletedAt string
@@ -697,6 +733,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var authJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
 			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled, &rtkCompress,
+			&checkinEnabled,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
 			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain, &authJSON); err != nil {
 			_ = rows.Close()
@@ -705,6 +742,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		p.Protocol = domain.Protocol(protocol)
 		p.Disabled = disabled != 0
 		p.RTKCompress = rtkCompress != 0
+		p.CheckinEnabled = checkinEnabled != 0
 		p.Deleted = deleted != 0
 		p.DeletedAt = deletedAt
 		p.CodingPlanProvider = codingPlanProvider
@@ -814,7 +852,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 }
 
 func (s *Store) loadModels(providerID string) ([]domain.Model, error) {
-	rows, err := s.reader().Query(`SELECT id, protocol, context_length, in_menu, display_name FROM models WHERE provider_id = ? ORDER BY position, id`, providerID)
+	rows, err := s.reader().Query(`SELECT id, protocol, context_length, in_menu, display_name, free, rate, rate_was FROM models WHERE provider_id = ? ORDER BY position, id`, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -824,9 +862,11 @@ func (s *Store) loadModels(providerID string) ([]domain.Model, error) {
 		var m domain.Model
 		var protocol string
 		var inMenu int
-		if err := rows.Scan(&m.ID, &protocol, &m.ContextLength, &inMenu, &m.Name); err != nil {
+		var free int
+		if err := rows.Scan(&m.ID, &protocol, &m.ContextLength, &inMenu, &m.Name, &free, &m.Rate, &m.RateWas); err != nil {
 			return nil, err
 		}
+		m.Free = free != 0
 		m.ProviderID = providerID
 		m.Protocol = domain.Protocol(protocol)
 		m.InMenu = inMenu != 0

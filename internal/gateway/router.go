@@ -1695,6 +1695,22 @@ func (r *Router) SetProviderRTKCompress(providerID string, enabled bool) (domain
 	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
 }
 
+// SetProviderCheckin turns the daily check-in of one subscription on or off. It
+// goes through its own endpoint, as RTKCompress does, so a partial provider
+// patch saved from the console cannot reset it.
+func (r *Router) SetProviderCheckin(providerID string, enabled bool) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		r.state.Providers[index].CheckinEnabled = enabled
+		return r.state.Providers[index], nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
 func (r *Router) UpdateProviderModels(providerID string, models []domain.Model, healthStatus string) (domain.Provider, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

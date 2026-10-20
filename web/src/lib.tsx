@@ -1,36 +1,37 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import {
-    AdminAuthStatus,
-    APIKey,
-    APIKeyDayStats,
-    BadgeTone,
-    CloudflareZoneOption,
-    GatewayState,
-    HostDiskTemp,
-    HostFanSpeed,
-    HostMetrics,
-    LegacyRequestStatsSnapshot,
-    LogEntry,
-    Model,
-    NavItemID,
-    OutputEndpoint,
-    Protocol,
-    Provider,
-    ProviderAuthPreview,
-    ProviderCacheTestResult,
-    ProviderChatTestOptions,
-    ProviderConnectKind,
-    ProviderPreset,
-    ProviderThinkingTestResult,
-    PublicAccessSettings,
-    RequestAdapter,
-    RequestStatsSnapshot,
-    Route,
-    RouteTestResult,
-    SelfcheckCaseResult,
-    SelfcheckPrefs,
-    SubscriptionConnectKind
+  AdminAuthStatus,
+  APIKey,
+  APIKeyDayStats,
+  BadgeTone,
+  CloudflareZoneOption,
+  GatewayState,
+  HostDiskTemp,
+  HostFanSpeed,
+  HostMetrics,
+  LegacyRequestStatsSnapshot,
+  LogEntry,
+  Model,
+  NavItemID,
+  OutputEndpoint,
+  Protocol,
+  Provider,
+  ProviderAuthPreview,
+  ProviderCacheTestResult,
+  ProviderChatTestOptions,
+  ProviderConnectKind,
+  ProviderPreset,
+  ProviderThinkingTestResult,
+  PublicAccessSettings,
+  RequestAdapter,
+  RequestStatsSnapshot,
+  Route,
+  RouteTestResult,
+  SelfcheckCaseResult,
+  SelfcheckPrefs,
+  SubscriptionCheckin,
+  SubscriptionConnectKind
 } from './types';
 
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
@@ -440,7 +441,7 @@ export const LOGS_PAGE_SIZE = 10;
 export const API_KEYS_PAGE_SIZE = 30;
 
 // 用户管理表格列宽（表头与数据行共用，保证对齐）。
-export const USERS_TABLE_GRID = 'minmax(0,0.7fr) 48px minmax(0,1.2fr) minmax(0,0.8fr) minmax(0,0.9fr) minmax(0,0.9fr) 236px';
+export const USERS_TABLE_GRID = 'minmax(0,0.7fr) 64px 48px minmax(0,1fr) minmax(0,0.8fr) minmax(0,0.9fr) minmax(0,0.9fr) 236px';
 
 // 与后端 internal/gateway/user_isolation.go 里的 logOwnerFilterAdmin 保持一致。
 export const LOG_OWNER_FILTER_ADMIN = '_admin';
@@ -606,7 +607,10 @@ export function trafficLogSourceTitle(log: LogEntry) {
 }
 
 export function trafficLogProviderLabel(log: LogEntry, providers: Provider[]) {
-  return providerUsageLabel(log.providerId || '_unknown', providers);
+  return providerDisplayLabel(
+    providers.find((item) => item.id === log.providerId),
+    providerUsageLabel(log.providerId || '_unknown', providers),
+  );
 }
 
 export function isTrafficLogError(log: LogEntry) {
@@ -1345,6 +1349,86 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
   return 'api_key';
 }
 
+// 上游凭证里有些 accountLabel 恒等于品牌名（实测 Cursor 就是 "Cursor"），
+// 它对区分账号毫无价值，当成"没有标识"处理，免得占位还误导。
+const GENERIC_ACCOUNT_LABELS = new Set(['cursor', 'qoder', 'workbuddy', 'trae', 'zcode', 'anthropic', 'openai']);
+
+/**
+ * 挑一个真正能区分「哪个账号」的标识出来。
+ *
+ * Provider 的名字来自接入目录，同一个服务商多登一个账号就多一条同名记录，
+ * 备选链和 API 日志把它们并排摆出来时，只读名字分不出谁是谁。
+ *
+ * 昵称不一定可信：WorkBuddy 的 accountLabel 取自上游昵称，实测就有账号的昵称
+ * 是 "1"，所以昵称没有区分度时退回账号 id 尾段——九个字符，但一定唯一。
+ */
+export function providerAccountLabel(provider: Provider): string {
+  const pick = (label?: string, id?: string) => {
+    const text = (label || '').trim();
+    const uid = (id || '').trim();
+    const tail = uid ? `#${uid.replace(/-/g, '').slice(0, 8)}` : '';
+    if (text && !GENERIC_ACCOUNT_LABELS.has(text.toLowerCase())) {
+      // 短到这种地步的昵称没有区分度（实测 WorkBuddy 的昵称就是 "1"），有账号 id 就让位给它。
+      return tail && /^\d{0,3}$/.test(text) ? tail : text;
+    }
+    return tail;
+  };
+  switch (providerConnectKind(provider)) {
+    case 'claude_oauth': return pick(provider.claudeOAuth?.accountLabel);
+    case 'cursor_oauth': return pick(provider.cursorOAuth?.accountLabel);
+    case 'chatgpt_oauth': return pick(chatgptAccountLabelFriendly(provider.chatgptOAuth?.accountLabel));
+    case 'qoder_pat':
+    case 'qoder_cn': return pick(provider.qoderPat?.email || provider.qoderPat?.accountLabel);
+    case 'workbuddy':
+    case 'workbuddy_ai': return pick(provider.workbuddyOAuth?.accountLabel, provider.workbuddyOAuth?.userId);
+    case 'zcode':
+    case 'zcode_bigmodel': return pick(provider.zcodeOAuth?.accountLabel);
+    case 'trae_cn':
+    case 'trae_global': return pick(provider.traeOAuth?.accountLabel, provider.traeOAuth?.userId);
+    default: return '';
+  }
+}
+
+/**
+ * 行内展示用的短账号：邮箱只留 @ 之前的一段。
+ * 「lylearcherai2@gmail.com · Free」要 216px，日志那一列给不满；账号之间的差别
+ * 本来就在本地部分，域名砍掉不影响认人，完整值仍留在悬浮提示和详情弹窗里。
+ */
+export function shortenAccountLabel(label: string): string {
+  const at = label.indexOf('@');
+  if (at <= 0) return label;
+  const plan = label.indexOf(' · ', at);
+  return plan < 0 ? label.slice(0, at) : label.slice(0, at) + label.slice(plan);
+}
+
+/** Provider 的完整署名：名字 + 账号标识，用来在名字撞车时区分是哪一条。 */
+export function providerDisplayLabel(provider: Provider | undefined, missing = '未知 Provider') {
+  if (!provider) return missing;
+  const account = providerAccountLabel(provider);
+  return account && account !== provider.name ? `${provider.name} · ${account}` : provider.name;
+}
+
+/**
+ * API 日志的「这条请求实际由谁承接」。
+ *
+ * 后端把故障转移后真正服务的那条 Provider 写进 providerId（不是首选），所以
+ * 拿日志的 routeId 反查路由首选、再对照密钥的备选顺序，就能在纯前端算出
+ * "首选没服务、这条走了备选 N"，不用加库字段。
+ */
+export function trafficLogServing(log: LogEntry, providers: Provider[], routes: Route[], apiKeys: APIKey[]) {
+  const route = routes.find((item) => item.id === log.routeId);
+  const primaryId = route?.providerId || '';
+  const servedId = log.providerId || '';
+  if (!primaryId || !servedId || primaryId === servedId) return null;
+  const primary = providers.find((item) => item.id === primaryId);
+  const fallbacks = (apiKeys.find((item) => item.id === log.apiKeyId) || {}).fallbackProviderIds || [];
+  const rank = fallbacks.indexOf(servedId);
+  return {
+    primary,
+    rank: rank >= 0 ? rank + 1 : 0,
+  };
+}
+
 // isWorkBuddyConnectKind 判定两个 WorkBuddy 构建：它们只在端点与模型表上不同，
 // 控制台里的展示、徽标与登录流程都走同一套分支。
 export function isWorkBuddyConnectKind(kind: ProviderConnectKind): boolean {
@@ -1386,6 +1470,58 @@ export function subscriptionOAuthPrefix(kind: ProviderConnectKind): string {
   if (isZCodeConnectKind(kind)) return 'zcode-oauth';
   if (isTraeConnectKind(kind)) return 'trae-oauth';
   return 'workbuddy-oauth';
+}
+
+/**
+ * checkinReport 把签到结果写成卡片上的一行。
+ *
+ * 只说厂商给了的：连续天数只有 WorkBuddy 报，Qoder 的活动接口不报，所以 Qoder
+ * 那行不会出现「连续 N 天」；积分为 0 时也不编一个「+0」。
+ * 「立即签到」按钮在今天的还没到手时出现（dueToday），失败的那次也算还没到手。
+ */
+export function checkinReport(view?: SubscriptionCheckin): {
+  tone: 'ok' | 'bad' | 'wait' | 'none';
+  text: string;
+  hint: string;
+  dueToday: boolean;
+} {
+  if (!view?.supported) return { tone: 'none', text: '', hint: '', dueToday: false };
+  const record = view.record;
+  const today = record && record.day === view.today ? record : undefined;
+  const last = !today && (record?.outcome === 'claimed' || record?.outcome === 'done')
+    ? `上次签到 ${record?.day}`
+    : '';
+  const hint = record?.msg || '';
+  if (today) {
+    switch (today.outcome) {
+      case 'claimed':
+      case 'done': {
+        const credit = (today.credit ?? 0) > 0 ? ` +${trimNumber(today.credit ?? 0)}` : '';
+        const streak = (today.streak ?? 0) > 0 ? ` · 连续 ${today.streak} 天` : '';
+        return { tone: 'ok', text: `今日已签到${credit}${streak}`, hint, dueToday: false };
+      }
+      case 'ineligible':
+        return { tone: 'none', text: '这个账号不参与每日签到', hint, dueToday: false };
+      case 'inactive':
+        return { tone: 'none', text: '当前没有签到活动', hint, dueToday: false };
+      case 'own-app':
+        return { tone: 'none', text: '只能在厂商自己的应用里签到', hint, dueToday: false };
+      case 'failed':
+        return {
+          tone: 'bad',
+          text: [view.enabled ? '签到失败，稍后自动重试' : '签到失败', hint].filter(Boolean).join(' · '),
+          hint,
+          dueToday: true,
+        };
+    }
+  }
+  if (view.enabled) return { tone: 'wait', text: ['今日未签到', last].filter(Boolean).join(' · '), hint, dueToday: true };
+  return { tone: 'none', text: ['自动签到已关闭', last].filter(Boolean).join(' · '), hint, dueToday: true };
+}
+
+// trimNumber 把 100.0 写成 100，把 0.5 原样留着：厂商给的额度有时是浮点。
+function trimNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
 }
 
 // presetMatchesProvider 判断一个 Provider 是否属于目录里的某个预设，用于磁贴上
@@ -2662,6 +2798,47 @@ export const QODER_TIER_INFO: Record<string, { label: string; multiplier: string
 };
 
 /**
+ * isFreeModel 判定"这个模型不花套餐积分"。除了上游明确标的 free，还认名字里
+ * 带 free 的（magpie 的同一手：有些上游只在名字里说免费，不给价格字段）。
+ */
+export function isFreeModel(model: Model): boolean {
+  if (model.free) return true;
+  return /(^|[^a-z])free($|[^a-z])/i.test(`${model.id} ${model.name || ''}`);
+}
+
+// modelRateTimes 是倍率的写法：<0.01 一律收成 "<0.01"，否则两位小数去掉尾零
+// （0.50→0.5、1.00→1）。上游按 0 报倍率等于没报，返回空不渲染。
+function modelRateTimes(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return '';
+  if (rate < 0.01) return '<0.01×';
+  return `${Number(rate.toFixed(2))}×`;
+}
+
+/**
+ * modelRateLabel 给出倍率与被划线的原价；只有原价确实高于现价时才带出原价，
+ * 免费模型不显示 0×。
+ */
+export function modelRateLabel(model: Model): { rate: string; was: string } | null {
+  const rate = modelRateTimes(model.free ? 0 : model.rate || 0);
+  const wasValue = modelRateTimes(model.rateWas || 0);
+  const was = rate && wasValue && (model.rate || 0) < (model.rateWas || 0) ? wasValue : '';
+  if (!rate && !was) return null;
+  return { rate, was };
+}
+
+/**
+ * modelContextLabel 只在窗口到 1M 及以上、且名字里没写过 M 时给一个短标签：
+ * 200K 这类窗口在列表里到处都有，标出来只会淹没真正的大窗口。
+ */
+export function modelContextLabel(model: Model): string {
+  const context = model.contextLength || 0;
+  if (context < 1_000_000) return '';
+  if (/\b\d+(\.\d+)?m\b/i.test(`${model.id} ${model.name || ''}`)) return '';
+  const millions = context / 1_000_000;
+  return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+}
+
+/**
  * modelAlias 是上游给这个模型起的名字，只在它确实不同于 id 时给出。
  * id 仍是各处的主角（请求里用的就是它、点击即复制），别名只作次级说明：
  * Qoder 这类「按 key 路由、按品牌名展示」的上游，光看 id 是一串代号。
@@ -2676,11 +2853,12 @@ export function modelSelectOptionLabel(model: Model) {
   // Qoder 按 key 路由（qmodel_38max），但它自己的界面写的是 Qwen3.8-Max：下拉框
   // 里给后者，请求里仍是前者。filterModelOptions 同时匹配 id，搜旧名字照样找得到。
   const label = modelAlias(model) || model.id;
-  if (tier) {
-    const base = `${label}（${tier.label} ${tier.multiplier}）`;
-    return out ? `${base} · out ${out}` : base;
-  }
-  return out ? `${label} · out ${out}` : label;
+  // 下拉框里也要能看出免费与倍率：选模型时最想知道的就是这个。
+  const price = [isFreeModel(model) ? '免费' : '', modelRateLabel(model)?.rate || '', modelContextLabel(model)].filter(Boolean).join(' ');
+  const suffix = [price, out ? `out ${out}` : ''].filter(Boolean).join(' · ');
+  const tierText = tier ? `${tier.label} ${tier.multiplier}` : '';
+  const head = tierText ? `${label}（${tierText}）` : label;
+  return suffix ? `${head} · ${suffix}` : head;
 }
 
 export function formatCompactCount(value: number) {

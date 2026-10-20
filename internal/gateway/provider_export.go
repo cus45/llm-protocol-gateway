@@ -130,7 +130,9 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 	}
 	switch provider.AuthType {
 	case domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth, domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN,
-		domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
+		domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI,
+		domain.AuthTypeZCode, domain.AuthTypeZCodeBigModel, domain.AuthTypeTraeCN, domain.AuthTypeTraeGlobal,
+		domain.AuthTypeOpenCodeZenFree:
 	default:
 		return domain.Provider{}, fmt.Errorf("unsupported authType %q", provider.AuthType)
 	}
@@ -256,26 +258,36 @@ func sanitizeImportedQoderPAT(cred *domain.QoderCredential) *domain.QoderCredent
 	if cred == nil {
 		return nil
 	}
-	access := strings.TrimSpace(cred.AccessToken)
-	refresh := strings.TrimSpace(cred.RefreshToken)
-	expires := strings.TrimSpace(cred.ExpiresAt)
-	label := strings.TrimSpace(cred.AccountLabel)
-	if access == "" && refresh == "" {
-		if expires == "" && label == "" && !cred.Connected {
+	// A Qoder browser sign-in is more than its token pair: the uid and machine id
+	// are what its requests are signed with and what a daily check-in is
+	// attributed to. The bundle is a full backup, so all of it has to survive the
+	// round trip — an import that kept only the tokens restored a card that could
+	// neither forward nor be checked in.
+	sanitized := *cred
+	sanitized.AccessToken = strings.TrimSpace(cred.AccessToken)
+	sanitized.RefreshToken = strings.TrimSpace(cred.RefreshToken)
+	sanitized.ExpiresAt = strings.TrimSpace(cred.ExpiresAt)
+	sanitized.AccountLabel = strings.TrimSpace(cred.AccountLabel)
+	sanitized.SignInMode = strings.TrimSpace(cred.SignInMode)
+	sanitized.PAT = strings.TrimSpace(cred.PAT)
+	sanitized.UID = strings.TrimSpace(cred.UID)
+	sanitized.Email = strings.TrimSpace(cred.Email)
+	sanitized.Name = strings.TrimSpace(cred.Name)
+	sanitized.DeviceToken = strings.TrimSpace(cred.DeviceToken)
+	sanitized.DeviceRefresh = strings.TrimSpace(cred.DeviceRefresh)
+	sanitized.MachineID = strings.TrimSpace(cred.MachineID)
+	// HasStoredToken is computed when a provider is redacted for the browser,
+	// never carried: an import must not be able to assert it.
+	sanitized.HasStoredToken = false
+	if sanitized.AccessToken == "" && sanitized.RefreshToken == "" && sanitized.DeviceToken == "" {
+		if sanitized.ExpiresAt == "" && sanitized.AccountLabel == "" && sanitized.UID == "" && !cred.Connected {
 			return nil
 		}
-		return &domain.QoderCredential{
-			ExpiresAt:    expires,
-			AccountLabel: label,
-			Connected:    false,
-		}
+		// A metadata-only bundle (an export taken without credentials) says
+		// nothing about a live sign-in.
+		sanitized.Connected = false
 	}
-	return &domain.QoderCredential{
-		AccessToken:  access,
-		RefreshToken: refresh,
-		ExpiresAt:    expires,
-		AccountLabel: label,
-	}
+	return &sanitized
 }
 
 func sanitizeImportedChatGPTOAuth(cred *domain.ChatGPTOAuthCredential) *domain.ChatGPTOAuthCredential {
@@ -415,7 +427,8 @@ func mergeQoderPATImport(existing, incoming *domain.QoderCredential) *domain.Qod
 	if incoming == nil {
 		return cloneQoderPAT(existing)
 	}
-	if strings.TrimSpace(incoming.AccessToken) != "" || strings.TrimSpace(incoming.RefreshToken) != "" {
+	if strings.TrimSpace(incoming.AccessToken) != "" || strings.TrimSpace(incoming.RefreshToken) != "" ||
+		strings.TrimSpace(incoming.DeviceToken) != "" {
 		return cloneQoderPAT(incoming)
 	}
 	if existing == nil {
@@ -427,6 +440,21 @@ func mergeQoderPATImport(existing, incoming *domain.QoderCredential) *domain.Qod
 	}
 	if incoming.AccountLabel != "" {
 		merged.AccountLabel = incoming.AccountLabel
+	}
+	// Identity the live account never learned — a card signed in before the
+	// account endpoints were asked — is worth taking from the bundle, since the
+	// bundle's copy came from a machine that did know it.
+	if merged.UID == "" {
+		merged.UID = incoming.UID
+	}
+	if merged.Email == "" {
+		merged.Email = incoming.Email
+	}
+	if merged.Name == "" {
+		merged.Name = incoming.Name
+	}
+	if merged.MachineID == "" {
+		merged.MachineID = incoming.MachineID
 	}
 	return &merged
 }

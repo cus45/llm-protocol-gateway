@@ -281,9 +281,12 @@ func (s *Server) handleOpenAIResponsesCompact(w http.ResponseWriter, r *http.Req
 	}
 
 	bufWriter := newBufferedResponseWriter()
-	status, usage, upstreamBody, _, _, err := s.executeProtocolFlowWithFailover(
+	status, usage, upstreamBody, decision, effectiveModel, err := s.executeProtocolFlowWithFailover(
 		bufWriter, r, route, decision, model, syntheticReq, domain.ProtocolOpenAIResponses, gatewayKeyMatched, matchedKey, gatewayKeyMatched,
 	)
+	// decision 到这里已经是真正服务的那条 Provider；接住它，否则下面的日志会把
+	// 备选承接的请求记到首选头上。
+	logModel = finalizeRequestLogModel(logModel, model, effectiveModel)
 	if err != nil || status >= 400 {
 		message := "compaction upstream call failed"
 		if err != nil {

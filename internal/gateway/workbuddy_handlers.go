@@ -108,6 +108,8 @@ func (s *Server) handleWorkBuddyUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	quota := workBuddyQuotaFor(ctx, site, *refreshed.WorkBuddy)
+	view := s.checkinViewFor(refreshed)
+	quota.Checkin = &view
 	// The refresh may have rotated the token; keep the stored one current.
 	if refreshed.WorkBuddy.AccessToken != provider.WorkBuddy.AccessToken {
 		_ = s.persistProviderOAuth(refreshed)

@@ -265,6 +265,78 @@ func TestHandleOpenAIResponsesCompactEndToEnd(t *testing.T) {
 	}
 }
 
+// TestHandleOpenAIResponsesCompactAttributesLogToServingProvider pins the
+// request-log attribution on the compaction path: when the preferred provider
+// is down and a backup produces the summary, the log row must name the backup.
+// The handler used to discard executeProtocolFlowWithFailover's returned
+// decision and log the pre-flight (preferred) provider, so the API log blamed
+// an account that never served the request.
+func TestHandleOpenAIResponsesCompactAttributesLogToServingProvider(t *testing.T) {
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "resp_backup",
+			"object": "response",
+			"output": []any{map[string]any{
+				"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "summary from the backup"}},
+			}},
+			"usage": map[string]any{"input_tokens": 7, "output_tokens": 3},
+		})
+	}))
+	defer live.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer down.Close()
+
+	preferred := domain.Provider{
+		ID: "p-pref", Name: "p-pref", Protocol: domain.ProtocolOpenAIResponses,
+		AuthType: domain.AuthTypeAPIKey, BaseURL: down.URL + "/v1/responses", APIKeySource: "sk-a", HealthStatus: "healthy",
+	}
+	backup := domain.Provider{
+		ID: "p-back", Name: "p-back", Protocol: domain.ProtocolOpenAIResponses,
+		AuthType: domain.AuthTypeAPIKey, BaseURL: live.URL + "/v1/responses", APIKeySource: "sk-b", HealthStatus: "healthy",
+	}
+	route := domain.Route{ID: "r-cf", Name: "r-cf", ProviderID: preferred.ID, OutputProtocol: domain.ProtocolOpenAIResponses, Mode: domain.RouteModeAuto, Enabled: true}
+	apiKey := domain.APIKey{
+		ID: "k-cf", Name: "k-cf", Key: "sk-gw-test-compact-failover", RouteID: route.ID,
+		Enabled: true, StreamEnabled: true,
+		FallbackProviderIDs:    []string{backup.ID},
+		FallbackModelOverrides: map[string]string{backup.ID: "gpt-5.5"},
+	}
+	logStore := monitor.NewStore()
+	router := NewRouter(domain.GatewayState{
+		Providers: []domain.Provider{preferred, backup},
+		Routes:    []domain.Route{route},
+		APIKeys:   []domain.APIKey{apiKey},
+	})
+	server := NewServer(router, logStore)
+
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/responses/compact",
+		strings.NewReader(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"summarize this"}]}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the backup to serve the compaction, got %d: %s", rec.Code, rec.Body.String())
+	}
+	logs := logStore.List(0)
+	if len(logs) == 0 {
+		t.Fatal("expected the compact call to write a request log")
+	}
+	last := logs[len(logs)-1]
+	if last.Action != "compact" {
+		t.Fatalf("expected the compact log row, got action=%q", last.Action)
+	}
+	if last.ProviderID != backup.ID {
+		t.Fatalf("compact log should name the serving provider %q, got %q", backup.ID, last.ProviderID)
+	}
+}
+
 // TestFlattenInputToTranscript reproduces the shape of a real Codex history
 // (message/function_call/function_call_output/reasoning items) and checks
 // the flattened output: tool calls/results render as readable text,

@@ -88,7 +88,13 @@ type qoderModelInfo struct {
 	Thinks        bool
 	AlwaysThinks  bool
 	Images        bool
-	Config        json.RawMessage
+	// Free is whether the plan pays nothing for this model, Rate the credits
+	// multiple it does cost, and RateWas the price struck through beside it
+	// while a discount runs (0: none).
+	Free    bool
+	Rate    float64
+	RateWas float64
+	Config  json.RawMessage
 }
 
 // routable is whether the entry names one model a client can pick. "auto" and
@@ -180,10 +186,14 @@ func qoderReadListingModel(raw json.RawMessage) (qoderModelInfo, bool) {
 		ReasoningEff   []string        `json:"reasoning_efforts"`
 		ThinkingConfig json.RawMessage `json:"thinking_config"`
 		ContextConfig  json.RawMessage `json:"context_config"`
+		// Raw is the entry as it arrived: the price fields are read off it with
+		// the promotion rules below, which need more shape than this struct keeps.
+		Raw json.RawMessage
 	}
 	if json.Unmarshal(raw, &entry) != nil || !entry.Enable {
 		return qoderModelInfo{}, false
 	}
+	entry.Raw = raw
 	info := qoderModelInfo{
 		Key:            strings.TrimSpace(entry.Key),
 		Source:         entry.Source,
@@ -198,6 +208,7 @@ func qoderReadListingModel(raw json.RawMessage) (qoderModelInfo, bool) {
 		return qoderModelInfo{}, false
 	}
 	info.Windows, info.DefaultWindow = qoderWindowsOf(entry.ContextConfig)
+	info.Free, info.Rate, info.RateWas = qoderPriceOf(entry.Raw)
 	// thinking_config is where Qoder keeps the levels a model offers, its
 	// default, and whether thinking can be turned off at all; is_reasoning
 	// alone stands for a model listed without one.
@@ -239,6 +250,92 @@ func qoderReadListingModel(raw json.RawMessage) (qoderModelInfo, bool) {
 		}
 	}
 	return info, true
+}
+
+// qoderPriceOf reads what a listing entry costs the plan, as Qoder's own client
+// shows it beside the model: the credits multiple a request costs (0.5×), and
+// the price struck through next to it while a discount runs.
+//
+// The rule is not "is_free". Qoder's listing marks Qwen3.8-Max is_free=true
+// while pricing it at 0.5× (an off-peak discount), and its client shows the
+// price, not the flag — so a model counts as free only when the listed price is
+// 0 and that 0 is not a promotion. An active promotion carrying a price before
+// it is a discount; a limited-time free model (Qwen3.8-Flash: 0× with its
+// original 0.1× struck through) is free while it runs. is_free is consulted
+// only for a listing that names no price at all.
+func qoderPriceOf(raw json.RawMessage) (free bool, rate float64, rateWas float64) {
+	var entry struct {
+		IsFree       *bool    `json:"is_free"`
+		IsFreeC      *bool    `json:"isFree"`
+		PriceFactor  *float64 `json:"price_factor"`
+		PriceFactorC *float64 `json:"priceFactor"`
+		Original     float64  `json:"original_price_factor"`
+		OriginalC    float64  `json:"originalPriceFactor"`
+		// Qoder spells the promotion block both ways across its replies, and
+		// once misspelled it; both are read.
+		Promotion  *qoderPromotion `json:"promotion"`
+		PromotionT *qoderPromotion `json:"prommotion"`
+	}
+	if json.Unmarshal(raw, &entry) != nil {
+		return false, 0, 0
+	}
+	price := entry.PriceFactor
+	if price == nil {
+		price = entry.PriceFactorC
+	}
+	if price == nil {
+		isFree := entry.IsFree
+		if isFree == nil {
+			isFree = entry.IsFreeC
+		}
+		return isFree != nil && *isFree, 0, 0
+	}
+	promotion := entry.Promotion
+	if promotion == nil {
+		promotion = entry.PromotionT
+	}
+	before, discount := 0.0, 0.0
+	if promotion != nil {
+		if promotion.Before != nil {
+			before = *promotion.Before
+		} else if promotion.BeforeC != nil {
+			before = *promotion.BeforeC
+		}
+		discount = qoderMaxFloat(promotion.Discount, promotion.DiscountC)
+	}
+	discounted := promotion != nil && promotion.Active && before > 0
+	rate = qoderMaxFloat(*price, 0)
+	rateWas = qoderMaxFloat(entry.Original, entry.OriginalC)
+	if discounted {
+		rateWas = before
+		if rate == 0 {
+			// A promotion that zeroes the price for a while still costs the
+			// discounted multiple, not nothing.
+			rate = before * discount
+		}
+	}
+	if rateWas <= rate {
+		rateWas = 0
+	}
+	return *price == 0 && !discounted, rate, rateWas
+}
+
+type qoderPromotion struct {
+	Active    bool     `json:"active"`
+	Before    *float64 `json:"before_promotion_price_factor"`
+	BeforeC   *float64 `json:"beforePromotionPriceFactor"`
+	Discount  float64  `json:"discount_factor"`
+	DiscountC float64  `json:"discountFactor"`
+}
+
+func qoderMaxFloat(values ...float64) float64 {
+	best := 0.0
+	for index, value := range values {
+		if index == 0 || value > best {
+			best = value
+		}
+	}
+	return best
 }
 
 // qoderWindowsOf reads a model's context windows from context_config — the
@@ -309,6 +406,9 @@ func qoderCatalogModels(providerID string, models []qoderStaticModel, infos []qo
 				Name:          info.DisplayName,
 				Protocol:      domain.ProtocolOpenAIChat,
 				ContextLength: info.largestContext(),
+				Free:          info.Free,
+				Rate:          info.Rate,
+				RateWas:       info.RateWas,
 				InMenu:        true,
 			}
 			fillModelTokenBudgets(&model)

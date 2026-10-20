@@ -1,6 +1,14 @@
-import type { LogEntry, Provider } from '../types';
-import { ProviderLabel } from './provider_label';
-import { actionLabel, isTrafficLogError, trafficLogKeyLabel, trafficLogKeyTitle, trafficLogProviderLabel } from '../lib';
+import type {APIKey, LogEntry, Provider, Route} from '../types';
+import {ProviderLabel} from './provider_label';
+import {
+    actionLabel,
+    isTrafficLogError,
+    providerDisplayLabel,
+    trafficLogKeyLabel,
+    trafficLogKeyTitle,
+    trafficLogProviderLabel,
+    trafficLogServing
+} from '../lib';
 
 /**
  * API 日志的请求表。版式照 magpie 的日志页抄：一行一条、数字等宽右对齐、
@@ -68,9 +76,11 @@ function compactFlow(label: string) {
   return to ? `${initial(from)}→${initial(to)}` : initial(from);
 }
 
-export function TrafficLogTable({ logs, providers, onOpen }: {
+export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
   logs: LogEntry[];
   providers: Provider[];
+  routes?: Route[];
+  apiKeys?: APIKey[];
   onOpen: (log: LogEntry) => void;
 }) {
   return (
@@ -82,7 +92,7 @@ export function TrafficLogTable({ logs, providers, onOpen }: {
           <span>请求模型</span>
           <span>实际模型</span>
           <span title="上游实际收到的推理设置">推理强度</span>
-          <span>供应商</span>
+          <span title="实际承接这条请求的 Provider 与账号；带「备N」标记的是首选未服务、由备选第 N 位接的">供应商 · 账号</span>
           <span>协议</span>
           <span className="num">输入</span>
           <span className="num">输出</span>
@@ -99,6 +109,11 @@ export function TrafficLogTable({ logs, providers, onOpen }: {
           const speed = speedCell(log);
           const provider = providers.find((item) => item.id === log.providerId);
           const model = splitModel(log.model || '');
+          // providerId 记的就是真正服务的那条：与路由首选不一致，说明这条走了备选。
+          const serving = trafficLogServing(log, providers, routes || [], apiKeys || []);
+          const failoverTitle = serving
+            ? `首选「${providerDisplayLabel(serving.primary, '未绑定')}」未承接，本条由${serving.rank ? `备选 ${serving.rank}` : '其他 Provider'}「${providerDisplayLabel(provider, log.providerId || '未知')}」服务`
+            : undefined;
           return (
             <div
               className={`tlog-grid tlog-row${error ? ' error' : ''}`}
@@ -117,8 +132,9 @@ export function TrafficLogTable({ logs, providers, onOpen }: {
               <span className="tlog-model" title={model.requested}>{model.requested || '—'}</span>
               <span className="tlog-model effective" title={model.effective}>{model.effective || '—'}</span>
               <span className="tlog-reasoning" title={log.reasoningEffort || '未设置推理强度'}>{log.reasoningEffort || '—'}</span>
-              <span className="tlog-provider">
-                {provider ? <ProviderLabel provider={provider} size={14} /> : trafficLogProviderLabel(log, providers)}
+              <span className="tlog-provider" title={failoverTitle}>
+                {serving ? <i className={`tlog-served${serving.rank ? '' : ' unknown'}`}>{serving.rank ? `备${serving.rank}` : '切换'}</i> : null}
+                {provider ? <ProviderLabel provider={provider} size={14} stack /> : trafficLogProviderLabel(log, providers)}
               </span>
               <span className="tlog-proto" title={`${actionLabel(log.action)} · ${log.protocolFlow || '未知流向'} · ${log.path}`}>
                 {compactFlow(log.protocolFlow)}

@@ -390,7 +390,7 @@ export function ApiKeyDetailPanel({
                     disabled={saving}
                     onChange={(event) => void onUpdateOwner(keyItem, event.target.value)}
                   >
-                    <option value="">管理员</option>
+                    <option value="">内置 admin（无归属）</option>
                     {owners.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
                   </select>
                 </div>

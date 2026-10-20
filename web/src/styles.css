@@ -1482,6 +1482,21 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
 }
 .provider-label-protocol { color: var(--subtle); font-size: 11.5px; font-family: var(--mono); }
 .provider-label.missing { color: var(--subtle); font-family: var(--mono); font-size: 11.5px; }
+/* 窄列里名字和账号分两行：图标竖着跨两行，两行各自占满剩余宽度。 */
+.provider-label.stacked {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
+  column-gap: 7px; row-gap: 1px; line-height: 1.25;
+}
+.provider-label.stacked .brand-icon { grid-row: 1 / span 2; align-self: center; }
+.provider-label.stacked .provider-label-account { margin-left: 0; max-width: none; }
+.provider-label.stacked .provider-label-account::before { content: none; }
+/* 同名 Provider 的账号尾巴：昵称 / 邮箱 / 账号 id 尾段，比名字弱一档。
+   自带分隔点，父级不再叠一层 gap，窄列里能把那 7px 还给正文。 */
+.provider-label-account {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: -7px;
+  color: var(--subtle); font-size: 11.5px; font-family: var(--mono); font-weight: 500;
+}
+.provider-label-account::before { content: '·'; margin-right: 5px; color: var(--border-strong); }
 
 /* 筛选下拉里的图标与文字同一基线，图标不参与换行。 */
 .searchable-select-option { display: flex; align-items: center; gap: 8px; }
@@ -1504,7 +1519,9 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
 
 /* 故障转移链里的身份列占满剩余宽度，长名字截断而不是把模型挤走。 */
 .fallback-row .fallback-identity { flex: 1; min-width: 0; }
-.fallback-row .provider-label-name { font-size: 13px; }
+.fallback-row .provider-label-name { font-size: 13px; min-width: 44px; }
+/* 同一条链上常常是同一个服务商的几个账号：名字是重复的，账号才是信息。 */
+.fallback-row .provider-label-account { flex-shrink: 0; max-width: 200px; }
 .fallback-name.missing {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--subtle); font-family: var(--mono); font-size: 12px;
@@ -2491,6 +2508,45 @@ html[data-theme="dark"] .claude-usage-state.ok { color: #6ee7b7; }
 html[data-theme="dark"] .claude-usage-state.warn { color: #fcd34d; }
 .cursor-usage-panel { border-color: var(--border); background: var(--surface-soft); }
 .cursor-usage-panel .claude-usage-title { color: var(--text); }
+
+/* 每日签到：额度窗口之后的一行——状态点 + 文案 + 开关 + 立即签到。
+   只有厂商真有签到活动时后端才给 supported，所以这行不会出现在没有该功能的卡上。 */
+.checkin-row {
+  display: grid; gap: 4px;
+  padding-top: 8px; border-top: 1px solid var(--border);
+}
+/* 状态与两个按钮固定一行：可换行的 flex 容器会把按钮甩到第二行，
+   把同一排 Provider 卡撑得一张高一张低。 */
+.checkin-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.checkin-say {
+  display: inline-flex; align-items: center; gap: 6px;
+  /* 文案一行读完，长的那段（厂商原话）收进 title：同一句错误在上面的额度行里
+     已经完整出现过。 */
+  flex: 1 1 auto; min-width: 0;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+}
+.checkin-say > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkin-row[data-state="ok"] .checkin-say { color: var(--green); }
+.checkin-row[data-state="bad"] .checkin-say { color: var(--red); }
+html[data-theme="dark"] .checkin-row[data-state="ok"] .checkin-say { color: #6ee7b7; }
+.checkin-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--slate-soft); flex: none; }
+.checkin-dot.ok { background: var(--green); }
+.checkin-dot.bad { background: var(--red); }
+.checkin-dot.wait { background: var(--amber); }
+.checkin-btn {
+  flex: none;
+  font: inherit; font-size: 10.5px; font-weight: 600;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  cursor: pointer;
+}
+.checkin-btn:hover:not(:disabled) { border-color: var(--accent-border); color: var(--accent-strong); }
+.checkin-btn:disabled { opacity: 0.6; cursor: default; }
+/* 开关是"状态"而不是"动作"：开着的时候要点就点得出来。 */
+.checkin-btn.auto.on {
+  border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-strong);
+}
+.checkin-error { font-size: 10.5px; color: var(--red); overflow-wrap: anywhere; }
 
 /* ChatGPT quota 卡内 grid — 3 桶等宽固定（卡宽 ≥340px 时每格 ~96px 足够） */
 .chatgpt-usage-panel .claude-usage-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -3688,6 +3744,17 @@ html[data-theme="dark"] .output-curl-head {
   background: var(--surface-sunken);
   color: var(--muted);
   border: 1px solid var(--border);
+}
+/* 免费与倍率：免费是唯一用绿色的标签（它决定要不要用这个模型），
+   倍率与被划线的原价保持中性灰，避免一排行里出现三种颜色。 */
+.model-tag.free {
+  background: var(--green-soft);
+  color: var(--green);
+  border: 1px solid transparent;
+}
+.model-tag.rate s {
+  margin-right: 3px;
+  opacity: 0.7;
 }
 
 .view-mode-toggle {
@@ -5611,7 +5678,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .tlog-scroll { overflow-x: auto; }
 /* 列宽按"1250px 可视区不横向滚动"倒推：14 列一旦超宽，整张表就要左右拖，
    比少几列难用得多。 */
-.tlog { min-width: 1224px; }
+.tlog { min-width: 1300px; }
 .tlog-grid {
   display: grid; gap: 0 8px; align-items: center;
   grid-template-columns:
@@ -5620,7 +5687,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
     minmax(132px, 1.15fr)
     minmax(112px, 1fr)
     78px
-    minmax(96px, 1fr)
+    minmax(172px, 1.4fr)
     44px
     66px 66px 76px 76px
     76px
@@ -5665,7 +5732,16 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text); font-family: var(--mono); font-size: 12px;
 }
-.tlog-provider { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.tlog-provider { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; font-size: 12px; }
+.tlog-provider .provider-label { min-width: 0; }
+/* 首选没承接、这条走了备选：位次角标比文字短，挤在窄列里也认得出。 */
+.tlog-served {
+  flex-shrink: 0; padding: 1px 5px; border-radius: 5px; font-style: normal;
+  background: var(--amber-soft); color: var(--amber);
+  font-size: 10.5px; font-weight: 700; font-family: var(--mono);
+}
+/* 位次算不出来（密钥的备选链后来被改过）：只说「换过」，不编一个数字出来。 */
+.tlog-served.unknown { background: var(--surface-sunken); color: var(--muted); }
 .tlog-proto {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--subtle); font-family: var(--mono); font-size: 11px;

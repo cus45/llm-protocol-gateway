@@ -43,6 +43,69 @@ func keysOf(models []qoderModelInfo) []string {
 	return out
 }
 
+// Qoder's listing prices a model with price_factor, and marks is_free for
+// reasons that do not match "costs the plan nothing" — Qwen3.8-Max carries
+// is_free=true beside a 0.5× price because an off-peak discount is running.
+// The rule magpie settled on (after shipping the wrong one) is what this pins.
+func TestQoderPriceOf(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantFree bool
+		wantRate float64
+		wantWas  float64
+	}{
+		{"discounted but not free", `{"price_factor":0.5,"is_free":true}`, false, 0.5, 0},
+		{"zero price is free", `{"price_factor":0}`, true, 0, 0},
+		{"zero from an active promotion is a discount", `{"price_factor":0,"promotion":{"active":true,"before_promotion_price_factor":0.1,"discount_factor":0.4}}`, false, 0.04, 0.1},
+		{"limited-time free keeps the original struck through", `{"price_factor":0,"original_price_factor":0.1}`, true, 0, 0.1},
+		{"original below the price is no discount", `{"price_factor":0.5,"original_price_factor":0.2}`, false, 0.5, 0},
+		{"camel case spellings", `{"priceFactor":0.3,"promotion":{"active":true,"beforePromotionPriceFactor":0.6,"discountFactor":0.5}}`, false, 0.3, 0.6},
+		{"misspelled promotion block is still read", `{"price_factor":0,"prommotion":{"active":true,"before_promotion_price_factor":0.2,"discount_factor":0.5}}`, false, 0.1, 0.2},
+		{"no price at all falls back to is_free", `{"is_free":true}`, true, 0, 0},
+		{"no price and no flag", `{}`, false, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			free, rate, was := qoderPriceOf(json.RawMessage(tc.raw))
+			// 0.1 × 0.4 is not exactly 0.04 in binary floating point, and the
+			// console rounds for display anyway, so compare with a tolerance.
+			near := func(got, want float64) bool {
+				diff := got - want
+				if diff < 0 {
+					diff = -diff
+				}
+				return diff < 1e-9
+			}
+			if free != tc.wantFree || !near(rate, tc.wantRate) || !near(was, tc.wantWas) {
+				t.Fatalf("qoderPriceOf(%s) = (%v, %v, %v), want (%v, %v, %v)",
+					tc.raw, free, rate, was, tc.wantFree, tc.wantRate, tc.wantWas)
+			}
+		})
+	}
+}
+
+// The prices have to reach the model rows, or the console cannot badge them.
+func TestQoderCatalogModelsCarryPrices(t *testing.T) {
+	listing := `{"chat":[
+		{"key":"qfmodel","enable":true,"display_name":"Qwen3.8-Flash","price_factor":0,"original_price_factor":0.1},
+		{"key":"ultimate","enable":true,"display_name":"Ultimate","price_factor":1.6}
+	]}`
+	models := qoderCatalogModels("qoder", nil, qoderParseSample(t, listing))
+	byID := map[string]domain.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	flash := byID["qfmodel"]
+	if !flash.Free || flash.RateWas != 0.1 {
+		t.Fatalf("the limited-time free model lost its pricing: %+v", flash)
+	}
+	ultimate := byID["ultimate"]
+	if ultimate.Free || ultimate.Rate != 1.6 {
+		t.Fatalf("a paid model should carry its multiple: %+v", ultimate)
+	}
+}
+
 // Qoder's app scene is what the app shows and what a request names; a model only
 // the chat scene still lists is kept, but inserted where it followed in the chat
 // order rather than appended — so a model picked before stays served after the

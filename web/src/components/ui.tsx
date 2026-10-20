@@ -1,8 +1,9 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
-import React, { useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { copyToClipboard } from '../lib';
-import { BadgeTone, ModalLayer, NavItemID, ThemeMode } from '../types';
+import React, {useEffect, useRef} from 'react';
+import {createPortal} from 'react-dom';
+import {copyToClipboard, isFreeModel, modelContextLabel, modelRateLabel} from '../lib';
+import {BadgeTone, ModalLayer, Model, NavItemID, ThemeMode} from '../types';
+
 export const THEME_STORAGE_KEY = 'llm-gateway-theme';
 
 export function systemPrefersDark() {
@@ -121,6 +122,30 @@ export interface MoreMenuItem {
 /** “更多操作”下拉菜单：低频操作（克隆/禁用/删除）收纳入口，避免卡片页脚按钮堆砌。
  *  菜单层 portal 到 body 并用 fixed 坐标定位——卡片容器有 overflow:hidden，
  *  卡内绝对定位会被裁剪；portal 同时天然脱离卡片点击冒泡路径。 */
+/**
+ * ModelPriceTags 是模型的价格标签组：免费（唯一用绿色）、积分倍率（被划线的是
+ * 打折前的原价）、以及 1M 以上的窗口。上游没给价格的厂商一个都不渲染 —— 宁缺
+ * 毋造，避免把 0× 当成"免费"读。
+ */
+export function ModelPriceTags({ model }: { model: Model }) {
+  const rate = modelRateLabel(model);
+  const context = modelContextLabel(model);
+  const free = isFreeModel(model);
+  if (!free && !rate && !context) return null;
+  return (
+    <>
+      {free ? <span className="model-tag free">免费</span> : null}
+      {rate ? (
+        <span className="model-tag rate" title={`每次请求消耗 ${rate.rate} 倍积分${rate.was ? `（原价 ${rate.was}）` : ''}`}>
+          {rate.was ? <s>{rate.was}</s> : null}
+          {rate.rate}
+        </span>
+      ) : null}
+      {context ? <span className="model-tag ctx" title={`${(model.contextLength || 0).toLocaleString()} tokens`}>{context}</span> : null}
+    </>
+  );
+}
+
 export function MoreMenu({ items, label = '更多操作' }: { items: MoreMenuItem[]; label?: string }) {
   const [open, setOpen] = React.useState(false);
   const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);

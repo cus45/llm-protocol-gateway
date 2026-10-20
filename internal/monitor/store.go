@@ -117,6 +117,7 @@ type RequestLogQuery struct {
 	APIKeyName string // substring match against api_key_name (case-insensitive)
 	// ProviderID filters to the exact input provider id (empty means no filter).
 	ProviderID string
+	Model      string // exact model match
 	// APIKeyIDs restricts results to logs whose api_key_id is in this set.
 	// Used for per-user data isolation, and for the admin-only "owner user"
 	// log filter; nil means no restriction.
@@ -408,6 +409,9 @@ func (s *Store) Query(query RequestLogQuery) RequestLogPage {
 			continue
 		}
 		if providerID := strings.TrimSpace(query.ProviderID); providerID != "" && item.ProviderID != providerID {
+			continue
+		}
+		if model := strings.TrimSpace(query.Model); model != "" && item.Model != model {
 			continue
 		}
 		if keyIDSet != nil {

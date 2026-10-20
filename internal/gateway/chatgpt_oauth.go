@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -41,12 +42,26 @@ type chatgptOAuthPending struct {
 	FlowID    string
 	CreatedAt time.Time
 	shutdown  func()
+	// claim is shared by every copy of this flow (the store hands out values, not
+	// pointers), so the browser callback and a pasted callback URL can't both
+	// spend the one-time code: whichever arrives first wins, the other is told
+	// the sign-in already finished. OpenAI answers a second exchange with
+	// invalid_grant, which reads to the user as "登录失败".
+	claim *atomic.Bool
 }
 
 type chatgptOAuthFlowStatus struct {
 	Status    string    `json:"status"`
 	Message   string    `json:"message,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// The callback-port facts the console needs to offer the paste-in finish
+	// from the start, not only after something already went wrong: ChatGPT sends
+	// the browser back to localhost:1455 only, which is unreachable when the
+	// gateway runs on another machine (magpie's #1782 answer).
+	PasteCallback   bool   `json:"pasteCallback,omitempty"`
+	CallbackPort    int    `json:"callbackPort,omitempty"`
+	CallbackBlocked string `json:"callbackBlocked,omitempty"`
+	Instructions    string `json:"instructions,omitempty"`
 }
 
 type chatgptOAuthPendingStore struct {
@@ -114,17 +129,64 @@ func (store *chatgptOAuthPendingStore) finish(providerID string) {
 	delete(store.pending, providerID)
 }
 
+// releaseCallbackListeners stops the callback listeners every pending flow holds.
+// ChatGPT only ever redirects to port 1455, so exactly one flow can have it: a
+// stale flow — of this provider or another — must not cost the new one its
+// callback, which is what makes a second "连接" click look like a broken login.
+// The flows stay registered, so each can still be finished by pasting its
+// callback address.
+func (store *chatgptOAuthPendingStore) releaseCallbackListeners() {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for providerID, entry := range store.pending {
+		if entry.shutdown == nil {
+			continue
+		}
+		entry.shutdown()
+		entry.shutdown = nil
+		store.pending[providerID] = entry
+	}
+}
+
 func (store *chatgptOAuthPendingStore) setStatus(flowID, status, message string) {
 	if strings.TrimSpace(flowID) == "" {
 		return
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	// The callback-port hint was published when the flow started and belongs to
+	// the flow, not to this particular transition: keep it through every update
+	// so the console can still offer the paste-in finish.
+	previous := store.statuses[flowID]
 	store.statuses[flowID] = chatgptOAuthFlowStatus{
-		Status:    status,
-		Message:   message,
-		UpdatedAt: time.Now(),
+		Status:          status,
+		Message:         message,
+		UpdatedAt:       time.Now(),
+		PasteCallback:   previous.PasteCallback,
+		CallbackPort:    previous.CallbackPort,
+		CallbackBlocked: previous.CallbackBlocked,
+		Instructions:    previous.Instructions,
 	}
+}
+
+// setCallbackHint records how this flow's callback can be completed, before any
+// status transition happens.
+func (store *chatgptOAuthPendingStore) setCallbackHint(flowID string, hint chatgptOAuthFlowStatus) {
+	if strings.TrimSpace(flowID) == "" {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry := store.statuses[flowID]
+	entry.PasteCallback = hint.PasteCallback
+	entry.CallbackPort = hint.CallbackPort
+	entry.CallbackBlocked = hint.CallbackBlocked
+	entry.Instructions = hint.Instructions
+	if entry.Status == "" {
+		entry.Status = "pending"
+	}
+	entry.UpdatedAt = time.Now()
+	store.statuses[flowID] = entry
 }
 
 func (store *chatgptOAuthPendingStore) status(flowID string) (chatgptOAuthFlowStatus, bool) {

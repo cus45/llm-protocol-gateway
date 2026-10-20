@@ -248,6 +248,13 @@ type Provider struct {
 	// POST /__providers/{id}/rtk endpoint so partial provider patches cannot
 	// reset it. Requires the rtk CLI on the gateway host.
 	RTKCompress bool `json:"rtkCompress,omitempty"`
+	// CheckinEnabled asks this subscription's daily check-in on the loop, once
+	// a Beijing day. Off by default: pressing 签到 spends an account's daily
+	// grant, so it is never enabled behind the user's back, and it is toggled
+	// through POST /__providers/{id}/checkin/auto for the same reason RTKCompress
+	// is. Only a provider whose vendor runs such an event
+	// (gateway.checkinVendorOf) may turn it on.
+	CheckinEnabled bool `json:"checkinEnabled,omitempty"`
 	// Deleted marks a provider as soft-deleted (see Router.DeleteProvider).
 	// Soft-deleted providers are hidden from normal listings/routing and can't
 	// be bound to new routes or API keys, but their configuration/secrets are
@@ -596,6 +603,17 @@ type Model struct {
 	ContextLength   int      `json:"contextLength"`
 	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
 	InMenu          bool     `json:"inMenu"`
+	// Free and Rate are what the upstream charges for this model, read from its
+	// own listing: Rate is the credits multiple a request costs, RateWas the
+	// price struck through beside it while a discount runs (0: none), and Free
+	// means the plan pays nothing for it. Display-only, and zero/false for every
+	// vendor that does not publish prices per model — the console hides the
+	// badges rather than inventing them.
+	Free bool    `json:"free,omitempty"`
+	Rate float64 `json:"rate,omitempty"`
+	// RateWas is only meaningful above Rate; a promotion that zeroes the price
+	// for a while is a discount, not a free model, and this is what shows it.
+	RateWas float64 `json:"rateWas,omitempty"`
 }
 
 type OutputEndpoint struct {
@@ -884,6 +902,63 @@ const (
 	// running after the gateway was down through it.
 	QuotaMissGraceMinutes = 10
 )
+
+// Daily check-in ("每日签到").
+//
+// Some subscriptions hand out credits once a day for pressing 签到 in their own
+// app — WorkBuddy (China) on a streak, Qoder through its campaigns page. The
+// gateway presses it for a signed-in account so the user does not have to open
+// the vendor's app every day. Only the vendors listed by
+// gateway.checkinVendorOf have one; every other subscription shows no switch at
+// all, because a button that can never fire is worse than no button.
+
+// CheckinRecord is what came of one account's check-in on Day, a Beijing day
+// ("2006-01-02") — the day the vendors count in, fixed to UTC+8 so a gateway on
+// a US VPS and its user in Shenzhen agree about whether today is done. One row
+// per provider holds the latest answer, which is all the console needs.
+type CheckinRecord struct {
+	ProviderID string `json:"providerId,omitempty"`
+	// AccountKey is the account the record belongs to (site|uid). A row kept
+	// under a provider whose account was swapped out is not today's answer, and
+	// the loop says so rather than skipping the new account.
+	AccountKey string  `json:"accountKey,omitempty"`
+	Day        string  `json:"day,omitempty"`
+	At         string  `json:"at,omitempty"` // RFC3339 UTC
+	Outcome    string  `json:"outcome,omitempty"`
+	Credit     float64 `json:"credit,omitempty"`
+	// Streak is how many days in a row the vendor counts. Only shown when the
+	// vendor reports it: WorkBuddy does, Qoder's campaigns do not.
+	Streak  int    `json:"streak,omitempty"`
+	Message string `json:"msg,omitempty"`
+	// Until is the end (RFC3339) of the window a success was read inside: a
+	// Qoder campaign can hand out again before the Beijing day turns, so a
+	// "done" is only trusted until then.
+	Until string `json:"validUntil,omitempty"`
+	// Offline marks a check-in whose request never reached the vendor (no route,
+	// no answer in time), and Tries how many before it the same day did the
+	// same; that pair is what backs the retry off, minute by minute, instead of
+	// waiting out the failure retry on a machine that just woke up.
+	Offline bool `json:"offline,omitempty"`
+	Tries   int  `json:"tries,omitempty"`
+}
+
+// CheckinOutcome.
+const (
+	CheckinClaimed    = "claimed"    // credits claimed now
+	CheckinDone       = "done"       // today's already in, pressed by us or in the app
+	CheckinIneligible = "ineligible" // the account can't take part
+	CheckinInactive   = "inactive"   // no event running, or it has ended
+	CheckinFailed     = "failed"     // no answer; tried again later the same day
+	// CheckinOwnApp is a check-in the vendor only lets its own app press. It is
+	// an answer for the day, so it is not retried: WorkBuddy's check-in is
+	// signed with a device token from its security SDK, which we cannot make.
+	CheckinOwnApp = "own-app"
+)
+
+// CheckedIn says whether the day's credits are in, claimed now or before.
+func (r CheckinRecord) CheckedIn() bool {
+	return r.Outcome == CheckinClaimed || r.Outcome == CheckinDone
+}
 
 type MetricsSnapshot struct {
 	Requests       int64   `json:"requests"`

@@ -235,7 +235,7 @@ func isUserProviderManagementPath(method, path string) bool {
 	}
 	if len(parts) == 2 {
 		switch parts[1] {
-		case "test", "chat-test", "cache-test", "thinking-test", "conformance", "self-register-token":
+		case "test", "chat-test", "cache-test", "thinking-test", "conformance", "self-register-token", "checkin":
 			return method == http.MethodPost
 		case "auth-preview":
 			return method == http.MethodGet
@@ -245,6 +245,10 @@ func isUserProviderManagementPath(method, path string) bool {
 	}
 	if len(parts) == 3 {
 		switch parts[1] {
+		case "checkin":
+			// checkin/auto is the daily switch on a subscription's card; the
+			// owner of the card owns it, as they own the RTK switch.
+			return parts[2] == "auto" && method == http.MethodPost
 		case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "qoder-pat", "qoder-oauth", "workbuddy-oauth":
 			// A Qoder connection has two doors: qoder-oauth is the browser
 			// device flow (start/status), qoder-pat the pasted token
@@ -488,7 +492,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Normal-user login.
+	// Console user login (role=user or role=admin, resolved from the users table).
 	if s.userStore == nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid username or password")
 		return
@@ -547,8 +551,11 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normal user: change own password (must prove current password).
-	if hasIdentity && !identity.isAdmin() {
+	// Database-backed user (whatever their role): change own password, must prove
+	// current one. Keyed on UserID, not isAdmin(): a user promoted to admin must
+	// not land in the branch below, which rewrites the shared legacy admin
+	// password instead of their own hash.
+	if hasIdentity && identity.UserID != legacyAdminUserID {
 		if s.userStore == nil {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "user store is not configured")
 			return

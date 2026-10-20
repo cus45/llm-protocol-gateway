@@ -226,6 +226,10 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 		where = append(where, "provider_id = ?")
 		args = append(args, providerID)
 	}
+	if model := strings.TrimSpace(query.Model); model != "" {
+		where = append(where, "model = ?")
+		args = append(args, model)
+	}
 	if query.APIKeyIDs != nil {
 		// Per-user isolation: an empty (non-nil) set must match nothing.
 		if len(query.APIKeyIDs) == 0 {

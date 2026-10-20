@@ -80,5 +80,7 @@ func (s *Server) handleQoderUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	_, quota := s.qoderQuotaFor(ctx, provider)
+	view := s.checkinViewFor(provider)
+	quota.Checkin = &view
 	writeJSON(w, http.StatusOK, quota)
 }

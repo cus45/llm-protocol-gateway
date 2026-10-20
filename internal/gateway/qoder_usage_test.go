@@ -71,6 +71,18 @@ func TestQoderParseQuotaShapes(t *testing.T) {
 	}
 }
 
+func TestQoderQuotaPreservesPoolResetTimes(t *testing.T) {
+	for _, field := range []string{"resetsAt", "reset_at"} {
+		t.Run(field, func(t *testing.T) {
+			raw := `{"userQuota":{"total":100,"used":20,"` + field + `":"2026-11-02T16:00:00Z"}}`
+			quota := qoderParseQuota(qoderUsageEnvelope{DisplayMode: "qoder", QoderUsage: json.RawMessage(raw)})
+			if len(quota.Windows) != 1 || quota.Windows[0].ResetsAt != "2026-11-02T16:00:00Z" {
+				t.Fatalf("reset time lost: %+v", quota.Windows)
+			}
+		})
+	}
+}
+
 func TestQoderWhenAcceptsEveryShapeItHasUsed(t *testing.T) {
 	cases := []struct {
 		name string

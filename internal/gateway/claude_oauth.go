@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -69,12 +70,24 @@ type claudeOAuthPending struct {
 	Mode        string
 	CreatedAt   time.Time
 	shutdown    func()
+	// claim is shared by every copy of this flow (the store hands out values), so
+	// the browser callback and a pasted address cannot both spend the one-time
+	// code. A second exchange is rejected by Anthropic, which reads to the user
+	// as a failed login.
+	claim *atomic.Bool
 }
 
 type claudeOAuthFlowStatus struct {
 	Status    string    `json:"status"`
 	Message   string    `json:"message,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// How this flow can be finished besides the browser redirect: the callback
+	// goes to the gateway's own port on localhost, which is unreachable when the
+	// gateway runs elsewhere, so pasting the address the browser ended on is a
+	// first-class way in (the same shape ChatGPT's flow advertises).
+	PasteCallback bool   `json:"pasteCallback,omitempty"`
+	CallbackURL   string `json:"callbackUrl,omitempty"`
+	Instructions  string `json:"instructions,omitempty"`
 }
 
 // claudeOAuthPendingStore is a short-lived, in-memory map of provider ID to
@@ -125,11 +138,36 @@ func (store *claudeOAuthPendingStore) setStatus(flowID, status, message string) 
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	// The callback hint belongs to the flow rather than to one transition: keep
+	// it through every update so the console never loses the paste-in finish.
+	previous := store.statuses[flowID]
 	store.statuses[flowID] = claudeOAuthFlowStatus{
-		Status:    status,
-		Message:   message,
-		UpdatedAt: time.Now(),
+		Status:        status,
+		Message:       message,
+		UpdatedAt:     time.Now(),
+		PasteCallback: previous.PasteCallback,
+		CallbackURL:   previous.CallbackURL,
+		Instructions:  previous.Instructions,
 	}
+}
+
+// setCallbackHint records how this flow's callback can be completed, before any
+// status transition happens.
+func (store *claudeOAuthPendingStore) setCallbackHint(flowID string, hint claudeOAuthFlowStatus) {
+	if strings.TrimSpace(flowID) == "" {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry := store.statuses[flowID]
+	entry.PasteCallback = hint.PasteCallback
+	entry.CallbackURL = hint.CallbackURL
+	entry.Instructions = hint.Instructions
+	if entry.Status == "" {
+		entry.Status = "pending"
+	}
+	entry.UpdatedAt = time.Now()
+	store.statuses[flowID] = entry
 }
 
 func (store *claudeOAuthPendingStore) status(flowID string) (claudeOAuthFlowStatus, bool) {
@@ -275,6 +313,37 @@ func buildClaudeLocalAuthorizeURL(redirectURI, challenge, state string) string {
 // buildClaudeAuthorizeURL is kept for tests/backward compatibility.
 func buildClaudeAuthorizeURL(challenge, state string) string {
 	return buildClaudeManualAuthorizeURL(challenge, state)
+}
+
+// claudePasteInstructions is what a user whose browser cannot reach the gateway
+// has to be told: the address the tab ended on is the finish.
+const claudePasteInstructions = "授权完成后浏览器会停在回调地址（形如 http://localhost:18093/callback?code=…&state=…）。这个页面打不开是正常的（网关不在你这台机器上时必然打不开）：把地址栏里那条完整地址复制粘贴到下面，一样能收尾。"
+
+// parseClaudeOAuthInput takes whatever was pasted: a whole callback URL (the
+// usual thing a browser's address bar offers), Anthropic's "code#state" form, or
+// a bare code.
+func parseClaudeOAuthInput(raw string) (code string, state string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if strings.Contains(raw, "://") {
+		if parsed, err := url.Parse(raw); err == nil {
+			query := parsed.Query()
+			code = strings.TrimSpace(query.Get("code"))
+			state = strings.TrimSpace(query.Get("state"))
+			if code != "" {
+				return code, state
+			}
+		}
+	}
+	return parseClaudeOAuthCode(raw)
+}
+
+// claimClaudeCallback lets only the first of the browser callback and a pasted
+// address spend the code.
+func claimClaudeCallback(pending claudeOAuthPending) bool {
+	return pending.claim == nil || pending.claim.CompareAndSwap(false, true)
 }
 
 // parseClaudeOAuthCode splits Anthropic's occasional "code#state" paste

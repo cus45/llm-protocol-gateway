@@ -1657,6 +1657,9 @@ type workBuddyQuota struct {
 	Windows   []workBuddyQuotaWin `json:"windows"`
 	Error     string              `json:"error,omitempty"`
 	FetchedAt string              `json:"fetchedAt,omitempty"`
+	// Checkin rides on the same reply so the card can show today's 签到 without a
+	// request of its own.
+	Checkin *checkinView `json:"checkin,omitempty"`
 }
 
 type workBuddyQuotaWin struct {
@@ -1685,18 +1688,25 @@ func (n *workBuddyNumber) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// workBuddyQuotaFor reads an account's credit allowance from its resource
-// summary, and from the enterprise meter when the summary grants no packages
-// (a team account's credits only live there).
-func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) workBuddyQuota {
-	quota := workBuddyQuota{User: credential.AccountLabel, Windows: []workBuddyQuotaWin{}}
-	headers := map[string]string{
+// workBuddyAccountHeaders are the headers a plan-account JSON call carries: the
+// bearer plus the two identity headers the account is asked with. Every account
+// endpoint takes them — the credit summary and the daily check-in alike.
+func workBuddyAccountHeaders(site workBuddySite, credential domain.WorkBuddyCredential) map[string]string {
+	return map[string]string{
 		"Authorization": "Bearer " + credential.AccessToken,
 		"X-User-Id":     credential.UserID,
 		"X-Domain":      workBuddyDomain(site, credential),
 		"X-Product":     "SaaS",
 		"X-IDE-Type":    "WorkBuddy",
 	}
+}
+
+// workBuddyQuotaFor reads an account's credit allowance from its resource
+// summary, and from the enterprise meter when the summary grants no packages
+// (a team account's credits only live there).
+func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) workBuddyQuota {
+	quota := workBuddyQuota{User: credential.AccountLabel, Windows: []workBuddyQuotaWin{}}
+	headers := workBuddyAccountHeaders(site, credential)
 	// The resource-summary meter has no /v2 gateway prefix: WorkBuddy asks it
 	// at /billing/meter/... on both desktop and web.
 	var summary struct {

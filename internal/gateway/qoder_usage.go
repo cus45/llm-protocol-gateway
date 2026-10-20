@@ -38,6 +38,9 @@ type qoderQuota struct {
 	Until     string             `json:"until,omitempty"`
 	Error     string             `json:"error,omitempty"`
 	FetchedAt string             `json:"fetchedAt,omitempty"`
+	// Checkin rides on the same reply so the card can show today's 签到 without a
+	// request of its own.
+	Checkin *checkinView `json:"checkin,omitempty"`
 }
 
 // qoderUsageEnvelope is Qoder's reply: {displayMode, qoderUsage}. Enterprise
@@ -50,12 +53,14 @@ type qoderUsageEnvelope struct {
 // qoderUsageBucket is one credit pool. Qoder names the fields in both cases and
 // sometimes caps instead of totalling.
 type qoderUsageBucket struct {
-	Name      string   `json:"name"`
-	Unit      string   `json:"unit"`
-	Total     *float64 `json:"total"`
-	Cap       *float64 `json:"cap"`
-	Used      *float64 `json:"used"`
-	Remaining *float64 `json:"remaining"`
+	Name      string          `json:"name"`
+	Unit      string          `json:"unit"`
+	Total     *float64        `json:"total"`
+	Cap       *float64        `json:"cap"`
+	Used      *float64        `json:"used"`
+	Remaining *float64        `json:"remaining"`
+	ResetsAt  json.RawMessage `json:"resetsAt,omitempty"`
+	ResetAt   json.RawMessage `json:"reset_at,omitempty"`
 }
 
 func (b qoderUsageBucket) total() float64 {
@@ -179,15 +184,7 @@ func qoderParseQuota(envelope qoderUsageEnvelope) qoderQuota {
 // qoderWhenString reads a reset time when a pool carries one; Qoder names it
 // a few different ways across its replies.
 func qoderWhenString(bucket *qoderUsageBucket) string {
-	var shaped struct {
-		ResetsAt json.RawMessage `json:"resetsAt"`
-		ResetAt  json.RawMessage `json:"reset_at"`
-	}
-	raw, _ := json.Marshal(bucket)
-	if json.Unmarshal(raw, &shaped) != nil {
-		return ""
-	}
-	return qoderWhen(firstNonRaw(shaped.ResetsAt, shaped.ResetAt))
+	return qoderWhen(firstNonRaw(bucket.ResetsAt, bucket.ResetAt))
 }
 
 func firstNonRaw(values ...json.RawMessage) json.RawMessage {
@@ -252,7 +249,7 @@ func (s *Server) qoderQuotaFor(ctx context.Context, provider domain.Provider) (d
 	}
 	envelope, err := qoderFetchUsage(ctx, site, token)
 	if err != nil && qoderErrorIsClient(err) && strings.TrimSpace(credential.DeviceRefresh) != "" {
-		refreshed, refreshErr := rotateQoderDeviceToken(ctx, site, credential)
+		refreshed, refreshErr := s.rotateQoderDeviceTokenFor(ctx, provider.ID, site, credential)
 		if refreshErr == nil {
 			credential = refreshed
 			if token = strings.TrimSpace(credential.DeviceToken); token != "" {
@@ -302,4 +299,22 @@ func rotateQoderDeviceToken(ctx context.Context, site qoderSite, credential doma
 		renewed.ExpiresAt = qoderFormatExpiry(token.expiry(time.Now()))
 	}
 	return renewed, nil
+}
+
+// rotateQoderDeviceTokenFor rotates under the provider's renewal lock, which is
+// the only thing that keeps two paths from spending the same refresh token: a
+// chat renewal, a quota read and a check-in can all find the stored device token
+// refused at once. A caller that waited for the lock takes whatever the first one
+// wrote instead of rotating again.
+func (s *Server) rotateQoderDeviceTokenFor(ctx context.Context, providerID string, site qoderSite, credential domain.QoderCredential) (domain.QoderCredential, error) {
+	lock := qoderRenewLock(providerID)
+	lock.Lock()
+	defer lock.Unlock()
+	if current, err := s.router.ProviderByID(providerID); err == nil && current.QoderPAT != nil {
+		stored := strings.TrimSpace(current.QoderPAT.DeviceRefresh)
+		if stored != "" && stored != strings.TrimSpace(credential.DeviceRefresh) {
+			return *current.QoderPAT, nil
+		}
+	}
+	return rotateQoderDeviceToken(ctx, site, credential)
 }

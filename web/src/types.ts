@@ -175,6 +175,7 @@ export type WorkBuddyUsage = {
   windows: WorkBuddyUsageWindow[];
   error?: string;
   fetchedAt?: string;
+  checkin?: SubscriptionCheckin;
 };
 
 export type ZCodeOAuthInfo = {
@@ -222,6 +223,27 @@ export type SubscriptionUsage = {
   windows: SubscriptionUsageWindow[];
   error?: string;
   fetchedAt?: string;
+  checkin?: SubscriptionCheckin;
+};
+
+/** 一次签到的结果。day 是北京日，网关算好，浏览器不再按时区猜「今天」。 */
+export type CheckinRecord = {
+  day?: string;
+  at?: string;
+  outcome?: 'claimed' | 'done' | 'ineligible' | 'inactive' | 'failed' | 'own-app';
+  credit?: number;
+  /** 厂商自己数的连续天数；没给就是 0，前端不编。 */
+  streak?: number;
+  msg?: string;
+};
+
+/** 订阅额度卡片上的签到块，跟着 usage 一起回来。 */
+export type SubscriptionCheckin = {
+  /** 厂商有没有每日签到活动；没有的订阅整个块都不出现。 */
+  supported: boolean;
+  enabled: boolean;
+  today: string;
+  record?: CheckinRecord;
 };
 
 export type QoderPATInfo = {
@@ -514,6 +536,11 @@ export type Model = {
   contextLength: number;
   maxOutputTokens?: number;
   inMenu: boolean;
+  /** 上游标出的价格：free = 该套餐下不消耗积分；rate = 每次请求的积分倍率；
+   *  rateWas = 打折时被划线的原价。三者都是展示用，上游不给价格时全为假值。 */
+  free?: boolean;
+  rate?: number;
+  rateWas?: number;
 };
 
 export type DataPaths = {

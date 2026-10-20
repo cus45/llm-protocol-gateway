@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -70,19 +71,25 @@ type RTKStatsStore interface {
 }
 
 type Server struct {
-	router                  *Router
-	logs                    *monitor.Store
-	stateSaver              StateSaver
-	apiKeyStore             APIKeyStore
-	apiKeyToucher           *apiKeyToucher
-	providerOAuthSaver      ProviderOAuthSaver
-	requestLogStore         RequestLogStore
-	requestLogBatcher       *requestLogBatcher
-	usageDailyStore         UsageDailyStore
-	rtkStatsStore           RTKStatsStore
-	rtk                     *rtkCompressor
-	alertStore              AlertStore
-	scheduledTaskStore      ScheduledTaskStore
+	router             *Router
+	logs               *monitor.Store
+	stateSaver         StateSaver
+	apiKeyStore        APIKeyStore
+	apiKeyToucher      *apiKeyToucher
+	providerOAuthSaver ProviderOAuthSaver
+	requestLogStore    RequestLogStore
+	requestLogBatcher  *requestLogBatcher
+	usageDailyStore    UsageDailyStore
+	rtkStatsStore      RTKStatsStore
+	rtk                *rtkCompressor
+	alertStore         AlertStore
+	scheduledTaskStore ScheduledTaskStore
+	checkinStore       CheckinStore
+	// checkinMu guards checkinRunning, the set of providers whose check-in is in
+	// flight: the loop and a press of the same account must not both spend its
+	// one-shot refresh token.
+	checkinMu               sync.Mutex
+	checkinRunning          map[string]bool
 	tunnels                 *tunnel.Manager
 	pendingClaudeOAuth      *claudeOAuthPendingStore
 	pendingCursorOAuth      *cursorOAuthPendingStore
@@ -204,6 +211,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		}
 		if tasks, ok := stateSaver[0].(ScheduledTaskStore); ok {
 			server.scheduledTaskStore = tasks
+		}
+		if records, ok := stateSaver[0].(CheckinStore); ok {
+			server.checkinStore = records
 		}
 	}
 	return server
@@ -358,6 +368,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__providers/{id}/qoder-oauth/pause", s.handleQoderPATDisconnect)
 	mux.HandleFunc("POST /__providers/{id}/qoder-oauth/resume", s.handleQoderPATReconnect)
 	mux.HandleFunc("GET /__providers/{id}/qoder-oauth/usage", s.handleQoderUsage)
+	// The daily check-in: press it now, and switch the automatic one on or off.
+	// Only the subscriptions whose vendor runs such an event answer; the rest
+	// get 409 and the console shows no button for them.
+	mux.HandleFunc("POST /__providers/{id}/checkin", s.handleProviderCheckin)
+	mux.HandleFunc("POST /__providers/{id}/checkin/auto", s.handleProviderCheckinAuto)
 	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/start", s.handleWorkBuddyOAuthStart)
 	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/status", s.handleWorkBuddyOAuthStatus)
 	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/disconnect", s.handleWorkBuddyOAuthDisconnect)
@@ -665,6 +680,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		Status:        strings.TrimSpace(r.URL.Query().Get("status")),
 		APIKeyName:    strings.TrimSpace(r.URL.Query().Get("apiKeyName")),
 		ProviderID:    strings.TrimSpace(r.URL.Query().Get("providerId")),
+		Model:         strings.TrimSpace(r.URL.Query().Get("model")),
 		Page:          atoiDefault(r.URL.Query().Get("page"), 1),
 		PageSize:      atoiDefault(r.URL.Query().Get("pageSize"), 100),
 		IncludeBodies: parseBoolQuery(r.URL.Query().Get("includeBodies")),
@@ -675,6 +691,9 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	} else if ownerUserID := strings.TrimSpace(r.URL.Query().Get("ownerUserId")); ownerUserID != "" {
 		// Admin-only "所属用户" log filter; empty param means no filter (see all users).
 		query.APIKeyIDs = s.ownedKeyIDsForOwnerFilter(ownerUserID)
+	}
+	if keyID := strings.TrimSpace(r.URL.Query().Get("apiKeyId")); keyID != "" {
+		query.APIKeyIDs = intersectKeyIDs(query.APIKeyIDs, []string{keyID})
 	}
 	if from := strings.TrimSpace(r.URL.Query().Get("from")); from != "" {
 		if parsed, err := time.Parse(time.RFC3339, from); err == nil {
@@ -816,13 +835,6 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if snapshot.Range != nil && snapshot.Today.Total.RequestCount < snapshot.Range.Total.RequestCount {
-			snapshot.Today.Total = snapshot.Range.Total
-			snapshot.Today.ByAPIKey = snapshot.Range.ByAPIKey
-			snapshot.Today.ByProvider = snapshot.Range.ByProvider
-			snapshot.Today.ByModel = snapshot.Range.ByModel
-			snapshot.Today.ByProtocol = snapshot.Range.ByProtocol
-		}
 		s.fillUsageKeyNames(&snapshot)
 		s.requestStatsCache.set(userCacheKey, snapshot)
 		w.Header().Set("Cache-Control", "private, max-age=5")
@@ -859,14 +871,6 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	}
-	if snapshot.Range != nil && snapshot.Today.Total.RequestCount < snapshot.Range.Total.RequestCount {
-		snapshot.Today.Total = snapshot.Range.Total
-		snapshot.Today.ByAPIKey = snapshot.Range.ByAPIKey
-		snapshot.Today.ByProvider = snapshot.Range.ByProvider
-		snapshot.Today.ByModel = snapshot.Range.ByModel
-		snapshot.Today.ByUser = snapshot.Range.ByUser
-		snapshot.Today.ByProtocol = snapshot.Range.ByProtocol
 	}
 	s.fillUsageKeyNames(&snapshot)
 	s.fillUsageUserNames(&snapshot)
@@ -2256,7 +2260,7 @@ func (s *Server) handleClaudeOAuthStart(w http.ResponseWriter, r *http.Request) 
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to generate oauth state: "+err.Error())
 		return
 	}
-	pending := claudeOAuthPending{Verifier: verifier, State: state, CreatedAt: time.Now()}
+	pending := claudeOAuthPending{Verifier: verifier, State: state, CreatedAt: time.Now(), claim: &atomic.Bool{}}
 
 	if mode == "manual" {
 		pending.Mode = "manual"
@@ -2273,8 +2277,25 @@ func (s *Server) handleClaudeOAuthStart(w http.ResponseWriter, r *http.Request) 
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to start claude oauth flow: "+err.Error())
 		return
 	}
+	// The paste-in finish is offered from the start: with the gateway on a server,
+	// a browser on another machine can never reach its localhost callback, and
+	// waiting until something has already gone wrong reads as a broken login.
+	callbackURL := s.claudeOAuthCallbackURL()
+	s.pendingClaudeOAuth.setCallbackHint(flowID, claudeOAuthFlowStatus{
+		PasteCallback: true,
+		CallbackURL:   callbackURL,
+		Instructions:  claudePasteInstructions,
+	})
 	s.logs.AddApp("info", "claude oauth localhost flow started", providerID)
-	writeJSON(w, http.StatusOK, map[string]any{"authUrl": authURL, "state": state, "flowId": flowID, "mode": "localhost"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authUrl":       authURL,
+		"state":         state,
+		"flowId":        flowID,
+		"mode":          "localhost",
+		"pasteCallback": true,
+		"callbackUrl":   callbackURL,
+		"instructions":  claudePasteInstructions,
+	})
 }
 
 // handleClaudeOAuthStatus reports the progress of a localhost OAuth flow.
@@ -2325,6 +2346,13 @@ func (s *Server) handleClaudeOAuthCallback(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "oauth flow expired or unknown state; start again from Protocol Gateway", http.StatusBadRequest)
 		return
 	}
+	if !claimClaudeCallback(pending) {
+		// The code was already spent by the pasted address; say so instead of
+		// exchanging a second time, which Anthropic rejects.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><html><body style='font-family:sans-serif;padding:32px'><h2>这次授权已经处理过了</h2><p>回调地址已被使用一次（浏览器回调与粘贴只会算一次）。账号没连上的话，请回控制台重新点一次连接。</p></body></html>"))
+		return
+	}
 	if err := s.finishClaudeOAuthExchange(providerID, pending.FlowID, pending, code, callbackState); err != nil {
 		s.logs.AddApp("error", "claude oauth callback exchange failed", err.Error())
 		http.Error(w, "failed to exchange oauth code", http.StatusBadGateway)
@@ -2354,7 +2382,7 @@ func (s *Server) handleClaudeOAuthComplete(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	code, embeddedState := parseClaudeOAuthCode(payload.Code)
+	code, embeddedState := parseClaudeOAuthInput(payload.Code)
 	if code == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "code is required")
 		return
@@ -2374,6 +2402,10 @@ func (s *Server) handleClaudeOAuthComplete(w http.ResponseWriter, r *http.Reques
 	}
 	if state != pending.State {
 		writeOpenAIError(w, http.StatusBadRequest, "oauth state mismatch; start the flow again")
+		return
+	}
+	if !claimClaudeCallback(pending) {
+		writeOpenAIError(w, http.StatusBadRequest, "这个授权流程已经处理过了（浏览器回调先到了）：刷新看账号是否已连上，没连上就重新点一次连接")
 		return
 	}
 

@@ -50,8 +50,23 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 type userPayload struct {
 	Username           string   `json:"username"`
 	Password           string   `json:"password"`
+	Role               string   `json:"role"`
 	AllowedProviderIDs []string `json:"allowedProviderIds"`
 	Enabled            *bool    `json:"enabled"`
+}
+
+// parseUserRole maps the console role names. Empty means a normal user, so the
+// field stays optional for clients that predate role management.
+func parseUserRole(raw string) (domain.UserRole, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return domain.UserRoleUser, true
+	case string(domain.UserRoleUser):
+		return domain.UserRoleUser, true
+	case string(domain.UserRoleAdmin):
+		return domain.UserRoleAdmin, true
+	}
+	return "", false
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +95,11 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("password must be at least %d characters", adminPasswordMinLen))
 		return
 	}
+	role, validRole := parseUserRole(payload.Role)
+	if !validRole {
+		writeOpenAIError(w, http.StatusBadRequest, `role must be "user" or "admin"`)
+		return
+	}
 	if _, err := s.userStore.UserByUsername(username); err == nil {
 		writeOpenAIError(w, http.StatusConflict, "username already exists")
 		return
@@ -104,7 +124,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		}),
 		Username:           username,
 		PasswordHash:       string(hash),
-		Role:               domain.UserRoleUser,
+		Role:               role,
 		AllowedProviderIDs: s.sanitizeProviderIDs(payload.AllowedProviderIDs),
 		Enabled:            true,
 		CreatedAt:          nowRFC3339(),
@@ -116,7 +136,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.logs.AddApp("info", "user created", user.Username)
+	s.logs.AddApp("info", "user created", fmt.Sprintf("%s (role=%s)", user.Username, user.Role))
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -133,6 +153,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	previousRole := user.Role
 	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -151,6 +172,19 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if value, ok := raw["role"]; ok {
+		var role string
+		if err := json.Unmarshal(value, &role); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "role must be a string")
+			return
+		}
+		parsedRole, validRole := parseUserRole(role)
+		if !validRole {
+			writeOpenAIError(w, http.StatusBadRequest, `role must be "user" or "admin"`)
+			return
+		}
+		user.Role = parsedRole
+	}
 	if value, ok := raw["allowedProviderIds"]; ok {
 		var ids []string
 		if err := json.Unmarshal(value, &ids); err == nil {
@@ -167,7 +201,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.logs.AddApp("info", "user updated", user.Username)
+	if user.Role != previousRole {
+		s.logs.AddApp("info", "user role changed", fmt.Sprintf("%s: %s -> %s", user.Username, previousRole, user.Role))
+	} else {
+		s.logs.AddApp("info", "user updated", user.Username)
+	}
 	writeJSON(w, http.StatusOK, user)
 }
 

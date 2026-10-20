@@ -3,6 +3,7 @@ import React from 'react';
 import {
     API_BASE,
     chatgptPlanLabel,
+    checkinReport,
     cursorBridgeStatusLabel,
     cursorBridgeTone,
     flowBadgeTone,
@@ -27,6 +28,7 @@ import {
     CursorOAuthUsageReport,
     DeepSeekBalanceReport,
     Provider,
+    SubscriptionCheckin,
     WorkBuddyUsage,
     ZhipuUsageBucket,
     ZhipuUsageReport
@@ -137,46 +139,57 @@ export function useOAuthUsageReport<T extends { available?: boolean; error?: str
   const pageVisible = usePageVisible();
   const pathRef = React.useRef(path);
   const reportRef = React.useRef(report);
+  const requestVersionRef = React.useRef(0);
+  const enabledRef = React.useRef(enabled);
+  if (pathRef.current !== path || enabledRef.current !== enabled) requestVersionRef.current++;
   pathRef.current = path;
+  enabledRef.current = enabled;
   reportRef.current = report;
 
   const load = React.useCallback(async (opts?: { force?: boolean; skipIfHidden?: boolean; silent?: boolean }) => {
+    if (!enabledRef.current) return;
     const force = Boolean(opts?.force);
     const skipIfHidden = opts?.skipIfHidden !== false;
     const silent = Boolean(opts?.silent);
     if (!force && skipIfHidden && !isDocumentActive()) {
       return;
     }
+    const requestPath = pathRef.current;
+    const version = ++requestVersionRef.current;
     if (!silent && (force || reportRef.current == null)) {
       setLoading(true);
     }
     try {
-      const url = force ? `${API_BASE}${pathRef.current}?refresh=1` : `${API_BASE}${pathRef.current}`;
+      const separator = requestPath.includes('?') ? '&' : '?';
+      const url = `${API_BASE}${requestPath}${force ? `${separator}refresh=1` : ''}`;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       const data = await response.json() as T;
+      if (version !== requestVersionRef.current || requestPath !== pathRef.current || !enabledRef.current) return;
       setReport(data);
-      writeOAuthUsageCache(pathRef.current, data);
+      writeOAuthUsageCache(requestPath, data);
     } catch (error) {
-      if (reportRef.current == null) {
+      if (version === requestVersionRef.current && enabledRef.current && reportRef.current == null) {
         setReport({ available: false, error: error instanceof Error ? error.message : '无法获取额度' } as T);
       }
     } finally {
-      if (!silent || force) {
-        setLoading(false);
-      }
+      if (version === requestVersionRef.current) setLoading(false);
     }
   }, []);
 
-  const hadCachedReportRef = React.useRef(report != null);
+  React.useEffect(() => {
+    const cached = enabled ? readOAuthUsageCache<T>(path) : null;
+    reportRef.current = cached;
+    setReport(cached);
+    setLoading(false);
+    if (!enabled) return undefined;
+    return () => { requestVersionRef.current++; };
+  }, [enabled, path]);
 
   React.useEffect(() => {
-    if (!enabled) {
-      setReport(null);
-      return undefined;
-    }
+    if (!enabled) return undefined;
     let cancelled = false;
     const safeLoad = async (opts: { force?: boolean; skipIfHidden?: boolean; silent?: boolean }) => {
       if (cancelled) return;
@@ -184,7 +197,7 @@ export function useOAuthUsageReport<T extends { available?: boolean; error?: str
     };
 
     if (pageVisible) {
-      void safeLoad({ force: false, skipIfHidden: false, silent: hadCachedReportRef.current });
+      void safeLoad({ force: false, skipIfHidden: false, silent: reportRef.current != null });
     }
     const timer = window.setInterval(() => {
       if (!isDocumentActive()) return;
@@ -692,8 +705,13 @@ export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }
     Boolean(connected),
     `/__providers/${encodeURIComponent(providerId)}/workbuddy-oauth/usage`,
   );
+  const [checkinOverride, setCheckinOverride] = React.useState<SubscriptionCheckin | null>(null);
+  React.useEffect(() => { setCheckinOverride(null); }, [providerId]);
+  const checkin = checkinOverride || report?.checkin;
 
-  if (compact && (!report || report.error || report.windows.length === 0)) return null;
+  // 签到是账号接口上的另一件事，额度读不出来时它仍要留在原地。
+  const hasWindows = Boolean(report) && !report?.error && (report?.windows.length ?? 0) > 0;
+  if (compact && !hasWindows && !checkin?.supported) return null;
 
   return (
     <UsagePanelShell
@@ -726,6 +744,89 @@ export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }
           ))}
         </div>
       )}
+      {checkin?.supported ? <CheckinRow providerId={providerId} view={checkin} onChange={setCheckinOverride} /> : null}
     </UsagePanelShell>
+  );
+}
+
+/**
+ * 签到行：今天签到了没有、给了多少、连续几天，加两个按钮。
+ *
+ * 只有厂商真有每日签到活动时后端才给 supported——不是每个订阅都有这个按钮，
+ * 一个永远点不亮的开关比没有开关更糟。「立即签到」只在今天还没到手时出现。
+ * 连续天数照厂商给的显示：Qoder 的活动接口不报，它那一行就没有这一段。
+ */
+export function CheckinRow({ providerId, view, onChange }: {
+  providerId: string;
+  view: SubscriptionCheckin;
+  onChange: (next: SubscriptionCheckin) => void;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const report = checkinReport(view);
+
+  async function post(path: string, body?: unknown): Promise<SubscriptionCheckin | null> {
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerId)}/${path}`, {
+        method: 'POST',
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error((data as { error?: { message?: string } }).error?.message || `HTTP ${response.status}`);
+      }
+      return data as SubscriptionCheckin;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="checkin-row" data-state={report.tone}>
+      <div className="checkin-line">
+        <span className="checkin-say" title={report.text}>
+          <i className={`checkin-dot ${report.tone}`} />
+          <span>{report.text}</span>
+        </span>
+        <button
+          type="button"
+          className={`checkin-btn auto${view.enabled ? ' on' : ''}`}
+          aria-pressed={view.enabled}
+          disabled={busy}
+          title={view.enabled
+            ? '已开：网关每天按厂商的算法替这个账号点一次签到。点击关闭。'
+            : '让网关每天替这个账号点一次签到（厂商怎么点，它就怎么点）'}
+          onClick={() => {
+            void post('checkin/auto', { enabled: !view.enabled }).then((next) => {
+              if (next) onChange(next);
+            });
+          }}
+        >
+          自动签到
+        </button>
+        {report.dueToday ? (
+          <button
+            type="button"
+            className="checkin-btn now"
+            disabled={busy}
+            title="现在就替这个账号点一次签到"
+            onClick={() => {
+              void post('checkin').then((next) => {
+                if (next) onChange(next);
+              });
+            }}
+          >
+            {busy ? '签到中…' : '立即签到'}
+          </button>
+        ) : null}
+      </div>
+      {error ? <div className="checkin-error">{error}</div> : null}
+    </div>
   );
 }

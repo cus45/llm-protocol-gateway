@@ -1,26 +1,39 @@
-import { providerOptionLabel } from '../lib';
-import { resolveProviderIcon } from '../provider_presets';
-import type { Provider } from '../types';
-import { BrandIcon } from './ui';
+import {providerAccountLabel, providerOptionLabel, shortenAccountLabel} from '../lib';
+import {resolveProviderIcon} from '../provider_presets';
+import type {Provider} from '../types';
+import {BrandIcon} from './ui';
 
 /**
- * Provider 的统一署名：品牌图标 + 名称。
+ * Provider 的统一署名：品牌图标 + 名称 +（可选）账号标识。
  *
  * 「输入 Provider」卡片早就带图标了，但模型列表的筛选项、密钥的路由与方案、
  * API 日志的 Provider 列都还是光秃秃一行字——同一个服务商在七个地方长得都不
  * 一样，认厂商只能靠读字。这里收一个组件，各处都用它。
+ *
+ * 账号标识解决的是另一半问题：同一个服务商每多登一个账号就多一条同名记录，
+ * 只读名字分不出是哪条，所以在名字后面补一段昵称 / 邮箱 / 账号 id 尾段。
  */
-export function ProviderLabel({ provider, size = 16, protocol, className = '' }: {
+export function ProviderLabel({ provider, size = 16, protocol, account = true, stack = false, className = '' }: {
   provider: Provider;
   size?: number;
   /** 需要时把协议跟在名字后面，省得每处自己拼 Badge。 */
   protocol?: string;
+  /** 关掉账号标识：宽度实在挤不动的场合（窄胶囊）用。 */
+  account?: boolean;
+  /** 名字与账号分两行：API 日志那种一列要装两件事的窄格子。 */
+  stack?: boolean;
   className?: string;
 }) {
+  const accountLabel = account ? providerAccountLabel(provider) : '';
+  const showAccount = Boolean(accountLabel) && accountLabel !== provider.name;
   return (
-    <span className={`provider-label${className ? ` ${className}` : ''}`} title={providerOptionLabel(provider)}>
+    <span
+      className={`provider-label${stack ? ' stacked' : ''}${className ? ` ${className}` : ''}`}
+      title={showAccount ? `${providerOptionLabel(provider)} · ${accountLabel}` : providerOptionLabel(provider)}
+    >
       <BrandIcon icon={resolveProviderIcon(provider)} name={provider.name} size={size} />
       <span className="provider-label-name">{provider.name}</span>
+      {showAccount ? <span className="provider-label-account">{shortenAccountLabel(accountLabel)}</span> : null}
       {protocol ? <span className="provider-label-protocol">{protocol}</span> : null}
     </span>
   );

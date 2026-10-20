@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { API_BASE, subscriptionOAuthPrefix } from '../lib';
-import type { ProviderConnectKind, SubscriptionUsage } from '../types';
-import { UsageBucketRow, UsagePanelShell, useOAuthUsageReport } from './panels';
-import { CopyButton } from './ui';
+import {useEffect, useRef, useState} from 'react';
+import {API_BASE, subscriptionOAuthPrefix} from '../lib';
+import type {ProviderConnectKind, SubscriptionCheckin, SubscriptionUsage} from '../types';
+import {CheckinRow, UsageBucketRow, UsagePanelShell, useOAuthUsageReport} from './panels';
+import {CopyButton} from './ui';
 
 /**
  * 需要浏览器登录的订阅（ZCode、Trae）共用的连接面板。
@@ -174,8 +174,17 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
     Boolean(connected),
     `/__providers/${encodeURIComponent(providerId)}/${subscriptionOAuthPrefix(kind)}/usage`,
   );
+  // 签到开关与「立即签到」的回答由后端直接给出，先本地显示，等下一次自然刷新
+  // 再和额度一起回来——为此重读一次上游额度不值得。
+  const [checkinOverride, setCheckinOverride] = useState<SubscriptionCheckin | null>(null);
+  useEffect(() => { setCheckinOverride(null); }, [providerId]);
+  const checkin = checkinOverride || report?.checkin;
 
-  if (compact && (!report || report.error || report.windows.length === 0)) return null;
+  // 紧凑卡片本来只在该账号报出额度时才出现；签到是厂商账号接口上的另一件事，
+  // 额度读不出来时它也得留在原地，否则开关连同状态一起消失。
+  const hasWindows = Boolean(report) && !report?.error && (report?.windows.length ?? 0) > 0;
+  const showCheckin = Boolean(report?.checkin?.supported);
+  if (compact && !hasWindows && !showCheckin) return null;
 
   return (
     <UsagePanelShell
@@ -210,6 +219,9 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
           ))}
         </div>
       )}
+      {checkin?.supported ? (
+        <CheckinRow providerId={providerId} view={checkin} onChange={setCheckinOverride} />
+      ) : null}
     </UsagePanelShell>
   );
 }

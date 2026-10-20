@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -162,5 +163,90 @@ func TestParseProviderExportIDs(t *testing.T) {
 	}
 	if ParseProviderExportIDs("  ") != nil {
 		t.Fatalf("empty should be nil")
+	}
+}
+
+// A Qoder browser sign-in is more than its tokens: the uid and machine id sign
+// every request and name the account a daily check-in belongs to. Export is a
+// full backup, so a restore has to come back able to forward.
+func TestQoderCredentialSurvivesAnExportRoundTrip(t *testing.T) {
+	stored := domain.QoderCredential{
+		SignInMode: "device", UID: "uid-7", Email: "me@example.com", Name: "Me",
+		AccessToken: "job", RefreshToken: "jobr", ExpiresAt: "2026-11-01T00:00:00Z",
+		DeviceToken: "dev", DeviceRefresh: "devr", MachineID: "mach", AccountLabel: "me@example.com",
+	}
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{ID: "q", Name: "Qoder", AuthType: domain.AuthTypeQoderCN, QoderPAT: &stored},
+	}})
+	bundle, errs := router.ExportProviders(nil)
+	if len(errs) != 0 {
+		t.Fatalf("export errors: %v", errs)
+	}
+	fresh := NewRouter(domain.GatewayState{})
+	if result := fresh.ImportProviders(bundle); len(result.Created) != 1 {
+		t.Fatalf("import result = %+v", result)
+	}
+	imported, err := fresh.ProviderByID("q")
+	if err != nil || imported.QoderPAT == nil {
+		t.Fatalf("imported provider = %+v (%v)", imported, err)
+	}
+	if !reflect.DeepEqual(*imported.QoderPAT, stored) {
+		t.Fatalf("round trip lost fields:\n got %+v\nwant %+v", *imported.QoderPAT, stored)
+	}
+}
+
+// A bundle taken without credentials says nothing about a live sign-in: it must
+// not claim one, and it must not overwrite the account the card already is.
+func TestQoderMetadataOnlyImportKeepsTheLiveAccount(t *testing.T) {
+	existing := domain.QoderCredential{SignInMode: "device", UID: "uid-7", AccessToken: "job", DeviceToken: "dev"}
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{ID: "q", Name: "Qoder", AuthType: domain.AuthTypeQoderCN, QoderPAT: &existing},
+	}})
+	result := router.ImportProviders(ProvidersExportBundle{
+		Version: providersExportVersion,
+		Providers: []domain.Provider{{ID: "q", Name: "Qoder", AuthType: domain.AuthTypeQoderCN,
+			QoderPAT: &domain.QoderCredential{AccountLabel: "old@example.com", Connected: true}}},
+	})
+	if len(result.Updated) != 1 {
+		t.Fatalf("import result = %+v", result)
+	}
+	provider, _ := router.ProviderByID("q")
+	if provider.QoderPAT.DeviceToken != "dev" || provider.QoderPAT.AccessToken != "job" || provider.QoderPAT.UID != "uid-7" {
+		t.Fatalf("a metadata-only import must not disturb the live credential: %+v", provider.QoderPAT)
+	}
+	if provider.QoderPAT.Connected {
+		t.Fatal("a bundle without tokens must not assert a live sign-in")
+	}
+}
+
+// Every connection kind the console can create has to come back through import:
+// a bundle that answers "unsupported authType" for the subscriptions added after
+// this list was written is a backup that cannot be restored.
+func TestImportAcceptsEveryConsoleAuthType(t *testing.T) {
+	authTypes := []string{
+		"", domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth,
+		domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN,
+		domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI, domain.AuthTypeZCode,
+		domain.AuthTypeZCodeBigModel, domain.AuthTypeTraeCN, domain.AuthTypeTraeGlobal,
+		domain.AuthTypeOpenCodeZenFree,
+	}
+	router := NewRouter(domain.GatewayState{})
+	bundle := ProvidersExportBundle{Version: providersExportVersion}
+	for index, authType := range authTypes {
+		name := authType
+		if name == "" {
+			name = "default"
+		}
+		bundle.Providers = append(bundle.Providers, domain.Provider{
+			ID: "p" + string(rune('a'+index)), Name: name, Protocol: domain.ProtocolOpenAIChat,
+			BaseURL: "https://example.invalid/v1", AuthType: authType, APIKeySource: "env:X",
+		})
+	}
+	result := router.ImportProviders(bundle)
+	if len(result.Errors) != 0 {
+		t.Fatalf("import rejected auth types: %v", result.Errors)
+	}
+	if len(result.Created) != len(authTypes) {
+		t.Fatalf("created %d of %d", len(result.Created), len(authTypes))
 	}
 }
