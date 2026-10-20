@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, isTraeConnectKind, isZCodeConnectKind, providerConnectKind, retrySecondsLabel, useNowTick } from '../lib';
+import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, isQoderConnectKind, isTraeConnectKind, isZCodeConnectKind, providerConnectKind, retrySecondsLabel, useNowTick } from '../lib';
 import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, Provider, WorkBuddyUsage, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
 import { SubscriptionUsagePanel } from './subscription';
 
@@ -523,8 +523,9 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
   const subscriptionConnected = zcodeConnected || traeConnected;
   const oauthConnected = isClaudeOAuth ? claudeOAuthConnected : isCursorOAuth ? cursorOAuthConnected : isChatGPTOAuth ? chatgptOAuthConnected : isQoderPAT ? qoderPATConnected : isWorkBuddy ? workBuddyConnected : subscriptionConnected;
   const showOAuthBadge = isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy || isSubscriptionOAuth;
-  // Qoder 用的是 PAT 而非 OAuth，徽章文案跟着认证方式走，避免误导
-  const oauthBadgeLabel = isQoderPAT ? 'PAT' : 'OAuth';
+  // Qoder 有两个门：浏览器授权（OAuth 设备码）与粘贴个人访问令牌。徽章跟着
+  // 实际走过的那个门走，标成 OAuth 会让用令牌连的人找不到自己的 PT 在哪。
+  const oauthBadgeLabel = isQoderPAT ? (provider?.qoderPat?.signInMode === 'pat' ? 'PAT' : 'OAuth') : 'OAuth';
   const isUnavailable = healthStatus === 'unavailable';
   const now = useNowTick(isUnavailable && !!nextRetryAt);
   const retryLabel = isUnavailable ? retrySecondsLabel(nextRetryAt, now) : null;
@@ -574,6 +575,7 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
       {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
       {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
+      {isQoderConnectKind(connectKind) && qoderPATConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Qoder 积分" /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
       {/* 事实区：两行。地址独占一行（通常最长），密钥 / 默认 / 模型 挤进一行；

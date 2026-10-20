@@ -53,6 +53,21 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 		}
 		return response, nil
 	}
+	if isQoderProvider(provider) {
+		// Qoder is the same case: its agent takes a signed request in its own
+		// codec and answers in its own envelopes, and sendQoderChat hands back an
+		// OpenAI-shaped response so the converters below see what they already
+		// know how to read.
+		qoderModel := chatBodyModel(body)
+		if qoderModel == "" {
+			qoderModel = strings.TrimSpace(provider.DefaultModel)
+		}
+		response, err := s.sendQoderChat(ctx, provider, qoderModel, body)
+		if response == nil {
+			return nil, err
+		}
+		return response, nil
+	}
 	if provider.AuthType == domain.AuthTypeChatGPTOAuth {
 		refreshed, err := s.ensureFreshChatGPTToken(provider)
 		if err != nil {
@@ -66,49 +81,21 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 		body = prepared
 		accept = "text/event-stream"
 	}
+	// A call that came with no id would otherwise be replayed as "" forever,
+	// which strict upstreams refuse for the whole conversation.
+	body = chatToolCallIDs(body)
+	var workBuddyAliases map[string]string
 	if isWorkBuddyProvider(provider) {
 		// Both WorkBuddy builds require a leading system message and a
 		// streaming request; idempotent, so a caller that already shaped the
-		// body is unaffected.
-		body, _ = prepareWorkBuddyChatBody(body)
+		// body is unaffected. The aliases it returns name the model's calls
+		// back to the client's own names.
+		body, workBuddyAliases, _ = shapeWorkBuddyChatBody(body)
 	}
 	if isOpenCodeZenProvider(provider) {
 		// Zen's free tier is served to a streaming request that offers OpenCode's
 		// two tools, so the body is shaped before the URL is asked too.
 		body, _ = prepareOpenCodeZenChatBody(provider, body)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if accept != "" {
-		request.Header.Set("Accept", accept)
-	} else {
-		request.Header.Set("Accept", "application/json")
-	}
-	if provider.AuthType == domain.AuthTypeChatGPTOAuth {
-		applyChatGPTCodexHeaders(request, provider)
-		// Codex backend routes prompt-cache shards by session headers, not by
-		// the body field: lift prompt_cache_key out of the body and isolate it
-		// per ChatGPT account (sub2api isolateOpenAIUpstreamSessionID).
-		if cacheKey := extractPromptCacheKeyFromBody(body); cacheKey != "" {
-			accountID := ""
-			if provider.ChatGPTOAuth != nil {
-				accountID = provider.ChatGPTOAuth.ChatGPTAccountID
-			}
-			isolated := chatgptSessionIDForCache(provider.ID, accountID, cacheKey)
-			request.Header.Set("session_id", isolated)
-			request.Header.Set("conversation_id", isolated)
-			request.Header.Set("x-client-request-id", isolated)
-		}
-	} else {
-		applyProviderAuth(request, provider, func() string {
-			if skipIncomingAuth {
-				return ""
-			}
-			return r.Header.Get("Authorization")
-		}())
 	}
 	// Extract model from body for header placeholder substitution when possible.
 	model := ""
@@ -116,9 +103,47 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 	if json.Unmarshal(body, &payload) == nil {
 		model, _ = payload["model"].(string)
 	}
-	applyOpenCodeZenHeaders(request, provider, body)
-	applyRequestAdapterHeaders(request, provider, model)
-	return doHTTPWithTiming(ctx, &http.Client{Timeout: 0}, request)
+	incomingAuth := ""
+	if !skipIncomingAuth {
+		incomingAuth = r.Header.Get("Authorization")
+	}
+	send := func(requestBody []byte) (*http.Response, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if accept != "" {
+			request.Header.Set("Accept", accept)
+		} else {
+			request.Header.Set("Accept", "application/json")
+		}
+		if provider.AuthType == domain.AuthTypeChatGPTOAuth {
+			applyChatGPTCodexHeaders(request, provider)
+			// Codex backend routes prompt-cache shards by session headers, not by
+			// the body field: lift prompt_cache_key out of the body and isolate it
+			// per ChatGPT account (sub2api isolateOpenAIUpstreamSessionID).
+			if cacheKey := extractPromptCacheKeyFromBody(requestBody); cacheKey != "" {
+				accountID := ""
+				if provider.ChatGPTOAuth != nil {
+					accountID = provider.ChatGPTOAuth.ChatGPTAccountID
+				}
+				isolated := chatgptSessionIDForCache(provider.ID, accountID, cacheKey)
+				request.Header.Set("session_id", isolated)
+				request.Header.Set("conversation_id", isolated)
+				request.Header.Set("x-client-request-id", isolated)
+			}
+		} else {
+			applyProviderAuth(request, provider, incomingAuth)
+		}
+		applyOpenCodeZenHeaders(request, provider, requestBody)
+		applyRequestAdapterHeaders(request, provider, model)
+		return doHTTPWithTiming(ctx, &http.Client{Timeout: 0}, request)
+	}
+	if isWorkBuddyProvider(provider) {
+		return s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, send)
+	}
+	return send(body)
 }
 
 func (s *Server) proxyOpenAIResponses(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, skipIncomingAuth bool) (int, TokenUsage, []byte, error) {
@@ -250,9 +275,6 @@ func (s *Server) proxyOpenAIChatToResponses(w http.ResponseWriter, r *http.Reque
 	chatReq, toolCtx, err := responsesToOpenAIChatRequest(responsesReq, model)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
-	}
-	if provider.AuthType == domain.AuthTypeQoderPAT {
-		qoderBackfillToolDescriptions(chatReq)
 	}
 	// Cursor OAuth injects bridge quirks; other openai_chat providers stay standard
 	// so Claude→Responses (and generic Chat→Responses) are not coupled to Cursor fixes.
@@ -616,7 +638,7 @@ func (s *Server) executeProtocolFlow(
 	}
 	// Single chokepoint for the Qoder job-token refresh: every pass-through path
 	// and every protocol conversion below flows through here.
-	if provider.AuthType == domain.AuthTypeQoderPAT {
+	if isQoderProvider(provider) {
 		provider, err = s.ensureFreshQoderToken(provider)
 		if err != nil {
 			return 0, TokenUsage{}, nil, err

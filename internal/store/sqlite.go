@@ -266,6 +266,13 @@ func (s *Store) migrate() error {
 	if err := addColumnIfMissing(tx, "api_keys", "codex_keep_official_login", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// display_name: what the upstream calls the model to its own users (Qoder
+	// routes on keys like qmodel_38max and shows "Qwen3.8-Max"). Display-only —
+	// a request still names the model by id — and empty for every vendor whose
+	// model id is already its label.
+	if err := addColumnIfMissing(tx, "models", "display_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
 		username TEXT NOT NULL UNIQUE,
@@ -486,15 +493,20 @@ func (s *Store) Save(state domain.GatewayState) error {
 				scope = provider.ChatGPTOAuth.ChatGPTAccountID
 				accountLabel = provider.ChatGPTOAuth.AccountLabel
 			}
-		case domain.AuthTypeQoderPAT:
+		case domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN:
 			if provider.QoderPAT != nil {
 				accessToken = provider.QoderPAT.AccessToken
 				refreshToken = provider.QoderPAT.RefreshToken
 				expiresAt = provider.QoderPAT.ExpiresAt
 				accountLabel = provider.QoderPAT.AccountLabel
+				userID = provider.QoderPAT.UID
 				if provider.QoderPAT.Disconnected {
 					scope = domain.QoderDisconnectedScopeMarker
 				}
+				// The browser sign-in's account identity, machine id and model
+				// listing have no column of their own, so the whole credential
+				// rides in oauth_json, which is authoritative on load.
+				authJSON = marshalProviderCredential(provider.QoderPAT)
 			}
 		case domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
 			if provider.WorkBuddy != nil {
@@ -561,9 +573,9 @@ func (s *Store) Save(state domain.GatewayState) error {
 				inMenu = 1
 			}
 			if _, err := tx.Exec(`INSERT INTO models
-				(provider_id, id, protocol, context_length, in_menu, position)
-				VALUES (?, ?, ?, ?, ?, ?)`,
-				provider.ID, model.ID, string(model.Protocol), model.ContextLength, inMenu, mIndex); err != nil {
+				(provider_id, id, protocol, context_length, in_menu, position, display_name)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				provider.ID, model.ID, string(model.Protocol), model.ContextLength, inMenu, mIndex, model.Name); err != nil {
 				return err
 			}
 		}
@@ -725,9 +737,14 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 					AccountLabel:     accountLabel,
 				}
 			}
-		case domain.AuthTypeQoderPAT:
-			if accessToken != "" || refreshToken != "" {
-				p.QoderPAT = &domain.QoderPATCredential{
+		case domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN:
+			var credential domain.QoderCredential
+			if unmarshalProviderCredential(authJSON, &credential) {
+				p.QoderPAT = &credential
+			} else if accessToken != "" || refreshToken != "" {
+				// A row written before the browser sign-in existed holds only
+				// the columns; the pasted token sits in the refresh-token one.
+				p.QoderPAT = &domain.QoderCredential{
 					AccessToken:  accessToken,
 					RefreshToken: refreshToken,
 					ExpiresAt:    expiresAt,
@@ -786,7 +803,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 }
 
 func (s *Store) loadModels(providerID string) ([]domain.Model, error) {
-	rows, err := s.reader().Query(`SELECT id, protocol, context_length, in_menu FROM models WHERE provider_id = ? ORDER BY position, id`, providerID)
+	rows, err := s.reader().Query(`SELECT id, protocol, context_length, in_menu, display_name FROM models WHERE provider_id = ? ORDER BY position, id`, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -796,7 +813,7 @@ func (s *Store) loadModels(providerID string) ([]domain.Model, error) {
 		var m domain.Model
 		var protocol string
 		var inMenu int
-		if err := rows.Scan(&m.ID, &protocol, &m.ContextLength, &inMenu); err != nil {
+		if err := rows.Scan(&m.ID, &protocol, &m.ContextLength, &inMenu, &m.Name); err != nil {
 			return nil, err
 		}
 		m.ProviderID = providerID

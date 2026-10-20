@@ -22,6 +22,11 @@ const (
 	failoverNone failoverClass = iota
 	failoverSoft
 	failoverHard
+	// failoverPromptRefusal advances the backup chain but rests nobody: the
+	// vendor turned the request's own prompt away, as WorkBuddy's 11128 does to
+	// another agent's system prompt. Every account of it answers the same, so
+	// none of them is at fault.
+	failoverPromptRefusal
 )
 
 const (
@@ -138,6 +143,9 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 		}
 		if softThrottle {
 			return failoverSoft, "http_400_throttle"
+		}
+		if workBuddyPromptRefused(status, body) {
+			return failoverPromptRefusal, "prompt_refused"
 		}
 		return failoverNone, ""
 	default:
@@ -498,6 +506,8 @@ func (s *Server) applyProviderFailoverOutcome(providerID string, status int, bod
 				providerID, count, providerSoftFailureThreshold, reason,
 			))
 		}
+	case failoverPromptRefusal:
+		// The account is not the problem: ask the next provider, mark nothing.
 	}
 	return true
 }

@@ -1,7 +1,13 @@
 package gateway
 
+// Qoder's personal-access-token path: the second way into the same account,
+// kept because a headless deployment cannot open a browser. A pasted token is
+// exchanged for the job token that signs inference calls; Qoder never rotates
+// the token itself, so it is carried forward on every exchange and is what
+// mints a new pair when the refresh tokens lapse.
+
 import (
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,33 +19,13 @@ import (
 )
 
 const (
-	// qoderDirectBaseURL is Qoder's stateless, natively OpenAI-Chat compatible
-	// endpoint. Defaulted rather than pinned in normalizeProvider so an endpoint
-	// change can be handled by editing the provider instead of rebuilding.
-	qoderDirectBaseURL    = "https://api2-v2.qoder.sh/model/v1"
-	qoderTokenExchangeURL = "https://openapi.qoder.sh/api/v1/jobToken/exchange"
-	qoderTokenExpirySkew  = 5 * time.Minute
-	// qoderTokenFallbackTTL is the conservative floor used when the exchange
-	// response carries no explicit lifetime and the job token is not a decodable
-	// JWT. The observed real lifetime is ~24h, so this only costs extra
-	// exchanges, never a stale token.
+	// qoderTokenFallbackTTL is the floor used when Qoder names no lifetime at
+	// all. The observed real lifetime is ~24h, so a short floor only costs an
+	// extra exchange, never a stale token.
 	qoderTokenFallbackTTL = time.Hour
-	qoderAccountLabel     = "Qoder"
+	// qoderTokenExpirySkew is how early a token is treated as spent.
+	qoderTokenExpirySkew = 5 * time.Minute
 )
-
-// qoderAccountLabelFor builds the console-facing label for a Qoder connection.
-//
-// Qoder exposes no account/user endpoint, and the job token is an opaque string
-// (not a JWT), so the real username cannot be resolved. The PAT's last 4 chars
-// are the only stable, non-sensitive discriminator available — enough to tell
-// two connected accounts apart without revealing the credential.
-func qoderAccountLabelFor(pat string) string {
-	pat = strings.TrimSpace(pat)
-	if len(pat) < 4 {
-		return qoderAccountLabel
-	}
-	return qoderAccountLabel + " · ****" + pat[len(pat)-4:]
-}
 
 // isPlaceholderBaseURL reports whether a base URL carries no real routing
 // information: either empty, or still the create form's example.com prefill.
@@ -51,218 +37,116 @@ func isPlaceholderBaseURL(baseURL string) bool {
 	return strings.Contains(strings.ToLower(baseURL), "example.com")
 }
 
-// defaultQoderModels is the model catalog from Qoder's official docs
-// (docs.qoder.com/cli/model). The direct endpoint serves no /models route, so
-// this list is the catalog. Names are the documented ones lowercased, matching
-// the CLI's own `--model efficient` form — the endpoint rejects the
-// title-cased display names.
-//
-// Only the tier aliases are listed. The docs' frontier models (qwen3.8-max-preview,
-// glm-5.2, kimi-k3, …) are gated per plan and are rejected with
-// invalid_model_error on accounts that lack them; listing them puts entries in
-// the console dropdown that fail at request time. Users whose plan includes a
-// frontier model can add it as an extra model on the provider.
-func defaultQoderModels(providerID string) []domain.Model {
-	// Order matches docs.qoder.com/zh/user-guide/chat/model-tier-selector's
-	// credit-consumption multiplier, descending: ultimate 1.6x > performance
-	// 1.1x > auto 1.0x > efficient 0.3x > lite (free). Kept in this order (not
-	// alphabetical) so anything that just iterates provider.Models — the model
-	// list page, dropdowns — shows the priciest tier first without needing its
-	// own sort.
-	aliases := []string{
-		"ultimate",
-		"performance",
-		"auto", // Smart Routing
-		"efficient",
-		"lite",
+// qoderAccountLabelFor is the console-facing name of a connection: the account
+// Qoder's own endpoint reported, falling back to its uid, and only then to the
+// pasted token's last four — enough to tell two accounts apart when the account
+// endpoint refused to say who it was.
+func qoderAccountLabelFor(site qoderSite, credential *domain.QoderCredential) string {
+	if credential == nil {
+		return site.Name
 	}
-	models := make([]domain.Model, 0, len(aliases))
-	for _, alias := range aliases {
-		model := domain.Model{
-			ID:         alias,
-			ProviderID: providerID,
-			Protocol:   domain.ProtocolOpenAIChat,
-			InMenu:     true,
-		}
-		fillModelTokenBudgets(&model)
-		models = append(models, model)
+	if name := firstNonEmpty(credential.Email, credential.Name, credential.UID); name != "" {
+		return name
 	}
-	return models
+	if pat := qoderPersonalToken(credential); pat != "" && len(pat) >= 4 {
+		return site.Name + " · ****" + pat[len(pat)-4:]
+	}
+	return site.Name
 }
 
-// qoderJobTokenResponse is deliberately permissive: the exchange response shape
-// is not fully pinned down, so every plausible token/lifetime field is accepted
-// and the first non-empty one wins.
-type qoderJobTokenResponse struct {
-	JobToken    string `json:"jobToken"`
-	Token       string `json:"token"`
-	AccessToken string `json:"accessToken"`
-	ExpiresIn   int64  `json:"expiresIn"`
-	ExpiresAt   int64  `json:"expiresAt"`
-	TTL         int64  `json:"ttl"`
-	Data        *struct {
-		JobToken    string `json:"jobToken"`
-		Token       string `json:"token"`
-		AccessToken string `json:"accessToken"`
-		ExpiresIn   int64  `json:"expiresIn"`
-		ExpiresAt   int64  `json:"expiresAt"`
-		TTL         int64  `json:"ttl"`
-	} `json:"data"`
-}
-
-func firstPositiveInt64(values ...int64) int64 {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-// qoderJWTExp reads the exp claim when the token is JWT-shaped. Opaque tokens
-// return ok=false.
-func qoderJWTExp(token string) (int64, bool) {
-	parts := strings.Split(strings.TrimSpace(token), ".")
-	if len(parts) != 3 {
-		return 0, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return 0, false
-	}
-	var claims struct {
-		Exp int64 `json:"exp"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
-		return 0, false
-	}
-	return claims.Exp, true
-}
-
-// qoderTokenExpiry derives the job token expiry from, in order of preference:
-// an absolute expiry from the exchange response, a relative lifetime from it,
-// the JWT exp claim, and finally qoderTokenFallbackTTL. Every branch subtracts
-// the skew so the gateway always re-exchanges before the real expiry.
-func qoderTokenExpiry(jobToken string, expiresInSeconds, expiresAtEpoch int64, now time.Time) time.Time {
-	if expiresAtEpoch > 0 {
-		if expiresAtEpoch > 1e12 { // milliseconds
-			expiresAtEpoch /= 1000
-		}
-		if absolute := time.Unix(expiresAtEpoch, 0); absolute.After(now) {
-			return absolute.Add(-qoderTokenExpirySkew)
-		}
-	}
-	if expiresInSeconds > 0 {
-		return now.Add(time.Duration(expiresInSeconds) * time.Second).Add(-qoderTokenExpirySkew)
-	}
-	if exp, ok := qoderJWTExp(jobToken); ok {
-		if absolute := time.Unix(exp, 0); absolute.After(now) {
-			return absolute.Add(-qoderTokenExpirySkew)
-		}
-	}
-	return now.Add(qoderTokenFallbackTTL)
-}
-
-// exchangeQoderJobToken trades the long-lived personal access token for a
-// short-lived job token, mirroring refreshCursorOAuthToken: the long-lived
-// credential goes out as the bearer and the response body is length-limited.
-func exchangeQoderJobToken(pat string) (domain.QoderPATCredential, error) {
-	return exchangeQoderJobTokenAt(qoderTokenExchangeURL, pat)
-}
-
-func exchangeQoderJobTokenAt(exchangeURL, pat string) (domain.QoderPATCredential, error) {
+// exchangeQoderJobToken trades a personal access token for a job token and
+// reads who the account is, so a token-connected account carries the same
+// identity fields as a browser-signed-in one.
+func exchangeQoderJobToken(ctx context.Context, site qoderSite, base domain.QoderCredential, pat string) (domain.QoderCredential, error) {
 	pat = strings.TrimSpace(pat)
 	if pat == "" {
-		return domain.QoderPATCredential{}, fmt.Errorf("qoder personal access token is empty")
+		return base, fmt.Errorf("Qoder 个人访问令牌为空")
 	}
-	// The upstream takes the PAT in the body as personal_token, not (only) as a
-	// bearer header: an empty body is rejected with "personal_token is required".
-	// The header is sent as well since it is harmless and some deployments read it.
+	// The upstream takes the token in the body as personal_token; an empty body
+	// is rejected with "personal_token is required".
 	payload, err := json.Marshal(map[string]string{"personal_token": pat})
 	if err != nil {
-		return domain.QoderPATCredential{}, err
+		return base, err
 	}
-	request, err := http.NewRequest(http.MethodPost, exchangeURL, strings.NewReader(string(payload)))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, site.OpenAPI+qoderJobExchangePath, strings.NewReader(string(payload)))
 	if err != nil {
-		return domain.QoderPATCredential{}, err
+		return base, err
 	}
-	request.Header.Set("Authorization", "Bearer "+pat)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	request.Header.Set("Accept", "application/json")
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return domain.QoderPATCredential{}, err
+		return base, err
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		// Never interpolate the PAT here: exchange errors flow into request logs.
-		return domain.QoderPATCredential{}, fmt.Errorf("qoder job token exchange failed with HTTP %d: %s",
-			response.StatusCode, strings.TrimSpace(string(body)))
+		// Never interpolate the token here: exchange errors flow into request logs.
+		return base, &qoderError{Message: qoderErrorMessage(body, response.StatusCode), Status: response.StatusCode}
 	}
-	var parsed qoderJobTokenResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return domain.QoderPATCredential{}, fmt.Errorf("decode qoder job token response: %w", err)
+	var job qoderJobToken
+	if err := json.Unmarshal(body, &job); err != nil {
+		return base, fmt.Errorf("解析 Qoder 任务令牌失败: %w", err)
 	}
-	jobToken := firstNonEmpty(parsed.JobToken, parsed.Token, parsed.AccessToken)
-	expiresIn := firstPositiveInt64(parsed.ExpiresIn, parsed.TTL)
-	expiresAt := parsed.ExpiresAt
-	if parsed.Data != nil {
-		jobToken = firstNonEmpty(jobToken, parsed.Data.JobToken, parsed.Data.Token, parsed.Data.AccessToken)
-		expiresIn = firstPositiveInt64(expiresIn, parsed.Data.ExpiresIn, parsed.Data.TTL)
-		expiresAt = firstPositiveInt64(expiresAt, parsed.Data.ExpiresAt)
+	access := job.accessToken()
+	if access == "" {
+		return base, fmt.Errorf("Qoder 的回应里没有任务令牌")
 	}
-	if jobToken == "" {
-		return domain.QoderPATCredential{}, fmt.Errorf("qoder job token response contained no token")
+	credential := base
+	credential.SignInMode = qoderSignInModePAT
+	credential.PAT = pat
+	credential.AccessToken = access
+	credential.RefreshToken = job.refreshToken()
+	credential.DeviceChat = false
+	credential.ExpiresAt = qoderJobExpiry(job, time.Now())
+	if credential.MachineID == "" {
+		credential.MachineID = newUUIDV4()
 	}
-	return domain.QoderPATCredential{
-		AccessToken: jobToken,
-		// The exchange never rotates the PAT, so it is always carried forward.
-		RefreshToken: pat,
-		ExpiresAt:    qoderTokenExpiry(jobToken, expiresIn, expiresAt, time.Now()).UTC().Format(time.RFC3339),
-		AccountLabel: qoderAccountLabelFor(pat),
-		Connected:    true,
-	}, nil
+	// The account endpoint answers with the job token too, which is how a pasted
+	// token gets a name and a uid — the uid is what the COSY envelope signs
+	// with, so an account that cannot be named cannot be asked.
+	if info, infoErr := qoderFetchUserInfo(ctx, site, access); infoErr == nil {
+		credential.Email = strings.TrimSpace(info.Email)
+		if credential.Name == "" {
+			credential.Name = info.displayName()
+		}
+		if credential.UID == "" {
+			credential.UID = info.accountUID()
+		}
+	}
+	if strings.TrimSpace(credential.UID) == "" {
+		return base, fmt.Errorf("%s 无法确认这个令牌属于哪个账号，请重新登录", site.Name)
+	}
+	credential.AccountLabel = qoderAccountLabelFor(site, &credential)
+	credential.Connected = true
+	return credential, nil
 }
 
-// qoderTokenNeedsRefresh matches cursorTokenNeedsRefresh, including its
-// deliberate fail-open behaviour on a missing or unparseable expiry: sending a
-// possibly-stale token and letting the failover path handle the 401 beats
-// hitting the exchange endpoint on every single request.
-func qoderTokenNeedsRefresh(credential *domain.QoderPATCredential) bool {
-	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
-		return true
+// qoderJobExpiry is a job token's end as an RFC3339 string: Qoder's own
+// lifetime if it named one, else the fallback floor, minus the skew so a
+// renewal always happens ahead of the real expiry.
+func qoderJobExpiry(job qoderJobToken, now time.Time) string {
+	expiresAt := job.expiry(now)
+	if job.ExpiresIn <= 0 && strings.TrimSpace(job.ExpireTime) == "" && strings.TrimSpace(job.ExpiresAt) == "" {
+		expiresAt = now.Add(qoderTokenFallbackTTL)
 	}
-	if strings.TrimSpace(credential.ExpiresAt) == "" {
-		return false
+	if !expiresAt.After(now) {
+		expiresAt = now.Add(qoderTokenFallbackTTL)
 	}
-	expiresAt, err := time.Parse(time.RFC3339, credential.ExpiresAt)
-	if err != nil {
-		return false
-	}
-	return time.Now().After(expiresAt)
+	return expiresAt.Add(-qoderTokenExpirySkew).UTC().Format(time.RFC3339)
 }
 
-// ensureFreshQoderToken guarantees the provider holds a usable job token. It is
-// called on every proxied request, so the unexpired path performs no network
-// I/O at all.
 // BackfillQoderAccountLabels refreshes account labels for already connected
-// Qoder providers (one-shot at startup).
-//
-// The label is derived locally from the stored PAT, so unlike the Claude
-// backfill this needs no network call. It runs because the label is only
-// written during a token exchange, and exchanges happen lazily on the forward
-// path — a connected provider that is idle would otherwise keep showing the old
-// bare "Qoder" label indefinitely.
+// Qoder providers (one-shot at startup). Labels are derived from what is
+// stored, so this needs no network call; it runs because a label is only
+// written when a credential is made or renewed, and an idle connection would
+// otherwise keep showing what an older version derived from it.
 func (s *Server) BackfillQoderAccountLabels() {
 	for _, provider := range s.router.State().Providers {
-		if provider.Deleted || provider.AuthType != domain.AuthTypeQoderPAT || provider.QoderPAT == nil {
+		if provider.Deleted || !isQoderProvider(provider) || provider.QoderPAT == nil {
 			continue
 		}
-		pat := strings.TrimSpace(provider.QoderPAT.RefreshToken)
-		if pat == "" {
-			continue
-		}
-		want := qoderAccountLabelFor(pat)
+		want := qoderAccountLabelFor(qoderSiteOf(provider), provider.QoderPAT)
 		if provider.QoderPAT.AccountLabel == want {
 			continue
 		}
@@ -281,9 +165,10 @@ func (s *Server) BackfillQoderAccountLabels() {
 	}
 }
 
-// qoderLiteralPAT returns a PAT pasted as the provider's literal API key, if
-// any. A plain source or "literal:"-prefixed source counts as literal; env /
-// keychain sources are dynamic and must keep using the stored credential.
+// qoderLiteralPAT returns a personal access token pasted as the provider's
+// literal API key, if any. A plain source or "literal:"-prefixed source counts
+// as literal; env and keychain sources are dynamic and keep using the stored
+// credential.
 func qoderLiteralPAT(provider domain.Provider) string {
 	source := strings.TrimSpace(provider.APIKeySource)
 	if source == "" {
@@ -302,98 +187,4 @@ func qoderLiteralPAT(provider domain.Provider) string {
 		return source
 	}
 	return ""
-}
-
-func (s *Server) ensureFreshQoderToken(provider domain.Provider) (domain.Provider, error) {
-	if provider.AuthType != domain.AuthTypeQoderPAT {
-		return provider, nil
-	}
-	stored := ""
-	if provider.QoderPAT != nil {
-		stored = strings.TrimSpace(provider.QoderPAT.RefreshToken)
-	}
-	// A fresh PAT pasted into the provider's API key field overrides an
-	// out-of-date stored credential: prefer it whenever it differs, so a
-	// pasted key takes effect immediately without a reconnect round-trip.
-	literal := qoderLiteralPAT(provider)
-	pat := stored
-	if literal != "" && literal != stored {
-		pat = literal
-	}
-	if strings.TrimSpace(pat) == "" {
-		return provider, fmt.Errorf("provider %q has no Qoder personal access token; paste one in provider settings", provider.ID)
-	}
-	if provider.QoderPAT != nil && provider.QoderPAT.Disconnected {
-		// A user-initiated disconnect must actually stop forwarding, not just
-		// change a console label — otherwise "断开连接" would silently keep
-		// working via this lazy refresh, defeating the point of disconnecting.
-		return provider, fmt.Errorf("provider %q was disconnected from Qoder; reconnect in provider settings", provider.ID)
-	}
-	// Force a fresh exchange when the literal PAT wins: the stored job token
-	// (if any) was minted from the old PAT and must not be reused.
-	if (literal != "" && literal != stored) || qoderTokenNeedsRefresh(provider.QoderPAT) {
-		refreshed, err := exchangeQoderJobToken(pat)
-		if err != nil {
-			return provider, err
-		}
-		updated, err := s.router.SetProviderQoderPAT(provider.ID, refreshed)
-		if err != nil {
-			return provider, err
-		}
-		_ = s.persistProviderOAuth(updated)
-		return updated, nil
-	}
-	return provider, nil
-}
-
-// qoderBackfillToolDescriptions fills in an empty function.description on every
-// tool in an outgoing OpenAI-chat request bound for Qoder.
-//
-// This is a Qoder-specific workaround, not a general protocol fix: the real
-// OpenAI Chat Completions spec documents tools[].function.description as
-// optional, and every other openai_chat provider in this gateway tolerates it
-// being absent. Whatever serves Qoder's "ultimate" tier validates it more
-// strictly than the spec requires and rejects a missing/null description with
-// a Pydantic-style "tools.0.custom.description: Input should be a valid
-// string" — observed in production when Claude Code's built-in web_search
-// tool (which carries no description at all) got routed there. Scoped to
-// AuthTypeQoderPAT call sites only; must not touch the shared
-// convert_claude_openai.go / convert_openai_responses_chat.go conversion paths
-// used by every other openai_chat provider.
-func qoderBackfillToolDescriptions(chatReq map[string]any) {
-	tools, ok := chatReq["tools"].([]any)
-	if !ok {
-		return
-	}
-	for _, item := range tools {
-		tool, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		function, ok := tool["function"].(map[string]any)
-		if !ok {
-			continue
-		}
-		if _, hasKey := function["description"]; !hasKey {
-			function["description"] = ""
-		}
-	}
-}
-
-// syncQoderProviderModels installs the model catalog. Qoder's direct endpoint
-// serves no /models route, so this uses the probed alias list directly instead
-// of attempting a fetch that always 404s.
-func (s *Server) syncQoderProviderModels(providerID string) (domain.Provider, error) {
-	provider, err := s.router.ProviderByID(providerID)
-	if err != nil {
-		return domain.Provider{}, err
-	}
-	updated, err := s.router.UpdateProviderModels(providerID, defaultQoderModels(providerID), "healthy")
-	if err != nil {
-		return provider, err
-	}
-	if err := s.saveState(); err != nil {
-		return updated, err
-	}
-	return updated, nil
 }

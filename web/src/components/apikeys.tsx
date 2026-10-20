@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildApiKeyClientConfigExtras, buildApiKeyClientConfigInstallScript, buildApiKeyCodexRestoreOfficialScript, buildApiKeyPublicCurl, clientConfigFilePath, clientConfigProtocolHint, clientConfigScriptNoun, clientConfigTitle, clientConfigsForProtocol, copyToClipboard, fixedOutputLabels, getApiKeyBinding, localGatewayRoot, protocolFromLabel, protocolLabel, providerOptionLabel, thinkingDepthSelectOptions } from '../lib';
+import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildApiKeyClientConfigExtras, buildApiKeyClientConfigInstallScript, buildApiKeyCodexRestoreOfficialScript, buildApiKeyPublicCurl, clientConfigFilePath, clientConfigProtocolHint, clientConfigScriptNoun, clientConfigTitle, clientConfigsForProtocol, copyToClipboard, fixedOutputLabels, getApiKeyBinding, modelAlias, localGatewayRoot, protocolFromLabel, protocolLabel, providerOptionLabel, thinkingDepthSelectOptions } from '../lib';
 import { SearchableModelSelect } from './selects';
 import { APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route } from '../types';
 import { Badge, CopyButton, Modal } from './ui';
@@ -1157,6 +1157,7 @@ export function ApiKeyModelMappingModal({
                   <span>{model.id}</span>
                   <span className="model-id-copy-hint" aria-hidden="true">📋</span>
                 </div>
+                {modelAlias(model) ? <div className="model-id-alias">{modelAlias(model)}</div> : null}
                 {model.contextLength ? <div className="model-mapping-model-meta">{model.contextLength.toLocaleString()} tokens</div> : null}
               </div>
               <input

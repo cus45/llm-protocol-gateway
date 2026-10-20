@@ -341,7 +341,7 @@ func (s *Server) testProviderChat(r *http.Request, providerID string, req provid
 	}
 	// The transport below (executeProviderChatHTTP) bypasses executeProtocolFlow,
 	// so the Qoder job token has to be refreshed here explicitly.
-	if provider.AuthType == domain.AuthTypeQoderPAT {
+	if isQoderProvider(provider) {
 		refreshed, err := s.ensureFreshQoderToken(provider)
 		if err != nil {
 			return map[string]any{"success": false, "error": err.Error(), "latencyMs": time.Since(started).Milliseconds()}, http.StatusBadGateway
@@ -516,7 +516,7 @@ func (s *Server) testProviderCacheChat(r *http.Request, providerID string, req p
 	// cache_control system block yields prompt_tokens=8 where the same text as a
 	// plain string yields 810. The request would succeed while measuring nothing,
 	// so skip rather than report a misleading result.
-	if provider.AuthType == domain.AuthTypeChatGPTOAuth || provider.AuthType == domain.AuthTypeQoderPAT || isWorkBuddyProvider(provider) || provider.Protocol == domain.ProtocolOpenAIResponses {
+	if provider.AuthType == domain.AuthTypeChatGPTOAuth || isQoderProvider(provider) || isWorkBuddyProvider(provider) || provider.Protocol == domain.ProtocolOpenAIResponses {
 		return map[string]any{
 			"success":    true,
 			"skipped":    true,
@@ -638,7 +638,7 @@ func (s *Server) testProviderThinkingChat(r *http.Request, providerID string, re
 	}
 	// executeProviderChatHTTP below bypasses executeProtocolFlow, so the Qoder
 	// job token has to be refreshed here explicitly.
-	if provider.AuthType == domain.AuthTypeQoderPAT {
+	if isQoderProvider(provider) {
 		refreshed, refreshErr := s.ensureFreshQoderToken(provider)
 		if refreshErr != nil {
 			return map[string]any{"success": false, "error": refreshErr.Error(), "latencyMs": time.Since(started).Milliseconds()}, http.StatusBadGateway

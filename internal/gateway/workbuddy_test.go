@@ -23,6 +23,31 @@ func pointWorkBuddyAt(t *testing.T, cn, ai string) {
 	t.Cleanup(func() { workBuddyCNEndpoint, workBuddyIntlEndpoint = oldCN, oldAI })
 }
 
+// messageContent reads one message's text, whichever shape the body left it in.
+func messageContent(t *testing.T, payload map[string]any, index int) string {
+	t.Helper()
+	messages, _ := payload["messages"].([]any)
+	if index >= len(messages) {
+		t.Fatalf("messages = %d, want more than %d", len(messages), index)
+	}
+	message, _ := messages[index].(map[string]any)
+	switch content := message["content"].(type) {
+	case string:
+		return content
+	case []any:
+		text := ""
+		for _, item := range content {
+			part, _ := item.(map[string]any)
+			if piece, _ := part["text"].(string); piece != "" {
+				text += piece
+			}
+		}
+		return text
+	}
+	t.Fatalf("message %d has no text content: %+v", index, message)
+	return ""
+}
+
 func TestPrepareWorkBuddyChatBody(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -73,6 +98,220 @@ func TestPrepareWorkBuddyChatBody(t *testing.T) {
 			check:    func(*testing.T, map[string]any) {},
 			wantSame: true,
 		},
+		{
+			name: "Claude Code 自带的提示词：换成能过渠道校验的说法",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=cli\nYou are Claude Code, Anthropic's official CLI for Claude.\nMain branch (you will usually use this for PRs): main"},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				text := messageContent(t, payload, 0)
+				if strings.Contains(text, "x-anthropic-billing-header") {
+					t.Fatalf("billing header survived: %q", text)
+				}
+				if strings.Contains(text, "official CLI for Claude") {
+					t.Fatalf("the flagged wording survived: %q", text)
+				}
+				if !strings.Contains(text, "You are Claude Code, Anthropic's CLI for Claude") {
+					t.Fatalf("rewrite lost its meaning: %q", text)
+				}
+				if !strings.Contains(text, "Main branch (usually the base for PRs): main") {
+					t.Fatalf("main-branch line untouched: %q", text)
+				}
+			},
+		},
+		{
+			name: "改写只动 system 轮，用户说的原话照发",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"be nice"},{"role":"user","content":"You are Claude Code, Anthropic's official CLI for Claude."}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				if got := messageContent(t, payload, 1); got != "You are Claude Code, Anthropic's official CLI for Claude." {
+					t.Fatalf("user turn rewritten: %q", got)
+				}
+			},
+			wantSame: true,
+		},
+		{
+			name: "整条 system 只剩计费头：丢掉这一轮",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"x-anthropic-billing-header: cc_version=2.1.280"},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != 2 {
+					t.Fatalf("messages = %d, want 2 (the emptied system turn goes, the filler comes)", len(messages))
+				}
+				first, _ := messages[0].(map[string]any)
+				if first["role"] != "system" || first["content"] != workBuddySystemPrompt {
+					t.Fatalf("first = %+v", first)
+				}
+			},
+		},
+		{
+			name: "分块的 content 也改写",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":[{"type":"text","text":"Main branch (you will usually use this for PRs): main"}]},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				first, _ := messages[0].(map[string]any)
+				parts, _ := first["content"].([]any)
+				part, _ := parts[0].(map[string]any)
+				if text, _ := part["text"].(string); text != "Main branch (usually the base for PRs): main" {
+					t.Fatalf("part = %q", text)
+				}
+			},
+		},
+		{
+			name: "Codex 的 developer 轮按 system 发",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"developer","content":"You are a helpful assistant."},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				first, _ := messages[0].(map[string]any)
+				if first["role"] != "system" {
+					t.Fatalf("first role = %v, want system", first["role"])
+				}
+				if len(messages) != 2 {
+					t.Fatalf("messages = %d, want 2 (no system prepended twice)", len(messages))
+				}
+			},
+		},
+		{
+			name:     "改写过的请求再过一遍：不再改动",
+			body:     `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"You are Claude Code, Anthropic's CLI for Claude.\nThe Codex CLI is an open source project led by OpenAI."},{"role":"user","content":"hi"}]}`,
+			check:    func(t *testing.T, payload map[string]any) {},
+			wantSame: true,
+		},
+		{
+			name: "Anthropic 的工具块混在 Chat 里：读成 tool_calls 与 role:tool",
+			body: `{"model":"glm-5.3","stream":true,"messages":[` +
+				`{"role":"system","content":"be nice"},` +
+				`{"role":"assistant","content":[{"type":"text","text":"我先读文件"},{"type":"tool_use","id":"toolu_01ABC","name":"Read","input":{"path":"a.txt"}}]},` +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01ABC","content":[{"type":"text","text":"a 的内容"}]},{"type":"text","text":"继续"}]}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != 4 {
+					t.Fatalf("messages = %d, want system/assistant/tool/user: %+v", len(messages), messages)
+				}
+				assistant, _ := messages[1].(map[string]any)
+				calls, _ := assistant["tool_calls"].([]any)
+				if len(calls) != 1 {
+					t.Fatalf("the call stayed a content part: %+v", assistant)
+				}
+				call, _ := calls[0].(map[string]any)
+				if call["id"] != "toolu_01ABC" || call["type"] != "function" {
+					t.Fatalf("call = %+v", call)
+				}
+				function, _ := call["function"].(map[string]any)
+				if function["name"] != "Read" || !strings.Contains(function["arguments"].(string), "a.txt") {
+					t.Fatalf("function = %+v", function)
+				}
+				if assistant["content"] != "我先读文件" {
+					t.Fatalf("the assistant's own text moved: %v", assistant["content"])
+				}
+				answered, _ := messages[2].(map[string]any)
+				if answered["role"] != "tool" || answered["tool_call_id"] != "toolu_01ABC" || answered["content"] != "a 的内容" {
+					t.Fatalf("answer = %+v", answered)
+				}
+				next, _ := messages[3].(map[string]any)
+				if next["role"] != "user" || next["content"] != "继续" {
+					t.Fatalf("the user's own words = %+v", next)
+				}
+			},
+		},
+		{
+			name: "并行结果乱序、一个调用没结果：重排，并补上被打断的那份答复",
+			body: `{"model":"glm-5.3","stream":true,"messages":[` +
+				`{"role":"system","content":"s"},` +
+				`{"role":"assistant","content":"","tool_calls":[` +
+				`{"id":"c1","type":"function","function":{"name":"Bash","arguments":"{\"a\":1}"}},` +
+				`{"id":"c2","type":"function","function":{"name":"Read","arguments":"{}"}},` +
+				`{"id":"c3","type":"function","function":{"name":"Grep","arguments":"{}"}}]},` +
+				`{"role":"tool","tool_call_id":"c2","content":"二"},` +
+				`{"role":"tool","tool_call_id":"c1","content":"一"},` +
+				`{"role":"user","content":"下一步"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != 6 {
+					t.Fatalf("messages = %d, want the third answer synthesized: %+v", len(messages), messages)
+				}
+				for position, want := range []string{"c1", "c2", "c3"} {
+					tool, _ := messages[2+position].(map[string]any)
+					if tool["role"] != "tool" || tool["tool_call_id"] != want {
+						t.Fatalf("answer %d = %+v, want %s", position, tool, want)
+					}
+				}
+				closing, _ := messages[4].(map[string]any)
+				if !strings.Contains(closing["content"].(string), "turn was interrupted") {
+					t.Fatalf("an unanswered call got no closing answer: %+v", closing)
+				}
+				tail, _ := messages[5].(map[string]any)
+				if tail["role"] != "user" {
+					t.Fatalf("the user's turn moved: %+v", tail)
+				}
+			},
+		},
+		{
+			name: "答复找不到对应调用（会话被压缩掉了）：结果留成用户轮，不编造调用",
+			body: `{"model":"glm-5.3","stream":true,"messages":[` +
+				`{"role":"system","content":"s"},` +
+				`{"role":"tool","tool_call_id":"gone","content":"孤儿结果"},` +
+				`{"role":"user","content":"继续"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != 3 {
+					t.Fatalf("messages = %d, want the orphan turned into a user turn", len(messages))
+				}
+				for _, item := range messages {
+					if message, _ := item.(map[string]any); message["role"] == "tool" {
+						t.Fatalf("an answer to no call stayed a tool turn: %+v", messages)
+					}
+				}
+				orphan, _ := messages[1].(map[string]any)
+				if orphan["role"] != "user" || orphan["content"] != "孤儿结果" {
+					t.Fatalf("orphan = %+v, want the result to survive as the user's", orphan)
+				}
+			},
+		},
+		{
+			name: "同一调用两份答复：第一份留着",
+			body: `{"model":"glm-5.3","stream":true,"messages":[` +
+				`{"role":"system","content":"s"},` +
+				`{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"Bash","arguments":"{}"}}]},` +
+				`{"role":"tool","tool_call_id":"c1","content":"第一份"},` +
+				`{"role":"tool","tool_call_id":"c1","content":"第二份"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				if len(messages) != 3 {
+					t.Fatalf("messages = %d, want the second answer dropped", len(messages))
+				}
+				tool, _ := messages[2].(map[string]any)
+				if tool["content"] != "第一份" {
+					t.Fatalf("the wrong answer stood: %+v", tool)
+				}
+			},
+		},
+		{
+			name: "tool_choice 的对象写法：换成工具名",
+			body: `{"model":"glm-5.3","stream":true,"tool_choice":{"type":"function","function":{"name":"Bash"}},` +
+				`"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				if payload["tool_choice"] != "Bash" {
+					t.Fatalf("tool_choice = %+v", payload["tool_choice"])
+				}
+			},
+		},
+		{
+			name: "tool_choice 为 none：连 tools 一起不收",
+			body: `{"model":"glm-5.3","stream":true,"tool_choice":"none","tools":[{"type":"function","function":{"name":"Bash"}}],` +
+				`"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				if _, exists := payload["tool_choice"]; exists {
+					t.Fatal("tool_choice none survived")
+				}
+				if _, exists := payload["tools"]; exists {
+					t.Fatal("tools survived a choice of none")
+				}
+			},
+		},
+		{
+			name:     "已经配平的工具轮与 auto：一个字都不动",
+			body:     `{"model":"glm-5.3","stream":true,"tool_choice":"auto","messages":[{"role":"system","content":"s"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"Bash","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"},{"role":"user","content":"继续"}]}`,
+			check:    func(t *testing.T, payload map[string]any) {},
+			wantSame: true,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -86,6 +325,290 @@ func TestPrepareWorkBuddyChatBody(t *testing.T) {
 			}
 			testCase.check(t, payload)
 		})
+	}
+}
+
+// TestWorkBuddyPromptRefusalAsksTheNextOneButRestsNobody: WorkBuddy turning the
+// agent's own prompt away is not the account's fault, so the backup chain moves
+// on and the provider is never painted 异常.
+func TestWorkBuddyPromptRefusalAsksTheNextOneButRestsNobody(t *testing.T) {
+	refusal := []byte(`{"code":11128,"msg":"Illegal API invocation from an unapproved channel","displayMsg":{"zh":"请求被拦截，请重新发送"}}`)
+	class, reason := classifyProviderFailover(http.StatusBadRequest, refusal, nil, nil)
+	if class != failoverPromptRefusal || reason != "prompt_refused" {
+		t.Fatalf("class = %v reason = %q, want the prompt refusal", class, reason)
+	}
+	if !shouldFailoverProvider(http.StatusBadRequest, refusal, nil) {
+		t.Fatal("a refusal another provider may take did not fail over")
+	}
+	server := &Server{}
+	for attempt := 0; attempt < 3; attempt++ {
+		if !server.applyProviderFailoverOutcome("workbuddy-1", http.StatusBadRequest, refusal, nil) {
+			t.Fatal("the backup chain did not move on")
+		}
+	}
+	if _, unavailable := server.providerNextRetry("workbuddy-1"); unavailable {
+		t.Fatal("a prompt the vendor turns away rested the account")
+	}
+	server.providerAvailabilityMu.Lock()
+	count := server.providerSoftFailures["workbuddy-1"].count
+	server.providerAvailabilityMu.Unlock()
+	if count != 0 {
+		t.Fatalf("soft failures counted %d for a refusal of the prompt", count)
+	}
+	if note := summarizeUpstreamHTTPError(http.StatusBadRequest, refusal); !strings.Contains(note, WorkBuddyRefusedNote) {
+		t.Fatalf("the client is told %q, with no way out", note)
+	}
+	// An ordinary bad request stays the client's own problem.
+	if class, _ := classifyProviderFailover(http.StatusBadRequest, []byte(`{"error":{"message":"tools[0].type is illegal"}}`), nil, nil); class != failoverNone {
+		t.Fatalf("a bad schema class = %v, want none", class)
+	}
+}
+
+// serveAsClaude posts one Anthropic request through the gateway against a single
+// provider, on its own route and API key, and returns what the client got.
+func serveAsClaude(t *testing.T, provider domain.Provider, model string, stream bool, system string) *httptest.ResponseRecorder {
+	t.Helper()
+	router := NewRouter(domain.GatewayState{
+		Providers: []domain.Provider{provider},
+		Routes: []domain.Route{{
+			ID: "r1", Name: "R1", ProviderID: provider.ID,
+			OutputProtocol: domain.ProtocolClaude, Mode: domain.RouteModeAuto, Enabled: true,
+		}},
+		APIKeys: []domain.APIKey{{ID: "k1", Name: "K1", Key: "sk-gw", RouteID: "r1", Enabled: true, StreamEnabled: true}},
+	})
+	body, err := json.Marshal(map[string]any{
+		"model": model, "max_tokens": 32, "stream": stream,
+		"system":   []map[string]any{{"type": "text", "text": system}},
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(string(body)))
+	request.Header.Set("x-api-key", "sk-gw")
+	request.Header.Set("anthropic-version", "2023-06-01")
+	recorder := httptest.NewRecorder()
+	NewServer(router, monitor.NewStore()).handleClaudeMessages(recorder, request)
+	return recorder
+}
+
+// TestClaudeMessagesToWorkBuddyShapesTheUpstreamRequest: a Claude client reaches
+// a WorkBuddy plan through its own converter, which once built and sent the
+// request by hand and so skipped everything WorkBuddy asks for — the streaming
+// request, a leading system turn, the words its channel check turns away, and
+// the account's own headers. What the plan sees is now what a Chat client's own
+// path sends, and a client that asked for one object still gets one.
+func TestClaudeMessagesToWorkBuddyShapesTheUpstreamRequest(t *testing.T) {
+	var gotPath string
+	var gotAuth, gotUserID, gotDomain, gotIDEType, gotUserAgent string
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth, gotUserID = r.Header.Get("Authorization"), r.Header.Get("X-User-Id")
+		gotDomain, gotIDEType = r.Header.Get("X-Domain"), r.Header.Get("X-IDE-Type")
+		gotUserAgent = r.Header.Get("User-Agent")
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = map[string]any{}
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"c1","created":1700000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`,
+			`data: {"id":"c1","created":1700000000,"model":"glm-5.3","choices":[{"index":0,"delta":{"content":"收到"}}]}`,
+			`data: {"id":"c1","created":1700000000,"model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`,
+			`data: [DONE]`, "", "",
+		}, "\n"))
+	}))
+	defer upstream.Close()
+	pointWorkBuddyAt(t, upstream.URL, upstream.URL)
+
+	provider := domain.Provider{
+		ID: "wb1", Name: "WB", Protocol: domain.ProtocolOpenAIChat,
+		AuthType: domain.AuthTypeWorkBuddy, BaseURL: upstream.URL + "/v2",
+		WorkBuddy: &domain.WorkBuddyCredential{
+			AccessToken: "wb-access", RefreshToken: "wb-refresh", UserID: "u-1",
+			Domain:    "copilot.tencent.com",
+			ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	flagged := "x-anthropic-billing-header: cc_version=2.1.280\n" +
+		"You are Claude Code, Anthropic's official CLI for Claude.\n" +
+		"Main branch (you will usually use this for PRs): main"
+
+	recorder := serveAsClaude(t, provider, "glm-5.3", false, flagged)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/v2/chat/completions" {
+		t.Fatalf("upstream path = %q", gotPath)
+	}
+	if gotBody["stream"] != true {
+		t.Fatalf("WorkBuddy was asked for a non-stream chat: %v", gotBody["stream"])
+	}
+	messages, _ := gotBody["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatal("no messages reached the plan")
+	}
+	first, _ := messages[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Fatalf("first message role = %v, want system", first["role"])
+	}
+	text, _ := first["content"].(string)
+	if strings.Contains(text, "x-anthropic-billing-header") || strings.Contains(text, "official CLI for Claude") {
+		t.Fatalf("the flagged wording still goes to the plan: %q", text)
+	}
+	if !strings.Contains(text, "You are Claude Code, Anthropic's CLI for Claude") ||
+		!strings.Contains(text, "Main branch (usually the base for PRs)") {
+		t.Fatalf("the rewrite lost the prompt's meaning: %q", text)
+	}
+	if gotAuth != "Bearer wb-access" || gotUserID != "u-1" || gotDomain != "copilot.tencent.com" ||
+		gotIDEType != "WorkBuddy" || gotUserAgent != "WorkBuddy/"+workBuddyUAVersion {
+		t.Fatalf("the plan was not signed as its account: auth=%q user=%q domain=%q ide=%q ua=%q",
+			gotAuth, gotUserID, gotDomain, gotIDEType, gotUserAgent)
+	}
+	var completion map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &completion); err != nil {
+		t.Fatalf("a non-streaming Claude client did not get one object: %v (%s)", err, recorder.Body.String())
+	}
+	if completion["type"] != "message" {
+		t.Fatalf("client answer = %+v, want a Claude message", completion)
+	}
+	blocks, _ := completion["content"].([]any)
+	if len(blocks) == 0 {
+		t.Fatalf("no content block came back: %s", recorder.Body.String())
+	}
+	block, _ := blocks[0].(map[string]any)
+	if block["text"] != "收到" {
+		t.Fatalf("content = %+v, want the rebuilt answer", block)
+	}
+
+	if streamed := serveAsClaude(t, provider, "glm-5.3", true, flagged); streamed.Code != http.StatusOK ||
+		!strings.Contains(streamed.Body.String(), "event:") {
+		t.Fatalf("a streaming Claude client got %d: %s", streamed.Code, streamed.Body.String())
+	}
+}
+
+// TestClaudeMessagesToTraeSignsItsAgentCall: Trae is not an OpenAI endpoint, so a
+// Claude client's request has to reach Trae's own signed agent call and its event
+// stream has to come back as Claude events. The converted path used to post a
+// plain chat/completions to Trae's host with nothing but a bearer.
+func TestClaudeMessagesToTraeSignsItsAgentCall(t *testing.T) {
+	var paths []string
+	var gotAuth, gotDevice, gotUID string
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		gotAuth, gotDevice = r.Header.Get("Authorization"), r.Header.Get("x-device-id")
+		gotUID = r.Header.Get("x-uid")
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = map[string]any{}
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: output\n"+`data: {"response":"收到"}`+"\n\n"+
+			"event: done\n"+`data: {"finish_reason":"stop"}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	site := traeSites["trae-cn"]
+	oldAPI := site.api
+	site.api = upstream.URL
+	traeSites["trae-cn"] = site
+	t.Cleanup(func() {
+		site.api = oldAPI
+		traeSites["trae-cn"] = site
+	})
+
+	provider := domain.Provider{
+		ID: "trae1", Name: "Trae", Protocol: domain.ProtocolOpenAIChat,
+		AuthType: domain.AuthTypeTraeCN, DefaultModel: "glm-5.2",
+		Trae: &domain.TraeCredential{
+			AccessToken: "trae-jwt", RefreshToken: "trae-refresh", UserID: "u-9",
+			DeviceID: "1234567890123456789", MachineID: strings.Repeat("ab", 16),
+			ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	recorder := serveAsClaude(t, provider, "glm-5.2", false, "You are a helpful assistant.")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	for _, path := range paths {
+		if path != traeChatPath {
+			t.Fatalf("Trae was asked %q, want only its agent call %q", path, traeChatPath)
+		}
+	}
+	if gotAuth != "Cloud-IDE-JWT trae-jwt" || gotUID != "u-9" || gotDevice != "1234567890123456789" {
+		t.Fatalf("the agent call was not signed as the account: auth=%q uid=%q device=%q", gotAuth, gotUID, gotDevice)
+	}
+	if function, _ := gotBody["function"].(string); function == "" {
+		t.Fatalf("no agent function was named: %+v", gotBody)
+	}
+	if gotBody["stream"] != true {
+		t.Fatalf("Trae only answers a stream, request was: %+v", gotBody)
+	}
+	if session, _ := gotBody["session_id"].(string); len(session) != 36 {
+		t.Fatalf("session_id = %q, want the conversation's id", session)
+	}
+	var completion map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &completion); err != nil {
+		t.Fatalf("a non-streaming Claude client did not get one message: %v (%s)", err, recorder.Body.String())
+	}
+	blocks, _ := completion["content"].([]any)
+	if completion["type"] != "message" || len(blocks) == 0 {
+		t.Fatalf("client answer = %s", recorder.Body.String())
+	}
+	block, _ := blocks[0].(map[string]any)
+	if block["text"] != "收到" {
+		t.Fatalf("content = %+v, want Trae's answer rebuilt", block)
+	}
+
+	streamed := serveAsClaude(t, provider, "glm-5.2", true, "You are a helpful assistant.")
+	if streamed.Code != http.StatusOK || !strings.Contains(streamed.Body.String(), "event:") {
+		t.Fatalf("a streaming Claude client got %d: %s", streamed.Code, streamed.Body.String())
+	}
+}
+
+// TestClaudeMessagesToQoderReachesItsSender: Qoder takes a signed, encoded agent
+// request rather than a chat/completions body, and needs the account's model
+// listing to name the configuration it sends with it. Reaching that listing is
+// what proves a Claude client flows through Qoder's own sender.
+func TestClaudeMessagesToQoderReachesItsSender(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	site := qoderGlobalSite
+	oldAPI := site.API
+	site.API = upstream.URL
+	qoderGlobalSite = site
+	t.Cleanup(func() {
+		site.API = oldAPI
+		qoderGlobalSite = site
+	})
+
+	provider := domain.Provider{
+		ID: "qoder1", Name: "Qoder", Protocol: domain.ProtocolOpenAIChat,
+		AuthType: domain.AuthTypeQoderPAT, DefaultModel: "ultimate",
+		QoderPAT: &domain.QoderCredential{
+			AccessToken: "qoder-token", UID: "q-1", MachineID: strings.Repeat("cd", 16),
+			ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+
+	recorder := serveAsClaude(t, provider, "ultimate", false, "You are a helpful assistant.")
+	for _, path := range paths {
+		if path == "/chat/completions" {
+			t.Fatalf("Qoder got a bare chat/completions POST: %v", paths)
+		}
+	}
+	if len(paths) == 0 {
+		t.Fatal("the Claude client's request never reached Qoder's sender")
+	}
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("an unusable Qoder listing answered 200: %s", recorder.Body.String())
 	}
 }
 
@@ -314,8 +837,8 @@ func TestWorkBuddySignInStoresAccountSession(t *testing.T) {
 		{ID: "wb", Name: "WorkBuddy", AuthType: domain.AuthTypeWorkBuddy},
 	}})
 	s := &Server{
-		router:                router,
-		logs:                  monitor.NewStore(),
+		router:                 router,
+		logs:                   monitor.NewStore(),
 		subscriptionOAuthFlows: newSubscriptionOAuthStore(),
 	}
 

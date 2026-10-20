@@ -226,6 +226,12 @@ export type SubscriptionUsage = {
 
 export type QoderPATInfo = {
   connected?: boolean;
+  /** 这条连接是怎么来的：device = 浏览器授权，pat = 粘贴个人访问令牌。 */
+  signInMode?: 'device' | 'pat';
+  /** Qoder 的账号接口报出的邮箱；没有它就只能显示 uid 或令牌尾号。 */
+  email?: string;
+  /** Qoder CN 拒绝换发作业令牌时，账号改用设备令牌直接对话（CLI 的形态）。 */
+  deviceChat?: boolean;
   /** 用户点了「断开连接」：令牌仍保留在后端，只是暂停转发。见 disconnected 分支 UI。 */
   disconnected?: boolean;
   /** 后端仍存有个人访问令牌（即使当前 disconnected），可一键重新连接、无需再粘贴。 */
@@ -370,7 +376,7 @@ export type Provider = {
     createdAt?: string;
     lastSeenAt?: string;
   };
-  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
+  authType?: 'api_key' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'qoder_cn' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
   // 智谱（bigmodel / z.ai）编程套餐额度查询配置：团队版需要组织 + 项目 ID，
   // 两者都填时走团队版端点（?type=2 + bigmodel-organization/-project 请求头），
   // 否则走个人版端点。均为非敏感账号标识。
@@ -499,6 +505,8 @@ export type KeyProfile = {
 export type Model = {
   id: string;
   providerId: string;
+  /** 上游给用户看的名字；请求仍然只认 id。空表示上游没有别名。 */
+  name?: string;
   protocol: Protocol;
   contextLength: number;
   maxOutputTokens?: number;
@@ -877,7 +885,7 @@ export type TrafficRankCache = {
   models: Record<string, number>;
 };
 
-export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
+export type ProviderConnectKind = 'api_key' | 'self_register' | 'claude_oauth' | 'cursor_oauth' | 'chatgpt_oauth' | 'qoder_pat' | 'qoder_cn' | 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global' | 'opencode_zen_free';
 
 /** 需要浏览器登录的订阅连接方式：它们共用一套「发起 → 等待 → 已连接」流程。 */
 export type SubscriptionConnectKind = 'workbuddy' | 'workbuddy_ai' | 'zcode' | 'zcode_bigmodel' | 'trae_cn' | 'trae_global';

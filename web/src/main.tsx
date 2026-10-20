@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
 import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, QODER_DEFAULT_BASE_URL, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, providerAuthTypeParam, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogProviderLabel, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
+import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isQoderConnectKind, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, modelAlias, providerAuthTypeParam, qoderDefaultBaseURL, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogProviderLabel, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
 import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
 import { SubscriptionConnect } from './components/subscription';
 import { ProviderLabel, providerIcon } from './components/provider_label';
@@ -431,7 +431,7 @@ function App() {
       } else if (providersStatusFilter === 'disabled') {
         if (!provider.disabled) return false;
       } else if (providersStatusFilter === 'oauth') {
-        const isOAuth = provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || provider.authType === 'qoder_pat';
+        const isOAuth = provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || isQoderConnectKind(provider.authType);
         if (!isOAuth) return false;
       }
 
@@ -459,7 +459,7 @@ function App() {
       if (provider.authType === 'cursor_oauth' && provider.cursorOAuth?.connected) return true;
       if (provider.authType === 'claude_oauth' && provider.claudeOAuth?.connected) return true;
       if (provider.authType === 'chatgpt_oauth' && provider.chatgptOAuth?.connected) return true;
-      if (provider.authType === 'qoder_pat' && provider.qoderPat?.connected) return true;
+      if (isQoderConnectKind(provider.authType) && provider.qoderPat?.connected) return true;
       return false;
     });
   }, [state.models, sortedProviders]);
@@ -2202,7 +2202,7 @@ function App() {
     setCacheTestResult(null);
     setThinkingTestResult(null);
     setChatTestOpen(true);
-    if (provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || provider.authType === 'qoder_pat') return;
+    if (provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || isQoderConnectKind(provider.authType)) return;
     void fetch(`${API_BASE}/__providers/${encodeURIComponent(provider.id)}/auth-preview`)
       .then(async (response) => {
         if (!response.ok) return;
@@ -2263,7 +2263,7 @@ function App() {
   }
 
   async function runProviderConformance(provider: Provider) {
-    if (provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || provider.authType === 'qoder_pat') {
+    if (provider.authType === 'claude_oauth' || provider.authType === 'cursor_oauth' || provider.authType === 'chatgpt_oauth' || isQoderConnectKind(provider.authType)) {
       showToast('协议诊断仅支持 Bearer（api_key）自建上游');
       return;
     }
@@ -2554,7 +2554,7 @@ function App() {
       const isClaudeOAuth = providerDraft.protocol === 'claude' && providerDraft.authType === 'claude_oauth';
       const isCursorOAuth = providerDraft.protocol === 'openai_chat' && providerDraft.authType === 'cursor_oauth';
       const isChatGPTOAuth = providerDraft.protocol === 'openai_responses' && providerDraft.authType === 'chatgpt_oauth';
-      const isQoderPAT = providerDraft.protocol === 'openai_chat' && providerDraft.authType === 'qoder_pat';
+      const isQoder = providerDraft.protocol === 'openai_chat' && isQoderConnectKind(providerDraft.authType);
       const isWorkBuddy = isWorkBuddyConnectKind(providerDraft.authType);
       const isSelfRegister = providerDraft.authType === 'self_register';
       let requestAdapter: RequestAdapter | null = null;
@@ -2574,7 +2574,9 @@ function App() {
         defaultModel: providerDraft.defaultModel,
         defaultThinkingDepth: providerDraft.defaultThinkingDepth,
         authHeader: providerDraft.protocol === 'claude' ? 'x-api-key' : 'Authorization',
-        authType: isClaudeOAuth ? 'claude_oauth' : isCursorOAuth ? 'cursor_oauth' : isChatGPTOAuth ? 'chatgpt_oauth' : isQoderPAT ? 'qoder_pat'
+        // Qoder 两个站点是两种连接方式，直接把草稿里选定的那种交回去，
+        // 不能让「选了 Qoder CN、存成 qoder_pat」把账号签到错的站点上。
+        authType: isClaudeOAuth ? 'claude_oauth' : isCursorOAuth ? 'cursor_oauth' : isChatGPTOAuth ? 'chatgpt_oauth' : isQoder ? providerDraft.authType
           : providerAuthTypeParam(providerDraft.authType),
         requestAdapter,
         // 智谱团队版：两者都填才发送并触发团队端点；否则清空（走个人版）。
@@ -2596,7 +2598,7 @@ function App() {
       resetQoderPATFlowState();
       // OAuth 三种连接方式 / 自助注册模式：创建后不关弹窗，直接停留在编辑态，
       // 用户立刻就能点连接按钮 / 拿到注册令牌，不用再多点一次「编辑」重新进来。
-      if (wasCreate && (isSelfRegister || isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoderPAT || isWorkBuddy || isSubscriptionConnectKind(providerDraft.authType))) {
+      if (wasCreate && (isSelfRegister || isClaudeOAuth || isCursorOAuth || isChatGPTOAuth || isQoder || isWorkBuddy || isSubscriptionConnectKind(providerDraft.authType))) {
         // 不关弹窗、留在编辑态，并且直接把"创建"和"发起授权/生成令牌"这两步
         // 接在同一次点击触发的调用链里完成，用户不用再多点一次。
         setEditingProviderID(saved.id);
@@ -2612,9 +2614,10 @@ function App() {
         } else if (isCursorOAuth) {
           showToast(`已添加输入 Provider：${saved.name}，正在跳转 Cursor 授权…`);
           await startCursorOAuthConnect(saved.id);
-        } else if (isQoderPAT) {
-          // No browser round-trip: the user pastes a PAT into the panel below.
-          showToast(`已添加输入 Provider：${saved.name}，请粘贴 Qoder 个人访问令牌`);
+        } else if (isQoder) {
+          // 浏览器授权由下面的连接面板发起：这里只把弹窗留在编辑态，
+          // 不再替用户多开一个登录页。
+          showToast(`已添加输入 Provider：${saved.name}，点「登录」完成 Qoder 授权`);
         } else if (isChatGPTOAuth) {
           showToast(`已添加输入 Provider：${saved.name}，正在跳转 ChatGPT 授权…`);
           await startChatGPTOAuthConnect(saved.id);
@@ -3004,40 +3007,6 @@ function App() {
       await readConnectResponse(response, 'Qoder 账号连接失败');
       resetQoderPATFlowState();
       showToast('Qoder 账号连接成功');
-      await refreshState(false);
-    } catch (error) {
-      setQoderPatError(String(error));
-    } finally {
-      setQoderPatBusy(false);
-    }
-  }
-
-  async function disconnectQoderPAT() {
-    if (!editingProviderID) return;
-    setQoderPatBusy(true);
-    setQoderPatError('');
-    try {
-      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(editingProviderID)}/qoder-pat/disconnect`, { method: 'POST' });
-      await readConnectResponse(response, 'Qoder 断开连接失败');
-      showToast('已断开 Qoder 账号连接（令牌已保留，随时可一键重新连接）');
-      await refreshState(false);
-    } catch (error) {
-      setQoderPatError(String(error));
-    } finally {
-      setQoderPatBusy(false);
-    }
-  }
-
-  /** 用已保存的个人访问令牌重新连接，无需再粘贴。 */
-  async function reconnectQoderPAT() {
-    if (!editingProviderID) return;
-    setQoderPatBusy(true);
-    setQoderPatError('');
-    try {
-      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(editingProviderID)}/qoder-pat/reconnect`, { method: 'POST' });
-      await readConnectResponse(response, 'Qoder 重新连接失败');
-      resetQoderPATFlowState();
-      showToast('已使用已保存的令牌重新连接');
       await refreshState(false);
     } catch (error) {
       setQoderPatError(String(error));
@@ -4071,7 +4040,7 @@ function App() {
       : '';
   // 鉴权解析不出来时提前说清楚，别等 401 再猜。
   const chatTestAuthWarning = chatTestContext?.kind === 'provider' && chatTestProvider
-    && !['claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global'].includes(chatTestProvider.authType || '')
+    && !['claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'qoder_cn', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global'].includes(chatTestProvider.authType || '')
     && !providerAuthPreview?.value
     ? '未解析到 Provider 鉴权值；若使用 env: 变量，请确认网关进程环境变量已设置。'
     : undefined;
@@ -4649,7 +4618,7 @@ function App() {
                         onToggleEnabled={!isNormalUser ? () => void toggleProviderEnabled(provider) : undefined}
                         subtitle={(provider.authType === 'claude_oauth' && provider.claudeOAuth?.accountLabel)
                           || (provider.authType === 'chatgpt_oauth' && chatgptAccountLabelFriendly(provider.chatgptOAuth?.accountLabel))
-                          || (provider.authType === 'qoder_pat' && provider.qoderPat?.accountLabel)
+                          || (isQoderConnectKind(provider.authType) && provider.qoderPat?.accountLabel)
                           || (provider.workbuddyOAuth?.accountLabel)
                           || undefined}
                         icon={resolveProviderIcon(provider)}
@@ -4659,7 +4628,7 @@ function App() {
                         cursorOAuthConnected={provider.cursorOAuth?.connected}
                         isChatGPTOAuth={provider.authType === 'chatgpt_oauth'}
                         chatgptOAuthConnected={provider.chatgptOAuth?.connected}
-                        isQoderPAT={provider.authType === 'qoder_pat'}
+                        isQoderPAT={isQoderConnectKind(provider.authType)}
                         qoderPATConnected={provider.qoderPat?.connected}
                         isWorkBuddy={isWorkBuddyConnectKind(provider.authType || 'api_key')}
                         workBuddyConnected={provider.workbuddyOAuth?.connected}
@@ -5889,7 +5858,7 @@ function App() {
                         ? !!provider.claudeOAuth?.connected
                         : provider.authType === 'chatgpt_oauth'
                           ? !!provider.chatgptOAuth?.connected
-                          : provider.authType === 'qoder_pat'
+                          : isQoderConnectKind(provider.authType)
                           ? !!provider.qoderPat?.connected
                         : true;
                     if (!canSync) return <div className="hint-line">请先完成 OAuth 连接后再同步模型。</div>;
@@ -5933,6 +5902,7 @@ function App() {
                                 <span className="model-id-text">{model.id}</span>
                                 <span className="model-id-copy-hint" aria-hidden="true">📋</span>
                               </div>
+                              {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
                             </td>
                             <td>
                               {provider ? <ProviderLabel provider={provider} size={15} /> : <span className="provider-label missing">{model.providerId}</span>}
@@ -5973,14 +5943,17 @@ function App() {
                       <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
                         <div className="model-card-head">
                           <div className="model-card-title-row">
-                            <span
-                              className="provider-name model-id-clickable"
-                              title={`点击复制模型 ID：${model.id}`}
-                              onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
-                            >
-                              {model.id}
-                              <span className="model-id-copy-hint" aria-hidden="true">📋</span>
-                            </span>
+                            <div className="model-id-main">
+                              <span
+                                className="provider-name model-id-clickable"
+                                title={`点击复制模型 ID：${model.id}`}
+                                onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                              >
+                                {model.id}
+                                <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                              </span>
+                              {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
+                            </div>
                             <Badge tone="slate">{model.inMenu ? '菜单' : '隐藏'}</Badge>
                           </div>
                           <CopyButton
@@ -7657,7 +7630,7 @@ function App() {
             {(() => {
               // 连接方式与它的展示文案都取自 lib 里的那一张表：目录磁贴、筛选条与
               // 这个下拉框共用同一份标签，新增一种订阅不用再改这里。
-              const connectChoices: ProviderConnectKind[] = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'];
+              const connectChoices: ProviderConnectKind[] = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'qoder_cn', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'];
               const connectLocked = providerDraft.authType !== 'api_key' && providerDraft.authType !== 'self_register';
               const connectValue = providerConnectLabel(providerDraft.authType);
               // 自助注册类 Provider：协议只能由脚本通过 self-register 接口的
@@ -7680,7 +7653,7 @@ function App() {
                       const protocol = authType === 'claude_oauth' ? 'claude'
                         : authType === 'cursor_oauth' ? 'openai_chat'
                         : authType === 'chatgpt_oauth' ? 'openai_responses'
-                        : authType === 'qoder_pat' ? 'openai_chat'
+                        : isQoderConnectKind(authType) ? 'openai_chat'
                         : authType === 'workbuddy' || authType === 'workbuddy_ai' ? 'openai_chat'
                         : isZCodeConnectKind(authType) ? 'claude'
                         : isTraeConnectKind(authType) || authType === 'opencode_zen_free' ? 'openai_chat'
@@ -7693,7 +7666,7 @@ function App() {
                         authType,
                         protocol,
                         baseUrl: authType === 'self_register' ? selfRegisterPlaceholderBaseURL(protocol)
-                          : authType === 'qoder_pat' ? QODER_DEFAULT_BASE_URL
+                          : isQoderConnectKind(authType) ? qoderDefaultBaseURL(authType)
                           : current.baseUrl,
                       };
                     })}
@@ -7737,10 +7710,10 @@ function App() {
             {providerDraft.authType === 'chatgpt_oauth' && (
               <div className="hint-line">ChatGPT OAuth 上游固定为 OpenAI Responses（chatgpt.com/backend-api/codex/responses）。</div>
             )}
-            {providerDraft.authType === 'qoder_pat' && (
+            {isQoderConnectKind(providerDraft.authType) && (
               <>
-                <div className="hint-line">Qoder 直连上游原生兼容 OpenAI Chat，协议固定为 OpenAI Chat；客户端若要 Responses/Claude，请在路由输出协议里转换。请先到 qoder.com/account/integrations 生成个人访问令牌（pt- 开头），保存后在下方粘贴。</div>
-                <Field fullWidth label="Base URL（默认 Qoder 直连端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
+                <div className="hint-line">Qoder 的模型跑在它客户端自己的接口上：网关会把请求改写成 agent_chat_generation 并加上账号签名，对客户端仍表现为 OpenAI Chat（要 Responses/Claude 请在路由输出协议里转换）。保存后在下方登录；没有浏览器的部署（headless 服务器）可改用个人访问令牌。</div>
+                <Field fullWidth label="Base URL（默认该站点的推理主机，主机变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
               </>
             )}
             {isWorkBuddyConnectKind(providerDraft.authType) && (
@@ -7986,52 +7959,49 @@ function App() {
             );
           })()}
 
-          {providerDraft.protocol === 'openai_chat' && providerDraft.authType === 'qoder_pat' && (
+          {providerDraft.protocol === 'openai_chat' && isQoderConnectKind(providerDraft.authType) && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">保存后会留在编辑态，在这里粘贴 Qoder 个人访问令牌完成连接。</div>
+                <div className="hint-line">保存后会留在编辑态：点「登录」在浏览器里授权即可；没有浏览器的部署可展开下面的「用个人访问令牌连接」。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
-                const connected = editingProvider?.qoderPat?.connected;
-                const hasStoredToken = editingProvider?.qoderPat?.hasStoredToken;
-                if (connected) {
-                  return (
-                    <>
-                      <div className="hint-line">已连接{editingProvider?.qoderPat?.accountLabel ? ` · ${editingProvider.qoderPat.accountLabel}` : ''}{editingProvider?.qoderPat?.expiresAt ? ` · 令牌到期：${editingProvider.qoderPat.expiresAt}（到期自动续）` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
-                      <div className="actions" style={{ gap: 8 }}>
-                        <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
-                        <button className="btn danger" disabled={qoderPatBusy} onClick={() => void disconnectQoderPAT()}>{qoderPatBusy ? '处理中…' : '断开连接'}</button>
+                const qoder = editingProvider?.qoderPat;
+                return (
+                  <>
+                    <SubscriptionConnect
+                      providerId={editingProviderID}
+                      kind={providerDraft.authType}
+                      connected={qoder?.connected}
+                      accountLabel={qoder?.accountLabel}
+                      plan={qoder?.signInMode === 'pat' ? '个人访问令牌' : qoder?.deviceChat ? '设备令牌直连' : undefined}
+                      expiresAt={qoder?.expiresAt}
+                      hint={providerDraft.authType === 'qoder_cn' ? 'Qoder CN 认 qoder.cn 的账号（阿里云 / 手机号），与 qoder.com 账号不通用。' : undefined}
+                      onConnected={async () => {
+                        await refreshState(false);
+                        await fetchProviderModels(editingProviderID, editingProvider?.name || '', true);
+                        showToast('Qoder 已登录，模型列表取自该账号自己的清单');
+                      }}
+                      onPaused={() => void refreshState(false)}
+                    />
+                    <div className="hint-line" style={{ marginTop: 8 }}>
+                      模型 {editingProvider?.models?.length ?? 0} 个（登录时自动取该账号可用的清单）
+                      <button className="mini-btn" style={{ marginLeft: 8 }} disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '重新同步'}</button>
+                    </div>
+                    {/* 备用门：Qoder 的个人访问令牌长期有效，headless 部署打不开
+                        浏览器时用它换同一个作业令牌；两个门连的是同一个账号结构。 */}
+                    <details className="usage-details">
+                      <summary>用个人访问令牌连接（没有浏览器时）</summary>
+                      <div className="hint-line" style={{ marginTop: 8 }}>
+                        {qoder?.signInMode === 'pat' && qoder?.hasStoredToken
+                          ? '当前就是令牌连接；换账号可粘贴另一个 pt- 开头的令牌覆盖。'
+                          : `在 ${providerDraft.authType === 'qoder_cn' ? 'qoder.cn' : 'qoder.com'}/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里。令牌只用来兑换短期作业令牌，不会回传到浏览器。`}
                       </div>
-                      {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
-                    </>
-                  );
-                }
-                // 已断开，但令牌仍保存在后端：一键重新连接，不必再跑一趟
-                // qoder.com 重新复制令牌（disconnect 不再清空凭据）。
-                if (hasStoredToken) {
-                  return (
-                    <>
-                      <div className="hint-line">已断开{editingProvider?.qoderPat?.accountLabel ? ` · ${editingProvider.qoderPat.accountLabel}` : ''}（个人访问令牌仍保留，未在转发中使用）</div>
-                      <div className="actions" style={{ gap: 8 }}>
-                        <button className="btn primary" disabled={qoderPatBusy} onClick={() => void reconnectQoderPAT()}>{qoderPatBusy ? '连接中…' : '重新连接（使用已保存的令牌）'}</button>
-                      </div>
-                      {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
-                      <div className="hint-line" style={{ marginTop: 8 }}>要换成另一个账号？粘贴新的个人访问令牌即可覆盖：</div>
-                      <div className="field-inline" style={{ marginTop: 4 }}>
+                      <div className="field-inline" style={{ marginTop: 8 }}>
                         <input type="text" placeholder="粘贴 pt- 开头的个人访问令牌" value={qoderPatInput} onChange={(event) => setQoderPatInput(event.target.value)} />
                         <button className="mini-btn" disabled={qoderPatBusy || !qoderPatInput.trim()} onClick={() => void connectQoderPAT()}>{qoderPatBusy ? '连接中…' : '完成连接'}</button>
                       </div>
-                    </>
-                  );
-                }
-                return (
-                  <>
-                    <div className="hint-line">在 qoder.com/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里。令牌只用来兑换短期作业令牌，不会回传到浏览器。</div>
-                    <div className="field-inline" style={{ marginTop: 8 }}>
-                      <input type="text" placeholder="粘贴 pt- 开头的个人访问令牌" value={qoderPatInput} onChange={(event) => setQoderPatInput(event.target.value)} />
-                      <button className="mini-btn" disabled={qoderPatBusy || !qoderPatInput.trim()} onClick={() => void connectQoderPAT()}>{qoderPatBusy ? '连接中…' : '完成连接'}</button>
-                    </div>
-                    {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
+                      {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
+                    </details>
                   </>
                 );
               })()}
@@ -8153,7 +8123,7 @@ function App() {
               );
             })()}
           </details>
-          <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : providerDraft.authType === 'qoder_pat' ? '创建并粘贴 Qoder 令牌' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
+          <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : isQoderConnectKind(providerDraft.authType) ? '创建并登录 Qoder 账号' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
         </Modal>
       )}
 
@@ -8208,14 +8178,17 @@ function App() {
                   {providerModelsResult.models.map((model) => (
                     <div className="route-card" key={model.id}>
                       <div className="route-top">
-                        <div
-                          className="route-name model-id-clickable"
-                          title={`点击复制模型 ID：${model.id}`}
-                          onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
-                          style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                        >
-                          <span>{model.id}</span>
-                          <span className="model-id-copy-hint" aria-hidden="true" style={{ fontSize: 12 }}>📋</span>
+                        <div className="model-id-main">
+                          <div
+                            className="route-name model-id-clickable"
+                            title={`点击复制模型 ID：${model.id}`}
+                            onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                            style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                          >
+                            <span>{model.id}</span>
+                            <span className="model-id-copy-hint" aria-hidden="true" style={{ fontSize: 12 }}>📋</span>
+                          </div>
+                          {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <Badge tone="slate">{model.contextLength ? `${model.contextLength} 上下文` : '模型'}</Badge>

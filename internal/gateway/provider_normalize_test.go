@@ -51,7 +51,7 @@ func TestNormalizeProviderDefaultsQoderBaseURL(t *testing.T) {
 	if provider.Protocol != domain.ProtocolOpenAIChat {
 		t.Fatalf("expected openai_chat, got %q", provider.Protocol)
 	}
-	if provider.BaseURL != qoderDirectBaseURL {
+	if provider.BaseURL != qoderGlobalSite.API {
 		t.Fatalf("unexpected base URL: %q", provider.BaseURL)
 	}
 }
@@ -66,7 +66,7 @@ func TestNormalizeProviderReplacesQoderPlaceholderBaseURL(t *testing.T) {
 		BaseURL:  "https://example.com/v1/chat/completions",
 	}
 	normalizeProvider(&provider)
-	if provider.BaseURL != qoderDirectBaseURL {
+	if provider.BaseURL != qoderGlobalSite.API {
 		t.Fatalf("placeholder base URL survived: %q", provider.BaseURL)
 	}
 }
@@ -84,6 +84,25 @@ func TestNormalizeProviderKeepsManualQoderBaseURL(t *testing.T) {
 	normalizeProvider(&provider)
 	if provider.BaseURL != "https://qoder.example.invalid/model/v1" {
 		t.Fatalf("manual base URL was overwritten: %q", provider.BaseURL)
+	}
+}
+
+// Qoder CN is its own connection kind: its inference host is not qoder.sh's, so
+// defaulting a CN provider to the global host would send a signed request to a
+// site that does not know the account.
+func TestNormalizeProviderDefaultsQoderCNBaseURL(t *testing.T) {
+	provider := domain.Provider{
+		ID:       "qoder-cn",
+		Name:     "Qoder CN",
+		AuthType: domain.AuthTypeQoderCN,
+		Protocol: domain.ProtocolClaude,
+	}
+	normalizeProvider(&provider)
+	if provider.Protocol != domain.ProtocolOpenAIChat {
+		t.Fatalf("expected openai_chat, got %q", provider.Protocol)
+	}
+	if provider.BaseURL != "https://gateway.qoder.com.cn" {
+		t.Fatalf("unexpected base URL: %q", provider.BaseURL)
 	}
 }
 

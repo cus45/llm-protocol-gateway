@@ -302,7 +302,7 @@ func (r *Router) AddProvider(provider domain.Provider) (domain.Provider, error) 
 		provider.AuthType != domain.AuthTypeClaudeOAuth &&
 		provider.AuthType != domain.AuthTypeCursorOAuth &&
 		provider.AuthType != domain.AuthTypeChatGPTOAuth &&
-		provider.AuthType != domain.AuthTypeQoderPAT &&
+		!isQoderAuthType(provider.AuthType) &&
 		provider.AuthType != domain.AuthTypeOpenCodeZenFree &&
 		!isZCodeAuthType(provider.AuthType) &&
 		!isTraeAuthType(provider.AuthType) &&
@@ -437,17 +437,18 @@ func normalizeProvider(provider *domain.Provider) {
 			}
 		}
 	}
-	if provider.AuthType == domain.AuthTypeQoderPAT {
-		// Qoder's direct endpoint is natively OpenAI-Chat compatible. Unlike the
-		// clauses above, the base URL is only defaulted, not pinned:
-		// api2-v2.qoder.sh is an internal endpoint that may move, and leaving a
-		// manual override means an endpoint change is a config edit rather than a
-		// rebuild. The create form's example.com placeholder is treated as unset,
-		// otherwise a provider created before the user picks Qoder keeps sending
-		// requests to example.com.
+	if isQoderAuthType(provider.AuthType) {
+		// Qoder serves its models on the API its own client talks to, and a
+		// request there is shaped for it rather than for OpenAI Chat. The
+		// protocol is still declared as OpenAI Chat because that is what
+		// clients see; only the hop upstream is Qoder's (see sendQoderChat).
+		// The base URL is defaulted rather than pinned, so a host change is a
+		// config edit; the create form's example.com placeholder counts as unset.
 		provider.Protocol = domain.ProtocolOpenAIChat
 		if isPlaceholderBaseURL(provider.BaseURL) {
-			provider.BaseURL = qoderDirectBaseURL
+			if site, ok := qoderSiteForAuthType(provider.AuthType); ok {
+				provider.BaseURL = site.API
+			}
 		}
 	}
 	if provider.HealthStatus == "" {
@@ -1309,7 +1310,7 @@ func (r *Router) ClearProviderCursorOAuth(providerID string) (domain.Provider, e
 
 // SetProviderQoderPAT stores (or replaces) the Qoder credential pair for a
 // provider and forces it into qoder_pat auth mode.
-func (r *Router) SetProviderQoderPAT(providerID string, credential domain.QoderPATCredential) (domain.Provider, error) {
+func (r *Router) SetProviderQoderPAT(providerID string, credential domain.QoderCredential) (domain.Provider, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1318,7 +1319,9 @@ func (r *Router) SetProviderQoderPAT(providerID string, credential domain.QoderP
 			continue
 		}
 		updated := r.state.Providers[index]
-		updated.AuthType = domain.AuthTypeQoderPAT
+		if !isQoderAuthType(updated.AuthType) {
+			updated.AuthType = domain.AuthTypeQoderPAT
+		}
 		credentialCopy := credential
 		updated.QoderPAT = &credentialCopy
 		normalizeProvider(&updated)

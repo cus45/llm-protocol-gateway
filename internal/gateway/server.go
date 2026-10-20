@@ -82,6 +82,7 @@ type Server struct {
 	pendingCursorOAuth      *cursorOAuthPendingStore
 	pendingChatGPTOAuth     *chatgptOAuthPendingStore
 	subscriptionOAuthFlows  *subscriptionOAuthStore
+	qoderSignIns            *qoderSignInStore
 	cursorBridge            *cursor.Bridge
 	listenAddr              string
 	requestLogRetentionDays int
@@ -99,6 +100,12 @@ type Server struct {
 	// chatgptDigestSessions keeps prompt-cache key continuity for Claude→
 	// Responses conversations whose client sends no session signal at all.
 	chatgptDigestSessions *chatgptDigestSessionStore
+	// workBuddyAfterTools remembers, per provider and model, a chat that only
+	// went through once an empty assistant reply stood between the tool
+	// results and the user's message (WorkBuddy 11153); that model's next
+	// chats carry the reply up front. Runtime-only, as magpie's plugin keeps
+	// it for the run.
+	workBuddyAfterTools sync.Map
 	// webExposedChange is invoked when the UI toggles LAN/Web exposure so the
 	// process owner (CLI runtime / desktop app) can rebind the HTTP listener.
 	webExposedChange func(enabled bool) error
@@ -145,6 +152,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		pendingCursorOAuth:      newCursorOAuthPendingStore(),
 		pendingChatGPTOAuth:     newChatGPTOAuthPendingStore(),
 		subscriptionOAuthFlows:  newSubscriptionOAuthStore(),
+		qoderSignIns:            newQoderSignInStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
 		requestLogRetentionDays: 7,
@@ -330,6 +338,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__providers/{id}/qoder-pat/status", s.handleQoderPATStatus)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/disconnect", s.handleQoderPATDisconnect)
 	mux.HandleFunc("POST /__providers/{id}/qoder-pat/reconnect", s.handleQoderPATReconnect)
+	mux.HandleFunc("POST /__providers/{id}/qoder-oauth/start", s.handleQoderOAuthStart)
+	mux.HandleFunc("GET /__providers/{id}/qoder-oauth/status", s.handleQoderOAuthStatus)
+	// Pause and resume cover both doors: the shared subscription panel in the
+	// console speaks these verbs, and a paused account of either kind stops
+	// forwarding while keeping what it has.
+	mux.HandleFunc("POST /__providers/{id}/qoder-oauth/pause", s.handleQoderPATDisconnect)
+	mux.HandleFunc("POST /__providers/{id}/qoder-oauth/resume", s.handleQoderPATReconnect)
+	mux.HandleFunc("GET /__providers/{id}/qoder-oauth/usage", s.handleQoderUsage)
 	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/start", s.handleWorkBuddyOAuthStart)
 	mux.HandleFunc("GET /__providers/{id}/workbuddy-oauth/status", s.handleWorkBuddyOAuthStatus)
 	mux.HandleFunc("POST /__providers/{id}/workbuddy-oauth/disconnect", s.handleWorkBuddyOAuthDisconnect)
@@ -521,13 +537,20 @@ func redactProviderForClient(provider domain.Provider) domain.Provider {
 	}
 	if provider.QoderPAT != nil {
 		original := provider.QoderPAT
-		hasToken := strings.TrimSpace(original.RefreshToken) != ""
-		provider.QoderPAT = &domain.QoderPATCredential{
+		hasToken := strings.TrimSpace(original.RefreshToken) != "" || strings.TrimSpace(original.PAT) != ""
+		mode := original.SignInMode
+		if mode == "" {
+			mode = qoderSignInModePAT
+		}
+		provider.QoderPAT = &domain.QoderCredential{
 			ExpiresAt:    original.ExpiresAt,
 			AccountLabel: original.AccountLabel,
-			// Connected means "can forward right now": PAT present AND not
-			// paused by an explicit disconnect. The job token itself expiring
-			// does not affect this — it re-exchanges on demand.
+			Email:        original.Email,
+			SignInMode:   mode,
+			DeviceChat:   original.DeviceChat,
+			// Connected means "can forward right now": a credential present AND
+			// not paused by an explicit disconnect. The job token itself
+			// expiring does not affect this — it renews on demand.
 			Connected:      hasToken && !original.Disconnected,
 			Disconnected:   original.Disconnected,
 			HasStoredToken: hasToken,
@@ -2809,6 +2832,38 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 		return providerChatHTTPResult{Error: err.Error(), LatencyMs: time.Since(started).Milliseconds()}
 	}
 	resolvedModel, _ := payload["model"].(string)
+	if isQoderProvider(provider) {
+		// Qoder's upstream is its own signed endpoint, and it serves no
+		// /chat/completions path: ask it the way the forward path does, so the
+		// console's 对话测试 shows the real exchange instead of a 503 off a
+		// path that does not exist.
+		endpoint := qoderSiteOf(provider).qoderChatURL()
+		refreshed, refreshErr := s.ensureFreshQoderToken(provider)
+		if refreshErr != nil {
+			return providerChatHTTPResult{Error: refreshErr.Error(), TargetURL: endpoint, LatencyMs: time.Since(started).Milliseconds()}
+		}
+		response, sendErr := s.sendQoderChat(r.Context(), refreshed, resolvedModel, body)
+		if response == nil {
+			message := "Qoder 没有应答"
+			if sendErr != nil {
+				message = sendErr.Error()
+			}
+			return providerChatHTTPResult{Error: message, TargetURL: endpoint, RequestBody: string(body), LatencyMs: time.Since(started).Milliseconds()}
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 400 {
+			// Qoder only answers as a stream; the console asked for one object.
+			_ = forcedStreamAsCompletion(response, resolvedModel, workBuddyStreamAsCompletion)
+		}
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 16384))
+		return providerChatHTTPResult{
+			Status:       response.StatusCode,
+			LatencyMs:    time.Since(started).Milliseconds(),
+			ResponseBody: string(responseBody),
+			RequestBody:  string(body),
+			TargetURL:    endpoint,
+		}
+	}
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
 		baseURL, refreshed, bridgeErr := s.resolveCursorBridgeBaseURL(r.Context(), provider)
 		if bridgeErr != nil {
@@ -2846,8 +2901,10 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 	// system prompt and OpenCode only streams its free tier; the console asked
 	// for one JSON object, so the stream is rebuilt into one below.
 	workBuddy := isWorkBuddyProvider(provider)
+	body = chatToolCallIDs(body)
+	var workBuddyAliases map[string]string
 	if workBuddy {
-		body, _ = prepareWorkBuddyChatBody(body)
+		body, workBuddyAliases, _ = shapeWorkBuddyChatBody(body)
 	}
 	zenFree := false
 	if isOpenCodeZenProvider(provider) {
@@ -2866,22 +2923,28 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 		}
 		body = shaped
 	}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
-	if err != nil {
-		return providerChatHTTPResult{Error: err.Error(), TargetURL: upstreamURL, RequestBody: string(body), LatencyMs: time.Since(started).Milliseconds()}
+	send := func(requestBody []byte) (*http.Response, error) {
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if workBuddy || zenFree || trae {
+			request.Header.Set("Accept", "text/event-stream")
+		}
+		applyProviderAuth(request, provider, r.Header.Get("Authorization"))
+		applyOpenCodeZenHeaders(request, provider, requestBody)
+		if trae {
+			applyTraeHeaders(request, provider)
+		}
+		return (&http.Client{Timeout: 120 * time.Second}).Do(request)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	if workBuddy || zenFree || trae {
-		request.Header.Set("Accept", "text/event-stream")
+	var response *http.Response
+	if workBuddy {
+		response, err = s.sendWorkBuddyChat(provider, resolvedModel, body, workBuddyAliases, send)
+	} else {
+		response, err = send(body)
 	}
-	applyProviderAuth(request, provider, r.Header.Get("Authorization"))
-	applyOpenCodeZenHeaders(request, provider, body)
-	if trae {
-		applyTraeHeaders(request, provider)
-	}
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	response, err := client.Do(request)
 	if err != nil {
 		return providerChatHTTPResult{
 			Error:       err.Error(),
@@ -3395,9 +3458,11 @@ func (s *Server) persistProviderOAuth(provider domain.Provider) error {
 			refreshToken = provider.QoderPAT.RefreshToken
 			expiresAt = provider.QoderPAT.ExpiresAt
 			accountLabel = provider.QoderPAT.AccountLabel
+			userID = provider.QoderPAT.UID
 			if provider.QoderPAT.Disconnected {
 				scope = domain.QoderDisconnectedScopeMarker
 			}
+			authJSON = credentialJSON(provider.QoderPAT)
 		case provider.WorkBuddy != nil:
 			accessToken = provider.WorkBuddy.AccessToken
 			refreshToken = provider.WorkBuddy.RefreshToken
@@ -4065,7 +4130,7 @@ func (s *Server) proxyClaudeCountTokens(r *http.Request, provider domain.Provide
 	// real (non-empty) base URL, so it would otherwise fall through to a genuine
 	// Anthropic count_tokens call against api2-v2.qoder.sh and fail.
 	if provider.AuthType == domain.AuthTypeCursorOAuth ||
-		provider.AuthType == domain.AuthTypeQoderPAT ||
+		isQoderProvider(provider) ||
 		isWorkBuddyProvider(provider) ||
 		isOpenCodeZenProvider(provider) ||
 		isZCodeProvider(provider) ||
@@ -4171,20 +4236,25 @@ func (s *Server) fetchProviderModels(r *http.Request, provider domain.Provider, 
 		return providerTestResult{Success: true, Provider: provider.ID, ModelsURL: modelsURL, Status: response.StatusCode, LatencyMs: time.Since(started).Milliseconds(), Models: models, Preview: preview}
 	}
 
-	if provider.AuthType == domain.AuthTypeQoderPAT {
+	if isQoderProvider(provider) {
 		refreshed, err := s.ensureFreshQoderToken(provider)
 		if err != nil {
 			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: err.Error(), Models: []domain.Model{}}
 		}
 		provider = refreshed
-		// Qoder's direct endpoint serves no /models route (it 404s), so report the
-		// probed alias list rather than attempting a fetch that always fails.
+		// Qoder's models are the ones its listing gives this account, and the
+		// listing is also where a request's per-model configuration comes from,
+		// so syncing is the fetch — not a /models route, which Qoder has none of.
+		synced, syncErr := s.syncQoderProviderModels(provider.ID)
+		if syncErr != nil {
+			return providerTestResult{Success: false, Provider: provider.ID, LatencyMs: time.Since(started).Milliseconds(), Error: syncErr.Error(), Models: []domain.Model{}}
+		}
 		return providerTestResult{
 			Success:   true,
 			Provider:  provider.ID,
 			LatencyMs: time.Since(started).Milliseconds(),
-			Models:    defaultQoderModels(provider.ID),
-			Preview:   "qoder direct endpoint exposes no /models route; using the known alias list",
+			Models:    synced.Models,
+			Preview:   "qoder 账号自己的模型列表（/algo/api/v2/model/list）",
 		}
 	}
 
@@ -4684,10 +4754,17 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
-	if provider.AuthType == domain.AuthTypeQoderPAT {
-		qoderBackfillToolDescriptions(openAIReq)
-	}
 	stream, _ := openAIReq["stream"].(bool)
+	// These subscriptions only answer as a stream: WorkBuddy refuses a non-stream
+	// chat, Trae and Qoder are their agent's own event streams, and OpenCode
+	// serves its free tier to a streaming request only. They go upstream streamed
+	// whatever the client asked for, and a client that wanted a single object
+	// gets the stream rebuilt into one below.
+	forcedStream := !stream && (isWorkBuddyProvider(provider) || isTraeProvider(provider) ||
+		isQoderProvider(provider) || openCodeZenFreeFor(provider, model))
+	if forcedStream {
+		openAIReq["stream"] = true
+	}
 	upstreamBody, err := json.Marshal(openAIReq)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
@@ -4698,52 +4775,44 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	if bodyErr != nil {
 		return 0, TokenUsage{}, nil, bodyErr
 	}
+	accept := "application/json"
+	if stream || forcedStream {
+		accept = "text/event-stream"
+	}
 
-	var upstreamURL string
+	var response *http.Response
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
+		// The bridge keeps its own address and no provider auth, as before.
 		baseURL, refreshed, bridgeErr := s.resolveCursorBridgeBaseURL(r.Context(), provider)
 		if bridgeErr != nil {
 			return 0, TokenUsage{}, nil, bridgeErr
 		}
 		provider = refreshed
-		upstreamURL = strings.TrimRight(baseURL, "/") + "/chat/completions"
-	} else {
-		upstreamURL = resolveProviderChatURLWithAdapter(provider, model)
-	}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(upstreamBody))
-	if err != nil {
-		return 0, TokenUsage{}, nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if stream {
-		request.Header.Set("Accept", "text/event-stream")
-	} else {
-		request.Header.Set("Accept", "application/json")
-	}
-	if provider.AuthType != domain.AuthTypeCursorOAuth {
-		if authValue := resolveProviderAuth(provider); authValue != "" {
-			header := provider.AuthHeader
-			if header == "" {
-				header = "Authorization"
-			}
-			if strings.EqualFold(header, "Authorization") && !strings.HasPrefix(strings.ToLower(authValue), "bearer ") {
-				authValue = "Bearer " + authValue
-			}
-			request.Header.Set(header, authValue)
-		} else if !skipIncomingAuth {
-			if incomingAuth := r.Header.Get("Authorization"); incomingAuth != "" {
-				request.Header.Set("Authorization", incomingAuth)
-			}
+		request, reqErr := http.NewRequestWithContext(r.Context(), http.MethodPost,
+			strings.TrimRight(baseURL, "/")+"/chat/completions", bytes.NewReader(upstreamBody))
+		if reqErr != nil {
+			return 0, TokenUsage{}, nil, reqErr
 		}
-		applyRequestAdapterHeaders(request, provider, model)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", accept)
+		response, err = doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
+	} else {
+		// One sender for every provider, because that is where each subscription's
+		// own quirks live: WorkBuddy's forced stream, leading system turn, prompt
+		// words its channel check turns away and account headers; Trae's and
+		// Qoder's signed agent call, whose answer it hands back OpenAI-shaped so the
+		// converters below read what they already know; Zen's free-tier body.
+		response, err = s.doOpenAIProviderRequest(r.Context(), r, provider,
+			resolveProviderChatURLWithAdapter(provider, model), upstreamBody, accept, skipIncomingAuth)
 	}
-
-	client := &http.Client{Timeout: 0}
-	response, err := client.Do(request)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
 	defer response.Body.Close()
+
+	if forcedStream && response.StatusCode >= 200 && response.StatusCode < 400 {
+		_ = forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
+	}
 
 	if stream {
 		for key, values := range response.Header {
@@ -4822,6 +4891,12 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 		// through a path of its own rather than through the relay's shaping.
 		return s.proxyTraeChat(w, r, provider, model, body, skipIncomingAuth)
 	}
+	if isQoderProvider(provider) {
+		// Qoder is the same case: its endpoint takes a signed request in its own
+		// codec and answers in its own envelopes, and sendQoderChat hands the
+		// converted OpenAI stream back in its place.
+		return s.proxyQoderChat(w, r, provider, model, body, skipIncomingAuth)
+	}
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
 		baseURL, refreshed, err := s.resolveCursorBridgeBaseURL(r.Context(), provider)
 		if err != nil {
@@ -4854,8 +4929,12 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	// asked for a single JSON object gets the stream rebuilt into one before
 	// the response is written.
 	workBuddy := isWorkBuddyProvider(provider)
+	// A call that came with no id would otherwise be replayed as "" forever,
+	// which strict upstreams refuse for the whole conversation.
+	body = chatToolCallIDs(body)
+	var workBuddyAliases map[string]string
 	if workBuddy {
-		body, _ = prepareWorkBuddyChatBody(body)
+		body, workBuddyAliases, _ = shapeWorkBuddyChatBody(body)
 	}
 	zenFree := false
 	if isOpenCodeZenProvider(provider) {
@@ -4863,25 +4942,33 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	}
 	forcedStream := (workBuddy || zenFree) && !stream
 	upstreamURL := resolveProviderChatURLWithAdapter(provider, model)
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
-	if err != nil {
-		return 0, TokenUsage{}, nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if forcedStream {
-		request.Header.Set("Accept", "text/event-stream")
-	} else {
-		request.Header.Set("Accept", r.Header.Get("Accept"))
-	}
 	incomingAuth := ""
 	if !skipIncomingAuth {
 		incomingAuth = r.Header.Get("Authorization")
 	}
-	applyProviderAuth(request, provider, incomingAuth)
-	applyOpenCodeZenHeaders(request, provider, body)
-	applyRequestAdapterHeaders(request, provider, model)
-
-	response, err := doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
+	send := func(requestBody []byte) (*http.Response, error) {
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		if forcedStream {
+			request.Header.Set("Accept", "text/event-stream")
+		} else {
+			request.Header.Set("Accept", r.Header.Get("Accept"))
+		}
+		applyProviderAuth(request, provider, incomingAuth)
+		applyOpenCodeZenHeaders(request, provider, requestBody)
+		applyRequestAdapterHeaders(request, provider, model)
+		return doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
+	}
+	var response *http.Response
+	var err error
+	if workBuddy {
+		response, err = s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, send)
+	} else {
+		response, err = send(body)
+	}
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
@@ -5221,7 +5308,7 @@ func resolveProviderAuth(provider domain.Provider) string {
 	// Qoder carries its bearer in the credential rather than APIKeySource. This
 	// is a pure lookup: the exchange itself happens in ensureFreshQoderToken,
 	// since this function has no context to make a network call with.
-	if provider.AuthType == domain.AuthTypeQoderPAT {
+	if isQoderProvider(provider) {
 		if provider.QoderPAT != nil {
 			return strings.TrimSpace(provider.QoderPAT.AccessToken)
 		}

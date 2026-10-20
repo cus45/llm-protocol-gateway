@@ -1,11 +1,99 @@
 package gateway
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
+
+// chatToolCallIDs gives every tool call that arrived with no id one, and the tool
+// turns answering it the same ids in order. An upstream that leaves a streamed
+// call's id out (OpenCode Zen's free DeepSeek does) leaves the agent replaying a
+// call named "", which the strict ones then refuse for the rest of that
+// conversation — WorkBuddy answers 400 code 11133, or 11148 "tool calls and tool
+// results do not match". The id is made from the call's place in the history and
+// what it says, never at random, so the next turn of the same conversation sends
+// the same history byte for byte and the upstream's prompt cache still holds. A
+// request whose calls and results are already named is returned unchanged.
+func chatToolCallIDs(body []byte) []byte {
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if decoder.Decode(&payload) != nil {
+		return body
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	var open []string
+	for index, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringValue(message["role"]) {
+		case "assistant":
+			calls, _ := message["tool_calls"].([]any)
+			if len(calls) == 0 {
+				continue
+			}
+			open = open[:0]
+			for position, raw := range calls {
+				call, ok := raw.(map[string]any)
+				if !ok || stringValue(call["id"]) != "" {
+					continue
+				}
+				name, arguments := "", ""
+				if function, ok := call["function"].(map[string]any); ok {
+					name = stringValue(function["name"])
+					if raw, exists := function["arguments"]; exists {
+						if text, isText := raw.(string); isText {
+							arguments = text
+						} else if encoded, err := json.Marshal(raw); err == nil {
+							arguments = string(encoded)
+						}
+					}
+				}
+				id := chatStableCallID(index, position, name, arguments)
+				call["id"] = id
+				open = append(open, id)
+				changed = true
+			}
+		case "tool":
+			if stringValue(message["tool_call_id"]) != "" || len(open) == 0 {
+				continue
+			}
+			message["tool_call_id"] = open[0]
+			open = open[1:]
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(payload) != nil {
+		return body
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+}
+
+// chatStableCallID is the id given to the position-th call of the message-th
+// turn when it came with none: the same for the same call at the same place on
+// every request of the conversation.
+func chatStableCallID(message, position int, name, arguments string) string {
+	sum := sha256.Sum256([]byte(strconv.Itoa(message) + "." + strconv.Itoa(position) + "\x00" + name + "\x00" + arguments))
+	return "call_" + hex.EncodeToString(sum[:12])
+}
 
 // anthropicToolUseIDInvalid matches characters Anthropic rejects in tool_use.id /
 // tool_result.tool_use_id (must be ^[a-zA-Z0-9_-]+$). Cursor and other clients

@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -734,5 +735,101 @@ func TestOpenAIChatToResponsesFlattensNestedTools(t *testing.T) {
 	choice, _ := responsesReq["tool_choice"].(map[string]any)
 	if stringValue(choice["name"]) != "apply_patch" {
 		t.Fatalf("tool_choice=%#v", responsesReq["tool_choice"])
+	}
+}
+
+// TestChatToolCallIDsPairsCallsWithoutThem: an upstream that streams a tool call
+// with no id leaves the agent replaying `""` for the rest of the conversation,
+// which WorkBuddy then refuses every turn of (11133 / 11148). The ids are made
+// from the call's place and what it says, so the same history gets the same ids
+// on every turn and the upstream's prompt cache still holds.
+func TestChatToolCallIDsPairsCallsWithoutThem(t *testing.T) {
+	unnamed := func(name, arguments string) map[string]any {
+		return map[string]any{"id": "", "type": "function",
+			"function": map[string]any{"name": name, "arguments": arguments}}
+	}
+	asked := map[string]any{
+		"model": "deepseek-v4.1-flash",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "读一下 a.txt"},
+			map[string]any{"role": "assistant", "content": "", "tool_calls": []any{
+				unnamed("Read", `{"path":"a.txt"}`), unnamed("Read", `{"path":"b.txt"}`)}},
+			map[string]any{"role": "tool", "content": "a 的内容"},
+			map[string]any{"role": "tool", "content": "b 的内容"},
+			map[string]any{"role": "assistant", "content": "两个都读了"},
+		},
+	}
+	encoded, err := json.Marshal(asked)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repaired := chatToolCallIDs(encoded)
+	var payload map[string]any
+	if err := json.Unmarshal(repaired, &payload); err != nil {
+		t.Fatalf("repaired body is not JSON: %v", err)
+	}
+	messages, _ := payload["messages"].([]any)
+	calls, _ := messages[1].(map[string]any)["tool_calls"].([]any)
+	first, _ := calls[0].(map[string]any)
+	second, _ := calls[1].(map[string]any)
+	idFirst, _ := first["id"].(string)
+	idSecond, _ := second["id"].(string)
+	if idFirst == "" || idSecond == "" || idFirst == idSecond {
+		t.Fatalf("calls were not given distinct ids: %q %q", idFirst, idSecond)
+	}
+	if !regexp.MustCompile(`^call_[0-9a-f]{24}$`).MatchString(idFirst) {
+		t.Fatalf("id %q is not the stable shape", idFirst)
+	}
+	toolOne, _ := messages[2].(map[string]any)
+	toolTwo, _ := messages[3].(map[string]any)
+	if toolOne["tool_call_id"] != idFirst || toolTwo["tool_call_id"] != idSecond {
+		t.Fatalf("results did not take the calls' ids in order: %v %v", toolOne["tool_call_id"], toolTwo["tool_call_id"])
+	}
+
+	// Same history, next turn: byte for byte the same ids.
+	if again := chatToolCallIDs(encoded); string(again) != string(repaired) {
+		t.Fatal("the ids moved between two turns of the same history")
+	}
+	// A different argument is a different call: the cache shard must not mix them.
+	shifted, _ := json.Marshal(map[string]any{"model": "m", "messages": []any{
+		map[string]any{"role": "assistant", "tool_calls": []any{unnamed("Read", `{"path":"c.txt"}`)}},
+	}})
+	var shiftedPayload map[string]any
+	_ = json.Unmarshal(chatToolCallIDs(shifted), &shiftedPayload)
+	shiftedMessages, _ := shiftedPayload["messages"].([]any)
+	shiftedCalls, _ := shiftedMessages[0].(map[string]any)["tool_calls"].([]any)
+	shiftedCall, _ := shiftedCalls[0].(map[string]any)
+	if shiftedCall["id"] == idFirst {
+		t.Fatal("a different call at the same place got the same id")
+	}
+
+	// The trailing assistant turn answers nothing, so it keeps no queue.
+	if rest, _ := messages[4].(map[string]any); rest["tool_calls"] != nil {
+		t.Fatalf("an assistant turn with no calls gained one: %+v", rest)
+	}
+}
+
+func TestChatToolCallIDsLeavesNamedHistoryAlone(t *testing.T) {
+	asked := `{"model":"glm-5.3","messages":[{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`
+	if got := chatToolCallIDs([]byte(asked)); string(got) != asked {
+		t.Fatalf("a history whose turns are already named was rewritten:\n%s", got)
+	}
+	// Not a chat request at all.
+	if got := chatToolCallIDs([]byte(`{"model":"glm-5.3","input":"hi"}`)); string(got) != `{"model":"glm-5.3","input":"hi"}` {
+		t.Fatalf("a body without messages was rewritten: %s", got)
+	}
+}
+
+func TestSummarizeUpstreamHTTPErrorNotesToolDialect(t *testing.T) {
+	refusal := []byte(`{"code":11148,"msg":"tool calls and tool results do not match, please start a new conversation and retry"}`)
+	note := summarizeUpstreamHTTPError(400, refusal)
+	if !strings.Contains(note, chatToolDialectNote) {
+		t.Fatalf("the refusal reaches the user with no way out: %q", note)
+	}
+	// An ordinary bad request is the client's own business, not this note's.
+	other := summarizeUpstreamHTTPError(400, []byte(`{"error":{"message":"max tokens exceeded context"}}`))
+	if strings.Contains(other, chatToolDialectNote) {
+		t.Fatalf("an unrelated 400 got the tool-dialect note: %q", other)
 	}
 }

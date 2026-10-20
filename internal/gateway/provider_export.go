@@ -129,7 +129,7 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 		provider.AuthType = domain.AuthTypeAPIKey
 	}
 	switch provider.AuthType {
-	case domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth, domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT,
+	case domain.AuthTypeAPIKey, domain.AuthTypeClaudeOAuth, domain.AuthTypeCursorOAuth, domain.AuthTypeChatGPTOAuth, domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN,
 		domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
 	default:
 		return domain.Provider{}, fmt.Errorf("unsupported authType %q", provider.AuthType)
@@ -145,7 +145,7 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 		provider.AuthType != domain.AuthTypeClaudeOAuth &&
 		provider.AuthType != domain.AuthTypeCursorOAuth &&
 		provider.AuthType != domain.AuthTypeChatGPTOAuth &&
-		provider.AuthType != domain.AuthTypeQoderPAT &&
+		!isQoderProvider(provider) &&
 		!isWorkBuddyAuthType(provider.AuthType) {
 		return domain.Provider{}, fmt.Errorf("provider baseUrl is required")
 	}
@@ -252,7 +252,7 @@ func sanitizeImportedWorkBuddy(cred *domain.WorkBuddyCredential) *domain.WorkBud
 	}
 }
 
-func sanitizeImportedQoderPAT(cred *domain.QoderPATCredential) *domain.QoderPATCredential {
+func sanitizeImportedQoderPAT(cred *domain.QoderCredential) *domain.QoderCredential {
 	if cred == nil {
 		return nil
 	}
@@ -264,13 +264,13 @@ func sanitizeImportedQoderPAT(cred *domain.QoderPATCredential) *domain.QoderPATC
 		if expires == "" && label == "" && !cred.Connected {
 			return nil
 		}
-		return &domain.QoderPATCredential{
+		return &domain.QoderCredential{
 			ExpiresAt:    expires,
 			AccountLabel: label,
 			Connected:    false,
 		}
 	}
-	return &domain.QoderPATCredential{
+	return &domain.QoderCredential{
 		AccessToken:  access,
 		RefreshToken: refresh,
 		ExpiresAt:    expires,
@@ -411,7 +411,7 @@ func cloneWorkBuddy(cred *domain.WorkBuddyCredential) *domain.WorkBuddyCredentia
 	return &cloned
 }
 
-func mergeQoderPATImport(existing, incoming *domain.QoderPATCredential) *domain.QoderPATCredential {
+func mergeQoderPATImport(existing, incoming *domain.QoderCredential) *domain.QoderCredential {
 	if incoming == nil {
 		return cloneQoderPAT(existing)
 	}
@@ -534,7 +534,7 @@ func cloneCursorOAuth(cred *domain.CursorOAuthCredential) *domain.CursorOAuthCre
 	return &cloned
 }
 
-func cloneQoderPAT(cred *domain.QoderPATCredential) *domain.QoderPATCredential {
+func cloneQoderPAT(cred *domain.QoderCredential) *domain.QoderCredential {
 	if cred == nil {
 		return nil
 	}

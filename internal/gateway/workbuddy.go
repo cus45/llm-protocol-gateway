@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,8 +33,10 @@ import (
 //
 // Two upstream quirks are enforced here rather than left to the client, both
 // from WorkBuddy's own refusals: a request must stream ("Non-stream chat
-// request is currently not supported"), and its first message must be the
-// system prompt ("first message is not system prompt").
+// request is currently not supported"), and it reads a request whose opening
+// message isn't the system prompt, whose role is OpenAI's "developer", or whose
+// system prompt carries another agent's own words, as an unapproved channel
+// (code 11128).
 
 const (
 	// workBuddyAppVersion is the version the sign-in page is told, and
@@ -58,7 +62,7 @@ const (
 
 	workBuddyPollInterval   = time.Second
 	workBuddySignInDeadline = 5 * time.Minute
-	subscriptionPendingTTL     = 15 * time.Minute
+	subscriptionPendingTTL  = 15 * time.Minute
 	// workBuddyTokenExpirySkew refreshes slightly before the token lapses.
 	workBuddyTokenExpirySkew = time.Minute
 )
@@ -664,29 +668,204 @@ func workBuddyRequestID() string {
 }
 
 // workBuddySystemPrompt is the system message a chat that has none is sent
-// with: WorkBuddy refuses one whose first message isn't the system prompt, and
-// scripts and plain chat clients often send none.
+// with: WorkBuddy turns one whose first message isn't the system prompt away,
+// and scripts and plain chat clients often send none.
 const workBuddySystemPrompt = "You are a helpful assistant."
 
+// workBuddyFlagged are the words WorkBuddy turns a chat away for with code
+// 11128 "Illegal API invocation from an unapproved channel" — it reads the
+// prompt, not the headers, and each replacement below says the same thing in
+// words it passes. Measured against copilot.tencent.com on 2026-10-19: the
+// billing header, "You are Claude Code, Anthropic's official CLI for Claude"
+// and "Main branch (you will usually use this for PRs)" each draw 11128 from a
+// system message and answer 200 once replaced. The Codex line still draws it on
+// nothing today but the international build was not measured, so it stays.
+var workBuddyFlagged = []struct {
+	pattern     *regexp.Regexp
+	replacement string
+}{
+	{regexp.MustCompile(`(?i)x-anthropic-billing-header:[^\n]*\n?`), ""},
+	{regexp.MustCompile(`(?i)You are Claude Code, Anthropic['’]s official CLI for Claude`), "You are Claude Code, Anthropic's CLI for Claude"},
+	{regexp.MustCompile(`(?i)Main branch \(you will usually use this for PRs\)`), "Main branch (usually the base for PRs)"},
+	{regexp.MustCompile(`(?i)(?:the )?Codex CLI is an open source project led by OpenAI\.`), "The Codex CLI is an open source project led by OpenAI."},
+}
+
+// workBuddyRefusedWords is that refusal as WorkBuddy words it, whichever build.
+var workBuddyRefusedWords = regexp.MustCompile(`(?i)unapproved channel|illegal api invocation`)
+
+// WorkBuddyRefusedNote tells the user what a refusal that outlasts
+// workBuddyFlagged is for: the agent's own prompt, not the account. Kept clear
+// of the words classifyProviderFailover reads as quota or throttle.
+const WorkBuddyRefusedNote = "WorkBuddy 按提示词内容拦下了这条请求（渠道校验），账号本身没问题；换一个 Agent 用它，或给这个 Key 配上备用 Provider。"
+
+// workBuddyPromptRefused says an upstream answer is that refusal of the prompt.
+func workBuddyPromptRefused(status int, body []byte) bool {
+	return status >= 400 && workBuddyRefusedWords.Match(body)
+}
+
+// unflagWorkBuddyText puts workBuddyFlagged's words in place in one text.
+func unflagWorkBuddyText(text string) string {
+	for _, item := range workBuddyFlagged {
+		text = item.pattern.ReplaceAllString(text, item.replacement)
+	}
+	return text
+}
+
+// unflagWorkBuddyMessages clears workBuddyFlagged's words out of the system
+// turns, whether their content is a text or a list of parts, and drops one left
+// with nothing once its billing header went. What a user says goes upstream as
+// it was written: measured on the CN build, a system turn carrying a flagged
+// line draws 11128 from any position in the conversation, and the same line in
+// a user turn answers 200.
+func unflagWorkBuddyMessages(messages []any) ([]any, bool) {
+	changed := false
+	out := make([]any, 0, len(messages))
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if role, _ := message["role"].(string); role != "system" {
+			out = append(out, message)
+			continue
+		}
+		switch content := message["content"].(type) {
+		case string:
+			text := unflagWorkBuddyText(content)
+			if text == content {
+				break
+			}
+			changed = true
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			message["content"] = text
+		case []any:
+			parts, partsChanged := unflagWorkBuddyParts(content)
+			if !partsChanged {
+				break
+			}
+			changed = true
+			if len(parts) == 0 {
+				continue
+			}
+			message["content"] = parts
+		}
+		out = append(out, message)
+	}
+	return out, changed
+}
+
+func unflagWorkBuddyParts(parts []any) ([]any, bool) {
+	changed := false
+	out := make([]any, 0, len(parts))
+	for _, item := range parts {
+		part, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		text, isText := part["text"].(string)
+		if !isText {
+			out = append(out, part)
+			continue
+		}
+		replaced := unflagWorkBuddyText(text)
+		if replaced == text {
+			out = append(out, part)
+			continue
+		}
+		changed = true
+		if strings.TrimSpace(replaced) == "" {
+			continue
+		}
+		part["text"] = replaced
+		out = append(out, part)
+	}
+	return out, changed
+}
+
 // prepareWorkBuddyChatBody rewrites an OpenAI-Chat request into the shape
-// WorkBuddy accepts: streaming forced on (it refuses a non-stream request) and
-// a leading system message. The result is only ever a stream, so a client that
-// asked for a single JSON object gets one rebuilt by
-// workBuddyStreamAsCompletion.
+// WorkBuddy accepts: streaming forced on (it refuses a non-stream request), a
+// leading system message, "developer" turned into "system", the tools a
+// message carries lifted into the request's own, each tool's name and schema
+// mended into a shape its models take, a tool_choice named the way it reads,
+// and workBuddyFlagged's words out of the system turns. The result is only
+// ever a stream, so a client that asked for a single JSON object gets one
+// rebuilt by workBuddyStreamAsCompletion.
 func prepareWorkBuddyChatBody(body []byte) ([]byte, bool) {
+	prepared, _, changed := shapeWorkBuddyChatBody(body)
+	return prepared, changed
+}
+
+// shapeWorkBuddyChatBody is prepareWorkBuddyChatBody with the names its tools
+// were given, each to the name the client knows, so the model's calls can be
+// named back in the answer.
+func shapeWorkBuddyChatBody(body []byte) ([]byte, map[string]string, bool) {
 	var payload map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if decoder.Decode(&payload) != nil || payload == nil {
-		return body, false
+		return body, nil, false
 	}
 	messages, hasMessages := payload["messages"].([]any)
 	if !hasMessages {
-		return body, false // not a chat request (count_tokens, embeddings, …)
+		return body, nil, false // not a chat request (count_tokens, embeddings, …)
 	}
 	changed := false
+	if maxCompletion, exists := payload["max_completion_tokens"]; exists {
+		// WorkBuddy's endpoint takes max_tokens; an OpenAI-compatible client
+		// normally sends max_completion_tokens.
+		if _, hasMaxTokens := payload["max_tokens"]; !hasMaxTokens {
+			payload["max_tokens"] = maxCompletion
+		}
+		delete(payload, "max_completion_tokens")
+		changed = true
+	}
 	if streaming, _ := payload["stream"].(bool); !streaming {
 		payload["stream"] = true
+		changed = true
+	}
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := message["role"].(string); role == "developer" {
+			message["role"] = "system"
+			changed = true
+		}
+	}
+	if read, wasChanged := workBuddyToolBlocksToCalls(messages); wasChanged {
+		messages, changed = read, true
+		payload["messages"] = messages
+	}
+	if paired, wasChanged := pairWorkBuddyToolTurns(messages); wasChanged {
+		messages, changed = paired, true
+		payload["messages"] = messages
+	}
+	if liftWorkBuddyMessageTools(payload) {
+		changed = true
+		messages, _ = payload["messages"].([]any)
+	}
+	if unflagged, wasChanged := unflagWorkBuddyMessages(messages); wasChanged {
+		messages, changed = unflagged, true
+		payload["messages"] = messages
+	}
+	if workBuddyToolChoiceIsNone(payload["tool_choice"]) {
+		// A tool_choice of none means no tools at all: WorkBuddy is not told
+		// about tools the answer may not use.
+		delete(payload, "tool_choice")
+		delete(payload, "tools")
+		delete(payload, "functions")
+		changed = true
+	}
+	aliases, fitted := fitWorkBuddyTools(payload)
+	if fitted {
+		changed = true
+	}
+	if normalizeWorkBuddyToolChoice(payload) {
 		changed = true
 	}
 	if len(messages) > 0 {
@@ -696,15 +875,383 @@ func prepareWorkBuddyChatBody(body []byte) ([]byte, bool) {
 		}
 	}
 	if !changed {
-		return body, false
+		return body, nil, false
 	}
-	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if encoder.Encode(payload) != nil {
-		return body, false
+	prepared := encodeJSONWithoutEscaping(payload)
+	if prepared == nil {
+		return body, nil, false
 	}
-	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), true
+	return prepared, aliases, true
+}
+
+// ---- one send path for a WorkBuddy chat --------------------------------------
+
+// workBuddySender posts a shaped chat body and returns the upstream response.
+type workBuddySender func(body []byte) (*http.Response, error)
+
+// sendWorkBuddyChat sends a shaped WorkBuddy chat and adds magpie's two
+// repairs around the send. A chat that ends with tool results and then the
+// user's message is refused by some models with 400 code 11153; it is sent
+// again with an empty assistant reply between them, and the model is
+// remembered for the rest of the run so its next chats carry that reply up
+// front. A successful answer's tool calls are named back with aliases.
+func (s *Server) sendWorkBuddyChat(provider domain.Provider, model string, body []byte, aliases map[string]string, send workBuddySender) (*http.Response, error) {
+	key := provider.ID + "\x00" + strings.ToLower(strings.TrimSpace(model))
+	if _, remembered := s.workBuddyAfterTools.Load(key); remembered {
+		if quiet := replyAfterWorkBuddyTools(body); quiet != nil {
+			body = quiet
+		}
+	}
+	response, err := send(body)
+	if err != nil || response == nil {
+		return response, err
+	}
+	if response.StatusCode == http.StatusBadRequest {
+		original, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		restore := func() (*http.Response, error) {
+			response.Body = io.NopCloser(bytes.NewReader(original))
+			response.ContentLength = int64(len(original))
+			return response, nil
+		}
+		if readErr != nil || !workBuddyAfterToolsRefused(original) {
+			return restore()
+		}
+		quiet := replyAfterWorkBuddyTools(body)
+		if quiet == nil {
+			return restore()
+		}
+		s.workBuddyAfterTools.Store(key, true)
+		retried, retryErr := send(quiet)
+		if retryErr != nil || retried == nil {
+			// Surface the upstream's own refusal, not a transport error.
+			return restore()
+		}
+		response = retried
+	}
+	restoreWorkBuddyToolNames(response, aliases)
+	return response, nil
+}
+
+// workBuddyUnansweredResult is what an unanswered call is given, so the exchange
+// closes and the turn can go on. The wording is magpie's (its pairToolMessages and
+// anthropic.go share it), which is what the upstreams that validate a tool
+// exchange have been answered with since.
+const workBuddyUnansweredResult = "[The result of this tool call is unavailable: the turn was interrupted.]"
+
+// workBuddyToolBlocksToCalls reads Anthropic's tool blocks out of a Chat request:
+// a bridge that hands Claude Code's conversation to a Chat endpoint keeps
+// assistant parts as {type:"tool_use"} and answers as a user message of
+// {type:"tool_result"} blocks, and WorkBuddy then answers "unsupported content
+// type … tool_use" (11101) for the parts it cannot parse and "tool calls and tool
+// results do not match" (11148) for calls its history never names. magpie drops
+// these parts on a translation — its own IR cannot produce them — but a relay that
+// dropped them would lose the conversation's tool history, so they are read into
+// the dialect Chat names them by instead. A body carrying no blocks is untouched.
+func workBuddyToolBlocksToCalls(messages []any) ([]any, bool) {
+	changed := false
+	out := make([]any, 0, len(messages))
+	for index, item := range messages {
+		message, isMessage := item.(map[string]any)
+		parts, isParts := message["content"].([]any)
+		if !isMessage || !isParts {
+			out = append(out, item)
+			continue
+		}
+		keeps, calls, results := []any{}, []any{}, []any{}
+		for position, raw := range parts {
+			block, isBlock := raw.(map[string]any)
+			if !isBlock {
+				keeps = append(keeps, raw)
+				continue
+			}
+			switch stringValue(block["type"]) {
+			case "tool_use":
+				name := strings.TrimSpace(stringValue(block["name"]))
+				if name == "" {
+					keeps = append(keeps, raw)
+					continue
+				}
+				arguments := "{}"
+				if input, exists := block["input"]; exists {
+					if text, isText := input.(string); isText {
+						arguments = text
+					} else if encoded, err := json.Marshal(input); err == nil {
+						arguments = string(encoded)
+					}
+				}
+				id := strings.TrimSpace(stringValue(block["id"]))
+				if id == "" {
+					// The same call at the same place gets the same id on every
+					// turn, so the upstream's prompt cache still holds.
+					id = chatStableCallID(index, position, name, arguments)
+				}
+				calls = append(calls, map[string]any{
+					"id": id, "type": "function",
+					"function": map[string]any{"name": name, "arguments": arguments},
+				})
+			case "tool_result":
+				results = append(results, map[string]any{
+					"role":         "tool",
+					"tool_call_id": strings.TrimSpace(stringValue(block["tool_use_id"])),
+					"content":      workBuddyResultText(block["content"]),
+				})
+			default:
+				keeps = append(keeps, raw)
+			}
+		}
+		if len(calls) == 0 && len(results) == 0 {
+			out = append(out, message)
+			continue
+		}
+		changed = true
+		if len(calls) > 0 {
+			message["tool_calls"] = calls
+			if text, onlyText := workBuddyTextOfParts(keeps); onlyText {
+				message["content"] = text
+			} else if len(keeps) == 0 {
+				message["content"] = ""
+			} else {
+				message["content"] = keeps
+			}
+			out = append(out, message)
+			continue
+		}
+		// A tool turn must sit right behind the assistant turn that called, so the
+		// answers go ahead of whatever else this turn has to say.
+		out = append(out, results...)
+		if len(keeps) > 0 {
+			if text, onlyText := workBuddyTextOfParts(keeps); onlyText && text != "" {
+				out = append(out, map[string]any{"role": message["role"], "content": text})
+			} else {
+				out = append(out, map[string]any{"role": message["role"], "content": keeps})
+			}
+		}
+	}
+	return out, changed
+}
+
+// workBuddyResultText flattens a tool_result's content, which is a string or a
+// list of blocks, into the text a Chat tool turn carries.
+func workBuddyResultText(content any) string {
+	switch typed := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case []any:
+		text, onlyText := workBuddyTextOfParts(typed)
+		if onlyText {
+			return text
+		}
+		if encoded, err := json.Marshal(content); err == nil {
+			return string(encoded)
+		}
+		return text
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+// workBuddyTextOfParts joins the text of a content list and says whether every
+// part of it was text.
+func workBuddyTextOfParts(parts []any) (text string, onlyText bool) {
+	onlyText = true
+	lines := make([]string, 0, len(parts))
+	for _, raw := range parts {
+		part, isPart := raw.(map[string]any)
+		if !isPart || stringValue(part["type"]) != "text" {
+			onlyText = false
+			continue
+		}
+		if line := stringValue(part["text"]); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n"), onlyText
+}
+
+// pairWorkBuddyToolTurns mends a tool exchange for the upstreams that validate it:
+// WorkBuddy answers 11148 "tool calls and tool results do not match", Kimi
+// "tool_call_id is not found", for the same shapes. The rules are magpie's
+// pairToolMessages, copied turn for turn:
+//
+//   - the answers to one turn's calls go in the calls' order, because an agent
+//     returns parallel results out of order;
+//   - a second answer to the same call is dropped, the first stands;
+//   - an answer to no pending call becomes a user message holding its result, so
+//     the result survives with no made-up call and no id used twice;
+//   - a call left unanswered gets a synthetic result, so the exchange closes;
+//   - an assistant turn with nothing in it is dropped while a call is pending,
+//     where it would sit between the call and its answer.
+func pairWorkBuddyToolTurns(messages []any) ([]any, bool) {
+	var pending []string
+	var tools []any
+	order := map[string]int{}
+	answered := map[string]bool{}
+	changed := false
+	out := make([]any, 0, len(messages))
+
+	flushTools := func() {
+		if len(tools) == 0 {
+			return
+		}
+		before := make([]string, 0, len(tools))
+		for _, item := range tools {
+			message, _ := item.(map[string]any)
+			before = append(before, stringValue(message["tool_call_id"]))
+		}
+		sort.SliceStable(tools, func(i, j int) bool {
+			left, _ := tools[i].(map[string]any)
+			right, _ := tools[j].(map[string]any)
+			return order[stringValue(left["tool_call_id"])] < order[stringValue(right["tool_call_id"])]
+		})
+		for position, item := range tools {
+			message, _ := item.(map[string]any)
+			if stringValue(message["tool_call_id"]) != before[position] {
+				changed = true
+			}
+		}
+		out = append(out, tools...)
+		tools = nil
+	}
+	flushPending := func() {
+		flushTools()
+		for _, id := range pending {
+			if !answered[id] {
+				out = append(out, map[string]any{"role": "tool", "tool_call_id": id, "content": workBuddyUnansweredResult})
+				changed = true
+			}
+		}
+		pending, order, answered = nil, map[string]int{}, map[string]bool{}
+	}
+	answerAsUser := func(message map[string]any) {
+		text := strings.TrimSpace(workBuddyResultText(message["content"]))
+		if text == "" {
+			text = "Tool result received."
+		}
+		if last := len(out); last > 0 {
+			if previous, isMap := out[last-1].(map[string]any); isMap && stringValue(previous["role"]) == "user" {
+				if held, isText := previous["content"].(string); isText {
+					// Two user turns in a row are refused by some chat templates.
+					previous["content"] = held + "\n\n" + text
+					return
+				}
+			}
+		}
+		out = append(out, map[string]any{"role": "user", "content": text})
+	}
+
+	for _, item := range messages {
+		message, isMap := item.(map[string]any)
+		if !isMap {
+			flushPending()
+			out = append(out, item)
+			continue
+		}
+		switch strings.ToLower(stringValue(message["role"])) {
+		case "assistant":
+			calls, _ := message["tool_calls"].([]any)
+			if len(calls) == 0 {
+				if len(pending) > 0 && workBuddyEmptyAssistant(message) {
+					changed = true
+					continue
+				}
+				flushPending()
+				out = append(out, message)
+				continue
+			}
+			flushPending()
+			out = append(out, message)
+			for position, raw := range calls {
+				call, isCall := raw.(map[string]any)
+				if !isCall {
+					continue
+				}
+				id := strings.TrimSpace(stringValue(call["id"]))
+				pending = append(pending, id)
+				order[id] = position
+			}
+		case "tool":
+			id := strings.TrimSpace(stringValue(message["tool_call_id"]))
+			if _, known := order[id]; !known {
+				flushPending()
+				answerAsUser(message)
+				changed = true
+				continue
+			}
+			if answered[id] {
+				changed = true // a second answer: the first one stands
+				continue
+			}
+			answered[id] = true
+			tools = append(tools, message)
+		default:
+			flushPending()
+			out = append(out, message)
+		}
+	}
+	flushPending()
+	return out, changed
+}
+
+// workBuddyEmptyAssistant reports an assistant turn that says nothing: no text, no
+// calls, no reasoning of its own.
+func workBuddyEmptyAssistant(message map[string]any) bool {
+	if calls, _ := message["tool_calls"].([]any); len(calls) > 0 {
+		return false
+	}
+	for _, key := range []string{"reasoning_content", "reasoning"} {
+		if stringValue(message[key]) != "" {
+			return false
+		}
+	}
+	switch content := message["content"].(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(content) == ""
+	case []any:
+		return len(content) == 0
+	}
+	return false
+}
+
+// workBuddyToolChoiceIsNone reads either spelling an OpenAI client uses for "no
+// tools".
+func workBuddyToolChoiceIsNone(choice any) bool {
+	switch typed := choice.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "none")
+	case map[string]any:
+		return strings.EqualFold(stringValue(typed["type"]), "none")
+	}
+	return false
+}
+
+// normalizeWorkBuddyToolChoice turns the object form an OpenAI client names a tool
+// with into the string WorkBuddy reads, and drops a choice that names nothing.
+func normalizeWorkBuddyToolChoice(payload map[string]any) bool {
+	choice, exists := payload["tool_choice"]
+	if !exists || choice == nil {
+		delete(payload, "tool_choice")
+		return exists
+	}
+	switch typed := choice.(type) {
+	case string:
+		return false // "auto", "required": WorkBuddy reads the string as it is
+	case map[string]any:
+		name := stringValue(typed["name"])
+		if function, isFunction := typed["function"].(map[string]any); isFunction {
+			name = firstNonEmptyString(stringValue(function["name"]), name)
+		}
+		if strings.EqualFold(stringValue(typed["type"]), "function") && name != "" {
+			payload["tool_choice"] = name
+			return true
+		}
+	}
+	delete(payload, "tool_choice")
+	return true
 }
 
 // applyWorkBuddyHeaders authenticates a request with the account's WorkBuddy

@@ -44,13 +44,21 @@ Provider 不止支持 API Key，还支持 **OAuth 账号**直连：
 - **Claude 账号**（Claude.ai 订阅，OAuth）
 - **OpenAI / ChatGPT 账号**（Codex CLI OAuth）
 - **Cursor 账号**（Cursor 订阅）
-- **Qoder 账号**（PAT，粘贴个人访问令牌）
+- **Qoder 账号**（浏览器授权登录，或个人访问令牌）
 
-Qoder 走两级令牌：在 [qoder.com/account/integrations](https://qoder.com/account/integrations)
-生成长期 PAT（`pt-` 开头）粘贴到控制台，网关自动用它兑换短期 job token 并在过期前续期，
-无需浏览器往返。上游原生 OpenAI Chat 兼容，三种入站协议都能转发。
+Qoder 的模型跑在它客户端自己的接口上，不是公开的 OpenAI 兼容端点：网关按 Qoder 客户端
+的方式发请求（COSY 签名 + 它自己的正文编码），把回包转成标准 OpenAI Chat 再交给客户端，
+三种入站协议都能转发。登录有两种走法，连的是同一个账号：
 
-令牌刷新由网关托管，密钥/令牌永不下发到前端。
+- **浏览器授权**（默认）：走 Qoder 桌面客户端同款 PKCE 设备码流程，网关轮询到你在浏览器
+  里点完确认为止，换到的作业令牌在过期前自动续期（Qoder 的刷新令牌一次性的，网关串行换发）。
+- **个人访问令牌**（无浏览器时）：在 [qoder.com/account/integrations](https://qoder.com/account/integrations)
+  生成长期令牌（`pt-` 开头）粘贴到控制台，网关用它兑换同一个作业令牌；刷新令牌失效时自动
+  重新兑换，不用你再跑一趟。
+
+模型列表取自账号自己的清单（`/algo/api/v2/model/list`），登录时同步一次，Qoder 换了货架
+就点「重新同步」。**Qoder CN**（qoder.cn，阿里云/手机号账号）是另一种连接方式，协议相同、
+主机与账号不通用。令牌刷新由网关托管，密钥/令牌永不下发到前端。
 
 ### 7. Claude 账号缓存命中优化
 针对 Claude（尤其 OAuth 账号）转发，网关会在正确位置**自动注入 `cache_control` 断点**

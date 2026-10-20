@@ -245,12 +245,11 @@ func isUserProviderManagementPath(method, path string) bool {
 	}
 	if len(parts) == 3 {
 		switch parts[1] {
-		case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "qoder-pat", "workbuddy-oauth":
-			// qoder-pat has no browser round-trip (the user pastes a PAT), so it
-			// only uses complete/status/disconnect/reconnect — the OAuth
-			// families additionally share start/complete/disconnect/status but
-			// have no reconnect verb of their own (their PAT-equivalent is the
-			// OAuth token, refreshed transparently, not something to re-paste).
+		case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "qoder-pat", "qoder-oauth", "workbuddy-oauth":
+			// A Qoder connection has two doors: qoder-oauth is the browser
+			// device flow (start/status), qoder-pat the pasted token
+			// (complete/status). Both share disconnect, and reconnect is the
+			// PAT family's — the stored token is re-minted rather than re-pasted.
 			// Ownership itself is checked inside each handler.
 			switch parts[2] {
 			case "start", "complete", "disconnect":
@@ -259,6 +258,11 @@ func isUserProviderManagementPath(method, path string) bool {
 				return method == http.MethodGet
 			case "reconnect":
 				return method == http.MethodPost && parts[1] == "qoder-pat"
+			case "pause", "resume":
+				// The shared subscription panel pauses and resumes with its own
+				// verbs; only Qoder answers them, on the same handlers as
+				// disconnect and reconnect.
+				return method == http.MethodPost && parts[1] == "qoder-oauth"
 			}
 			return false
 		case "self-register-token":
@@ -284,7 +288,7 @@ func isUserProviderUsagePath(path string) bool {
 		return false
 	}
 	switch parts[1] {
-	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "workbuddy-oauth", "zcode-oauth", "trae-oauth", "zhipu", "deepseek":
+	case "claude-oauth", "cursor-oauth", "chatgpt-oauth", "workbuddy-oauth", "qoder-oauth", "zcode-oauth", "trae-oauth", "zhipu", "deepseek":
 		return parts[2] == "usage"
 	default:
 		return false

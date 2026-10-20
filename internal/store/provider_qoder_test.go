@@ -27,7 +27,7 @@ func TestProviderQoderPATRoundTrip(t *testing.T) {
 			Protocol: domain.ProtocolOpenAIChat,
 			BaseURL:  "https://api2-v2.qoder.sh/model/v1",
 			AuthType: domain.AuthTypeQoderPAT,
-			QoderPAT: &domain.QoderPATCredential{
+			QoderPAT: &domain.QoderCredential{
 				AccessToken:  "jt-job-token",
 				RefreshToken: "pt-personal-access-token",
 				ExpiresAt:    "2026-01-01T00:00:00Z",

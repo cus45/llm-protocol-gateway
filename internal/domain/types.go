@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type Protocol string
 
@@ -265,9 +268,10 @@ type Provider struct {
 	// ChatGPTOAuth holds the ChatGPT/Codex CLI OAuth token pair for
 	// AuthType == "chatgpt_oauth" providers (sub2api prior art).
 	ChatGPTOAuth *ChatGPTOAuthCredential `json:"chatgptOAuth,omitempty"`
-	// QoderPAT holds the Qoder personal access token plus the job token
-	// exchanged from it, for AuthType == "qoder_pat" providers.
-	QoderPAT *QoderPATCredential `json:"qoderPat,omitempty"`
+	// QoderPAT holds the Qoder account credential — a browser sign-in's token
+	// pair, or a personal access token plus the job token exchanged from it —
+	// for AuthType == "qoder_pat" (qoder.com) and "qoder_cn" (qoder.cn).
+	QoderPAT *QoderCredential `json:"qoderPat,omitempty"`
 	// WorkBuddy holds the WorkBuddy subscription token pair for
 	// AuthType == "workbuddy" (Tencent build) and "workbuddy_ai"
 	// (international build) providers. Nil/omitted when not signed in.
@@ -357,31 +361,69 @@ type CursorOAuthCredential struct {
 	Connected    bool   `json:"connected,omitempty"`
 }
 
-// QoderPATCredential holds the two-tier Qoder credentials. Field names mirror
-// CursorOAuthCredential so the existing sqlite oauth_* columns are reused with
-// no migration:
+// QoderCredential is a connected Qoder account. Qoder is signed in two ways —
+// the browser device flow its own client uses, or a long-lived personal access
+// token pasted by the user — and both end up holding the short-lived job token
+// that signs inference calls, so the same struct serves either.
 //
-//	RefreshToken = the long-lived personal access token ("pt-…") the user pastes
-//	AccessToken  = the short-lived job token exchanged from it (~24h)
+// Field names mirror CursorOAuthCredential so the existing sqlite oauth_*
+// columns are reused with no migration; the whole struct also rides in
+// oauth_json, which is authoritative on load:
 //
-// Both are secrets and must never reach the frontend (see
-// gateway.redactProviderForClient).
-type QoderPATCredential struct {
+//	AccessToken = the job token (jt-…) or, on a device-chat Qoder CN account,
+//	              the device token that signs the model calls
+//	RefreshToken = that token's single-use refresh token
+//	PAT          = the personal access token (pt-…) for a token-connected account
+//
+// AccessToken, RefreshToken, PAT and DeviceToken are secrets and must never
+// reach the frontend (see gateway.redactProviderForClient). The field name
+// Provider.QoderPAT and its "qoderPat" JSON key predate the device flow and
+// are kept stable so exported providers still import.
+type QoderCredential struct {
 	AccessToken  string `json:"accessToken,omitempty"`
 	RefreshToken string `json:"refreshToken,omitempty"`
 	ExpiresAt    string `json:"expiresAt,omitempty"` // RFC3339
 	AccountLabel string `json:"accountLabel,omitempty"`
 	Connected    bool   `json:"connected,omitempty"`
 	// Disconnected marks a user-initiated pause (the "断开连接" button): the
-	// personal access token itself is kept — unlike the old behavior, which
-	// wiped it — so reconnecting needs no trip back to
-	// qoder.com/account/integrations to fetch a fresh one. Forwarding must
-	// still refuse to use the credential while this is true.
+	// credential itself is kept, so reconnecting costs no browser trip and no
+	// fresh token. Forwarding must still refuse to use it while this is true.
 	Disconnected bool `json:"disconnected,omitempty"`
-	// HasStoredToken is computed at redaction time (RefreshToken != ""), never
-	// itself persisted. Lets the console tell "paused, PAT still known" apart
-	// from "never configured" without the PAT ever reaching the browser.
+	// HasStoredToken is computed at redaction time, never itself persisted:
+	// it lets the console tell "paused, still known" apart from "never
+	// configured" without any token reaching the browser.
 	HasStoredToken bool `json:"hasStoredToken,omitempty"`
+
+	// SignInMode is "device" for a browser sign-in or "pat" for a pasted
+	// personal access token; empty is a credential written before the browser
+	// flow existed, which is read as "pat".
+	SignInMode string `json:"signInMode,omitempty"`
+	// PAT is the long-lived personal access token the job token was exchanged
+	// from. Qoder never rotates it, so it is carried forward on every
+	// exchange and is what re-mints a job token when the refresh pair lapses.
+	PAT string `json:"pat,omitempty"`
+	// UID, Email and Name are the account Qoder's /api/v1/userinfo reports
+	// for it — the label the console shows and the uid the COSY envelope
+	// signs with.
+	UID   string `json:"uid,omitempty"`
+	Email string `json:"email,omitempty"`
+	Name  string `json:"name,omitempty"`
+	// DeviceToken authorizes the account endpoints (usage, check-in) and, on a
+	// device-chat account, the model calls themselves. Qoder records no expiry
+	// for it, so it is rotated when Qoder refuses it.
+	DeviceToken   string `json:"deviceToken,omitempty"`
+	DeviceRefresh string `json:"deviceRefresh,omitempty"`
+	// MachineID is generated once per sign-in and reused by every request:
+	// Qoder's envelope carries it as the machine identity, and its client
+	// rejects an account whose machine keeps changing.
+	MachineID string `json:"machineId,omitempty"`
+	// DeviceChat says AccessToken is the device token rather than a job token,
+	// because the site refused to trade it (Qoder CN's CLI works this way). It
+	// is then refreshed as a device token.
+	DeviceChat bool `json:"deviceChat,omitempty"`
+	// Models is the account's own model listing, kept verbatim because a
+	// request must carry each model's upstream configuration with it.
+	Models json.RawMessage `json:"models,omitempty"`
 }
 
 // QoderDisconnectedScopeMarker is stashed in the shared oauth_scope column
@@ -504,7 +546,15 @@ const (
 	AuthTypeClaudeOAuth  = "claude_oauth"
 	AuthTypeCursorOAuth  = "cursor_oauth"
 	AuthTypeChatGPTOAuth = "chatgpt_oauth"
-	AuthTypeQoderPAT     = "qoder_pat"
+	// AuthTypeQoderPAT is Qoder's international site (qoder.com) and
+	// AuthTypeQoderCN is Qoder CN (qoder.cn): the same subscription protocol on
+	// its own hosts, with its own device-flow client id and model catalog, so
+	// they are two connection kinds rather than a setting. The name of the
+	// first predates the browser sign-in and is kept as the stored value; a
+	// provider of it may be connected by device flow or by personal access
+	// token (QoderCredential.SignInMode).
+	AuthTypeQoderPAT = "qoder_pat"
+	AuthTypeQoderCN  = "qoder_cn"
 	// AuthTypeWorkBuddy is WorkBuddy (China, copilot.tencent.com) and
 	// AuthTypeWorkBuddyAI is WorkBuddy AI (www.workbuddy.ai): the same sign-in
 	// and API, a different endpoint, model list and extra request headers.
@@ -530,8 +580,13 @@ const (
 )
 
 type Model struct {
-	ID              string   `json:"id"`
-	ProviderID      string   `json:"providerId"`
+	ID         string `json:"id"`
+	ProviderID string `json:"providerId"`
+	// Name is what the upstream calls this model to its own users. It is
+	// display-only: a request still names the model by ID, because that is the
+	// key the upstream routes on. Empty means the upstream gives no other name,
+	// which is the case for every API-Key vendor whose model id is its label.
+	Name            string   `json:"name,omitempty"`
 	Protocol        Protocol `json:"protocol"`
 	ContextLength   int      `json:"contextLength"`
 	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`

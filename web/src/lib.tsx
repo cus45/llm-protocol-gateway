@@ -281,10 +281,16 @@ export async function readConnectResponse(response: Response, fallbackMessage: s
   throw new Error(`服务返回了非预期内容（HTTP ${response.status}），请稍后重试。`);
 }
 
-// Qoder 直连端点。后端 normalizeProvider 只在 baseUrl 留空时兜这个默认值
-// （保留手动覆盖入口），所以切到 Qoder 时前端要主动把占位 URL 换掉，
-// 否则会残留创建表单的 example.com 预填值。
-export const QODER_DEFAULT_BASE_URL = 'https://api2-v2.qoder.sh/model/v1';
+// Qoder 的两个站点各自的推理主机。后端 normalizeProvider 只在 baseUrl 留空时
+// 兜这个默认值（保留手动覆盖入口），所以切到 Qoder 时前端要主动把占位 URL 换掉，
+// 否则会残留创建表单的 example.com 预填值。请求体由网关按 Qoder 客户端的方式
+// 签名与编码，这两个地址只是账号所在的主机，不是可以直接 curl 的 OpenAI 端点。
+export const QODER_GLOBAL_BASE_URL = 'https://api3.qoder.sh';
+export const QODER_CN_BASE_URL = 'https://gateway.qoder.com.cn';
+
+export function qoderDefaultBaseURL(kind: ProviderConnectKind | undefined): string {
+  return kind === 'qoder_cn' ? QODER_CN_BASE_URL : QODER_GLOBAL_BASE_URL;
+}
 
 export const navItems = [
   { id: 'input-providers', label: '输入 Provider' },
@@ -1295,6 +1301,7 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
   if (provider.authType === 'cursor_oauth') return 'cursor_oauth';
   if (provider.authType === 'chatgpt_oauth') return 'chatgpt_oauth';
   if (provider.authType === 'qoder_pat') return 'qoder_pat';
+  if (provider.authType === 'qoder_cn') return 'qoder_cn';
   if (provider.authType === 'workbuddy') return 'workbuddy';
   if (provider.authType === 'workbuddy_ai') return 'workbuddy_ai';
   if (provider.authType === 'zcode') return 'zcode';
@@ -1310,6 +1317,12 @@ export function providerConnectKind(provider: Provider): ProviderConnectKind {
 // 控制台里的展示、徽标与登录流程都走同一套分支。
 export function isWorkBuddyConnectKind(kind: ProviderConnectKind): boolean {
   return kind === 'workbuddy' || kind === 'workbuddy_ai';
+}
+
+// isQoderConnectKind 判定 Qoder 的两个站点：协议一模一样，主机、client id 与
+// 模型目录不同，所以是两种连接方式而不是一个开关。
+export function isQoderConnectKind(kind: ProviderConnectKind | undefined): boolean {
+  return kind === 'qoder_pat' || kind === 'qoder_cn';
 }
 
 export function isZCodeConnectKind(kind: ProviderConnectKind): boolean {
@@ -1330,13 +1343,14 @@ export function isSubscriptionConnectKind(kind: ProviderConnectKind): kind is Su
 
 // PROVIDER_AUTH_TYPES 是表单可以提交给后端的全部连接方式：白名单之外一律退回
 // api_key，避免前端多出一个 authType 时把它原样写进 Provider。
-export const PROVIDER_AUTH_TYPES = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'] as const;
+export const PROVIDER_AUTH_TYPES = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'qoder_cn', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'] as const;
 
 export function providerAuthTypeParam(value: string): string {
   return (PROVIDER_AUTH_TYPES as readonly string[]).includes(value) ? value : 'api_key';
 }
 // subscriptionOAuthPrefix 是订阅登录那几个端点共用的路径段。
 export function subscriptionOAuthPrefix(kind: ProviderConnectKind): string {
+  if (isQoderConnectKind(kind)) return 'qoder-oauth';
   if (isZCodeConnectKind(kind)) return 'zcode-oauth';
   if (isTraeConnectKind(kind)) return 'trae-oauth';
   return 'workbuddy-oauth';
@@ -1379,7 +1393,8 @@ export function providerConnectLabel(kind: ProviderConnectKind): string {
     case 'claude_oauth': return '登录 Claude 账号 (OAuth)';
     case 'cursor_oauth': return '登录 Cursor 账号 (OAuth)';
     case 'chatgpt_oauth': return '登录 ChatGPT 账号 (OAuth)';
-    case 'qoder_pat': return '连接 Qoder 账号 (PAT)';
+    case 'qoder_pat': return '登录 Qoder 账号';
+    case 'qoder_cn': return '登录 Qoder CN 账号';
     case 'workbuddy': return '登录 WorkBuddy 账号';
     case 'workbuddy_ai': return '登录 WorkBuddy AI 账号';
     case 'zcode': return '登录 ZCode（Z.ai 套餐）';
@@ -1399,7 +1414,8 @@ export const PROVIDER_CONNECT_FILTERS: Array<{ id: '' | ProviderConnectKind; lab
   { id: 'claude_oauth', label: 'Claude OAuth' },
   { id: 'cursor_oauth', label: 'Cursor OAuth' },
   { id: 'chatgpt_oauth', label: 'ChatGPT OAuth' },
-  { id: 'qoder_pat', label: 'Qoder PAT' },
+  { id: 'qoder_pat', label: 'Qoder' },
+  { id: 'qoder_cn', label: 'Qoder CN' },
   { id: 'workbuddy', label: 'WorkBuddy' },
   { id: 'workbuddy_ai', label: 'WorkBuddy AI' },
   { id: 'zcode', label: 'ZCode (Z.ai)' },
@@ -2263,11 +2279,16 @@ export function buildProviderChatCurl(provider: Provider, model: string, options
     const body = JSON.stringify(payload, null, 2);
     return `curl -s 'http://127.0.0.1:<cursor-bridge-port>/v1/chat/completions' \\\n  -H 'Content-Type: application/json' \\\n  -d '${body.replace(/'/g, `'\\''`)}'`;
   }
-  if (provider.authType === 'qoder_pat') {
-    const resolvedModel = model.trim() || provider.defaultModel || 'claude-4.5-sonnet';
+  if (isQoderConnectKind(provider.authType)) {
+    const resolvedModel = model.trim() || provider.defaultModel || 'ultimate';
     const payload = buildProviderChatPayload(resolvedModel, buildProviderChatMessages(options));
     const body = JSON.stringify(payload, null, 2);
-    return `curl -s '${(provider.baseUrl || QODER_DEFAULT_BASE_URL).replace(/\/$/, '')}/chat/completions' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer <qoder-job-token (server-managed)>' \\\n  -d '${body.replace(/'/g, `'\\''`)}'`;
+    // 这条命令照抄跑不通，所以直接说明：Qoder 的上游不是 OpenAI 兼容端点，请求要
+    // 带 Qoder 客户端的 COSY 签名、正文走它自己的编码，curl 复现不了。
+    return `# Qoder 的上游不是 OpenAI 兼容端点：网关会把这份请求改写成 agent_chat_generation，\n`
+      + `# 并用账号令牌加上 COSY 签名，所以这条 curl 不能直接照抄。\n`
+      + `# 想自己试，请打本网关的对话接口（地址在「路由与密钥」页）：\n`
+      + `curl -s '<本网关的 openai_chat 地址>/chat/completions' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer <本网关的 API 密钥>' \\\n  -d '${body.replace(/'/g, `'\\''`)}'`;
   }
   if (provider.authType === 'chatgpt_oauth') {
     const resolvedModel = model.trim() || provider.defaultModel || 'gpt-5.2';
@@ -2601,20 +2622,33 @@ export function formatModelOutputBudget(n: number | undefined) {
 // 复用者）里生效，不必额外传 provider 上下文。
 export const QODER_TIER_INFO: Record<string, { label: string; multiplier: string }> = {
   ultimate: { label: '极致', multiplier: '1.6x' },
+  fast: { label: '快速', multiplier: '0.8x' },
   performance: { label: '性能', multiplier: '1.1x' },
   auto: { label: '智能路由', multiplier: '1.0x' },
   efficient: { label: '经济', multiplier: '0.3x' },
   lite: { label: '轻量', multiplier: '免费' },
 };
 
+/**
+ * modelAlias 是上游给这个模型起的名字，只在它确实不同于 id 时给出。
+ * id 仍是各处的主角（请求里用的就是它、点击即复制），别名只作次级说明：
+ * Qoder 这类「按 key 路由、按品牌名展示」的上游，光看 id 是一串代号。
+ */
+export function modelAlias(model: Model): string {
+  return model.name && model.name !== model.id ? model.name : '';
+}
+
 export function modelSelectOptionLabel(model: Model) {
   const tier = QODER_TIER_INFO[model.id];
   const out = formatModelOutputBudget(model.maxOutputTokens);
+  // Qoder 按 key 路由（qmodel_38max），但它自己的界面写的是 Qwen3.8-Max：下拉框
+  // 里给后者，请求里仍是前者。filterModelOptions 同时匹配 id，搜旧名字照样找得到。
+  const label = modelAlias(model) || model.id;
   if (tier) {
-    const base = `${model.id}（${tier.label} ${tier.multiplier}）`;
+    const base = `${label}（${tier.label} ${tier.multiplier}）`;
     return out ? `${base} · out ${out}` : base;
   }
-  return out ? `${model.id} · out ${out}` : model.id;
+  return out ? `${label} · out ${out}` : label;
 }
 
 export function formatCompactCount(value: number) {

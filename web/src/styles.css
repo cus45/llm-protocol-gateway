@@ -3805,6 +3805,27 @@ html[data-theme="dark"] .output-curl-head {
   user-select: text;
   -webkit-user-select: text;
 }
+/* 上游给这个模型起的名字：id 仍是这一列的主角（请求用的就是它、点击即复制），
+   别名只作次级说明，免得 Qoder 这类「按 key 路由、按品牌名展示」的账号在列表里
+   读成一串代号。 */
+/* id 与别名竖着排：卡片头、结果弹窗都是横排 flex，别名直接当兄弟节点会被
+   挤到 id 右边换行，把那张卡撑得比同排的其他卡高。 */
+.model-id-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.model-id-alias {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+  -webkit-user-select: none;
+}
 .model-id-copy-hint {
   font-size: 11px;
   opacity: 0.35;

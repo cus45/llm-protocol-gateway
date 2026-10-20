@@ -245,7 +245,8 @@ sudo firewall-cmd --permanent --add-port=18093/tcp && sudo firewall-cmd --reload
 4. 添加 Provider（控制台「Provider 管理」）：
 
    - **推荐 API Key / Bearer 类**：headless 服务器最稳，无需浏览器往返；
-   - **Qoder PAT**：粘贴 `pt-` 开头的个人访问令牌即可，无浏览器往返；
+   - **Qoder / Qoder CN**：优先在浏览器里授权登录；headless 服务器改用「粘贴个人访问令牌」，
+     填 `pt-` 开头的令牌即可，全程无浏览器往返；
    - **OAuth 类（Claude / ChatGPT / Cursor 账号）**：登录需交互式浏览器回调，
      无桌面服务器建议在桌面端登录后「导出 Provider → 服务器上导入」，或先配好
      公网域名/隧道后再在浏览器完成。
@@ -418,7 +419,7 @@ sudo systemctl start llm-protocol-gateway
 | 忘记管理密码 | 在服务器本机（SSH）执行，loopback 请求免当前密码校验：<br>`curl -s -X POST http://127.0.0.1:18093/__auth/password -H 'Content-Type: application/json' -d '{"newPassword":"新密码至少8位"}'` |
 | 调用上游全部 TLS 失败 | 缺 `ca-certificates`（第 1 节）；或出站 443 被安全组/公司网关拦；检查是否意外设置了 `HTTP_PROXY`/`HTTPS_PROXY` |
 | UI 上切换「局域网暴露」无效果 | 因为 systemd 里固定了 `GATEWAY_ADDR`，属于预期行为，改绑定地址请编辑 unit 后重启 |
-| OAuth 类 Provider 登录不了 | headless 服务器无法完成浏览器回调，改用 API Key / Qoder PAT，或桌面端导出后导入（见 9.4） |
+| OAuth 类 Provider 登录不了 | headless 服务器无法完成浏览器回调，改用 API Key / Qoder 个人访问令牌，或桌面端导出后导入（见 9.4） |
 | 自检（Self-check）不可用 | 该功能依赖服务器装有 `opencode` / `codex` / `claude` CLI，属可选功能，未装不影响转发 |
 
 ---
