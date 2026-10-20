@@ -1,23 +1,220 @@
 // 应用入口：App 组件 + 启动引导。通用类型/工具/组件已拆分到 types.ts、lib.ts、components/。
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { createRoot } from 'react-dom/client';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
+import {createRoot} from 'react-dom/client';
 import './styles.css';
-import { ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl } from './components/apikeys';
-import { LogTimingWaterfall, MachineMetric, Metric, UsageBarChart, UsageCacheHitRate, UsageComboTrendChart, UsageDailyTrafficLines, UsageDonutChart, UsageHourlyDistribution, UsageLineChart, UsageModelLeaderboard, UsageMonthlyTokenBars, UsagePivotExplorer, UsageRangeCalendar, UsageSegmentedShare, UsageStatusChart, downloadCSV } from './components/charts';
-import { API_BASE, API_KEYS_PAGE_SIZE, API_KEY_CONNECT_LABEL, BACKEND_FAIL_STREAK_LIMIT, BACKEND_POLL_MS_LOCAL, BACKEND_POLL_MS_REMOTE, LOGS_PAGE_SIZE, LOG_OWNER_FILTER_ADMIN, PROVIDER_CONNECT_FILTERS, REQUEST_ADAPTER_PRESETS, SELF_REGISTER_CONNECT_LABEL, USERS_TABLE_GRID, activePublicBaseURL, activeUIPublicBaseURL, antiAutofillProps, apiKeyReferencesProvider, buildApiKeyPatchBody, buildCurlCommand, buildProviderChatCurl, buildRouteTestCurl, buildSelfRegistrationPrompt, chatgptAccountLabelFriendly, clearUICache, compactRequestAdapterJSON, composeCustomDomain, copyToClipboard, coreNavIDs, defaultProviderChatTestOptions, defaultPublicAccess, defaultSelfcheckModelForProvider, defaultThinkingValueForField, deriveUIDomainFromAPI, diskTempLabel, diskTempNote, endpointURL, explainHttpStatus, fallbackState, fanSpeedLabel, fanSpeedNote, fetchWithTimeout, findRouteForBinding, fixedOutputLabels, formatBytes, formatChatTestResponse, formatCompactCount, formatDuration, formatJsonDisplay, formatLocalISODate, localDateToRFC3339, formatProviderCacheTestDetail, formatProviderThinkingTestDetail, formatRate, formatSelfcheckCaseDetail, formatTokenCount, formatTokenSummary, formatTokenSummaryCompact, formatTrafficLogDetail, formatTrafficLogJSON, getApiKeyBinding, hostTempMetric, httpStatusLabel, isFollowingTodayRange, isRemoteOrigin, isThinkingModel, isTrafficLogError, isVisionModel, isQoderConnectKind, isSubscriptionConnectKind, isTraeConnectKind, isWorkBuddyConnectKind, isZCodeConnectKind, loadBootSession, modelAlias, providerAuthTypeParam, qoderDefaultBaseURL, localGatewayRoot, logLevelValues, mapFromTrafficRanks, maskApiKeySource, modelsForSelfcheckProvider, navGroups, navIDFromPath, navItems, navPathForID, normalizeGatewayState, normalizePromptTokenStats, normalizeRequestStats, parseSSEStreamContent, pickCustomDomainRoot, previewRequestAdapterCurl, protocolFromLabel, protocolLabel, protocolTone, providerConnectKind, providerConnectLabel, providerOptionLabel, providerUsageLabel, publicAccessMetricValue, publicAccessStatusLabel, publicAccessURL, publicStatusTone, readConnectResponse, readSelfcheckPrefs, readStoredSidebarCollapsed, readUICache, reportIfLooksLikeAutofill, resolveProviderChatURL, resolveProviderTestModel, routeGatewayTestURL, selfRegisterPlaceholderBaseURL, splitCustomDomain, statusTone, testResultBadge, thermalPressureLabel, thinkingDepthSelectOptions, thinkingPresetsForProtocol, trafficLogKeyLabel, trafficLogProviderLabel, trafficRanksEqual, trafficRanksFromMap, uiCacheScope, userAllowedNavIDs, writeSelfcheckPrefs, writeStoredSidebarCollapsed, writeUICache } from './lib';
-import { ChatGPTOAuthUsagePanel, ClaudeOAuthUsagePanel, CursorOAuthUsagePanel, DeepSeekBalancePanel, ProviderCard, WorkBuddyUsagePanel, ZhipuUsagePanel, formatClaudeUsageResetAt, isDocumentActive } from './components/panels';
-import { SubscriptionConnect } from './components/subscription';
-import { ProviderLabel, providerIcon } from './components/provider_label';
-import { ChatTestDialog, type ChatTestTab } from './components/chat_test';
-import { QuotaKeeperPanel } from './components/quota_keeper';
-import { TrafficLogTable } from './components/traffic_log';
-import { MultiSelectFilter, SearchableModelSelect } from './components/selects';
-import { ProviderCatalogDialog } from './components/provider_catalog';
-import { providerConnectIcon, resolveProviderIcon } from './provider_presets';
-import { APIKey, AdminAuthStatus, AlertPage, AlertRecord, AlertSettingsView, AppLogEntry, ChatTestContext, CloudflareZoneOption, ConsoleUser, DailyRequestPoint, GatewayState, HostMetrics, KeyProfile, LegacyRequestStatsSnapshot, LogEntry, LogPage, NavItemID, Protocol, Provider, ProviderAuthPreview, ProviderAuthType, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, ProviderPreset, ProviderTestResult, ProviderThinkingTestResult, ProvidersImportResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckJobStatus, SelfcheckToolInfo, ThemeMode, TrafficRankCache, WorkBuddyUsage } from './types';
-import { Badge, BrandIcon, CopyButton, Field, Modal, NavIcon, SelectField, THEME_STORAGE_KEY, ThemeSwitch, URLRow, applyThemeMode, readStoredTheme, resolveTheme } from './components/ui';
-import { TerminalAuthGate } from './components/terminal_auth';
+import {ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl} from './components/apikeys';
+import {
+    downloadCSV,
+    LogTimingWaterfall,
+    MachineMetric,
+    Metric,
+    UsageBarChart,
+    UsageCacheHitRate,
+    UsageComboTrendChart,
+    UsageDailyTrafficLines,
+    UsageDonutChart,
+    UsageHourlyDistribution,
+    UsageModelLeaderboard,
+    UsagePivotExplorer,
+    UsageRangeCalendar,
+    UsageStatusChart
+} from './components/charts';
+import {
+    activePublicBaseURL,
+    activeUIPublicBaseURL,
+    antiAutofillProps,
+    API_BASE,
+    API_KEYS_PAGE_SIZE,
+    apiKeyReferencesProvider,
+    BACKEND_FAIL_STREAK_LIMIT,
+    BACKEND_POLL_MS_LOCAL,
+    BACKEND_POLL_MS_REMOTE,
+    buildApiKeyPatchBody,
+    buildCurlCommand,
+    buildProviderChatCurl,
+    buildRouteTestCurl,
+    buildSelfRegistrationPrompt,
+    chatgptAccountLabelFriendly,
+    clearUICache,
+    compactRequestAdapterJSON,
+    composeCustomDomain,
+    copyToClipboard,
+    coreNavIDs,
+    defaultProviderChatTestOptions,
+    defaultPublicAccess,
+    defaultSelfcheckModelForProvider,
+    defaultThinkingValueForField,
+    deriveUIDomainFromAPI,
+    diskTempLabel,
+    diskTempNote,
+    endpointURL,
+    explainHttpStatus,
+    fallbackState,
+    fanSpeedLabel,
+    fanSpeedNote,
+    fetchWithTimeout,
+    findRouteForBinding,
+    fixedOutputLabels,
+    formatBytes,
+    formatCompactCount,
+    formatDuration,
+    formatJsonDisplay,
+    formatLocalISODate,
+    formatRate,
+    formatSelfcheckCaseDetail,
+    formatTokenCount,
+    formatTokenSummary,
+    formatTrafficLogDetail,
+    formatTrafficLogJSON,
+    getApiKeyBinding,
+    hostTempMetric,
+    httpStatusLabel,
+    isFollowingTodayRange,
+    isQoderConnectKind,
+    isRemoteOrigin,
+    isSubscriptionConnectKind,
+    isThinkingModel,
+    isTraeConnectKind,
+    isTrafficLogError,
+    isVisionModel,
+    isWorkBuddyConnectKind,
+    isZCodeConnectKind,
+    loadBootSession,
+    localDateToRFC3339,
+    localGatewayRoot,
+    LOG_OWNER_FILTER_ADMIN,
+    logLevelValues,
+    LOGS_PAGE_SIZE,
+    mapFromTrafficRanks,
+    maskApiKeySource,
+    modelAlias,
+    modelsForSelfcheckProvider,
+    navGroups,
+    navIDFromPath,
+    navItems,
+    navPathForID,
+    normalizeGatewayState,
+    normalizePromptTokenStats,
+    normalizeRequestStats,
+    parseSSEStreamContent,
+    pickCustomDomainRoot,
+    previewRequestAdapterCurl,
+    protocolFromLabel,
+    protocolLabel,
+    protocolTone,
+    PROVIDER_CONNECT_FILTERS,
+    providerAuthTypeParam,
+    providerConnectKind,
+    providerConnectLabel,
+    providerOptionLabel,
+    providerUsageLabel,
+    publicAccessMetricValue,
+    publicAccessStatusLabel,
+    publicAccessURL,
+    publicStatusTone,
+    qoderDefaultBaseURL,
+    readConnectResponse,
+    readSelfcheckPrefs,
+    readStoredSidebarCollapsed,
+    readUICache,
+    reportIfLooksLikeAutofill,
+    REQUEST_ADAPTER_PRESETS,
+    resolveProviderChatURL,
+    resolveProviderTestModel,
+    routeGatewayTestURL,
+    selfRegisterPlaceholderBaseURL,
+    splitCustomDomain,
+    statusTone,
+    thermalPressureLabel,
+    thinkingDepthSelectOptions,
+    thinkingPresetsForProtocol,
+    trafficLogKeyLabel,
+    trafficLogProviderLabel,
+    trafficRanksEqual,
+    trafficRanksFromMap,
+    uiCacheScope,
+    userAllowedNavIDs,
+    USERS_TABLE_GRID,
+    writeSelfcheckPrefs,
+    writeStoredSidebarCollapsed,
+    writeUICache
+} from './lib';
+import {
+    ChatGPTOAuthUsagePanel,
+    ClaudeOAuthUsagePanel,
+    CursorOAuthUsagePanel,
+    DeepSeekBalancePanel,
+    formatClaudeUsageResetAt,
+    isDocumentActive,
+    ProviderCard,
+    WorkBuddyUsagePanel,
+    ZhipuUsagePanel
+} from './components/panels';
+import {SubscriptionConnect} from './components/subscription';
+import {providerIcon, ProviderLabel} from './components/provider_label';
+import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
+import {QuotaKeeperPanel} from './components/quota_keeper';
+import {TrafficLogTable} from './components/traffic_log';
+import {MultiSelectFilter, SearchableModelSelect} from './components/selects';
+import {ProviderCatalogDialog} from './components/provider_catalog';
+import {providerConnectIcon, resolveProviderIcon} from './provider_presets';
+import {
+    AdminAuthStatus,
+    AlertPage,
+    AlertRecord,
+    AlertSettingsView,
+    APIKey,
+    AppLogEntry,
+    ChatTestContext,
+    CloudflareZoneOption,
+    ConsoleUser,
+    DailyRequestPoint,
+    GatewayState,
+    HostMetrics,
+    KeyProfile,
+    LegacyRequestStatsSnapshot,
+    LogEntry,
+    LogPage,
+    NavItemID,
+    Protocol,
+    Provider,
+    ProviderAuthPreview,
+    ProviderAuthType,
+    ProviderCacheTestResult,
+    ProviderChatTestOptions,
+    ProviderConnectKind,
+    ProviderPreset,
+    ProvidersImportResult,
+    ProviderTestResult,
+    ProviderThinkingTestResult,
+    PublicAccessSettings,
+    RequestAdapter,
+    RequestStatsSnapshot,
+    Route,
+    RouteTestResult,
+    SelfcheckCaseResult,
+    SelfcheckJobStatus,
+    SelfcheckToolInfo,
+    ThemeMode,
+    TrafficRankCache
+} from './types';
+import {
+    applyThemeMode,
+    Badge,
+    BrandIcon,
+    CopyButton,
+    Field,
+    Modal,
+    NavIcon,
+    readStoredTheme,
+    resolveTheme,
+    SelectField,
+    THEME_STORAGE_KEY,
+    ThemeSwitch,
+    URLRow
+} from './components/ui';
+import {TerminalAuthGate} from './components/terminal_auth';
+
 function App() {
   const [activeNav, setActiveNav] = useState<NavItemID>(() => navIDFromPath(window.location.pathname));
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredTheme());

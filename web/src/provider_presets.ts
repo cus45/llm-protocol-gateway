@@ -1,5 +1,5 @@
-import type { Provider, ProviderConnectKind, ProviderPreset, ProviderPresetSection } from './types';
-import { presetMatchesProvider } from './lib';
+import type {Provider, ProviderConnectKind, ProviderPreset, ProviderPresetSection} from './types';
+import {presetMatchesProvider} from './lib';
 
 // 添加 Provider 的可选目录：点一个磁贴即填好连接方式、协议与接入地址，
 // 省掉手抄 URL。端点取自上游厂商公开文档（与参考项目 magpie 的预设表一致），

@@ -1,6 +1,38 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { APIKey, APIKeyDayStats, AdminAuthStatus, BadgeTone, CloudflareZoneOption, GatewayState, HostDiskTemp, HostFanSpeed, HostMetrics, LegacyRequestStatsSnapshot, LogEntry, Model, NavItemID, OutputEndpoint, Protocol, Provider, ProviderAuthPreview, ProviderCacheTestResult, ProviderChatTestOptions, ProviderConnectKind, SubscriptionConnectKind, ProviderPreset, ProviderThinkingTestResult, PublicAccessSettings, RequestAdapter, RequestStatsSnapshot, Route, RouteTestResult, SelfcheckCaseResult, SelfcheckPrefs } from './types';
+import {
+    AdminAuthStatus,
+    APIKey,
+    APIKeyDayStats,
+    BadgeTone,
+    CloudflareZoneOption,
+    GatewayState,
+    HostDiskTemp,
+    HostFanSpeed,
+    HostMetrics,
+    LegacyRequestStatsSnapshot,
+    LogEntry,
+    Model,
+    NavItemID,
+    OutputEndpoint,
+    Protocol,
+    Provider,
+    ProviderAuthPreview,
+    ProviderCacheTestResult,
+    ProviderChatTestOptions,
+    ProviderConnectKind,
+    ProviderPreset,
+    ProviderThinkingTestResult,
+    PublicAccessSettings,
+    RequestAdapter,
+    RequestStatsSnapshot,
+    Route,
+    RouteTestResult,
+    SelfcheckCaseResult,
+    SelfcheckPrefs,
+    SubscriptionConnectKind
+} from './types';
+
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
   {
     id: 'tuya-azure-deployment',

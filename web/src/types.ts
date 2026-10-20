@@ -1,6 +1,6 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
-import React from 'react';
-import { navItems } from './lib';
+import {navItems} from './lib';
+
 export type BadgeTone = 'green' | 'blue' | 'cyan' | 'amber' | 'red' | 'purple' | 'slate';
 
 export type Protocol = 'openai_chat' | 'openai_responses' | 'claude';

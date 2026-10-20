@@ -1,10 +1,32 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { apiKeyClientBaseURL, apiKeyGatewayRoot, buildApiKeyClientConfig, buildApiKeyClientConfigExtras, buildApiKeyClientConfigInstallScript, buildApiKeyCodexRestoreOfficialScript, buildApiKeyPublicCurl, clientConfigFilePath, clientConfigProtocolHint, clientConfigScriptNoun, clientConfigTitle, clientConfigsForProtocol, copyToClipboard, fixedOutputLabels, getApiKeyBinding, modelAlias, localGatewayRoot, protocolFromLabel, protocolLabel, providerOptionLabel, thinkingDepthSelectOptions } from '../lib';
-import { SearchableModelSelect } from './selects';
-import { APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route } from '../types';
-import { Badge, CopyButton, Modal } from './ui';
-import { ProviderLabel, providerIcon } from './provider_label';
+import {
+    apiKeyClientBaseURL,
+    apiKeyGatewayRoot,
+    buildApiKeyClientConfig,
+    buildApiKeyClientConfigExtras,
+    buildApiKeyClientConfigInstallScript,
+    buildApiKeyCodexRestoreOfficialScript,
+    buildApiKeyPublicCurl,
+    clientConfigFilePath,
+    clientConfigProtocolHint,
+    clientConfigScriptNoun,
+    clientConfigsForProtocol,
+    clientConfigTitle,
+    copyToClipboard,
+    getApiKeyBinding,
+    localGatewayRoot,
+    modelAlias,
+    protocolFromLabel,
+    protocolLabel,
+    providerOptionLabel,
+    thinkingDepthSelectOptions
+} from '../lib';
+import {SearchableModelSelect} from './selects';
+import {APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route} from '../types';
+import {Badge, CopyButton, Modal} from './ui';
+import {ProviderLabel} from './provider_label';
+
 /** 方案命名弹窗：替代 window.prompt——嵌入式浏览器/被浏览器拦截时 prompt 会静默
  *  返回 null，表现为按钮点了没反应；应用内弹窗不依赖原生对话框。 */
 export function ProfileNameDialog({ mode, initial, busy, onSubmit, onClose }: { mode: 'create' | 'rename'; initial: string; busy: boolean; onSubmit: (name: string) => void; onClose: () => void }) {

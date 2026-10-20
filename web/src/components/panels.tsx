@@ -1,8 +1,38 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { API_BASE, OAUTH_USAGE_POLL_MS, OAUTH_USAGE_STORAGE_PREFIX, chatgptAccountLabelFriendly, chatgptPlanLabel, cursorBridgeStatusLabel, cursorBridgeTone, flowBadgeTone, healthStatusLabel, healthTone, isQoderConnectKind, isTraeConnectKind, isZCodeConnectKind, providerConnectKind, retrySecondsLabel, useNowTick } from '../lib';
-import { BadgeTone, ChatGPTOAuthUsageReport, ChatGPTResetCredit, ClaudeOAuthUsageBucket, ClaudeOAuthUsageReport, CursorBridgeRuntime, CursorOAuthUsageReport, DeepSeekBalanceReport, Provider, WorkBuddyUsage, ZhipuUsageBucket, ZhipuUsageReport } from '../types';
-import { SubscriptionUsagePanel } from './subscription';
+import {
+    API_BASE,
+    chatgptPlanLabel,
+    cursorBridgeStatusLabel,
+    cursorBridgeTone,
+    flowBadgeTone,
+    healthStatusLabel,
+    healthTone,
+    isQoderConnectKind,
+    isTraeConnectKind,
+    isZCodeConnectKind,
+    OAUTH_USAGE_POLL_MS,
+    OAUTH_USAGE_STORAGE_PREFIX,
+    providerConnectKind,
+    retrySecondsLabel,
+    useNowTick
+} from '../lib';
+import {
+    BadgeTone,
+    ChatGPTOAuthUsageReport,
+    ChatGPTResetCredit,
+    ClaudeOAuthUsageBucket,
+    ClaudeOAuthUsageReport,
+    CursorBridgeRuntime,
+    CursorOAuthUsageReport,
+    DeepSeekBalanceReport,
+    Provider,
+    WorkBuddyUsage,
+    ZhipuUsageBucket,
+    ZhipuUsageReport
+} from '../types';
+import {SubscriptionUsagePanel} from './subscription';
+import {Badge, BrandIcon, MoreMenu} from './ui';
 
 /** 最早到期的重置卡时间；无效时间为空串。 */
 function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
@@ -14,7 +44,7 @@ function resetCreditEarliestExpiry(credits: ChatGPTResetCredit[]): string {
   }
   return earliest;
 }
-import { Badge, BrandIcon, MoreMenu } from './ui';
+
 export function RouteCard({ active, name, tone, status, meta, flow, onClick, onTest, onEdit, onClone, onDelete }: { active?: boolean; name: string; tone: BadgeTone; status: string; meta: string; flow: string[]; onClick: () => void; onTest: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
   return (
     <div className={`route-card clickable ${active ? 'active' : ''}`} onClick={onClick} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') onClick(); }}>
