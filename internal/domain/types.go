@@ -243,6 +243,11 @@ type Provider struct {
 	// While disabled, normal users cannot see, bind, or send traffic through
 	// this provider; admins keep full access.
 	Disabled bool `json:"disabled,omitempty"`
+	// RTKCompress enables gateway-side compression of tool results (command
+	// output) before forwarding. It is toggled through the dedicated
+	// POST /__providers/{id}/rtk endpoint so partial provider patches cannot
+	// reset it. Requires the rtk CLI on the gateway host.
+	RTKCompress bool `json:"rtkCompress,omitempty"`
 	// Deleted marks a provider as soft-deleted (see Router.DeleteProvider).
 	// Soft-deleted providers are hidden from normal listings/routing and can't
 	// be bound to new routes or API keys, but their configuration/secrets are

@@ -367,6 +367,9 @@ export type Provider = {
   // 管理员禁用开关：禁用后普通用户不可见、不可绑定、请求会被拒绝；
   // 新建 Provider 默认启用（字段缺省 = 启用）。
   disabled?: boolean;
+  // RTK 工具输出压缩开关（管理员，通过 POST /__providers/{id}/rtk 单独切换）：
+  // 开启后网关转发前用 rtk pipe 过滤 tool_result 里的命令输出。
+  rtkCompress?: boolean;
   // 自助注册（内网穿透场景）：owner/admin 生成一个 Provider 专属令牌后，
   // 用户自己的脚本可用该令牌调用 PATCH /__providers/{id}/self-register
   // 更新 baseUrl/apiKeySource，无需登录控制台。原始令牌只在生成那一刻返回，
@@ -745,6 +748,40 @@ export type RequestStatsSnapshot = {
   daily?: DailyRequestPoint[];
   status?: StatusBucketStats[];
   hourly?: HourlyBucketStats[];
+};
+
+export type RTKStatsDailyPoint = {
+  date: string;
+  commands: number;
+  originalTokens: number;
+  compressedTokens: number;
+  savedTokens: number;
+};
+
+export type RTKProviderStats = {
+  providerId: string;
+  commands: number;
+  originalTokens: number;
+  compressedTokens: number;
+  savedTokens: number;
+  savedPercent: number;
+};
+
+/** 网关侧 RTK 压缩节省统计（按天/按 Provider 聚合，Token 为文本估算值）。 */
+export type RTKStatsResponse = {
+  available: boolean;
+  version?: string;
+  days: number;
+  from?: string;
+  commands: number;
+  originalBytes: number;
+  compressedBytes: number;
+  originalTokens: number;
+  compressedTokens: number;
+  savedTokens: number;
+  savedPercent: number;
+  daily: RTKStatsDailyPoint[];
+  byProvider?: RTKProviderStats[];
 };
 
 export type AppLogEntry = {

@@ -214,6 +214,9 @@ func (s *Store) migrate() error {
 		// subscription no longer needs a migration of its own. Secrets live
 		// here exactly as in the token columns; nothing reads it to the client.
 		{"oauth_json", "TEXT NOT NULL DEFAULT ''"},
+		// rtk_compress: provider-level switch for gateway-side tool-result
+		// compression (see domain.Provider.RTKCompress).
+		{"rtk_compress", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -225,6 +228,9 @@ func (s *Store) migrate() error {
 	}
 	if err := ensureUsageDailyTables(tx); err != nil {
 		return fmt.Errorf("migrate usage_daily: %w", err)
+	}
+	if err := ensureRTKDailyTable(tx); err != nil {
+		return fmt.Errorf("migrate rtk_daily: %w", err)
 	}
 	if err := ensureAlertsTable(tx); err != nil {
 		return fmt.Errorf("migrate alerts: %w", err)
@@ -542,6 +548,10 @@ func (s *Store) Save(state domain.GatewayState) error {
 		if provider.Disabled {
 			disabled = 1
 		}
+		rtkCompress := 0
+		if provider.RTKCompress {
+			rtkCompress = 1
+		}
 		selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt := "", "", "", ""
 		if provider.SelfRegistration != nil {
 			selfRegTokenHash = provider.SelfRegistration.TokenHash
@@ -555,14 +565,14 @@ func (s *Store) Save(state domain.GatewayState) error {
 		}
 		if _, err := tx.Exec(`INSERT INTO providers
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
-			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
+			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
-			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled,
+			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled, rtkCompress,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
 			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain, authJSON); err != nil {
 			return err
@@ -666,7 +676,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 
 func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
-		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled,
+		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json
 		FROM providers ORDER BY position, id`)
@@ -679,14 +689,14 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var protocol string
 		var accessToken, refreshToken, expiresAt, scope, accountLabel string
 		var userID, authDomain string
-		var disabled int
+		var disabled, rtkCompress int
 		var selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt string
 		var deleted int
 		var deletedAt string
 		var codingPlanProvider, teamOrganizationID, teamProjectID string
 		var authJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
-			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled,
+			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled, &rtkCompress,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
 			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain, &authJSON); err != nil {
 			_ = rows.Close()
@@ -694,6 +704,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		}
 		p.Protocol = domain.Protocol(protocol)
 		p.Disabled = disabled != 0
+		p.RTKCompress = rtkCompress != 0
 		p.Deleted = deleted != 0
 		p.DeletedAt = deletedAt
 		p.CodingPlanProvider = codingPlanProvider

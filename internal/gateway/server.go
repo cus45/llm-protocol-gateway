@@ -65,6 +65,10 @@ type UsageDailyStore interface {
 	monitor.UsageDailyStore
 }
 
+type RTKStatsStore interface {
+	monitor.RTKStatsStore
+}
+
 type Server struct {
 	router                  *Router
 	logs                    *monitor.Store
@@ -75,6 +79,8 @@ type Server struct {
 	requestLogStore         RequestLogStore
 	requestLogBatcher       *requestLogBatcher
 	usageDailyStore         UsageDailyStore
+	rtkStatsStore           RTKStatsStore
+	rtk                     *rtkCompressor
 	alertStore              AlertStore
 	scheduledTaskStore      ScheduledTaskStore
 	tunnels                 *tunnel.Manager
@@ -155,6 +161,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		qoderSignIns:            newQoderSignInStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
+		rtk:                     newRTKCompressor(),
 		requestLogRetentionDays: 7,
 	}
 	if days := router.State().RequestLogRetentionDays; days > 0 {
@@ -182,6 +189,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		if uds, ok := stateSaver[0].(UsageDailyStore); ok {
 			server.usageDailyStore = uds
 			logs.SetUsageDailyStore(uds)
+		}
+		if rss, ok := stateSaver[0].(RTKStatsStore); ok {
+			server.rtkStatsStore = rss
 		}
 		if as, ok := stateSaver[0].(AlertStore); ok {
 			server.alertStore = as
@@ -267,6 +277,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__settings/paths", s.handleSettingsPaths)
 	mux.HandleFunc("GET /__logs", s.handleLogs)
 	mux.HandleFunc("GET /__request-stats", s.handleRequestStats)
+	mux.HandleFunc("GET /__rtk/stats", s.handleRTKStats)
 	mux.HandleFunc("GET /__app/logs", s.handleAppLogs)
 	// UI 诊断日志：浏览器端关键事件上报（见 ui_log.go 的背景说明）。
 	mux.HandleFunc("POST /__ui-log", s.handleUILog)
@@ -305,6 +316,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__providers/import", s.handleImportProviders)
 	mux.HandleFunc("POST /__providers/{id}/test", s.handleTestProvider)
 	mux.HandleFunc("POST /__providers/{id}/enabled", s.handleSetProviderEnabled)
+	mux.HandleFunc("POST /__providers/{id}/rtk", s.handleSetProviderRTK)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token", s.handleGenerateProviderSelfRegistrationToken)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token/revoke", s.handleRevokeProviderSelfRegistration)
 	mux.HandleFunc("PATCH /__providers/{id}/self-register", s.handleProviderSelfRegister)
@@ -2017,6 +2029,14 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		// Normal users own the providers they create (including clones);
 		// OAuth connect/disconnect on owned providers is allowed too.
 		provider.OwnerUserID = identity.UserID
+		// The RTK switch is an admin-only, host-wide capability.
+		provider.RTKCompress = false
+	}
+	if provider.RTKCompress {
+		if available, _ := s.rtk.status(); !available {
+			writeOpenAIError(w, http.StatusConflict, "rtk CLI not found on the gateway host; install rtk or set GATEWAY_RTK_PATH, then retry")
+			return
+		}
 	}
 	created, err := s.router.AddProvider(provider)
 	if err != nil {

@@ -83,7 +83,7 @@ func (s *Server) handleWorkBuddyOAuthDisconnect(w http.ResponseWriter, r *http.R
 // leave the server; only the plan name and the used/limit numbers do.
 func (s *Server) handleWorkBuddyUsage(w http.ResponseWriter, r *http.Request) {
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderAccessForUser(w, r, providerID) {
 		return
 	}
 	provider, err := s.router.ProviderByID(providerID)

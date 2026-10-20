@@ -209,6 +209,32 @@ curl -s http://127.0.0.1:18093/__health
 - 同一端口只允许一个实例：重复启动会 fail-fast 退出（日志提示 `cannot bind gateway listen address`），
   不会出现两个实例抢隧道的情况。
 
+### 可选：RTK 工具输出压缩
+
+Provider 菜单里的「RTK 压缩」会在转发前调用 [rtk](https://github.com/rtk-ai/rtk) 过滤
+`tool_result` 里的命令输出（git status/diff、go test、grep 等）。`deploy/deploy-linux.sh`
+默认检测服务器上的 `rtk`，缺失时用官方安装脚本装到 `/usr/local/bin`（SHA-256 校验）：
+
+```bash
+./deploy/deploy-linux.sh                      # 缺失时自动安装最新版
+RTK_VERSION=v0.50.0 ./deploy/deploy-linux.sh  # 安装/升级到指定版本
+INSTALL_RTK=always ./deploy/deploy-linux.sh   # 每次部署都升级
+INSTALL_RTK=never ./deploy/deploy-linux.sh    # 跳过，不碰服务器上的 rtk
+```
+
+手动安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
+  | sudo RTK_INSTALL_DIR=/usr/local/bin sh
+rtk --version
+```
+
+`/usr/local/bin` 在 systemd 默认 PATH 里，上面的 unit 不用改；如果 unit 自定义了
+`Environment=PATH=`，补一行 `Environment=GATEWAY_RTK_PATH=/usr/local/bin/rtk`。
+装好后在 Provider 菜单开启「RTK 压缩」，网关会在 30 秒内自动探测到 rtk，无需重启；
+用量统计页的「RTK 节省」卡片会显示每日节省，压缩失败或超时会自动透传原文。
+
 ---
 
 ## 8. 防火墙

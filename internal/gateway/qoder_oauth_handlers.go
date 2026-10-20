@@ -65,7 +65,7 @@ func (s *Server) handleQoderOAuthStatus(w http.ResponseWriter, r *http.Request) 
 // stays here.
 func (s *Server) handleQoderUsage(w http.ResponseWriter, r *http.Request) {
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderAccessForUser(w, r, providerID) {
 		return
 	}
 	provider, err := s.router.ProviderByID(providerID)

@@ -306,6 +306,11 @@ func (s *Store) ClearUsageDaily() error {
 	if _, err := s.db.Exec(`DELETE FROM usage_daily_buckets`); err != nil {
 		return err
 	}
+	// RTK savings are not reconstructible from request logs, but a full usage
+	// reset should still clear them so the dashboard starts from a clean slate.
+	if _, err := s.db.Exec(`DELETE FROM rtk_daily_buckets`); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, usageLastRequestSettingKey)
 	return err
 }

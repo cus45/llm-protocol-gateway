@@ -8,6 +8,7 @@ import {
     LogTimingWaterfall,
     MachineMetric,
     Metric,
+    RTKSavingsChart,
     UsageBarChart,
     UsageCacheHitRate,
     UsageComboTrendChart,
@@ -192,6 +193,7 @@ import {
     RequestStatsSnapshot,
     Route,
     RouteTestResult,
+    RTKStatsResponse,
     SelfcheckCaseResult,
     SelfcheckJobStatus,
     SelfcheckToolInfo,
@@ -300,6 +302,9 @@ function App() {
   }, [logs, logsKeyword]);
   const [selfcheckCaseDetail, setSelfcheckCaseDetail] = useState<SelfcheckCaseResult | null>(null);
   const [requestStats, setRequestStats] = useState<RequestStatsSnapshot | null>(null);
+  const [rtkStats, setRtkStats] = useState<RTKStatsResponse | null>(null);
+  // RTK 统计有自己独立的区间（7/30/90/全部），不跟随用量页的日历区间。
+  const [rtkStatsDays, setRtkStatsDays] = useState(30);
   const [monthlyDaily, setMonthlyDaily] = useState<DailyRequestPoint[]>([]);
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
   const [logLevel, setLogLevel] = useState('info');
@@ -1054,6 +1059,13 @@ function App() {
     }
     void refreshMonthlyDaily();
   }, [activeNav]);
+
+  // RTK 节省统计：进入用量页或切换 7/30/90/全部 时拉取。接口仅管理员可用，
+  // 普通用户不会渲染这张卡，403 直接忽略。
+  useEffect(() => {
+    if (activeNav !== 'usage-stats') return;
+    void refreshRTKStats();
+  }, [activeNav, rtkStatsDays]);
 
   useEffect(() => {
     if (activeNav !== 'traffic-tokens') return;
@@ -1889,6 +1901,17 @@ function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = normalizeRequestStats(await response.json() as RequestStatsSnapshot | LegacyRequestStatsSnapshot);
       setMonthlyDaily(data?.daily || []);
+    } catch {
+      // Keep UI usable when backend is down.
+    }
+  }
+
+  /** 拉取网关侧 RTK 压缩节省统计；days=0 表示全部历史。 */
+  async function refreshRTKStats(days = rtkStatsDays) {
+    try {
+      const response = await fetch(`${API_BASE}/__rtk/stats?days=${days}`, { credentials: 'same-origin' });
+      if (!response.ok) return;
+      setRtkStats(await response.json() as RTKStatsResponse);
     } catch {
       // Keep UI usable when backend is down.
     }
@@ -3258,6 +3281,29 @@ function App() {
       await refreshState(false);
     } catch (error) {
       showToast(`切换 Provider 状态失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // 管理员单独切换 Provider 的 RTK 工具输出压缩。走专用接口而不是 Provider
+  // 全量保存：后者是增量 PATCH，bool 的零值分不清「没传」和「关掉」。
+  async function toggleProviderRTK(provider: Provider) {
+    const enabling = !provider.rtkCompress;
+    setSaving(true);
+    try {
+      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(provider.id)}/rtk`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabling }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      showToast(enabling ? `已开启 RTK 工具输出压缩：${provider.name}` : `已关闭 RTK 工具输出压缩：${provider.name}`);
+      await refreshState(false);
+      if (enabling) void refreshRTKStats();
+    } catch (error) {
+      showToast(`切换 RTK 压缩失败：${String(error)}`);
     } finally {
       setSaving(false);
     }
@@ -4813,6 +4859,7 @@ function App() {
                         selectable={!isNormalUser}
                         providerDisabled={!!provider.disabled}
                         onToggleEnabled={!isNormalUser ? () => void toggleProviderEnabled(provider) : undefined}
+                        onToggleRTK={!isNormalUser ? () => void toggleProviderRTK(provider) : undefined}
                         subtitle={(provider.authType === 'claude_oauth' && provider.claudeOAuth?.accountLabel)
                           || (provider.authType === 'chatgpt_oauth' && chatgptAccountLabelFriendly(provider.chatgptOAuth?.accountLabel))
                           || (isQoderConnectKind(provider.authType) && provider.qoderPat?.accountLabel)
@@ -5174,6 +5221,78 @@ function App() {
                         note={`月度算力 ${formatTokenCount((usageMonth?.total.inputTokens ?? 0) + (usageMonth?.total.outputTokens ?? 0))} · ${usageMonth?.period || '本月'}`}
                       />
                     </div>
+
+                    {/* RTK 工具输出压缩节省：独立区间（7/30/90/全部），管理员可见。 */}
+                    {!isNormalUser && (
+                      <div className="usage-chart-card rtk-savings-card">
+                        <div className="usage-section-title-row">
+                          <div>
+                            <div className="usage-section-title">
+                              RTK 工具输出压缩节省
+                              <span className={`rtk-version-pill${rtkStats?.available ? '' : ' offline'}`}>
+                                {rtkStats?.available ? (rtkStats.version || 'rtk') : 'rtk 未安装'}
+                              </span>
+                            </div>
+                            <div className="usage-section-subtitle">
+                              {rtkStats && rtkStats.commands > 0
+                                ? `${rtkStats.commands.toLocaleString('zh-CN')} 条命令共节省 ${formatTokenCount(rtkStats.savedTokens)} token，平均省 ${rtkStats.savedPercent.toFixed(0)}%（文本估算）`
+                                : '统计网关实际转发时压缩过的命令输出；在 Provider 上开启 RTK 后开始累计。'}
+                            </div>
+                          </div>
+                          <div className="usage-nav-tabs">
+                            {[{ days: 7, label: '7 天' }, { days: 30, label: '30 天' }, { days: 90, label: '90 天' }, { days: 0, label: '全部' }].map((range) => (
+                              <button
+                                key={range.days}
+                                type="button"
+                                className={`usage-nav-tab ${rtkStatsDays === range.days ? 'active' : ''}`}
+                                onClick={() => setRtkStatsDays(range.days)}
+                              >
+                                {range.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {!rtkStats?.available ? (
+                          <div className="rtk-unavailable">
+                            网关主机上未找到 rtk CLI。安装 rtk（或设置 <code>GATEWAY_RTK_PATH</code>）后即可在 Provider 上开启压缩；网关每 30 秒自动重新探测。
+                          </div>
+                        ) : null}
+
+                        <div className="rtk-savings-summary">
+                          <div className="rtk-savings-main">
+                            <div className="rtk-savings-value">{formatTokenCount(rtkStats?.savedTokens || 0)}</div>
+                            <div className="rtk-savings-label">已节省 Token · 平均省 {(rtkStats?.savedPercent || 0).toFixed(0)}%</div>
+                          </div>
+                          <div className="rtk-savings-facts">
+                            <div><span>原始输出</span><b>{formatTokenCount(rtkStats?.originalTokens || 0)}</b></div>
+                            <div><span>压缩后</span><b>{formatTokenCount(rtkStats?.compressedTokens || 0)}</b></div>
+                            <div><span>压缩命令</span><b>{(rtkStats?.commands || 0).toLocaleString('zh-CN')}</b></div>
+                            <div><span>字节节省</span><b>{formatBytes(Math.max(0, (rtkStats?.originalBytes || 0) - (rtkStats?.compressedBytes || 0)))}</b></div>
+                          </div>
+                        </div>
+
+                        <div className="rtk-savings-legend">
+                          <span><i className="rtk-legend-dot saved" /> 已节省</span>
+                          <span><i className="rtk-legend-dot forwarded" /> 仍发给模型</span>
+                          {rtkStats?.from ? <span className="rtk-savings-range">区间自 {rtkStats.from}</span> : null}
+                        </div>
+
+                        <RTKSavingsChart points={rtkStats?.daily || []} />
+
+                        {rtkStats?.byProvider?.length ? (
+                          <div className="rtk-provider-list">
+                            {rtkStats.byProvider.slice(0, 6).map((item) => (
+                              <span className="rtk-provider-chip" key={item.providerId}>
+                                {providerUsageLabel(item.providerId, state.providers || [])}
+                                <b>{formatTokenCount(item.savedTokens)}</b>
+                                <em>{item.savedPercent.toFixed(0)}%</em>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
 
                     {/* 维度与指标切换导航 + 报表导出 */}
                     <div className="usage-dimension-nav">
@@ -8320,6 +8439,28 @@ function App() {
               );
             })()}
           </details>
+          {editingProviderID && !isNormalUser && (() => {
+            const editingProvider = state.providers.find((item) => item.id === editingProviderID);
+            if (!editingProvider) return null;
+            return (
+              <div className="rtk-provider-panel">
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={!!editingProvider.rtkCompress}
+                    disabled={saving}
+                    onChange={() => void toggleProviderRTK(editingProvider)}
+                  />
+                  <span>RTK 工具输出压缩（本 Provider）</span>
+                </label>
+                <div className="hint-line">
+                  开启后网关在转发前用 rtk pipe 过滤 tool_result 里的命令输出（git status/diff、go test、grep 等），
+                  节省量会累计到用量页的「RTK 节省」卡片。需要网关主机已安装 rtk CLI（或设置
+                  GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。
+                </div>
+              </div>
+            );
+          })()}
           <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : isQoderConnectKind(providerDraft.authType) ? '创建并登录 Qoder 账号' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
         </Modal>
       )}

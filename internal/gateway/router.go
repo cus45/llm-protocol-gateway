@@ -363,6 +363,9 @@ func (r *Router) UpdateProvider(providerID string, patch domain.Provider) (domai
 		updated.CodingPlanProvider = strings.TrimSpace(patch.CodingPlanProvider)
 		updated.TeamOrganizationID = strings.TrimSpace(patch.TeamOrganizationID)
 		updated.TeamProjectID = strings.TrimSpace(patch.TeamProjectID)
+		// RTKCompress is intentionally not merged here: this is a partial
+		// update path (trae/zcode refresh only Models), and a bool cannot
+		// distinguish "false" from "not sent". The switch has its own endpoint.
 		normalizeProvider(&updated)
 		r.state.Providers[index] = updated
 		r.rebuildModelsLocked()
@@ -1671,6 +1674,22 @@ func (r *Router) SetProviderDisabled(providerID string, disabled bool) (domain.P
 			continue
 		}
 		r.state.Providers[index].Disabled = disabled
+		return r.state.Providers[index], nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderRTKCompress flips the provider-level RTK tool-result compression
+// switch. Like the disabled switch it has a dedicated endpoint so partial
+// provider updates (e.g. refreshing a model list) cannot reset it.
+func (r *Router) SetProviderRTKCompress(providerID string, enabled bool) (domain.Provider, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		r.state.Providers[index].RTKCompress = enabled
 		return r.state.Providers[index], nil
 	}
 	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)

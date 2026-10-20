@@ -1,18 +1,24 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import {
-  copyToClipboard,
-  formatBytes,
-  formatCompactCount,
-  formatEnCompact,
-  formatLocalISODate,
-  formatTokenCount,
-  formatTokenSummaryCompact,
-  normalizePromptTokenStats,
-  pickUsageXTickIndexes,
-  providerUsageLabel,
+    copyToClipboard,
+    formatBytes,
+    formatEnCompact,
+    formatLocalISODate,
+    formatTokenCount,
+    normalizePromptTokenStats,
+    pickUsageXTickIndexes,
+    providerUsageLabel,
 } from '../lib';
-import { DailyRequestPoint, HourlyBucketStats, LogEntry, Provider, RequestStatsSnapshot, StatusBucketStats } from '../types';
+import {
+    DailyRequestPoint,
+    HourlyBucketStats,
+    LogEntry,
+    Provider,
+    RequestStatsSnapshot,
+    RTKStatsDailyPoint,
+    StatusBucketStats
+} from '../types';
 
 /** 通用经典调色板（支持暗黑与浅色模式） */
 export const CHART_PALETTE = [
@@ -2136,6 +2142,64 @@ export function UsagePivotExplorer({
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/** =========================================================================
+ * 12. RTK 每日压缩节省堆叠柱 (RTKSavingsChart)
+ * ========================================================================= */
+export function RTKSavingsChart({ points }: { points: RTKStatsDailyPoint[] }) {
+  const maxTotal = Math.max(
+    1,
+    ...points.map((point) => Math.max(0, point.savedTokens) + Math.max(0, point.compressedTokens)),
+  );
+  const hasData = points.some((point) => point.originalTokens > 0);
+  if (!hasData) {
+    return (
+      <div className="empty-state compact">
+        暂无压缩记录：在 Provider 上开启 RTK 后，网关转发命令输出时会自动累计节省量。
+      </div>
+    );
+  }
+  const tickIndexes = pickUsageXTickIndexes(points.length);
+  return (
+    <div className="rtk-daily-chart">
+      <div className="rtk-daily-bars">
+        {points.map((point) => {
+          const saved = Math.max(0, point.savedTokens);
+          const forwarded = Math.max(0, point.compressedTokens);
+          const total = saved + forwarded;
+          const savedPercent = total > 0 ? Math.round((saved / total) * 100) : 0;
+          return (
+            <div
+              className="rtk-daily-column"
+              key={point.date}
+              title={`${point.date}\n压缩 ${point.commands} 条命令\n节省 ${formatTokenCount(saved)} / 原始 ${formatTokenCount(total)} token（${savedPercent}%）\n仍发给模型 ${formatTokenCount(forwarded)}`}
+            >
+              <div className="rtk-daily-stack">
+                <span className="rtk-daily-saved" style={{ height: `${(saved / maxTotal) * 100}%` }} />
+                <span className="rtk-daily-forwarded" style={{ height: `${(forwarded / maxTotal) * 100}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="rtk-daily-axis">
+        {tickIndexes.map((index) => (
+          <span
+            className="rtk-daily-axis-label"
+            key={points[index].date}
+            style={{
+              left: `${points.length <= 1 ? 50 : (index / (points.length - 1)) * 100}%`,
+              // 首尾标签贴边对齐，避免 translateX(-50%) 被图表边缘裁掉一半。
+              transform: points.length <= 1 ? 'translateX(-50%)' : index === 0 ? 'translateX(0)' : index === points.length - 1 ? 'translateX(-100%)' : undefined,
+            }}
+          >
+            {points[index].date.slice(5)}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

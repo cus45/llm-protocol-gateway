@@ -543,7 +543,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, keyMask, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; keyMask?: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void }) {
   // 订阅类（ZCode / Trae）由后端返回的凭证对象决定卡片显示什么：整张 Provider 传进来
   // 比再加六个布尔参数更省事，也不会漏掉以后新增的连接方式。
   const connectKind = provider ? providerConnectKind(provider) : 'api_key';
@@ -583,6 +583,11 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       </div>
       <div className="provider-badges">
         {providerDisabled ? <Badge tone="red">已禁用</Badge> : null}
+        {provider?.rtkCompress ? (
+          <span title="RTK 工具输出压缩已开启：转发前过滤 tool_result 里的命令输出">
+            <Badge tone="green">RTK</Badge>
+          </span>
+        ) : null}
         <Badge tone="slate">{protocol}</Badge>
         {showOAuthBadge ? (
           <Badge tone={oauthConnected ? 'green' : 'amber'}>{oauthBadgeLabel}{oauthConnected ? ' 已连接' : ' 未连接'}</Badge>
@@ -659,6 +664,7 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
               items={[
                 { label: '克隆', onClick: onClone },
                 ...(onToggleEnabled ? [{ label: providerDisabled ? '启用' : '禁用', onClick: onToggleEnabled }] : []),
+                ...(onToggleRTK ? [{ label: provider?.rtkCompress ? '关闭 RTK 压缩' : '开启 RTK 压缩', onClick: onToggleRTK }] : []),
                 { label: '删除', danger: true, onClick: onDelete },
               ]}
             />

@@ -159,7 +159,9 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			messageStarted = true
 		}
 
-		if rawToolCalls, ok := delta["tool_calls"].([]any); ok {
+		// WorkBuddy sends "tool_calls":[] on every delta; an empty array is not a
+		// tool call, and treating it as one swallowed the chunk's text.
+		if rawToolCalls, ok := delta["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
 			for _, item := range rawToolCalls {
 				call, ok := item.(map[string]any)
 				if !ok {

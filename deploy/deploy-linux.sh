@@ -20,6 +20,8 @@
 #   INSTALL_DIR   服务器安装目录          默认 /opt/llm-protocol-gateway
 #   SERVICE_NAME  systemd 服务名          默认 llm-protocol-gateway
 #   GOARCH_TARGET 目标架构                默认 amd64（arm64 服务器请改）
+#   INSTALL_RTK   rtk CLI 安装策略        默认 auto（缺失才装），可选 always/never
+#   RTK_VERSION   rtk 版本（如 v0.50.0）  默认空=安装最新版
 #
 # 示例：
 #   SERVER_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519 ./deploy/deploy-linux.sh
@@ -37,6 +39,10 @@ DATA_DIR="${DATA_DIR:-/var/lib/llm-protocol-gateway}"
 SERVICE_NAME="${SERVICE_NAME:-llm-protocol-gateway}"
 GOARCH_TARGET="${GOARCH_TARGET:-amd64}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-5}"   # 服务器上保留的历史版本份数
+# RTK 是可选依赖：Provider 开启「RTK 压缩」时才用得到。auto 只在缺失时安装，
+# always 每次部署都升级到最新/指定版本，never 完全不碰服务器上的 rtk。
+INSTALL_RTK="${INSTALL_RTK:-auto}"
+RTK_VERSION="${RTK_VERSION:-}"
 
 SKIP_WEB=0
 SKIP_GO=0
@@ -86,6 +92,15 @@ if [[ "$MODE" == "deploy" ]]; then
   [[ "$SKIP_WEB" == "1" ]] || command -v npm >/dev/null || die "缺少 npm 命令（或用 --skip-web）"
 fi
 
+case "$INSTALL_RTK" in
+  auto|always|never) ;;
+  *) die "INSTALL_RTK 只能是 auto / always / never（当前: $INSTALL_RTK）" ;;
+esac
+# 版本号会拼进远程 shell 命令，先挡掉可能的注入字符。
+if [[ -n "$RTK_VERSION" && ! "$RTK_VERSION" =~ ^v?[0-9][0-9A-Za-z._-]*$ ]]; then
+  die "RTK_VERSION 格式不合法: $RTK_VERSION（示例: v0.50.0）"
+fi
+
 info "目标: ${REMOTE}:${SSH_PORT}  目录: ${INSTALL_DIR}  服务: ${SERVICE_NAME}"
 rsh "echo ok" >/dev/null 2>&1 || die "SSH 连接失败，请检查 ${SSH_KEY} 与服务器状态"
 ok "SSH 连接正常"
@@ -102,6 +117,8 @@ if [[ "$MODE" == "status" ]]; then
     ls -la ${INSTALL_DIR}/bin/gateway 2>/dev/null || true;
     echo '--- 备份 ---';
     ls -1 ${INSTALL_DIR}/bin/gateway.bak-* 2>/dev/null | tail -5 || echo '(无备份)';
+    echo '--- RTK ---';
+    command -v rtk >/dev/null 2>&1 && rtk --version || echo '(未安装)';
     echo '--- 健康检查 ---';
     curl -s --max-time 5 http://127.0.0.1:18093/__health || echo '(无响应)';
     echo;
@@ -214,7 +231,7 @@ scp "${SCP_OPTS[@]}" "$PKG" "${REMOTE}:${REMOTE_TMP}"
 ok "上传完成"
 
 # ── 5. 服务器部署 ──
-step "5. 服务器部署（备份 → 替换 → 重启）"
+step "5. 服务器部署（备份 → 替换 → 安装 rtk → 重启）"
 rsh "
   set -e
   TS=\$(date +%F-%H%M%S)
@@ -266,6 +283,27 @@ rsh "
   fi
 
   chown -R root:root ${INSTALL_DIR}
+
+  # RTK 工具输出压缩依赖（可选）。装到 /usr/local/bin：systemd 默认 PATH 能命中，
+  # 网关的候选路径探测也会找到；安装失败只告警，不能让整次部署回滚。
+  if [ '${INSTALL_RTK}' = 'never' ]; then
+    echo '跳过 rtk 安装（INSTALL_RTK=never）'
+  elif command -v rtk >/dev/null 2>&1 && [ '${INSTALL_RTK}' != 'always' ]; then
+    echo \"rtk 已安装: \$(rtk --version)\"
+  elif ! command -v curl >/dev/null 2>&1; then
+    echo '警告: 服务器没有 curl，无法自动安装 rtk；可手动安装或设 INSTALL_RTK=never'
+  else
+    RTK_SH=/tmp/rtk-install-\$\$.sh
+    echo '安装 rtk CLI ...'
+    if ! curl -fsSL -o \$RTK_SH https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh; then
+      echo '警告: rtk 安装脚本下载失败，Provider 的 RTK 压缩暂不可用（其余功能不受影响）'
+    elif RTK_INSTALL_DIR=/usr/local/bin ${RTK_VERSION:+RTK_VERSION=$RTK_VERSION} sh \$RTK_SH; then
+      echo \"rtk 安装完成: \$(/usr/local/bin/rtk --version)\"
+    else
+      echo '警告: rtk 安装失败，Provider 的 RTK 压缩暂不可用（其余功能不受影响）'
+    fi
+    rm -f \$RTK_SH
+  fi
 
   # 重启服务
   systemctl restart ${SERVICE_NAME}

@@ -666,6 +666,19 @@ func (s *Server) executeProtocolFlow(
 		}
 	}
 
+	// Provider-level RTK compression runs on the client-format request, before
+	// both pass-through marshaling and protocol conversion. The helper returns a
+	// new top-level map and only copies the message path it changes, so the
+	// failover loop's shallow attempt copies never leak compressed content into
+	// another provider's attempt.
+	if provider.RTKCompress && s.rtk != nil {
+		compressedReq, rtkStats := s.rtk.compressRequest(req, clientProtocol)
+		if rtkStats.Commands > 0 {
+			req = compressedReq
+			s.recordRTKStats(provider.ID, rtkStats)
+		}
+	}
+
 	if decision.Action == "pass_through" {
 		body, err := json.Marshal(req)
 		if err != nil {

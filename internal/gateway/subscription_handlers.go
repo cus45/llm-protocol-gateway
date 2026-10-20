@@ -109,7 +109,7 @@ func (s *Server) setZCodeDisconnected(w http.ResponseWriter, r *http.Request, di
 // business token never leave the server; the plan name and the used shares do.
 func (s *Server) handleZCodeUsage(w http.ResponseWriter, r *http.Request) {
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderAccessForUser(w, r, providerID) {
 		return
 	}
 	provider, err := s.router.ProviderByID(providerID)
@@ -223,7 +223,7 @@ func (s *Server) setTraeDisconnected(w http.ResponseWriter, r *http.Request, dis
 // only the plan name and the used/limit numbers go out.
 func (s *Server) handleTraeUsage(w http.ResponseWriter, r *http.Request) {
 	providerID := r.PathValue("id")
-	if !s.requireProviderOwnerForUser(w, r, providerID) {
+	if !s.requireProviderAccessForUser(w, r, providerID) {
 		return
 	}
 	provider, err := s.router.ProviderByID(providerID)
