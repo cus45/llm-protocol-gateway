@@ -210,7 +210,7 @@ export function UsageDonutChart({
 }: {
   title: string;
   subtitle?: string;
-  items: Array<{ label: string; value: number; color?: string; hint?: string }>;
+  items: Array<{ label: string; value: number; color?: string; hint?: string; sub?: string }>;
   formatValue?: (val: number) => string;
   totalLabel?: string;
   totalOverride?: number;
@@ -282,7 +282,7 @@ export function UsageDonutChart({
             <svg viewBox="0 0 220 220" className="donut-svg" role="img" aria-label={title}>
               {slices.map((sl) => (
                 <path
-                  key={sl.item.label}
+                  key={sl.idx}
                   d={sl.path}
                   fill={sl.color}
                   opacity={activeSlice && !sl.isHovered && !sl.isSelected ? 0.45 : 1}
@@ -295,7 +295,7 @@ export function UsageDonutChart({
                   onMouseLeave={() => setHoveredIdx(null)}
                   onClick={() => onSelect?.(sl.item.label)}
                 >
-                  <title>{`${sl.item.label}: ${formatValue ? formatValue(sl.item.value) : sl.item.value} (${sl.pctStr})`}</title>
+                  <title>{`${sl.item.sub ? `${sl.item.label} · ${sl.item.sub}` : sl.item.label}: ${formatValue ? formatValue(sl.item.value) : sl.item.value} (${sl.pctStr})`}</title>
                 </path>
               ))}
 
@@ -334,7 +334,7 @@ export function UsageDonutChart({
           <div className="donut-legend-list">
             {slices.map((sl) => (
               <div
-                key={sl.item.label}
+                key={sl.idx}
                 className={`donut-legend-row${sl.isSelected ? ' selected' : ''}${sl.isHovered ? ' hovered' : ''}`}
                 style={{ cursor: onSelect ? 'pointer' : 'default' }}
                 onMouseEnter={() => setHoveredIdx(sl.idx)}
@@ -342,8 +342,12 @@ export function UsageDonutChart({
                 onClick={() => onSelect?.(sl.item.label)}
               >
                 <span className="donut-legend-dot" style={{ backgroundColor: sl.color }} />
-                <span className="donut-legend-label" title={sl.item.label}>
-                  {sl.item.label}
+                <span
+                  className={`donut-legend-label${sl.item.sub ? ' stacked' : ''}`}
+                  title={sl.item.sub ? `${sl.item.label} · ${sl.item.sub}` : sl.item.label}
+                >
+                  <span className="donut-legend-name">{sl.item.label}</span>
+                  {sl.item.sub ? <span className="donut-legend-sub">{sl.item.sub}</span> : null}
                 </span>
                 <span className="donut-legend-pct-badge" style={{ color: sl.color }}>
                   {sl.pctStr}

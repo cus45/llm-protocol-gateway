@@ -5057,6 +5057,10 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
+	// The client's own tools[] decides how its tool names are spelled on the way
+	// back: a model that answers "bash" for a tool the client registered as
+	// "Bash" would otherwise reach the client as a tool it does not know.
+	declaredTools := claudeDeclaredToolNames(claudeReq["tools"])
 	stream, _ := openAIReq["stream"].(bool)
 	// These subscriptions only answer as a stream: WorkBuddy refuses a non-stream
 	// chat, Trae and Qoder are their agent's own event streams, and OpenCode
@@ -5151,7 +5155,7 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		// Chat→Claude 直写流（未走 finishConvertedProxy），同样需要心跳防反代空闲断流。
 		stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
 		defer stopHeartbeat()
-		usage, streamErr := streamOpenAIChatToClaudeEvents(hw, response.Body, model)
+		usage, streamErr := streamOpenAIChatToClaudeEvents(hw, response.Body, model, declaredTools)
 		return response.StatusCode, usage, nil, streamErr
 	}
 
@@ -5175,7 +5179,7 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		return response.StatusCode, TokenUsage{}, claudeBody, writeErr
 	}
 
-	claudeBody, usage, err := openAIChatResponseToClaude(responseBody, model)
+	claudeBody, usage, err := openAIChatResponseToClaude(responseBody, model, declaredTools)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
@@ -5388,6 +5392,16 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 	if response.StatusCode == http.StatusBadRequest {
 		if peeked, ok := s.maybeRectifyClaudeThinking(r, provider, body, response); ok {
 			response = peeked
+		}
+	}
+
+	// OAuth 伪装会把第三方小写/snake_case 工具名改成 Claude Code 的 TitleCase
+	// （bash → Bash）。客户端只认自己声明的名字，所以这里必须把它们改回去，
+	// 否则客户端会答 "No such tool available: Bash"。Claude Code 自己的工具名
+	// 本来就是 TitleCase 或 mcp__ 前缀，别名表为空，这段不产生任何开销以外的行为。
+	if provider.AuthType == domain.AuthTypeClaudeOAuth {
+		if aliases := claudeRequestToolAliases(body); len(aliases) > 0 {
+			wrapToolNameRestore(response, aliases, renameClaudeToolUseNamesJSON, renameClaudeToolUseNamesLine)
 		}
 	}
 

@@ -22,14 +22,13 @@ import {
     modelAlias,
     protocolFromLabel,
     protocolLabel,
-    providerOptionLabel,
     QuotaWindowOptions,
     scheduleModeLabel,
     ScheduleModeOptions,
     thinkingDepthSelectOptions,
     usageStatsForKey
 } from '../lib';
-import {SearchableModelSelect} from './selects';
+import {IconSelect, SearchableModelSelect} from './selects';
 import {
     APIKey,
     ConsoleUser,
@@ -43,6 +42,7 @@ import {
 } from '../types';
 import {Badge, CopyButton, InfoTip, Modal, Switch} from './ui';
 import {ProviderLabel} from './provider_label';
+import {providerSelectOptions} from './provider_select';
 
 /**
  * 密钥面板可以单独 PATCH 的字段。这里只有一处定义：以前三个地方各抄一遍，
@@ -383,28 +383,15 @@ export function ApiKeyDetailPanel({
                 disabled={saving}
                 onSave={(name) => onUpdateField(keyItem, 'name', name)}
               />
-              <div className="field">
-                <label>输入 Provider（首选）</label>
-                <select
-                  value={binding.providerId}
-                  disabled={saving}
-                  onChange={(event) => {
-                    void onUpdateBinding(keyItem, event.target.value, binding.outputProtocol);
-                  }}
-                >
-                  {providers.map((item) => <option key={item.id} value={item.id}>{providerOptionLabel(item)}</option>)}
-                </select>
-                {/* 原生 <option> 里放不进图标，就把署名列在下方：选完立刻能看到是哪个服务商、什么协议。
-                    账号名可能很长，单独一行，不跟标签抢宽度。 */}
-                <div className="binding-provider-hint">
-                  {routeProvider ? (
-                    <>
-                      <ProviderLabel provider={routeProvider} size={15} />
-                      <span className="binding-provider-protocol">输入协议：{protocolLabel(routeProvider.protocol)}</span>
-                    </>
-                  ) : <span>未绑定</span>}
-                </div>
-              </div>
+              <IconSelect
+                label="输入 Provider（首选）"
+                value={binding.providerId}
+                disabled={saving}
+                options={providerSelectOptions(providers)}
+                onChange={(providerId) => {
+                  void onUpdateBinding(keyItem, providerId, binding.outputProtocol);
+                }}
+              />
               {owners && onUpdateOwner ? (
                 <div className="field">
                   <label>所属用户</label>

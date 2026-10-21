@@ -167,7 +167,7 @@ func TestOpenAIChatResponseToClaudeMapsCacheUsage(t *testing.T) {
 		"choices":[{"index":0,"message":{"role":"assistant","content":"2"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":96,"prompt_cache_miss_tokens":4}
 	}`)
-	body, usage, err := openAIChatResponseToClaude(openAIResp, "deepseek-v4-flash")
+	body, usage, err := openAIChatResponseToClaude(openAIResp, "deepseek-v4-flash", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestOpenAIChatResponseToClaude(t *testing.T) {
 		"choices":[{"index":0,"message":{"role":"assistant","content":"2"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}
 	}`)
-	body, usage, err := openAIChatResponseToClaude(openAIResp, "deepseek-v4-flash")
+	body, usage, err := openAIChatResponseToClaude(openAIResp, "deepseek-v4-flash", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

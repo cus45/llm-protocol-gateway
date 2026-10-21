@@ -30,8 +30,9 @@ func writeClaudeSSE(w http.ResponseWriter, event string, payload any) error {
 }
 
 // streamOpenAIChatToClaudeEvents reads an OpenAI Chat Completions SSE stream and
-// writes an Anthropic Messages API SSE stream to w.
-func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, model string) (TokenUsage, error) {
+// writes an Anthropic Messages API SSE stream to w. declared is the request's
+// own tool list, used to put back a spelling the model changed the case of.
+func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, model string, declared map[string]struct{}) (TokenUsage, error) {
 	messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	resolvedModel := strings.TrimSpace(model)
 	messageStarted := false
@@ -177,7 +178,7 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 					toolBlock := map[string]any{
 						"type":  "tool_use",
 						"id":    stringValue(call["id"]),
-						"name":  stringValue(functionValue["name"]),
+						"name":  restoreDeclaredToolName(stringValue(functionValue["name"]), declared),
 						"input": map[string]any{},
 					}
 					if err := writeClaudeSSE(w, "content_block_start", map[string]any{

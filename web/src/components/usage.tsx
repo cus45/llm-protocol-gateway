@@ -9,6 +9,7 @@ import {
     formatTokenCount,
     normalizePromptTokenStats,
     providerUsageLabel,
+    providerUsageParts,
 } from '../lib';
 import {
     downloadCSV,
@@ -87,7 +88,7 @@ function exportUsage(stats: RequestStatsSnapshot, from: string, to: string) {
   downloadCSV(`gateway-usage-${from}-to-${to}.csv`, lines.map(row => row.map(csvCell).join(',')).join('\r\n'));
 }
 
-function RankBars({ title, subtitle, items, formatValue, toggle }: { title: string; subtitle: string; items: Array<{ label: string; value: number }>; formatValue?: (value: number) => string; toggle?: ReactNode }) {
+function RankBars({ title, subtitle, items, formatValue, toggle }: { title: string; subtitle: string; items: Array<{ label: string; value: number; sub?: string }>; formatValue?: (value: number) => string; toggle?: ReactNode }) {
   const max = Math.max(1, ...items.map(item => item.value));
   return <div className="usage-chart-card usage-rank-bars-card">
     <div className="usage-section-title-row">
@@ -97,7 +98,10 @@ function RankBars({ title, subtitle, items, formatValue, toggle }: { title: stri
     {items.length === 0 ? <div className="empty-state compact">当前区间暂无数据</div> : <div className="usage-bar-list">
       {items.map((item, index) => <div className="usage-bar-row" key={`${item.label}-${index}`}>
         <span className="usage-bar-rank">#{index + 1}</span>
-        <span className="usage-bar-label" title={item.label}>{item.label}</span>
+        <span className={`usage-bar-label${item.sub ? ' stacked' : ''}`} title={item.sub ? `${item.label} · ${item.sub}` : item.label}>
+          <span className="usage-bar-name">{item.label}</span>
+          {item.sub ? <span className="usage-bar-sub">{item.sub}</span> : null}
+        </span>
         <div className="usage-bar-track"><div className="usage-bar-fill" style={{ width: `${(item.value / max) * 100}%` }} /></div>
         <span className="usage-bar-value font-mono">{formatValue ? formatValue(item.value) : item.value.toLocaleString()}</span>
       </div>)}
@@ -163,7 +167,17 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
   const sparkCost = daily.map(d => d.costMicros || 0);
   const costMicros = total?.costMicros || 0;
   const pricedCount = total?.pricedCount || 0;
-  const providerItems = (range?.byProvider || []).map(p => ({ label: providerUsageLabel(p.providerId, providers), value: metricValue(p, metric) }));
+  // 环形图与排行都按「谁消耗的」这一层看：同一个服务商的多个登录账号是各自独立的
+  // Provider 记录，只读名字完全分不清，所以窄格子一律拆成 名称 / 账号 两行。
+  const providerItems = (range?.byProvider || []).map(p => ({
+    ...providerUsageParts(p.providerId, providers),
+    value: metricValue(p, metric),
+  }));
+  const accountItems = [...(range?.byProvider || [])]
+    .filter(p => metricValue(p, metric) > 0)
+    .sort((a, b) => metricValue(b, metric) - metricValue(a, metric))
+    .slice(0, 8)
+    .map(p => ({ ...providerUsageParts(p.providerId, providers), value: metricValue(p, metric) }));
   const protocolItems = (range?.byProtocol || []).map(p => ({ label: p.protocol, value: metricValue(p, metric) }));
   const activeModels = (range?.byModel || []).filter(m => m.requestCount > 0).length;
   const activeProviders = (range?.byProvider || []).filter(p => p.requestCount > 0).length;
@@ -214,16 +228,24 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
     </div>
     <div className="overview-rankings-row">
       <UsageModelLeaderboard title="核心模型用量排行" items={range?.byModel || []} metric={metric} models={models} providers={providers} />
-      <RankBars
-        title={rankTab === 'keys' ? 'API 密钥消耗排行' : '用户消耗排行'}
-        subtitle={`按${metricLabel(metric)} Top 8`}
-        items={rankTab === 'keys' ? keyItems : userItems}
-        formatValue={metricFormat(metric)}
-        toggle={<div className="usage-segments usage-rank-toggle">
-          <button type="button" className={rankTab === 'keys' ? 'active' : ''} onClick={() => setRankTab('keys')}>密钥</button>
-          {!isNormalUser && <button type="button" className={rankTab === 'users' ? 'active' : ''} onClick={() => setRankTab('users')}>用户</button>}
-        </div>}
-      />
+      <div className="usage-rank-stack">
+        <RankBars
+          title={rankTab === 'keys' ? 'API 密钥消耗排行' : '用户消耗排行'}
+          subtitle={`按${metricLabel(metric)} Top 8`}
+          items={rankTab === 'keys' ? keyItems : userItems}
+          formatValue={metricFormat(metric)}
+          toggle={<div className="usage-segments usage-rank-toggle">
+            <button type="button" className={rankTab === 'keys' ? 'active' : ''} onClick={() => setRankTab('keys')}>密钥</button>
+            {!isNormalUser && <button type="button" className={rankTab === 'users' ? 'active' : ''} onClick={() => setRankTab('users')}>用户</button>}
+          </div>}
+        />
+        <RankBars
+          title="账号消耗排行"
+          subtitle={`按${metricLabel(metric)} Top 8 · 同一服务商的多个账号分开计`}
+          items={accountItems}
+          formatValue={metricFormat(metric)}
+        />
+      </div>
     </div>
     {hasTrafficBytes && <div className="usage-charts-full">
       <UsageDailyTrafficLines title="按日业务流量（上行接收 vs 下行发送）" points={daily} />

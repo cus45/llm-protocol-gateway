@@ -227,7 +227,10 @@ func claudeRequestToOpenAIChat(claudeReq map[string]any, model string) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("claude request missing messages array")
 	}
-	convertedMessages, err := claudeMessagesToOpenAI(rawMessages)
+	// The request's own tools[] is the authority on how this client spells its
+	// tool names; the history's tool_use blocks must keep that spelling.
+	clientToolNames := claudeDeclaredToolNames(claudeReq["tools"])
+	convertedMessages, err := claudeMessagesToOpenAI(rawMessages, clientToolNames)
 	if err != nil {
 		return nil, err
 	}
@@ -336,8 +339,9 @@ func usageMapToClaudeUsage(usage TokenUsage, usageMap map[string]any) map[string
 }
 
 // openAIChatResponseToClaude converts an OpenAI Chat Completions JSON response
-// into an Anthropic Messages API response.
-func openAIChatResponseToClaude(openAIResp []byte, model string) ([]byte, TokenUsage, error) {
+// into an Anthropic Messages API response. declared is the request's own tool
+// list, used to put back a spelling the model changed the case of.
+func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[string]struct{}) ([]byte, TokenUsage, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(openAIResp, &payload); err != nil {
 		return nil, TokenUsage{}, err
@@ -358,6 +362,7 @@ func openAIChatResponseToClaude(openAIResp []byte, model string) ([]byte, TokenU
 	contentBlocks := []any{map[string]any{"type": "text", "text": ""}}
 	if message != nil {
 		contentBlocks = openAIAssistantMessageToClaudeResponseContent(message)
+		restoreClaudeToolUseNames(contentBlocks, declared)
 	}
 
 	stopReason := "end_turn"

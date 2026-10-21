@@ -430,7 +430,7 @@ func TestChatToClaudeStreamSurfacesBareErrorEvent(t *testing.T) {
 		`data: {"code":"invalid_model_error","message":"Unsupported model \"nope\"","type":"invalid_model_error"}` + "\n\n"
 
 	recorder := httptest.NewRecorder()
-	_, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(sse), "nope")
+	_, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(sse), "nope", nil)
 	if err == nil {
 		t.Fatal("expected an error for an error-event stream")
 	}

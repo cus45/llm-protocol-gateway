@@ -107,6 +107,11 @@ type claudeToResponsesDirectStreamState struct {
 	model      string
 	responseID string
 	toolCtx    *codexToolContext
+	// clientNames is what the Responses client registered its tools as. It is
+	// kept here rather than read off toolCtx at each use so a stream built
+	// without a tool context still names calls the way the client spelled them
+	// instead of falling back to the OAuth cloak's reverse map.
+	clientNames map[string]struct{}
 
 	seq             int
 	outputIndex     int
@@ -122,12 +127,13 @@ type claudeToResponsesDirectStreamState struct {
 func newClaudeToResponsesDirectStreamState(w http.ResponseWriter, model string, toolCtx *codexToolContext) *claudeToResponsesDirectStreamState {
 	gate := newVisibilityGatedSSEWriter(w)
 	return &claudeToResponsesDirectStreamState{
-		w:          gate,
-		visGate:    gate,
-		model:      model,
-		responseID: fmt.Sprintf("resp_%d", time.Now().UnixNano()),
-		toolCtx:    toolCtx,
-		blocks:     make(map[int]*claudeDirectBlockState),
+		w:           gate,
+		visGate:     gate,
+		model:       model,
+		responseID:  fmt.Sprintf("resp_%d", time.Now().UnixNano()),
+		toolCtx:     toolCtx,
+		clientNames: toolCtx.ClientToolNames(),
+		blocks:      make(map[int]*claudeDirectBlockState),
 	}
 }
 
@@ -258,7 +264,7 @@ func (s *claudeToResponsesDirectStreamState) handleContentBlockStart(event map[s
 			"id":      itemID,
 			"type":    "function_call",
 			"call_id": callID,
-			"name":    sanitizeResponsesToolName(flatName, nil),
+			"name":    sanitizeResponsesToolName(flatName, s.clientNames),
 			"status":  "in_progress",
 		}
 		respType := "function_call"
@@ -271,7 +277,7 @@ func (s *claudeToResponsesDirectStreamState) handleContentBlockStart(event map[s
 			// Keep item id stable for subsequent deltas/done events.
 			item["id"] = itemID
 		} else {
-			item["name"] = sanitizeResponsesToolName(flatName, nil)
+			item["name"] = sanitizeResponsesToolName(flatName, s.clientNames)
 		}
 		displayName := stringValue(item["name"])
 		if displayName == "" {

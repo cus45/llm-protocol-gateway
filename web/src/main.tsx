@@ -145,6 +145,7 @@ import {
 } from './components/panels';
 import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
+import {providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
 import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
@@ -211,6 +212,9 @@ import {
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
 
+// 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
+const ALL_PROVIDERS_VALUE = '__all_providers__';
+
 function App() {
   const [activeNav, setActiveNav] = useState<NavItemID>(() => navIDFromPath(window.location.pathname));
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredTheme());
@@ -228,6 +232,12 @@ function App() {
   const [logsApiKeyName, setLogsApiKeyName] = useState('');
   const [logsUsageTarget, setLogsUsageTarget] = useState<{ type: 'model' | 'apiKey'; value: string; label: string } | null>(null);
   const [logsProviderFilter, setLogsProviderFilter] = useState('');
+  // 日志筛选的 Provider 下拉：默认一项「全部 Provider」，其后的每一项都要能认人
+  // （图标 + 账号），否则一串同名 WorkBuddy 根本选不中想要的那个。
+  const trafficProviderFilterOptions = useMemo(
+    () => [{value: ALL_PROVIDERS_VALUE, label: '全部 Provider'}, ...providerSelectOptions(state.providers || [], {withProtocol: true})],
+    [state.providers],
+  );
   // 空字符串 = 全部；LOG_OWNER_FILTER_ADMIN = 管理员（无所属用户的旧密钥）；
   // 其余为具体用户 id。仅管理员可见/可用，与后端 ownedKeyIDsForOwnerFilter 对应。
   const [logsOwnerFilter, setLogsOwnerFilter] = useState('');
@@ -5894,18 +5904,19 @@ function App() {
                       </select>
                     </label>
 
-                    <label className="field">
+                    <div className="field">
                       <span>输入 Provider</span>
-                      <select
-                        value={logsProviderFilter}
-                        onChange={(e) => { setLogsPage(1); setLogsProviderFilter(e.target.value); }}
-                      >
-                        <option value="">全部 Provider</option>
-                        {(state.providers || []).map((provider) => (
-                          <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>
-                        ))}
-                      </select>
-                    </label>
+                      <div className="traffic-select">
+                        <IconSelect
+                          value={logsProviderFilter || ALL_PROVIDERS_VALUE}
+                          placeholder="全部 Provider"
+                          searchable={false}
+                          renderPortal={false}
+                          options={trafficProviderFilterOptions}
+                          onChange={(next) => { setLogsPage(1); setLogsProviderFilter(next === ALL_PROVIDERS_VALUE ? '' : next); }}
+                        />
+                      </div>
+                    </div>
 
                     {!isNormalUser && (
                       <label className="field">
@@ -7861,19 +7872,21 @@ function App() {
                   <span>首包超时</span>
                   <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
                   <div className="provider-knob-control">
-                    <input
-                      ref={providerFirstPacketRef}
-                      key={`first-packet-${editingProviderID}`}
-                      type="number"
-                      min={0}
-                      max={600}
-                      step={1}
-                      defaultValue={editingProvider.firstPacketTimeoutSec || ''}
-                      placeholder="不限制"
-                      disabled={saving}
-                      aria-label="首包超时（秒）"
-                    />
-                    <span className="provider-knob-unit">秒</span>
+                    <span className="knob-input">
+                      <input
+                        ref={providerFirstPacketRef}
+                        key={`first-packet-${editingProviderID}`}
+                        type="number"
+                        min={0}
+                        max={600}
+                        step={1}
+                        defaultValue={editingProvider.firstPacketTimeoutSec || ''}
+                        placeholder="不限制"
+                        disabled={saving}
+                        aria-label="首包超时（秒）"
+                      />
+                      <span className="knob-input-unit">秒</span>
+                    </span>
                     <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
                   </div>
                 </div>
@@ -7885,33 +7898,37 @@ function App() {
                   <div className="provider-knob-control">
                     <label className="provider-knob-field">
                       <span>上限</span>
-                      <input
-                        ref={providerConcurrencyRef}
-                        key={`concurrency-${editingProviderID}`}
-                        type="number"
-                        min={0}
-                        max={1000}
-                        step={1}
-                        defaultValue={editingProvider.maxConcurrentRequests || ''}
-                        placeholder="不限制"
-                        disabled={saving}
-                      />
-                      <span className="provider-knob-unit">个</span>
+                      <span className="knob-input">
+                        <input
+                          ref={providerConcurrencyRef}
+                          key={`concurrency-${editingProviderID}`}
+                          type="number"
+                          min={0}
+                          max={1000}
+                          step={1}
+                          defaultValue={editingProvider.maxConcurrentRequests || ''}
+                          placeholder="不限制"
+                          disabled={saving}
+                        />
+                        <span className="knob-input-unit">个</span>
+                      </span>
                     </label>
                     <label className="provider-knob-field">
                       <span>排队</span>
-                      <input
-                        ref={providerQueueWaitRef}
-                        key={`queue-wait-${editingProviderID}`}
-                        type="number"
-                        min={0}
-                        max={60}
-                        step={1}
-                        defaultValue={editingProvider.queueWaitSeconds || ''}
-                        placeholder="不排队"
-                        disabled={saving}
-                      />
-                      <span className="provider-knob-unit">秒</span>
+                      <span className="knob-input">
+                        <input
+                          ref={providerQueueWaitRef}
+                          key={`queue-wait-${editingProviderID}`}
+                          type="number"
+                          min={0}
+                          max={60}
+                          step={1}
+                          defaultValue={editingProvider.queueWaitSeconds || ''}
+                          placeholder="不排队"
+                          disabled={saving}
+                        />
+                        <span className="knob-input-unit">秒</span>
+                      </span>
                     </label>
                     <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
                   </div>
@@ -8045,14 +8062,12 @@ function App() {
         <Modal title={editingRouteID ? '编辑路由' : '创建路由'} description={editingRouteID ? '可临时切换输入 Provider 或输出协议，保存后立即生效。' : '路由只描述协议转发：自定义输入 Provider → 固定输出协议。模型与思考深度覆盖请在「API 密钥」页按密钥配置。'} onClose={() => { setRouteModalOpen(false); setEditingRouteID(''); }}>
           <div className="form-grid modal-form">
             <Field label="路由名称" value={routeDraft.name} onChange={(value) => setRouteDraft((current) => ({ ...current, name: value }))} />
-            <div className="field">
-              <label>输入 Provider</label>
-              <select value={routeDraft.providerId || state.providers[0]?.id || ''} onChange={(event) => setRouteDraft((current) => ({ ...current, providerId: event.target.value }))}>
-                {state.providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>
-                ))}
-              </select>
-            </div>
+            <IconSelect
+              label="输入 Provider"
+              value={routeDraft.providerId || state.providers[0]?.id || ''}
+              options={providerSelectOptions(state.providers)}
+              onChange={(value) => setRouteDraft((current) => ({ ...current, providerId: value }))}
+            />
             <SelectField label="输出协议" values={fixedOutputLabels} value={protocolLabel(routeDraft.outputProtocol)} onChange={(value) => setRouteDraft((current) => ({ ...current, outputProtocol: protocolFromLabel(value) }))} />
           </div>
           <div className="actions modal-actions"><button className="btn" onClick={() => { setRouteModalOpen(false); setEditingRouteID(''); }}>取消</button><button className="btn primary" disabled={saving || state.providers.length === 0} onClick={() => void createRoute()}>{saving ? '保存中...' : editingRouteID ? '保存修改' : '创建路由'}</button></div>
@@ -8064,18 +8079,13 @@ function App() {
           <div className="form-stack api-key-form">
             <div className="form-row">
               <Field label="名称" value={apiKeyDraft.name} onChange={(value) => setApiKeyDraft((current) => ({ ...current, name: value }))} />
-              <div className="field">
-                <div className="field-label-row">
-                  <label>输入 Provider</label>
-                  <InfoTip text="这条 Key 默认转发到的上游；请求落到它时，网关按「输出协议」决定透传还是转换。" />
-                </div>
-                <select
-                  value={apiKeyDraft.providerId}
-                  onChange={(event) => setApiKeyDraft((current) => ({ ...current, providerId: event.target.value, modelOverride: '' }))}
-                >
-                  {state.providers.map((provider) => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-                </select>
-              </div>
+              <IconSelect
+                label="输入 Provider"
+                hint="这条 Key 默认转发到的上游；请求落到它时，网关按「输出协议」决定透传还是转换。"
+                value={apiKeyDraft.providerId}
+                options={providerSelectOptions(state.providers)}
+                onChange={(value) => setApiKeyDraft((current) => ({ ...current, providerId: value, modelOverride: '' }))}
+              />
               <IconSelect
                 fullWidth
                 label="输出协议"

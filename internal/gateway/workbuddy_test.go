@@ -1223,3 +1223,27 @@ func TestWorkBuddyQuotaReadsCreditPackages(t *testing.T) {
 		t.Fatalf("used = %.2f%%, want ~13.3%%", window.Used)
 	}
 }
+
+// The account label is the only thing that tells two WorkBuddy sign-ins apart in
+// every picker, so it must stay unique — but it must not put a whole phone
+// number on screen either. A sign-in with no nickname falls back to the phone,
+// kept as 1815****4947; a nickname is left exactly as the account spells it.
+func TestWorkBuddyAccountLabelMasksThePhoneItFallsBackTo(t *testing.T) {
+	cases := []struct {
+		nickname, phone, uid string
+		want                 string
+	}{
+		{"郭庆", "181512344947", "uid-9", "郭庆"},
+		{"", "181512344947", "uid-9", "1815****4947"},
+		{"   ", "13900001111", "uid-9", "1390****1111"},
+		{"", "", "uid-9", "uid-9"},
+		{"", "12345", "uid-9", "12345"},
+		{"", "", "", "WorkBuddy"},
+	}
+	for _, item := range cases {
+		if got := workBuddyAccountLabel(item.nickname, item.phone, item.uid); got != item.want {
+			t.Errorf("workBuddyAccountLabel(%q, %q, %q) = %q, want %q",
+				item.nickname, item.phone, item.uid, got, item.want)
+		}
+	}
+}

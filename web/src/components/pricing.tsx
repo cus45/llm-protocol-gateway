@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import type {Model, ModelUSDPrice, Provider} from '../types';
 import {API_BASE, formatCostCoverage, providerUsageLabel} from '../lib';
+import {providerAccountFace} from './provider_select';
 import {Modal} from './ui';
 import './usage.css';
 
@@ -178,7 +179,7 @@ export function PriceTablePanel({ providers, models, coverage, onClose }: {
           <div className="field">
             <label>Provider</label>
             <select value={providerId} onChange={event => { setProviderId(event.target.value); setModelId('*'); }}>
-              {providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name || provider.id}</option>)}
+              {providers.map(provider => <option key={provider.id} value={provider.id}>{providerAccountFace(provider)}</option>)}
             </select>
           </div>
           <div className="field">

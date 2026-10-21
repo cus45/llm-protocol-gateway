@@ -746,28 +746,36 @@ func responsesToOpenAIChatResponse(responsesBody []byte, model string) ([]byte, 
 	}
 	assistantMessage := map[string]any{"role": "assistant", "content": text}
 	if outputItems, ok := payload["output"].([]any); ok {
+		// A Responses answer may hold several function_call items (parallel tool
+		// use). Chat expresses them as one tool_calls array; keeping only the
+		// first call dropped every other one, so the client never ran them and
+		// its next request carried a tool result for a call it never made.
+		calls := make([]any, 0, len(outputItems))
 		for _, item := range outputItems {
 			block, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
-			if stringValue(block["type"]) == "function_call" {
-				callID := sanitizeResponsesCallID(stringValue(block["call_id"]))
-				name := stringValue(block["name"])
-				if callID == "" || name == "" {
-					continue
-				}
-				assistantMessage["content"] = nil
-				assistantMessage["tool_calls"] = []any{map[string]any{
-					"id":   callID,
-					"type": "function",
-					"function": map[string]any{
-						"name":      name,
-						"arguments": stringValue(block["arguments"]),
-					},
-				}}
-				break
+			if stringValue(block["type"]) != "function_call" {
+				continue
 			}
+			callID := sanitizeResponsesCallID(stringValue(block["call_id"]))
+			name := stringValue(block["name"])
+			if callID == "" || name == "" {
+				continue
+			}
+			calls = append(calls, map[string]any{
+				"id":   callID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      name,
+					"arguments": stringValue(block["arguments"]),
+				},
+			})
+		}
+		if len(calls) > 0 {
+			assistantMessage["content"] = nil
+			assistantMessage["tool_calls"] = calls
 		}
 	}
 	usage := ParseResponsesUsage(responsesBody)

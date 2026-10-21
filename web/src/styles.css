@@ -1262,9 +1262,11 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
   border-radius: var(--r-sm) var(--r-sm) 0 0;
 }
 /* IconSelect：带品牌图标的单选框。触发器与 .field select 同尺寸、同边框、同下拉箭头，
-   只有内容改成了「图标 + 文字」，因此和旁边的输入框/下拉并列时基线对齐。 */
+   只有内容改成了「图标 + 文字」，因此和旁边的输入框/下拉并列时基线对齐。
+   触发器和菜单行都不用 flex：本机引擎会把 flex 容器里的按钮/子项退回普通流，
+   布局会随菜单高度抖动；改用固定两列的 grid，图标与文字各占一格，稳稳对齐。 */
 .icon-select-trigger {
-  display: flex; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 8px;
   width: 100%; height: var(--control-h); box-sizing: border-box;
   padding: 0 34px 0 12px;
   border-radius: var(--r-md); border: 1px solid var(--border);
@@ -1277,8 +1279,48 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .icon-select.open .icon-select-trigger,
 .icon-select-trigger:focus-visible { outline: none; border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
 .icon-select-trigger:disabled { opacity: 0.55; cursor: not-allowed; }
-.icon-select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.icon-select .searchable-select-menu { max-height: 320px; }
+.icon-select-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; }
+.icon-select-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-select-name-text { display: inline-block; max-width: calc(100% - 6.5em); vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-select-trigger-account { display: inline-block; max-width: 6.5em; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-select-trigger-account::before { content: '·'; margin: 0 0.35em; opacity: 0.55; }
+.icon-select-name.muted { color: var(--muted); }
+/* 协议 / 分类标签：跟在名称后面，弱化成一枚小胶囊，不抢名称的宽度。 */
+.icon-select-meta {
+  padding: 0 6px; border-radius: 999px; white-space: nowrap;
+  font-size: 10.5px; font-weight: 600; line-height: 16px;
+  color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--border);
+}
+.icon-select .searchable-select-menu { max-height: 340px; }
+/* 菜单行：图标 + 名称/标签 + 第二行账号。选项比普通下拉高一行，行高收紧一像素。
+   本机 in-app 引擎对 flex 容器里的 <button> 及其子项处理不可靠（实测行高忽大忽小、
+   图标和文字各自成块），这里用 float 排版：图标左浮动，文字撑满剩余宽度。
+   没有 flex/grid，就没有会被 webview 改写的布局模型。 */
+.searchable-select-option.icon-select-option {
+  display: block; padding: 7px 10px; line-height: 1.3;
+}
+.icon-select-option > .filter-option-icon { float: left; margin: 3px 10px 0 0; }
+.icon-select-option::after { content: ''; display: block; clear: both; }
+.searchable-select-option.icon-select-option:focus-visible { outline: 2px solid var(--accent-border); outline-offset: -2px; }
+/* 补上悬浮/选中底色：行内容被拆成浮动/块级后，某些 webview 会把底色只铺到文字上，
+   看起来像灰砖；这里把底色钉在整行上。 */
+.searchable-select-option.icon-select-option:hover,
+.searchable-select-option.icon-select-option.active { background: var(--hover); }
+.icon-select-text { display: block; min-width: 0; overflow: hidden; }
+.icon-select-text > .icon-select-line { margin-bottom: 1px; }
+.icon-select-sub { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.searchable-select-option.icon-select-option.selected .icon-select-sub { color: var(--accent-strong); opacity: 0.8; }
+/* 选项多时的搜索框：粘在菜单顶部，滚动时不过早滑走。 */
+.icon-select-search { position: sticky; top: -5px; z-index: 1; padding: 2px 2px 6px; margin: -2px -2px 2px; background: var(--surface); }
+.icon-select-search input {
+  width: 100%; height: 30px; box-sizing: border-box; outline: none;
+  padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--border);
+  background: var(--surface-sunken); color: var(--text); font: inherit; font-size: 12.5px;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.icon-select-search input:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+/* 页面内联展开：不挂 portal，被筛选栏的横排约束，菜单向下展开盖在日志表格上。 */
+.searchable-select-menu.inline { max-height: 320px; }
 .modal-multi-select { margin: 0; width: 100%; }
 .modal-multi-select .searchable-select-input { height: var(--control-h); }
 
@@ -1774,13 +1816,6 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
 }
 .models-filter-chip.active .models-filter-count { background: var(--surface); color: var(--accent); }
 
-/* 密钥「路由与方案」：绑定下拉下方的署名行。 */
-.binding-provider-hint {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px;
-  font-size: 12px; color: var(--muted); min-width: 0;
-}
-.binding-provider-protocol { white-space: nowrap; }
-
 /* 故障转移链里的身份列占满剩余宽度，长名字截断而不是把模型挤走。 */
 .fallback-row .fallback-identity { flex: 1; min-width: 0; }
 .fallback-row .provider-label-name { font-size: 13px; min-width: 44px; }
@@ -1937,6 +1972,26 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   white-space: nowrap;
   font-weight: 500;
   color: var(--text);
+}
+/* 名称 + 账号两行：一行装不下「名称 · 账号」，截断掉的正好是区分账号的那一段 */
+.usage-bar-label.stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+  white-space: normal;
+}
+.usage-bar-name,
+.usage-bar-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-bar-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
 }
 .usage-bar-track {
   flex: 1 1 80px;
@@ -2259,6 +2314,25 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: var(--accent); co
   white-space: nowrap;
   font-weight: 600;
   color: var(--text-strong);
+}
+/* 图例也只有一百多像素：名称与账号分两行，避免账号被截掉 */
+.donut-legend-label.stacked {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  white-space: normal;
+}
+.donut-legend-name,
+.donut-legend-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.donut-legend-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
 }
 .donut-legend-pct-badge {
   font-size: 11px;
@@ -4870,6 +4944,17 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   width: 100%;
 }
 
+/* Provider 筛选：与旁边两个原生 select 同尺寸同底色（原生 select 那条高度是 34px、
+   字号 12.5px）。筛选项列表一屏放得下，不弹搜索框，直接向下展开。 */
+.traffic-select { position: relative; min-width: 0; }
+.traffic-select .field { display: block; }
+.traffic-select .icon-select-trigger { height: 34px; font-size: 12.5px; padding: 0 30px 0 10px; gap: 7px; color: var(--text-strong); background-position: right 10px center; }
+.traffic-select .icon-select-trigger .filter-option-icon { width: 15px; height: 15px; }
+.traffic-select .icon-select-meta { display: none; }
+.traffic-select .searchable-select-menu.inline { max-height: min(360px, 60vh); }
+.traffic-select .searchable-select-option { font-family: inherit; padding: 7px 9px; }
+
+
 .traffic-action-group {
   display: flex;
   align-items: center;
@@ -5455,7 +5540,7 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   }
 }
 
-/* 行 3：核心模型排行 与 实体消耗分析 (双栏 1.25fr : 1fr) */
+/* 行 3：核心模型排行 + 右列实体排行栈（密钥/用户、账号） */
 .overview-rankings-row {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
@@ -5467,6 +5552,13 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   .overview-rankings-row {
     grid-template-columns: 1fr;
   }
+}
+/* 同一列叠两张排行卡：密钥（或用户）在上、账号在下，由 usage.css 分配高度 */
+.usage-rank-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
 .overview-rankings-row .usage-chart-card {
   height: 100%;
@@ -6293,12 +6385,43 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 }
 .rtk-provider-panel .toggle-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
 .rtk-provider-panel .toggle-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
-/* 面板里的数字旋钮与同排的 .btn-sm（--btn-h: 30px）等高，避免一行里 28/30 差两像素。 */
-.rtk-provider-panel .toggle-row input[type="number"] { width: 88px; height: 30px; padding: 0 8px; }
+/* 面板里的数字旋钮：输入框和单位包进同一个控件框，外观与 .field input 一致
+   （同底色、同边框、同圆角、同聚焦环），高度与同排的 .btn-sm（--btn-h: 30px）
+   等高。光秃秃的 input 会拿到浏览器默认的灰底白边，跟主题完全是两套东西。 */
+.rtk-provider-panel .toggle-row input[type="number"] {
+  width: 66px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.rtk-provider-panel .toggle-row input[type="number"]::-webkit-outer-spin-button,
+.rtk-provider-panel .toggle-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.rtk-provider-panel .toggle-row input[type="number"]::placeholder { color: var(--subtle); font-weight: 500; }
 .provider-knob-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .provider-knob-field { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--muted); }
-.provider-knob-field input[type="number"] { width: 72px; }
+.knob-input {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: var(--btn-h); box-sizing: border-box;
+  padding: 0 8px 0 4px;
+  border-radius: var(--r-sm); border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.knob-input:hover { border-color: var(--border-strong); }
+.knob-input:focus-within { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.knob-input:has(input:disabled) { opacity: 0.6; }
+.knob-input-unit { color: var(--muted); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
 .provider-knob-unit { font-weight: 500; color: var(--muted); }
+
 .rtk-provider-panel .hint-line { margin-top: 6px; }
 .rtk-savings-card { margin-top: 14px; }
 .rtk-version-pill {

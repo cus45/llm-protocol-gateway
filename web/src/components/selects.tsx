@@ -427,12 +427,22 @@ export type IconSelectOption = {
   label: string;
   // 品牌图标名（与 provider preset 的 icon 同一套文件）；空 = 没有厂商可指。
   icon?: string;
+  // 第二行：同名项之间真正能认人的那部分（账号 / 邮箱 / 编号）。
+  description?: string;
+  // 选项右侧的处理（协议名、价格档位这类分类标签）。
+  meta?: string;
+  // 搜索用的额外关键字（id、账号全称），展示时不用。
+  keywords?: string;
 };
 
 /**
  * IconSelect：能带品牌图标的单选框。原生 <select> 的 <option> 放不进图标，所以
  * 触发器和菜单都自己画；外观直接复用 .searchable-select（高度、边框、聚焦环、
  * 下拉开合），和筛选栏里的下拉是同一套观感。
+ *
+ * 同一个服务商多登几个账号就会出现一串同名条目，光靠 label 分不出是谁——
+ * 所以每项还能带一行 description（账号 / 邮箱 / 编号）和一枚 meta（协议）。
+ * 选项一多就打开搜索，按 label、description、keywords 一起过滤。
  */
 export function IconSelect({
   label,
@@ -443,6 +453,8 @@ export function IconSelect({
   fullWidth,
   hint,
   placeholder = '请选择',
+  searchable,
+  renderPortal = true,
 }: {
   label?: string;
   value: string;
@@ -453,23 +465,47 @@ export function IconSelect({
   // 字段说明：收进标签旁的 InfoTip，不占一行纵向空间。
   hint?: string;
   placeholder?: string;
+  // 缺省时按选项数量决定；页面筛选栏这类常驻控件可以显式关掉。
+  searchable?: boolean;
+  // 弹窗里的下拉必须挂到 body，否则被 modal-card 的 overflow 裁掉；
+  // 页面内联的筛选框直接就地展开，省掉跟随滚动重定位的那套。
+  renderPortal?: boolean;
 }) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const listRef = React.useRef<HTMLDivElement | null>(null);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
   const [highlight, setHighlight] = React.useState(0);
 
-  const selectedIndex = options.findIndex((option) => option.value === value);
-  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  // 筛选栏的选项本来就一屏放得下，默认不弹搜索框；长列表才需要。
+  const canSearch = searchable ?? options.length > 12;
+  const selected = options.find((option) => option.value === value);
+  // 带说明的选项（同名 Provider 靠短 ID 区分）：菜单里分两行更好读，但收起后的
+  // 触发器只有一行高 —— 说明就是认人的那个值（账号），不能藏在「名称 · 描述」
+  // 拼接出来的省略号里：名称让位，账号始终完整显示。
+  const selectedInline = selected ? [selected.label, selected.description].filter(Boolean).join(' · ') : '';
 
-  const close = React.useCallback(() => setOpen(false), []);
+  const filtered = React.useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return options;
+    return options.filter((option) =>
+      option.label.toLowerCase().includes(needle) ||
+      (option.description || '').toLowerCase().includes(needle) ||
+      (option.meta || '').toLowerCase().includes(needle) ||
+      (option.keywords || '').toLowerCase().includes(needle));
+  }, [options, query]);
 
-  const pick = React.useCallback((index: number) => {
-    const option = options[index];
+  const close = React.useCallback(() => {
+    setOpen(false);
+    setQuery('');
+  }, []);
+
+  const pick = React.useCallback((option: IconSelectOption | undefined) => {
     if (!option) return;
     onChange(option.value);
     close();
-  }, [close, onChange, options]);
+  }, [close, onChange]);
 
   React.useEffect(() => {
     if (disabled) setOpen(false);
@@ -477,8 +513,11 @@ export function IconSelect({
 
   React.useEffect(() => {
     if (!open) return;
-    setHighlight(selectedIndex >= 0 ? selectedIndex : 0);
-  }, [open, selectedIndex]);
+    setQuery('');
+    const index = options.findIndex((option) => option.value === value);
+    setHighlight(index >= 0 ? index : 0);
+    if (canSearch) inputRef.current?.focus();
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -497,13 +536,13 @@ export function IconSelect({
     if (!open || !listRef.current) return;
     const active = listRef.current.querySelector<HTMLElement>('[data-active="true"]');
     active?.scrollIntoView({ block: 'nearest' });
-  }, [highlight, open]);
+  }, [highlight, open, filtered]);
 
   const move = (delta: number) => {
-    setHighlight((prev) => (options.length === 0 ? 0 : (prev + delta + options.length) % options.length));
+    setHighlight((prev) => (filtered.length === 0 ? 0 : (prev + delta + filtered.length) % filtered.length));
   };
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (disabled) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -511,10 +550,10 @@ export function IconSelect({
       move(event.key === 'ArrowDown' ? 1 : -1);
       return;
     }
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (event.key === 'Enter') {
       event.preventDefault();
       if (!open) { setOpen(true); return; }
-      pick(highlight);
+      pick(filtered[highlight]);
       return;
     }
     if (event.key === 'Escape') {
@@ -526,6 +565,62 @@ export function IconSelect({
       }
     }
   };
+
+  const searchField = open && canSearch ? (
+    <div className="icon-select-search">
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        placeholder="搜索名称、账号或 ID…"
+        autoComplete="one-time-code"
+        data-1p-ignore
+        data-lpignore="true"
+        onChange={(event) => { setQuery(event.target.value); setHighlight(0); }}
+        onKeyDown={onKeyDown}
+      />
+    </div>
+  ) : null;
+
+  const rows = filtered.length === 0 ? (
+    <div className="searchable-select-empty">无匹配项</div>
+  ) : filtered.map((option, index) => {
+    const isSelected = option.value === value;
+    return (
+      // 行用 div 而不是 button：某些浏览器（实测本机的 in-app 引擎）对 flex 容器里的
+      // <button> 会退回 inline-block，图标和文字各自成块、行高忽大忽小。按钮语义
+      // 由 role="option" + 键盘处理保留，点击仍走 onMouseDown。
+      <div
+        key={option.value || '__empty__'}
+        role="option"
+        tabIndex={-1}
+        aria-selected={isSelected}
+        data-active={index === highlight ? 'true' : 'false'}
+        className={`icon-select-option${isSelected ? ' selected' : ''}${index === highlight ? ' active' : ''}`}
+        onMouseEnter={() => setHighlight(index)}
+        onMouseDown={(event) => {
+          event.preventDefault();
+          pick(option);
+        }}
+      >
+        <BrandIcon icon={option.icon} name={option.label} size={16} className="filter-option-icon" />
+        <span className="icon-select-text">
+          <span className="icon-select-line">
+            <span className="icon-select-name">{option.label}</span>
+            {option.meta ? <span className="icon-select-meta">{option.meta}</span> : null}
+          </span>
+          {option.description ? <span className="icon-select-sub">{option.description}</span> : null}
+        </span>
+      </div>
+    );
+  });
+
+  const menu = (
+    <>
+      {searchField}
+      {rows}
+    </>
+  );
 
   return (
     <div className={`field${fullWidth ? ' field-full' : ''}`}>
@@ -546,32 +641,30 @@ export function IconSelect({
           onClick={() => setOpen((current) => !current)}
           onKeyDown={onKeyDown}
         >
-          {selected ? <BrandIcon icon={selected.icon} name={selected.label} size={16} /> : null}
-          <span className="icon-select-value">{selected?.label ?? placeholder}</span>
+          {selected ? (
+            <>
+              <BrandIcon icon={selected.icon} name={selected.label} size={16} />
+              <span className="icon-select-line">
+                <span className="icon-select-name" title={selectedInline}>
+                  {selected.description && selected.description !== selected.label ? (
+                    <>
+                      <span className="icon-select-name-text">{selected.label}</span>
+                      <span className="icon-select-trigger-account">{selected.description}</span>
+                    </>
+                  ) : selected.label}
+                </span>
+                {selected.meta ? <span className="icon-select-meta">{selected.meta}</span> : null}
+              </span>
+            </>
+          ) : (
+            <span className="icon-select-name muted" title={placeholder}>{placeholder}</span>
+          )}
         </button>
-        <SelectMenuPortal anchorRef={rootRef} open={open} menuRef={listRef}>
-          {options.map((option, index) => {
-            const isSelected = option.value === value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                data-active={index === highlight ? 'true' : 'false'}
-                className={`searchable-select-option${isSelected ? ' selected' : ''}${index === highlight ? ' active' : ''}`}
-                onMouseEnter={() => setHighlight(index)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  pick(index);
-                }}
-              >
-                <BrandIcon icon={option.icon} name={option.label} size={16} className="filter-option-icon" />
-                <span className="searchable-select-option-label">{option.label}</span>
-              </button>
-            );
-          })}
-        </SelectMenuPortal>
+        {renderPortal ? (
+          <SelectMenuPortal anchorRef={rootRef} open={open} menuRef={listRef}>{menu}</SelectMenuPortal>
+        ) : open ? (
+          <div className="searchable-select-menu inline" role="listbox" ref={listRef}>{menu}</div>
+        ) : null}
       </div>
     </div>
   );

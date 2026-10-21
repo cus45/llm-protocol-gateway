@@ -174,7 +174,12 @@ func normalizeToolResultContent(content any) any {
 		if len(typed) == 0 {
 			return ""
 		}
-		return typed
+		// 客户端按 OpenAI 习惯把工具结果拆成 text / image_url 部件，而 Claude 的
+		// tool_result 只认 text / image，原样透传会让上游 400（未知 block 类型）。
+		if blocks := openAIContentToClaudeBlocks(typed); len(blocks) > 0 {
+			return blocks
+		}
+		return ""
 	default:
 		text := strings.TrimSpace(fmt.Sprint(content))
 		if text == "" {
@@ -182,6 +187,61 @@ func normalizeToolResultContent(content any) any {
 		}
 		return text
 	}
+}
+
+// dropCallID 从待应答列表里去掉一个已经拿到结果的调用。
+func dropCallID(ids []string, id string) []string {
+	for index, item := range ids {
+		if item == id {
+			return append(ids[:index], ids[index+1:]...)
+		}
+	}
+	return ids
+}
+
+// appendImageNote 在工具文本后补一句「截图在下一段」，让模型知道该往下看。
+// 措辞与 magpie 一致，减少同一个网关里两种说法。
+func appendImageNote(text string, count int) string {
+	note := fmt.Sprintf("[The tool returned %d images; they follow in the next message.]", count)
+	if count == 1 {
+		note = "[The tool returned an image; it follows in the next message.]"
+	}
+	if strings.TrimSpace(text) == "" {
+		return note
+	}
+	return text + "\n\n" + note
+}
+
+// toolResultContentForOpenAI 拆一个 Claude tool_result 的 content：文本拼成
+// OpenAI tool 消息装得下的字符串，图片块单独摘出来交给调用方安置。
+//
+// OpenAI Chat 的 tool 消息只能装文本，而浏览器类工具每次调用都回截图；把图丢掉
+// 等于让模型点完一次就再也看不见画面，只能靠猜选择器和 uid——这就是「点元素报
+// No snapshot found / querySelector 为 null」的来源。调用方把这些图跟在 tool
+// 消息之后的一条 user 消息里发出去。
+func toolResultContentForOpenAI(content any) (string, []any) {
+	blocks, ok := content.([]any)
+	if !ok {
+		return toolResultContentToString(content), nil
+	}
+	texts := make([]string, 0, len(blocks))
+	images := make([]any, 0, 1)
+	for _, item := range blocks {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringValue(block["type"]) == "image" {
+			if converted := claudeImageBlockToOpenAIChat(block); converted != nil {
+				images = append(images, converted)
+			}
+			continue
+		}
+		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n"), images
 }
 
 func toolResultContentToString(content any) string {
@@ -768,6 +828,29 @@ func extractOpenAIToolNames(openAIReq map[string]any) map[string]struct{} {
 	return names
 }
 
+// chatDeclaredToolNames is the set of tool names a Chat request offers in its
+// tools[], however it spells them (nested function tools and the flat
+// Responses-shaped ones alike). Like claudeDeclaredToolNames it is never nil,
+// so "no tools" and "no tool by this name" stay apart.
+func chatDeclaredToolNames(payload map[string]any) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, raw := range asMapSlice(payload["tools"]) {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if function, ok := tool["function"].(map[string]any); ok {
+			if name := strings.TrimSpace(stringValue(function["name"])); name != "" {
+				names[name] = struct{}{}
+			}
+		}
+		if name := strings.TrimSpace(stringValue(tool["name"])); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
 // resolveOpenAIToolNameFromClaude maps Claude tool_use names back to the client
 // tool names from the original OpenAI request. Cursor sends TitleCase names like
 // "Read"; blindly reverse-remapping OAuth names would turn them into "read" and
@@ -802,8 +885,64 @@ func resolveOpenAIToolNameFromClaude(claudeName string, clientToolNames map[stri
 				return name
 			}
 		}
+		// A known tool list with no match in it means the name is simply not
+		// one of this request's tools — nothing about it was renamed on the
+		// way in, so it is forwarded as the client spelled it. Falling back to
+		// the OAuth cloak's reverse map here would turn a client's own "Bash"
+		// into "bash" and the model would copy that spelling back (the client
+		// then answers "No such tool available: bash, call Bash instead").
+		return claudeName
 	}
 	return reverseRemapClaudeOAuthToolName(claudeName)
+}
+
+// claudeDeclaredToolNames is the set of tool names an Anthropic-format request
+// declares in its own tools[]. It is what a history's tool_use names are
+// matched against: a name in it is the client's own spelling and reaches the
+// model untouched. The set is never nil, so resolveOpenAIToolNameFromClaude
+// knows "no tool list" and "a tool list that does not contain this name" apart.
+func claudeDeclaredToolNames(rawTools any) map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, item := range asMapSlice(rawTools) {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name := strings.TrimSpace(stringValue(tool["name"])); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+// restoreDeclaredToolName is name as the client declared it, when the model
+// answered with a different case of it. Some models lowercase every tool they
+// call; the client only knows the spelling it registered, so the case the
+// model dropped is put back. A name the declared list does not hold (or holds
+// in two spellings that differ only by case) is left alone.
+func restoreDeclaredToolName(name string, declared map[string]struct{}) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(declared) == 0 {
+		return name
+	}
+	if _, ok := declared[name]; ok {
+		return name
+	}
+	lower := strings.ToLower(name)
+	match := ""
+	for candidate := range declared {
+		if strings.ToLower(candidate) != lower {
+			continue
+		}
+		if match != "" && match != candidate {
+			return name // ambiguous: two declared names differ only by case
+		}
+		match = candidate
+	}
+	if match != "" {
+		return match
+	}
+	return name
 }
 
 func claudeToolUseBlocksToOpenAIToolCalls(blocks []any, clientToolNames map[string]struct{}) []any {
@@ -831,6 +970,23 @@ func claudeToolUseBlocksToOpenAIToolCalls(blocks []any, clientToolNames map[stri
 		})
 	}
 	return toolCalls
+}
+
+// restoreClaudeToolUseNames puts the declared spelling back into a Claude
+// content list's tool_use blocks.
+func restoreClaudeToolUseNames(blocks []any, declared map[string]struct{}) {
+	if len(declared) == 0 {
+		return
+	}
+	for _, item := range blocks {
+		block, ok := item.(map[string]any)
+		if !ok || stringValue(block["type"]) != "tool_use" {
+			continue
+		}
+		if name := stringValue(block["name"]); name != "" {
+			block["name"] = restoreDeclaredToolName(name, declared)
+		}
+	}
 }
 
 func claudeContentBlocksToOpenAIAssistantMessage(blocks []any, clientToolNames map[string]struct{}) map[string]any {
@@ -955,8 +1111,51 @@ func openAIMessagesToClaude(rawMessages []any) ([]any, []map[string]any, error) 
 	return systemBlocks, claudeMessages, nil
 }
 
-func claudeMessagesToOpenAI(rawMessages []any) ([]map[string]any, error) {
+func claudeMessagesToOpenAI(rawMessages []any, clientToolNames map[string]struct{}) ([]map[string]any, error) {
 	messages := make([]map[string]any, 0, len(rawMessages))
+	// Chat 的 tool 消息只能装文本，工具结果里的截图得挪到紧随其后的一条 user
+	// 消息里；每张图前标出它来自哪次调用，并行调工具时才分得清哪张是谁的。
+	var pendingImages []any
+	toolNames := make(map[string]string, 4)
+	// 每个带 tool_calls 的 assistant 都要有问必答：被中断的回合（客户端断流、
+	// 取消）会留下没有结果的调用，严格的上游直接 400（WorkBuddy 11148
+	// "tool calls and tool results do not match"）。
+	var pendingCalls []string
+	fillPendingCalls := func() {
+		for _, id := range pendingCalls {
+			messages = append(messages, map[string]any{
+				"role":         "tool",
+				"tool_call_id": sanitizeAnthropicToolUseID(id),
+				"content":      "[The result of this tool call is unavailable: the turn was interrupted.]",
+			})
+		}
+		pendingCalls = nil
+	}
+	flushImages := func() {
+		if len(pendingImages) == 0 {
+			return
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": pendingImages})
+		pendingImages = nil
+	}
+	// mergeImages 把攒下的截图并到这条 user 消息最前面，而不是另起一条：
+	// 连着两条 user 消息有些模型的 chat template 会直接判不合法。
+	mergeImages := func(content any) any {
+		if len(pendingImages) == 0 {
+			return content
+		}
+		parts := make([]any, 0, len(pendingImages)+1)
+		parts = append(parts, pendingImages...)
+		switch typed := content.(type) {
+		case string:
+			parts = append(parts, map[string]any{"type": "text", "text": typed})
+		case []any:
+			parts = append(parts, typed...)
+		}
+		pendingImages = nil
+		return parts
+	}
+
 	for _, item := range rawMessages {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -968,19 +1167,30 @@ func claudeMessagesToOpenAI(rawMessages []any) ([]map[string]any, error) {
 		}
 		switch role {
 		case "assistant":
+			// 上一轮的调用若没人应答，先补上；截图只能落在 assistant 之前
+			fillPendingCalls()
+			flushImages()
 			blocks := contentBlocksFromAny(entry["content"])
 			if len(blocks) == 0 {
 				continue
 			}
 			hasToolUse := false
 			for _, blockItem := range blocks {
-				if block, ok := blockItem.(map[string]any); ok && stringValue(block["type"]) == "tool_use" && strings.TrimSpace(stringValue(block["name"])) != "" {
+				block, ok := blockItem.(map[string]any)
+				if !ok || stringValue(block["type"]) != "tool_use" {
+					continue
+				}
+				name := strings.TrimSpace(stringValue(block["name"]))
+				if id := strings.TrimSpace(stringValue(block["id"])); id != "" {
+					toolNames[id] = name
+					pendingCalls = append(pendingCalls, id)
+				}
+				if name != "" {
 					hasToolUse = true
-					break
 				}
 			}
 			if hasToolUse {
-				messages = append(messages, claudeContentBlocksToOpenAIAssistantMessage(blocks, nil))
+				messages = append(messages, claudeContentBlocksToOpenAIAssistantMessage(blocks, clientToolNames))
 				continue
 			}
 			content := normalizeClaudeContentForOpenAI(entry["content"])
@@ -1007,25 +1217,46 @@ func claudeMessagesToOpenAI(rawMessages []any) ([]map[string]any, error) {
 					textBlocks = append(textBlocks, block)
 				}
 			}
-			if len(textBlocks) > 0 {
-				content := normalizeClaudeContentForOpenAI(textBlocks)
-				if !isEmptyOpenAIContent(content) {
-					messages = append(messages, map[string]any{"role": "user", "content": content})
-				}
-			}
+			// 一个用户回合里工具结果在前、用户自己的话在后：严格的 OpenAI 上游要求
+			// tool 消息紧邻带 tool_calls 的 assistant，中间插一条 user 会被判成
+			// tool_call_id 找不到（Kimi、WorkBuddy 都会 400）。
 			for _, result := range toolResults {
 				toolUseID := stringValue(result["tool_use_id"])
 				if toolUseID == "" {
 					continue
 				}
+				pendingCalls = dropCallID(pendingCalls, toolUseID)
+				text, images := toolResultContentForOpenAI(result["content"])
+				if len(images) > 0 {
+					text = appendImageNote(text, len(images))
+					source := toolUseID
+					if name := toolNames[toolUseID]; name != "" {
+						source = name + " (tool call " + toolUseID + ")"
+					}
+					pendingImages = append(pendingImages, map[string]any{
+						"type": "text",
+						"text": "[From the result of " + source + ":]",
+					})
+					pendingImages = append(pendingImages, images...)
+				}
 				messages = append(messages, map[string]any{
 					"role":         "tool",
 					"tool_call_id": sanitizeAnthropicToolUseID(toolUseID),
-					"content":      toolResultContentToString(result["content"]),
+					"content":      text,
 				})
+			}
+			// 这一回合没应答完的调用，补在用户自己的话之前（tool 消息必须连着）
+			fillPendingCalls()
+			if len(textBlocks) > 0 {
+				content := normalizeClaudeContentForOpenAI(textBlocks)
+				if !isEmptyOpenAIContent(content) {
+					messages = append(messages, map[string]any{"role": "user", "content": mergeImages(content)})
+				}
 			}
 		}
 	}
+	fillPendingCalls()
+	flushImages()
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("claude request has no usable messages")
 	}

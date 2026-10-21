@@ -891,27 +891,40 @@ func replyAfterWorkBuddyTools(body []byte) []byte {
 // restoreWorkBuddyToolNames gives the model's calls in a successful response
 // the names the client gave its tools, on one JSON body or an SSE stream.
 func restoreWorkBuddyToolNames(response *http.Response, names map[string]string) {
+	wrapToolNameRestore(response, names, renameWorkBuddyToolCallNamesJSON, renameWorkBuddyToolCallNamesLine)
+}
+
+// wrapToolNameRestore renames the tool calls in a successful response back to
+// the names the client declared, streaming or not. Every rename a request makes
+// to a tool name must be undone here: a client only dispatches the names it
+// registered, so a renamed call reaches it as an unknown tool ("No such tool
+// available: bash. Tool names are case-sensitive: call Bash instead.").
+func wrapToolNameRestore(response *http.Response, names map[string]string, renameJSON, renameLine func([]byte, map[string]string) []byte) {
 	if response == nil || response.Body == nil || len(names) == 0 || response.StatusCode >= 400 {
 		return
 	}
 	jsonBody := strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "json")
 	response.Body = &toolNameRestoringBody{
-		src:      response.Body,
-		names:    names,
-		reader:   bufio.NewReader(response.Body),
-		jsonBody: jsonBody,
+		src:        response.Body,
+		names:      names,
+		reader:     bufio.NewReader(response.Body),
+		jsonBody:   jsonBody,
+		renameJSON: renameJSON,
+		renameLine: renameLine,
 	}
 	response.Header.Del("Content-Length")
 	response.ContentLength = -1
 }
 
 type toolNameRestoringBody struct {
-	src      io.ReadCloser
-	names    map[string]string
-	reader   *bufio.Reader
-	jsonBody bool
-	out      bytes.Buffer
-	done     bool
+	src        io.ReadCloser
+	names      map[string]string
+	reader     *bufio.Reader
+	jsonBody   bool
+	renameJSON func([]byte, map[string]string) []byte
+	renameLine func([]byte, map[string]string) []byte
+	out        bytes.Buffer
+	done       bool
 }
 
 func (b *toolNameRestoringBody) Read(p []byte) (int, error) {
@@ -922,7 +935,7 @@ func (b *toolNameRestoringBody) Read(p []byte) (int, error) {
 		if b.jsonBody {
 			raw, err := io.ReadAll(b.src)
 			if len(raw) > 0 {
-				b.out.Write(renameWorkBuddyToolCallNamesJSON(raw, b.names))
+				b.out.Write(b.renameJSON(raw, b.names))
 			}
 			b.done = true
 			if err != nil && b.out.Len() == 0 {
@@ -932,7 +945,7 @@ func (b *toolNameRestoringBody) Read(p []byte) (int, error) {
 		}
 		line, err := b.reader.ReadBytes('\n')
 		if len(line) > 0 {
-			b.out.Write(renameWorkBuddyToolCallNamesLine(line, b.names))
+			b.out.Write(b.renameLine(line, b.names))
 		}
 		if err != nil {
 			b.done = true

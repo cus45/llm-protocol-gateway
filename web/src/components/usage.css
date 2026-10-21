@@ -74,6 +74,10 @@ html[data-theme="dark"] .usage-page {
 .usage-rank-toggle { flex: none; }
 .usage-rank-bars-card { height: 100%; display: flex; flex-direction: column; }
 .usage-rank-bars-card .usage-bar-list { flex: 1; }
+/* 右列叠两张排行卡：密钥/用户在上、账号在下。第一张按内容高度，最后一张吃掉
+   左列模型排行多出来的高度，留白落在卡片里而不是裸露在页面上。 */
+.usage-rank-stack > .usage-rank-bars-card { flex: 0 0 auto; height: auto; }
+.usage-rank-stack > .usage-rank-bars-card:last-child { flex: 1 1 auto; }
 .usage-profile-card { display: flex; flex-direction: column; }
 .usage-profile-card .usage-profile-facts { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
 .usage-profile-card .usage-profile-facts > div { padding: 9px 0; }

@@ -19,7 +19,7 @@ func TestStreamOpenAIChatToClaudeEventsWithEmptyToolCalls(t *testing.T) {
 	}, "\n")
 
 	recorder := httptest.NewRecorder()
-	usage, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(input), "deepseek-v4.1-flash")
+	usage, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(input), "deepseek-v4.1-flash", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestStreamOpenAIChatToClaudeEvents(t *testing.T) {
 	}, "\n")
 
 	recorder := httptest.NewRecorder()
-	usage, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(input), "deepseek-chat")
+	usage, err := streamOpenAIChatToClaudeEvents(recorder, strings.NewReader(input), "deepseek-chat", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

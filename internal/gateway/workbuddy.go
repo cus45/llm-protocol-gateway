@@ -342,10 +342,31 @@ func (p workBuddyCredentialPayload) toCredential(account domain.WorkBuddyCredent
 func workBuddyAccountLabel(nickname, phone, uid string) string {
 	for _, candidate := range []string{nickname, phone, uid} {
 		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
-			return trimmed
+			return workBuddyHidablePhone(trimmed)
 		}
 	}
 	return "WorkBuddy"
+}
+
+// workBuddyHidablePhone keeps only the first four and last four digits of a
+// phone number. The label is what tells one WorkBuddy account from the next in
+// every picker, so it has to stay unique; what it must not do is put a whole
+// phone number on screen (a screenshot of the console is a shared artifact),
+// which is why the account is stored as 1815****4947 rather than 181512344947.
+func workBuddyHidablePhone(label string) string {
+	if !workBuddyAllDigits(label) || len(label) < 7 {
+		return label
+	}
+	return label[:4] + "****" + label[len(label)-4:]
+}
+
+func workBuddyAllDigits(value string) bool {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- the plan's JSON API ---------------------------------------------------
@@ -838,7 +859,7 @@ func shapeWorkBuddyChatBody(body []byte) ([]byte, map[string]string, bool) {
 			changed = true
 		}
 	}
-	if read, wasChanged := workBuddyToolBlocksToCalls(messages); wasChanged {
+	if read, wasChanged := workBuddyToolBlocksToCalls(messages, chatDeclaredToolNames(payload)); wasChanged {
 		messages, changed = read, true
 		payload["messages"] = messages
 	}
@@ -948,8 +969,10 @@ const workBuddyUnansweredResult = "[The result of this tool call is unavailable:
 // results do not match" (11148) for calls its history never names. magpie drops
 // these parts on a translation — its own IR cannot produce them — but a relay that
 // dropped them would lose the conversation's tool history, so they are read into
-// the dialect Chat names them by instead. A body carrying no blocks is untouched.
-func workBuddyToolBlocksToCalls(messages []any) ([]any, bool) {
+// the dialect Chat names them by instead. declared is the body's own tools[];
+// a call's name it holds is written in its spelling. A body carrying no blocks
+// is untouched.
+func workBuddyToolBlocksToCalls(messages []any, declared map[string]struct{}) ([]any, bool) {
 	changed := false
 	out := make([]any, 0, len(messages))
 	for index, item := range messages {
@@ -968,7 +991,14 @@ func workBuddyToolBlocksToCalls(messages []any) ([]any, bool) {
 			}
 			switch stringValue(block["type"]) {
 			case "tool_use":
-				name := strings.TrimSpace(stringValue(block["name"]))
+				// The name goes out as the chat's tools[] spell it. A name the
+				// request does not offer is the client's own spelling of a tool
+				// this chat does not carry; the model copies whatever it reads in
+				// the history, and the client only dispatches the names it
+				// registered ("No such tool available: bash. Tool names are
+				// case-sensitive: call Bash instead."), so the declared spelling
+				// is what has to be written down.
+				name := restoreDeclaredToolName(strings.TrimSpace(stringValue(block["name"])), declared)
 				if name == "" {
 					keeps = append(keeps, raw)
 					continue

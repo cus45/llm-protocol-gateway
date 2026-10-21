@@ -1810,10 +1810,29 @@ export function usageStatsForProvider(snapshot: RequestStatsSnapshot | null, pro
   return { today, month };
 }
 
+/**
+ * 按 providerId 取展示名。同一个服务商多登一个账号就是一条独立记录、名字完全一样，
+ * 所以这里必须带上账号标识——否则环形图、排行、筛选器里并排出现两行「WorkBuddy 订阅」，
+ * 读的人分不清谁是谁。没有账号概念的 Provider（api_key 类）仍只有名字。
+ */
 export function providerUsageLabel(providerId: string, providers: Provider[]) {
   if (providerId === '_unknown') return '未知 Provider';
   const provider = providers.find((item) => item.id === providerId);
-  return provider ? provider.name : providerId;
+  return provider ? providerDisplayLabel(provider) : providerId;
+}
+
+/**
+ * 窄卡片（环形图图例、排行条）用的两行标签：第一行名字、第二行账号。
+ * 这些格子只有一百来像素宽，把「名称 · 账号」塞一行必然被截断，而被截掉的
+ * 恰好是唯一能区分账号的那一段——分两行才既认得出厂商又认得出是谁。
+ */
+export function providerUsageParts(providerId: string, providers: Provider[]) {
+  if (providerId === '_unknown') return { label: '未知 Provider', sub: '' };
+  const provider = providers.find((item) => item.id === providerId);
+  if (!provider) return { label: providerId, sub: '' };
+  const account = providerAccountLabel(provider);
+  const sub = account && account !== provider.name ? shortenAccountLabel(account) : '';
+  return { label: provider.name, sub };
 }
 
 export function buildRouteTestPayload(model: string, message: string) {

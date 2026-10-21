@@ -277,10 +277,47 @@ func snakeOrLowerToTitleCase(name string) string {
 }
 
 func remapClaudeOAuthToolNames(payload map[string]any) {
+	walkClaudeOAuthToolNames(payload, remapClaudeOAuthToolName)
+}
+
+// claudeOAuthToolNameAliases is the names a request's tools wear after cloaking,
+// each mapped to the name the client declared. Cloaking renames third-party
+// lowercase/snake_case tools into Claude Code's TitleCase, and a client only
+// dispatches the names it declared, so the answer's tool_use names must be
+// named back with this map. It performs the same walk as the rename without
+// changing anything, so the two can never drift apart.
+func claudeOAuthToolNameAliases(claudeReq map[string]any) map[string]string {
+	aliases := map[string]string{}
+	walkClaudeOAuthToolNames(claudeReq, func(name string) (string, bool) {
+		mapped, changed := remapClaudeOAuthToolName(name)
+		if !changed {
+			return name, false
+		}
+		if _, taken := aliases[mapped]; !taken {
+			aliases[mapped] = name
+		}
+		return name, false
+	})
+	if len(aliases) == 0 {
+		return nil
+	}
+	return aliases
+}
+
+// walkClaudeOAuthToolNames applies rewrite to every tool name the cloak owns —
+// tools[].name, tool_choice.name and the names in message history — and reports
+// whether any name changed. rewrite returns the name to use and whether it
+// differs from the one given; a walker that only observes passes the name back
+// unchanged.
+func walkClaudeOAuthToolNames(payload map[string]any, rewrite func(name string) (string, bool)) bool {
+	if payload == nil || rewrite == nil {
+		return false
+	}
 	// Collect Anthropic server-tool names from tools[] (type != "" && != custom).
 	// These must stay snake_case in tool_choice and message history even when
 	// the name also appears in oauthToolRenameMap (e.g. server bash_* vs client bash).
 	serverToolNames := map[string]struct{}{}
+	changed := false
 	if rawTools, ok := payload["tools"].([]any); ok && len(rawTools) > 0 {
 		updated := make([]any, 0, len(rawTools))
 		for _, item := range rawTools {
@@ -296,8 +333,9 @@ func remapClaudeOAuthToolNames(payload map[string]any) {
 				continue
 			}
 			name := stringValue(tool["name"])
-			if mapped, changed := remapClaudeOAuthToolName(name); changed {
+			if mapped, differs := rewrite(name); differs {
 				tool["name"] = mapped
+				changed = true
 			}
 			updated = append(updated, tool)
 		}
@@ -307,23 +345,27 @@ func remapClaudeOAuthToolNames(payload map[string]any) {
 	if choice, ok := payload["tool_choice"].(map[string]any); ok && stringValue(choice["type"]) == "tool" {
 		name := stringValue(choice["name"])
 		if !shouldPreserveOAuthToolName(name, serverToolNames) {
-			if mapped, changed := remapClaudeOAuthToolName(name); changed {
+			if mapped, differs := rewrite(name); differs {
 				choice["name"] = mapped
+				changed = true
 			}
 		}
 	}
 
 	rawMessages, ok := payload["messages"].([]any)
 	if !ok {
-		return
+		return changed
 	}
 	for _, item := range rawMessages {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		remapClaudeOAuthToolNamesInContent(entry["content"], serverToolNames)
+		if walkClaudeOAuthToolNamesInContent(entry["content"], serverToolNames, rewrite) {
+			changed = true
+		}
 	}
+	return changed
 }
 
 // shouldPreserveOAuthToolName reports names that must stay unchanged under
@@ -342,10 +384,18 @@ func shouldPreserveOAuthToolName(name string, serverToolNames map[string]struct{
 }
 
 func remapClaudeOAuthToolNamesInContent(content any, serverToolNames map[string]struct{}) {
+	walkClaudeOAuthToolNamesInContent(content, serverToolNames, remapClaudeOAuthToolName)
+}
+
+// walkClaudeOAuthToolNamesInContent is the history half of
+// walkClaudeOAuthToolNames: it names a message's tool_use / tool_reference
+// blocks through rewrite and reports whether any changed.
+func walkClaudeOAuthToolNamesInContent(content any, serverToolNames map[string]struct{}, rewrite func(name string) (string, bool)) bool {
 	blocks, ok := content.([]any)
 	if !ok {
-		return
+		return false
 	}
+	changed := false
 	for _, blockItem := range blocks {
 		block, ok := blockItem.(map[string]any)
 		if !ok {
@@ -359,22 +409,27 @@ func remapClaudeOAuthToolNamesInContent(content any, serverToolNames map[string]
 			if shouldPreserveOAuthToolName(name, serverToolNames) {
 				continue
 			}
-			if mapped, changed := remapClaudeOAuthToolName(name); changed {
+			if mapped, differs := rewrite(name); differs {
 				block["name"] = mapped
+				changed = true
 			}
 		case "tool_reference":
 			name := stringValue(block["tool_name"])
 			if shouldPreserveOAuthToolName(name, serverToolNames) {
 				continue
 			}
-			if mapped, changed := remapClaudeOAuthToolName(name); changed {
+			if mapped, differs := rewrite(name); differs {
 				block["tool_name"] = mapped
+				changed = true
 			}
 		case "tool_result":
 			// tool_search results nest tool_reference inside tool_result.content.
-			remapClaudeOAuthToolNamesInContent(block["content"], serverToolNames)
+			if walkClaudeOAuthToolNamesInContent(block["content"], serverToolNames, rewrite) {
+				changed = true
+			}
 		}
 	}
+	return changed
 }
 
 func reverseRemapClaudeOAuthToolName(name string) string {

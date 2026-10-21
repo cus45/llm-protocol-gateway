@@ -582,7 +582,7 @@ func TestOpenAIChatResponseToClaudeMapsToolCalls(t *testing.T) {
 		"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]},"finish_reason":"tool_calls"}],
 		"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}
 	}`)
-	body, _, err := openAIChatResponseToClaude(openAIResp, "deepseek-chat")
+	body, _, err := openAIChatResponseToClaude(openAIResp, "deepseek-chat", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
