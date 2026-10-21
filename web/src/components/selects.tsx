@@ -433,7 +433,41 @@ export type IconSelectOption = {
   meta?: string;
   // 搜索用的额外关键字（id、账号全称），展示时不用。
   keywords?: string;
+  // 所属分组（服务商）。同组必须连续排列；有分组的选项在菜单里按「左品牌 /
+  // 右账号」两级展示。缺省 / 空 = 不分组，和以前一样平铺。
+  group?: string;
+  // 分组键：同一个键的选项收在同一个品牌下。缺省用 group 本身。
+  groupKey?: string;
 };
+
+type IconSelectGroup = {
+  key: string;
+  title: string;
+  icon?: string;
+  options: IconSelectOption[];
+};
+
+// 把已按组连续排列的选项切成一个个组；没有 group 的选项自成一组、不画品牌列。
+function toIconSelectGroups(options: IconSelectOption[]): IconSelectGroup[] {
+  const groups: IconSelectGroup[] = [];
+  options.forEach((option) => {
+    const key = option.group ? (option.groupKey ?? option.group) : '__solo__:' + option.value;
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) {
+      last.options.push(option);
+      return;
+    }
+    groups.push({ key, title: option.group || option.label, icon: option.group ? option.icon : undefined, options: [option] });
+  });
+  return groups;
+}
+
+function optionMatches(option: IconSelectOption, needle: string): boolean {
+  return option.label.toLowerCase().includes(needle) ||
+    (option.description || '').toLowerCase().includes(needle) ||
+    (option.meta || '').toLowerCase().includes(needle) ||
+    (option.keywords || '').toLowerCase().includes(needle);
+}
 
 /**
  * IconSelect：能带品牌图标的单选框。原生 <select> 的 <option> 放不进图标，所以
@@ -443,6 +477,11 @@ export type IconSelectOption = {
  * 同一个服务商多登几个账号就会出现一串同名条目，光靠 label 分不出是谁——
  * 所以每项还能带一行 description（账号 / 邮箱 / 编号）和一枚 meta（协议）。
  * 选项一多就打开搜索，按 label、description、keywords 一起过滤。
+ *
+ * 带 group 的选项（Provider）用两级菜单：左边是品牌（服务商），点一下右边换成
+ * 这个品牌下的账号。平铺 + 分组标题试过一版，品牌名和账号行长得一样，线一细就
+ * 分不清谁是谁的；左右分开后「先选服务商、再选账号」写进了布局本身。
+ * 键盘：←/→ 切换左右两栏，↑/↓ 在栏内移动，Enter 选。
  */
 export function IconSelect({
   label,
@@ -476,8 +515,11 @@ export function IconSelect({
   const inputRef = React.useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
+  // 当前停在左边还是右边的栏；highlight 是该栏内的行下标。
+  const [pane, setPane] = React.useState<'group' | 'option'>('option');
   const [highlight, setHighlight] = React.useState(0);
 
+  const twoLevel = options.some((option) => option.group);
   // 筛选栏的选项本来就一屏放得下，默认不弹搜索框；长列表才需要。
   const canSearch = searchable ?? options.length > 12;
   const selected = options.find((option) => option.value === value);
@@ -486,15 +528,29 @@ export function IconSelect({
   // 拼接出来的省略号里：名称让位，账号始终完整显示。
   const selectedInline = selected ? [selected.label, selected.description].filter(Boolean).join(' · ') : '';
 
-  const filtered = React.useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return options;
-    return options.filter((option) =>
-      option.label.toLowerCase().includes(needle) ||
-      (option.description || '').toLowerCase().includes(needle) ||
-      (option.meta || '').toLowerCase().includes(needle) ||
-      (option.keywords || '').toLowerCase().includes(needle));
-  }, [options, query]);
+  const groups = React.useMemo(() => toIconSelectGroups(options), [options]);
+  const needle = query.trim().toLowerCase();
+  // 搜索命中哪个账号，就把它所在品牌列为候选；品牌名本身命中则整组都在。
+  const matches = React.useMemo(() => {
+    if (!needle) return groups;
+    return groups.filter((group) => group.title.toLowerCase().includes(needle) ||
+      group.options.some((option) => optionMatches(option, needle)));
+  }, [groups, needle]);
+
+  // 选中项所在的品牌：打开菜单先停在这里，而不是永远从第一个品牌开始翻。
+  const selectedGroupKey = selected
+    ? groups.find((group) => group.options.some((option) => option.value === value))?.key
+    : undefined;
+  const [activeGroupKey, setActiveGroupKey] = React.useState<string>(selectedGroupKey ?? groups[0]?.key ?? '');
+  const activeGroup = matches.find((group) => group.key === activeGroupKey) ?? matches[0];
+  const activeGroupIndex = activeGroup ? matches.findIndex((group) => group.key === activeGroup.key) : -1;
+
+  // 品牌名自己也命中了搜索时，右栏列出该品牌全部账号（否则只列命中的那些）。
+  const optionNeedle = activeGroup && needle && activeGroup.title.toLowerCase().includes(needle) ? '' : needle;
+  const visibleOptions = React.useMemo(() => {
+    if (!activeGroup) return [];
+    return optionNeedle ? activeGroup.options.filter((option) => optionMatches(option, optionNeedle)) : activeGroup.options;
+  }, [activeGroup, optionNeedle]);
 
   const close = React.useCallback(() => {
     setOpen(false);
@@ -514,10 +570,30 @@ export function IconSelect({
   React.useEffect(() => {
     if (!open) return;
     setQuery('');
-    const index = options.findIndex((option) => option.value === value);
-    setHighlight(index >= 0 ? index : 0);
+    setActiveGroupKey(selectedGroupKey ?? groups[0]?.key ?? '');
+    if (selectedGroupKey) {
+      // 两级菜单打开就停在选中项所在的品牌，焦点给右栏（换账号比换服务商更常见）。
+      const index = groups.find((group) => group.key === selectedGroupKey)?.options.findIndex((option) => option.value === value) ?? 0;
+      setPane('option');
+      setHighlight(index >= 0 ? index : 0);
+    } else {
+      setPane(twoLevel ? 'group' : 'option');
+      setHighlight(0);
+    }
     if (canSearch) inputRef.current?.focus();
   }, [open]);
+
+  // 搜索变了：只命中一个品牌就直接落到那个品牌，否则回到第一个候选。
+  React.useEffect(() => {
+    if (!open || !twoLevel || !needle) return;
+    if (matches.length === 1) {
+      setActiveGroupKey(matches[0].key);
+      setHighlight(0);
+    } else if (!matches.some((group) => group.key === activeGroupKey)) {
+      setActiveGroupKey(matches[0]?.key ?? '');
+      setHighlight(0);
+    }
+  }, [needle]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -536,24 +612,36 @@ export function IconSelect({
     if (!open || !listRef.current) return;
     const active = listRef.current.querySelector<HTMLElement>('[data-active="true"]');
     active?.scrollIntoView({ block: 'nearest' });
-  }, [highlight, open, filtered]);
+  }, [highlight, pane, open, visibleOptions, activeGroup]);
 
-  const move = (delta: number) => {
-    setHighlight((prev) => (filtered.length === 0 ? 0 : (prev + delta + filtered.length) % filtered.length));
+  const moveGroup = (delta: number) => {
+    if (matches.length === 0) return;
+    const next = (activeGroupIndex + delta + matches.length) % matches.length;
+    setActiveGroupKey(matches[next].key);
+    setHighlight(0);
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (disabled) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
       if (!open) { setOpen(true); return; }
-      move(event.key === 'ArrowDown' ? 1 : -1);
+      if (twoLevel && pane === 'group') { moveGroup(delta); return; }
+      const total = twoLevel ? visibleOptions.length : options.length;
+      setHighlight((prev) => (total === 0 ? 0 : (prev + delta + total) % total));
+      return;
+    }
+    if (twoLevel && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+      event.preventDefault();
+      setPane(event.key === 'ArrowRight' ? 'option' : 'group');
       return;
     }
     if (event.key === 'Enter') {
       event.preventDefault();
       if (!open) { setOpen(true); return; }
-      pick(filtered[highlight]);
+      if (twoLevel && pane === 'group') { setPane('option'); setHighlight(0); return; }
+      pick(twoLevel ? visibleOptions[highlight] : options[highlight]);
       return;
     }
     if (event.key === 'Escape') {
@@ -582,9 +670,9 @@ export function IconSelect({
     </div>
   ) : null;
 
-  const rows = filtered.length === 0 ? (
-    <div className="searchable-select-empty">无匹配项</div>
-  ) : filtered.map((option, index) => {
+  // 一行可选的账号。平铺下拉和两级菜单共用；两级菜单里由左栏负责品牌图标，
+  // 这里不再重复画（showIcon=false）。
+  const optionRow = (option: IconSelectOption, index: number, showIcon: boolean) => {
     const isSelected = option.value === value;
     return (
       // 行用 div 而不是 button：某些浏览器（实测本机的 in-app 引擎）对 flex 容器里的
@@ -603,7 +691,7 @@ export function IconSelect({
           pick(option);
         }}
       >
-        <BrandIcon icon={option.icon} name={option.label} size={16} className="filter-option-icon" />
+        {showIcon ? <BrandIcon icon={option.icon} name={option.label} size={16} className="filter-option-icon" /> : null}
         <span className="icon-select-text">
           <span className="icon-select-line">
             <span className="icon-select-name">{option.label}</span>
@@ -613,12 +701,58 @@ export function IconSelect({
         </span>
       </div>
     );
-  });
+  };
 
-  const menu = (
+  const menu = twoLevel ? (
     <>
       {searchField}
-      {rows}
+      {matches.length === 0 ? (
+        <div className="searchable-select-empty">无匹配项</div>
+      ) : (
+        <div className="icon-select-split">
+          <div className="icon-select-groups" role="listbox" aria-label="服务商">
+            {matches.map((group, index) => {
+              const isActive = group.key === activeGroup?.key;
+              const isCurrent = group.options.some((option) => option.value === value);
+              return (
+                <div
+                  key={group.key}
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={isActive}
+                  data-active={pane === 'group' && index === highlight ? 'true' : 'false'}
+                  className={`icon-select-group-row${isActive ? ' active' : ''}${isCurrent ? ' current' : ''}`}
+                  // 左栏点一下就切过去，并把焦点交到右栏：选品牌只是第一步，
+                  // 下一步必然是挑账号，不该还要再点一次右边。
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    setActiveGroupKey(group.key);
+                    setPane('option');
+                    const currentIndex = group.options.findIndex((option) => option.value === value);
+                    setHighlight(currentIndex >= 0 ? currentIndex : 0);
+                  }}
+                >
+                  <BrandIcon icon={group.icon} name={group.title} size={16} className="filter-option-icon" />
+                  <span className="icon-select-group-title">{group.title}</span>
+                  <span className="icon-select-group-count">{group.options.length}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="icon-select-accounts" role="listbox" aria-label="账号">
+            {visibleOptions.length === 0 ? (
+              <div className="searchable-select-empty">无匹配账号</div>
+            ) : visibleOptions.map((option, index) => optionRow(option, index, false))}
+          </div>
+        </div>
+      )}
+    </>
+  ) : (
+    <>
+      {searchField}
+      {options.length === 0 ? (
+        <div className="searchable-select-empty">无匹配项</div>
+      ) : options.map((option, index) => optionRow(option, index, true))}
     </>
   );
 
@@ -630,7 +764,7 @@ export function IconSelect({
           {hint ? <InfoTip text={hint} /> : null}
         </div>
       ) : null}
-      <div className={`searchable-select icon-select${open ? ' open' : ''}`} ref={rootRef}>
+      <div className={`searchable-select icon-select${open ? ' open' : ''}${twoLevel ? ' two-level' : ''}`} ref={rootRef}>
         <button
           type="button"
           className="icon-select-trigger"

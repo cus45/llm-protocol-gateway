@@ -295,11 +295,23 @@ func inputItemsFromChatMessages(messages []any) ([]any, string, error) {
 			if callID == "" {
 				continue
 			}
+			// function_call_output 只认字符串，工具结果里的图另起一条 user 消息。
+			text, imageURLs := splitToolResultImages(entry["content"])
+			output := text
+			if len(imageURLs) > 0 {
+				output = appendImageNote(text, len(imageURLs))
+			}
 			inputItems = append(inputItems, map[string]any{
 				"type":    "function_call_output",
 				"call_id": callID,
-				"output":  toolResultContentToString(entry["content"]),
+				"output":  output,
 			})
+			if len(imageURLs) > 0 {
+				parts := make([]any, 0, len(imageURLs)+1)
+				parts = append(parts, map[string]any{"type": "input_text", "text": "[From the result of tool call " + callID + ":]"})
+				parts = append(parts, responsesInputImageParts(imageURLs)...)
+				inputItems = append(inputItems, map[string]any{"type": "message", "role": "user", "content": parts})
+			}
 			continue
 		}
 		if role == "assistant" {
@@ -615,11 +627,23 @@ func chatMessagesFromResponsesInput(input any, ctx *codexToolContext) ([]map[str
 				if callID == "" {
 					continue
 				}
+				// Chat 的 tool 消息同样只装文本，output 里的图挪到后一条 user 消息。
+				text, imageURLs := splitToolResultImages(entry["output"])
+				output := text
+				if len(imageURLs) > 0 {
+					output = appendImageNote(text, len(imageURLs))
+				}
 				messages = append(messages, map[string]any{
 					"role":         "tool",
 					"tool_call_id": callID,
-					"content":      toolResultContentToString(entry["output"]),
+					"content":      output,
 				})
+				if len(imageURLs) > 0 {
+					parts := make([]any, 0, len(imageURLs)+1)
+					parts = append(parts, map[string]any{"type": "text", "text": "[From the result of tool call " + callID + ":]"})
+					parts = append(parts, chatImagePartsFromURLs(imageURLs)...)
+					messages = append(messages, map[string]any{"role": "user", "content": parts})
+				}
 				continue
 			}
 			if itemType == "additional_tools" {

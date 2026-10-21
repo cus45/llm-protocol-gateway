@@ -1311,7 +1311,45 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .icon-select-sub { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .searchable-select-option.icon-select-option.selected .icon-select-sub { color: var(--accent-strong); opacity: 0.8; }
 /* 选项多时的搜索框：粘在菜单顶部，滚动时不过早滑走。 */
-.icon-select-search { position: sticky; top: -5px; z-index: 1; padding: 2px 2px 6px; margin: -2px -2px 2px; background: var(--surface); }
+/* 选项多时的搜索框：粘在菜单顶部，滚动时不过早滑走。 */
+.icon-select-search { position: sticky; top: -5px; z-index: 2; padding: 2px 2px 6px; margin: -2px -2px 2px; background: var(--surface); }
+/* 两级菜单：左栏服务商、右栏该服务商下的账号。两栏各自滚动，中间一条边线
+   把「品牌」和「账号」分成两件事——平铺 + 分组标题那种画法，品牌名和账号行
+   长得一样，层级全靠一条细线，扫一眼分不出谁属于谁。 */
+/* 触发器可能只有一百多像素宽，两栏菜单不能跟着它一起窄：品牌名会被截成
+   两三个字。菜单比触发器宽（锚在左边，向右展开），窄屏上再被视口收回来。 */
+.icon-select .searchable-select-menu:has(> .icon-select-split) {
+  padding: 0; overflow: hidden;
+  min-width: min(520px, calc(100vw - 24px));
+}
+.icon-select-split {
+  display: grid; grid-template-columns: minmax(150px, 0.85fr) minmax(0, 1.15fr);
+  height: 320px; max-height: 60vh;
+}
+.icon-select .searchable-select-menu:has(> .icon-select-split) > .icon-select-search { margin: 0; padding: 7px 8px 7px; border-bottom: 1px solid var(--border); }
+.icon-select-groups, .icon-select-accounts { overflow: auto; padding: 6px; }
+.icon-select-groups { background: var(--surface-sunken); border-right: 1px solid var(--border); }
+/* 左栏一行 = 一个服务商：图标 + 品牌名 + 账号数。 */
+.icon-select-group-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: var(--r-sm);
+  color: var(--muted); font-size: 12.5px; cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.icon-select-group-row:hover { background: var(--hover); color: var(--text); }
+/* 左栏当前展开的服务商：实心底色 + 主色字，和右栏的内容对应起来。 */
+.icon-select-group-row.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border); }
+.icon-select-group-row[data-active="true"] { box-shadow: inset 2px 0 0 var(--accent); }
+.icon-select-group-row .filter-option-icon { flex: none; }
+.icon-select-group-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 账号数：小胶囊，顺手告诉人这一栏里还有几个。 */
+.icon-select-group-count { flex: none; min-width: 18px; text-align: center; font-size: 10.5px; font-weight: 600; line-height: 16px; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); }
+.icon-select-group-row.active .icon-select-group-count { background: var(--accent-soft); color: var(--accent-strong); }
+/* 选中项所在的品牌：哪怕没展开，也在左栏留一个记号。 */
+.icon-select-group-row.current:not(.active) .icon-select-group-title::after { content: ' ✓'; color: var(--accent-strong); }
+/* 右栏一行 = 一个账号：选中项沿用全局的 .selected 主色。 */
+.icon-select-accounts .icon-select-option { border-radius: var(--r-sm); }
+.icon-select-accounts .icon-select-option.selected { background: var(--accent-soft); }
 .icon-select-search input {
   width: 100%; height: 30px; box-sizing: border-box; outline: none;
   padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--border);
@@ -1815,6 +1853,28 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   flex: 0 0 auto; white-space: nowrap;
 }
 .models-filter-chip.active .models-filter-count { background: var(--surface); color: var(--accent); }
+
+/* 一级筛选（服务商）的品牌名：多账号时只显示品牌，账号交给二级。长品牌名截断，
+   不能反过来把计数挤掉——计数是这一级唯一的分量信息。 */
+.models-filter-brand { min-width: 0; max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 品牌胶囊尾部的「N 个账号」：一级胶囊后面还挂着二级，别让人以为只有一个来源。 */
+.models-filter-chip-tag {
+  flex: 0 0 auto; padding: 0 6px; border-radius: 999px;
+  background: var(--surface-sunken); color: var(--subtle);
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.models-filter-chip.active .models-filter-chip-tag { background: var(--surface); color: var(--accent); }
+/* 二级筛选行：左缩进 + 一条细竖线表明层级，不额外加高度，避免筛选区变成长条。 */
+.models-filter-group.models-filter-subgroup {
+  margin-top: 2px; margin-left: 6px; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--border-strong);
+}
+.models-filter-subgroup .filter-group-label { font-size: 11.5px; font-weight: 600; }
+/* 二级胶囊里只剩账号，用等宽字让它跟品牌名区分开（账号常是手机号 / 邮箱尾段）。 */
+.models-filter-account {
+  min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11.5px;
+}
 
 /* 故障转移链里的身份列占满剩余宽度，长名字截断而不是把模型挤走。 */
 .fallback-row .fallback-identity { flex: 1; min-width: 0; }

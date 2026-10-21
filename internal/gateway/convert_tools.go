@@ -244,6 +244,83 @@ func toolResultContentForOpenAI(content any) (string, []any) {
 	return strings.Join(texts, "\n"), images
 }
 
+// splitToolResultImages 把工具结果拆成「纯文本 + 图片 data URL」，给 Responses
+// 两条链路用：function_call_output 只认字符串，图片必须单独作为一条 user 消息
+// 跟在后面（把它塞进 output 字符串里模型看不见，等同于丢掉）。
+// 同时接受 Claude 的 image 块与 Responses 的 input_image / image_url 部件。
+func splitToolResultImages(content any) (string, []string) {
+	blocks, ok := content.([]any)
+	if !ok {
+		return toolResultContentToString(content), nil
+	}
+	texts := make([]string, 0, len(blocks))
+	urls := make([]string, 0, 1)
+	for _, item := range blocks {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringValue(block["type"]) {
+		case "image":
+			source, _ := block["source"].(map[string]any)
+			data := stringValue(source["data"])
+			if data == "" {
+				continue
+			}
+			mediaType := firstNonEmpty(stringValue(source["media_type"]), "image/png")
+			urls = append(urls, "data:"+mediaType+";base64,"+data)
+		case "input_image", "image_url":
+			if url := imageURLFromPart(block); url != "" {
+				urls = append(urls, url)
+			}
+		default:
+			if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	return strings.Join(texts, "\n"), urls
+}
+
+// imageURLFromPart 兼容三种写法：字符串、{url} 对象、OpenAI Chat 的
+// {type:image_url, image_url:{url}}。
+func imageURLFromPart(part map[string]any) string {
+	switch typed := part["image_url"].(type) {
+	case string:
+		return typed
+	case map[string]any:
+		return stringValue(typed["url"])
+	}
+	return ""
+}
+
+// responsesInputImageParts 把 data URL 列表转成 Responses 的 input_image 部件。
+func responsesInputImageParts(urls []string) []any {
+	parts := make([]any, 0, len(urls))
+	for _, url := range urls {
+		if url == "" {
+			continue
+		}
+		parts = append(parts, map[string]any{"type": "input_image", "image_url": url})
+	}
+	return parts
+}
+
+// chatImagePartsFromURLs 把 data URL 列表转成 OpenAI Chat 的 image_url 部件。
+func chatImagePartsFromURLs(urls []string) []any {
+	parts := make([]any, 0, len(urls))
+	for _, url := range urls {
+		if url == "" {
+			continue
+		}
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": url},
+		})
+	}
+	return parts
+}
+
 func toolResultContentToString(content any) string {
 	switch typed := content.(type) {
 	case string:
@@ -1181,12 +1258,16 @@ func claudeMessagesToOpenAI(rawMessages []any, clientToolNames map[string]struct
 					continue
 				}
 				name := strings.TrimSpace(stringValue(block["name"]))
+				// 名字为空的 tool_use 会被整条丢掉（下游无法序列化），这类调用
+				// 也就不该进待应答队列，否则会补出一条没有对应 tool_calls 的
+				// 孤立 tool 消息，反而更不合规。
+				if name == "" {
+					continue
+				}
+				hasToolUse = true
 				if id := strings.TrimSpace(stringValue(block["id"])); id != "" {
 					toolNames[id] = name
 					pendingCalls = append(pendingCalls, id)
-				}
-				if name != "" {
-					hasToolUse = true
 				}
 			}
 			if hasToolUse {

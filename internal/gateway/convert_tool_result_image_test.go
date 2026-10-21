@@ -268,3 +268,163 @@ func TestMissingToolResultIsFilledBeforeUserTurn(t *testing.T) {
 		t.Fatalf("the user's own turn comes after all tool answers, got %v", messages[4]["role"])
 	}
 }
+
+// Claude → Responses：function_call_output 只能装字符串，截图得单独作为一条
+// user 消息跟在它后面，否则等价于丢掉（Responses 侧的同一个坑）。
+func TestClaudeToolResultImagesReachResponsesInput(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "user", "content": "看一下页面"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_r1", "name": "browser_click",
+				"input": map[string]any{"uid": "10_56"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_r1", "content": []any{
+				map[string]any{"type": "text", "text": "clicked"},
+				map[string]any{"type": "image", "source": map[string]any{
+					"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg==",
+				}},
+			}},
+		}},
+	}
+
+	items := claudeMessagesToResponsesInput(messages)
+	if len(items) != 4 {
+		raw, _ := json.Marshal(items)
+		t.Fatalf("expected message, function_call, function_call_output, image message; got %d: %s", len(items), raw)
+	}
+	output, ok := items[2].(map[string]any)
+	if !ok || output["type"] != "function_call_output" {
+		t.Fatalf("third item should be the tool output, got %v", items[2])
+	}
+	if out, _ := output["output"].(string); !strings.HasPrefix(out, "clicked") || !strings.Contains(out, "follows") {
+		t.Fatalf("tool output should keep text and point at the screenshot, got %q", out)
+	}
+
+	imageItem, ok := items[3].(map[string]any)
+	if !ok || imageItem["type"] != "message" || imageItem["role"] != "user" {
+		t.Fatalf("screenshot must follow in a user message item, got %v", items[3])
+	}
+	parts, _ := imageItem["content"].([]any)
+	head, _ := parts[0].(map[string]any)
+	if text, _ := head["text"].(string); !strings.Contains(text, "browser_click") || !strings.Contains(text, "toolu_r1") {
+		t.Fatalf("image should be attributed to its tool call, got %v", head)
+	}
+	var sawImage bool
+	for _, part := range parts {
+		block, _ := part.(map[string]any)
+		if block["type"] == "input_image" {
+			sawImage = true
+			if block["image_url"] != probePNGDataURL {
+				t.Fatalf("image url mangled: %v", block["image_url"])
+			}
+		}
+	}
+	if !sawImage {
+		raw, _ := json.Marshal(parts)
+		t.Fatalf("no input_image part produced: %s", raw)
+	}
+}
+
+// Responses → Chat：function_call_output.output 里的 input_image 必须转成
+// Chat 的 image_url 并另起一条 user 消息。
+func TestResponsesToolOutputImagesBecomeChatImageParts(t *testing.T) {
+	input := []any{
+		map[string]any{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "看一下页面"},
+		}},
+		map[string]any{"type": "function_call", "call_id": "call_r1", "name": "browser_click", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "call_id": "call_r1", "output": []any{
+			map[string]any{"type": "input_text", "text": "clicked"},
+			map[string]any{"type": "input_image", "image_url": probePNGDataURL},
+		}},
+	}
+
+	messages, err := chatMessagesFromResponsesInput(input, nil)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(messages) != 4 {
+		raw, _ := json.Marshal(messages)
+		t.Fatalf("expected user, assistant, tool, image user; got %d: %s", len(messages), raw)
+	}
+	if messages[2]["role"] != "tool" {
+		t.Fatalf("tool answer must stay a tool message, got %v", messages[2]["role"])
+	}
+	if text, _ := messages[2]["content"].(string); !strings.HasPrefix(text, "clicked") || !strings.Contains(text, "follows") {
+		t.Fatalf("tool text should survive with the follow-up note, got %q", text)
+	}
+	if messages[3]["role"] != "user" {
+		t.Fatalf("images must follow in a user message, got %v", messages[3]["role"])
+	}
+	parts, _ := messages[3]["content"].([]any)
+	var sawImage bool
+	for _, part := range parts {
+		block, _ := part.(map[string]any)
+		if block["type"] != "image_url" {
+			continue
+		}
+		sawImage = true
+		imageURL, _ := block["image_url"].(map[string]any)
+		if imageURL["url"] != probePNGDataURL {
+			t.Fatalf("image url mangled: %v", imageURL["url"])
+		}
+	}
+	if !sawImage {
+		raw, _ := json.Marshal(parts)
+		t.Fatalf("no image_url part in the follow-up message: %s", raw)
+	}
+}
+
+// Chat → Responses：客户端把图塞进 tool 消息的 content 数组时，同样别丢。
+func TestChatToolMessageImagesReachResponsesInput(t *testing.T) {
+	chatMessages := []any{
+		map[string]any{"role": "user", "content": "看一下页面"},
+		map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+			map[string]any{"id": "call_c1", "type": "function",
+				"function": map[string]any{"name": "browser_click", "arguments": "{}"}},
+		}},
+		map[string]any{"role": "tool", "tool_call_id": "call_c1", "content": []any{
+			map[string]any{"type": "text", "text": "clicked"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": probePNGDataURL}},
+		}},
+	}
+
+	items, _, err := inputItemsFromChatMessages(chatMessages)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	var output map[string]any
+	var imageItem map[string]any
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		switch block["type"] {
+		case "function_call_output":
+			output = block
+		case "message":
+			if block["role"] != "user" {
+				continue
+			}
+			parts, ok := block["content"].([]any)
+			if !ok {
+				continue
+			}
+			for _, part := range parts {
+				piece, _ := part.(map[string]any)
+				if piece["type"] == "input_image" && piece["image_url"] == probePNGDataURL {
+					imageItem = block
+				}
+			}
+		}
+	}
+	if output == nil {
+		t.Fatalf("no function_call_output produced: %v", items)
+	}
+	if text, _ := output["output"].(string); !strings.HasPrefix(text, "clicked") || !strings.Contains(text, "follows") {
+		t.Fatalf("tool output should keep text and point at the screenshot, got %q", text)
+	}
+	if imageItem == nil {
+		raw, _ := json.Marshal(items)
+		t.Fatalf("no user message carrying input_image: %s", raw)
+	}
+}

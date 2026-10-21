@@ -1,42 +1,151 @@
-import {protocolLabel, providerAccountLabel, providerOptionLabel, shortenAccountLabel} from '../lib';
+import {PROVIDER_PRESETS} from '../provider_presets';
+import {
+    protocolLabel,
+    providerAccountLabel,
+    providerConnectKind,
+    providerGroupLabel,
+    providerOptionLabel,
+    shortenAccountLabel,
+} from '../lib';
 import {providerIcon} from './provider_label';
 import type {IconSelectOption} from './selects';
-import type {Provider} from '../types';
+import type {Provider, ProviderConnectKind, ProviderPresetSection} from '../types';
 
 /**
  * 每个 Provider 在下拉里给人看的名字：品牌名 + 脱敏账号
  * （WorkBuddy 订阅 · 1815****4947）。同一个服务商每多登一个账号就多一条同名
  * 记录，只读名字分不出是哪条；账号必须在这里，展开选的时候能分清，选完之后
- * 触发器上也得能分清，两处用同一块文字。
+ * 触发器上也得能分清，两处用同一块文字。收起后触发器只有一行，没有分组标题
+ * 兜底，所以账号不能被省掉。
  */
 export function providerAccountFace(provider: Provider): string {
-  const account = providerAccountLabel(provider);
-  const name = provider.name.trim();
-  if (!account || account === name) return provider.name;
-  return `${name} · ${maskAccountLabel(account)}`;
+  return [providerBrandName(provider), providerAccountFaceTail(provider)].filter(Boolean).join(' · ');
 }
 
 /**
- * 筛选项 / 弹窗里的「输入 Provider」选项：品牌图标 + 带账号的名字，右侧标协议。
- * 没有账号可认的（API Key 类）第二行退回短 ID，同名项之间靠它区分。
- *
- * 账号已经并在 label 里了，菜单不再重复挂第二行——4 个 WorkBuddy 账号挤在一屏
- * 里，每项两行账号只会把列表撑长、把能区分的那个值说两遍。
+ * 下拉行里的名字。展开时头顶有分组标题写着品牌名，每行再重复一遍「claude pro」
+ * 只会把账号挤进省略号——所以菜单里用「账号」，品牌只留给触发器。
  */
-export function providerSelectOptions(providers: Provider[], options: { withProtocol?: boolean } = {}): IconSelectOption[] {
-  const withProtocol = options.withProtocol ?? true;
-  return providers.map((provider) => {
-    const account = providerAccountLabel(provider);
-    return {
-      value: provider.id,
-      label: providerAccountFace(provider),
+function providerMenuLabel(provider: Provider): string {
+  const brand = providerBrandName(provider);
+  const tail = providerAccountFaceTail(provider);
+  return tail || brand;
+}
+
+/** 品牌名之后要跟着的那截（账号 / 短 ID）；贴回名字里就是完整标签。 */
+function providerAccountFaceTail(provider: Provider): string {
+  const account = providerAccountLabel(provider);
+  if (!account || account === provider.name) return '';
+  return maskAccountLabel(account);
+}
+
+/**
+ * 去掉账号、只留品牌的名字：同一个服务商的多条记录共用一个分组标题，
+ * 标题取该组里最早的花名（第一条记录的名称去掉账号后缀）。
+ */
+function providerBrandName(provider: Provider): string {
+  const name = provider.name.trim();
+  const account = providerAccountLabel(provider);
+  if (!account) return name;
+  const raw = account.replace(/[\s-]/g, '');
+  // 名称里早就并进账号时（\`WorkBuddy 订阅 · 1815****4947\`、\`x · 1815****4947\`）截掉后半截。
+  const joined = name.split(' · ');
+  const masked = maskAccountLabel(account);
+  const stripped = joined.length > 1 && joined.slice(1).some((part) => raw.endsWith(part.replace(/\*/g, '')) || part === masked)
+    ? joined[0]
+    : name;
+  return stripped || name;
+}
+
+/**
+ * 筛选项 / 弹窗里的「输入 Provider」选项：每个 Provider 一条，带上所属品牌
+ * （group / groupKey）——菜单按品牌分成左右两栏，左栏一个品牌，右栏是它的账号。
+ *
+ * 右栏的名字只写账号（`1815****4947`、`luca`），品牌名由左栏说，不必每行重复；
+ * 没有账号可认的（API Key 类）退回完整名称 + 短 ID，同名项之间靠它区分。同品牌
+ * 里真撞名时整组退回完整名称（`WorkBuddy 订阅` 和 `WorkBuddy 订阅 · #3adf9871`
+ * 是两条记录，后者才是能认人的那个）。
+ *
+ * 触发器上仍然显示「品牌 · 账号」（providerAccountFace），和菜单里两栏拼起来一致。
+ */
+export type ProviderBrandGroup = {
+  /** providerGroupLabel 的值：同一服务商（API Key 类按 host）共用一个 */
+  key: string;
+  /** 一级筛选胶囊 / 分组标题上的品牌名 */
+  title: string;
+  icon: string;
+  kind: ProviderConnectKind;
+  items: Provider[];
+};
+
+/**
+ * 按服务商把 Provider 收成组。同一个服务商每多登一个账号就多一条独立记录，
+ * 平铺出来全是同名项；模型页的一级筛选和下拉菜单的分组标题都走这一份口径，
+ * 免得两处对「算不算同一家」判断不一致。
+ *
+ * 品牌顺序按目录磁贴的排法（订阅登录 → 模型厂商 → 中转 → 本机/自建），目录里
+ * 没有的落到「自定义」（排最后）；同段内保持 Provider 出现的顺序。
+ */
+export function groupProvidersByBrand(providers: Provider[]): ProviderBrandGroup[] {
+  const groups = new Map<string, ProviderBrandGroup>();
+  providers.forEach((provider) => {
+    const key = providerGroupLabel(provider);
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(provider);
+      return;
+    }
+    groups.set(key, {
+      key,
+      title: providerBrandName(provider) || key,
       icon: providerIcon(provider),
-      description: account ? undefined : provider.id,
-      meta: withProtocol ? protocolLabel(provider.protocol) : undefined,
-      keywords: `${providerOptionLabel(provider)} ${account} ${provider.id}`,
-    };
+      kind: providerConnectKind(provider),
+      items: [provider],
+    });
+  });
+  return [...groups.values()].sort((left, right) => {
+    const delta = sectionRank(left.kind) - sectionRank(right.kind);
+    if (delta !== 0) return delta;
+    return providers.indexOf(left.items[0]) - providers.indexOf(right.items[0]);
   });
 }
+
+export function providerSelectOptions(providers: Provider[], options: { withProtocol?: boolean } = {}): IconSelectOption[] {
+  const withProtocol = options.withProtocol ?? true;
+  return groupProvidersByBrand(providers).flatMap((group) => {
+    const faces = group.items.map((provider) => providerMenuLabel(provider));
+    const duplicated = group.items.length > 1 && new Set(faces).size !== faces.length;
+    const indices = group.items.map((_, index) => index);
+    indices.sort((left, right) => faces[left].localeCompare(faces[right], 'zh-Hans-CN'));
+    return indices.map((index) => {
+      const provider = group.items[index];
+      const account = providerAccountLabel(provider);
+      const face = faces[index];
+      // 有账号的：右栏只写账号；没有账号的：完整名称，短 ID 放第二行。
+      const label = duplicated ? provider.name.trim() : account ? face : provider.name.trim();
+      return {
+        value: provider.id,
+        label,
+        icon: group.icon,
+        description: account ? undefined : provider.id,
+        meta: withProtocol ? protocolLabel(provider.protocol) : undefined,
+        keywords: `${providerOptionLabel(provider)} ${provider.name} ${account} ${provider.id}`,
+        group: group.title,
+        groupKey: group.key,
+      };
+    });
+  });
+}
+
+/** 目录里匹配得上就按磁贴分段，匹配不上（自建反代、换过域名）排到最后的自定义段。 */
+function sectionRank(kind: ProviderConnectKind): number {
+  const rank = PROVIDER_SECTION_ORDER.indexOf(
+    PROVIDER_PRESETS.find((preset) => preset.authType === kind)?.section ?? 'local',
+  );
+  return rank >= 0 ? rank : PROVIDER_SECTION_ORDER.length;
+}
+
+const PROVIDER_SECTION_ORDER: ProviderPresetSection[] = ['subscription', 'vendor', 'relay', 'local'];
 
 /** 手机号只留前 4 后 4（1815****4947）；邮箱砍掉域名；其余原样。 */
 function maskAccountLabel(label: string): string {

@@ -86,6 +86,9 @@ func claudeDocumentBlockToResponsesInputFile(block map[string]any) map[string]an
 // preserving signed thinking blocks via encrypted_content.
 func claudeMessagesToResponsesInput(messages []any) []any {
 	input := make([]any, 0, len(messages))
+	// function_call_output 只能装字符串，工具结果里的截图要另起一条 user 消息
+	// 跟在它后面；带上工具名，并行调用时才分得清哪张图是谁的。
+	toolNames := make(map[string]string, 4)
 	for _, raw := range messages {
 		msg, ok := raw.(map[string]any)
 		if !ok {
@@ -166,17 +169,33 @@ func claudeMessagesToResponsesInput(messages []any) []any {
 						"name":      name,
 						"arguments": args,
 					})
+					toolNames[callID] = name
 				case "tool_result":
 					flushMessage()
 					callID := sanitizeResponsesCallID(stringValue(block["tool_use_id"]))
 					if callID == "" {
 						continue
 					}
+					text, imageURLs := splitToolResultImages(block["content"])
+					output := text
+					if len(imageURLs) > 0 {
+						output = appendImageNote(text, len(imageURLs))
+					}
 					input = append(input, map[string]any{
 						"type":    "function_call_output",
 						"call_id": callID,
-						"output":  toolResultContentToString(block["content"]),
+						"output":  output,
 					})
+					if len(imageURLs) > 0 {
+						source := callID
+						if name := toolNames[callID]; name != "" {
+							source = name + " (tool call " + callID + ")"
+						}
+						parts := make([]any, 0, len(imageURLs)+1)
+						parts = append(parts, map[string]any{"type": "input_text", "text": "[From the result of " + source + ":]"})
+						parts = append(parts, responsesInputImageParts(imageURLs)...)
+						input = append(input, map[string]any{"type": "message", "role": "user", "content": parts})
+					}
 				case "thinking", "redacted_thinking":
 					flushMessage()
 					// The synthetic rs_* id is only used for item construction;

@@ -1457,6 +1457,20 @@ const GENERIC_ACCOUNT_LABELS = new Set(['cursor', 'qoder', 'workbuddy', 'trae', 
  * 昵称不一定可信：WorkBuddy 的 accountLabel 取自上游昵称，实测就有账号的昵称
  * 是 "1"，所以昵称没有区分度时退回账号 id 尾段——九个字符，但一定唯一。
  */
+/**
+ * 下拉分组：同一「服务商」的 Provider 归一组。订阅登录按连接方式归
+ * （Claude / Cursor / WorkBuddy 各算一家，国际版和国内版也是一家）；API Key 类
+ * 按端点主机名归——同一个反代上起的多个 Provider 是一条链路，域名不同才是别家。
+ */
+export function providerGroupLabel(provider: Provider): string {
+  if (providerConnectKind(provider) !== 'api_key') return providerConnectKind(provider);
+  try {
+    return `api_key:${new URL(provider.baseUrl).host.toLowerCase() || provider.id}`;
+  } catch {
+    return `api_key:${provider.id}`;
+  }
+}
+
 export function providerAccountLabel(provider: Provider): string {
   const pick = (label?: string, id?: string) => {
     const text = (label || '').trim();

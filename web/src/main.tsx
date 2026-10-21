@@ -114,6 +114,7 @@ import {
     resolveProviderTestModel,
     routeGatewayTestURL,
     selfRegisterPlaceholderBaseURL,
+    shortenAccountLabel,
     splitCustomDomain,
     statusTone,
     thermalPressureLabel,
@@ -145,7 +146,7 @@ import {
 } from './components/panels';
 import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
-import {providerSelectOptions} from './components/provider_select';
+import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
 import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
@@ -517,6 +518,10 @@ function App() {
     streamEnabled: true,
     codexForceFast: false,
   });
+  // 模型页的 Provider 筛选分两级：一级是服务商，二级是同一服务商下的账号。
+  // 同一个服务商每多登一个账号就多一条同名记录，平铺时一排全是「WorkBuddy 订阅」，
+  // 光看名字认不出谁是谁。
+  const [modelsBrandFilter, setModelsBrandFilter] = useState('__all__');
   const [modelsProviderFilter, setModelsProviderFilter] = useState('__all__');
   const [modelsSearchQuery, setModelsSearchQuery] = useState('');
   const [modelsCapabilityFilter, setModelsCapabilityFilter] = useState<'all' | 'thinking' | 'vision' | 'context' | 'free'>('all');
@@ -689,6 +694,41 @@ function App() {
       return false;
     });
   }, [state.models, sortedProviders]);
+  // 一级筛选的胶囊：一个服务商一个，账号数在二级展开。
+  const modelsProviderGroups = useMemo(() => groupProvidersByBrand(modelsMenuProviders), [modelsMenuProviders]);
+  const modelsActiveGroup = useMemo(
+    () => modelsProviderGroups.find((group) => group.key === modelsBrandFilter) ?? null,
+    [modelsProviderGroups, modelsBrandFilter],
+  );
+  // 两级筛选最终收敛成一组 provider id：选中具体账号只留它，选中服务商留全组。
+  const modelsFilterProviderIDs = useMemo(() => {
+    if (modelsProviderFilter !== '__all__') return new Set([modelsProviderFilter]);
+    if (modelsActiveGroup) return new Set(modelsActiveGroup.items.map((provider) => provider.id));
+    return null;
+  }, [modelsProviderFilter, modelsActiveGroup]);
+  // 选中的服务商 / 账号被删掉时回到「全部」，否则用户会停在一个看不见的筛选上、
+  // 列表恒空（与 Provider 卡片页的 connect 胶囊同一套兜底）。
+  useEffect(() => {
+    if (modelsBrandFilter === '__all__') return;
+    if (modelsProviderGroups.some((group) => group.key === modelsBrandFilter)) return;
+    setModelsBrandFilter('__all__');
+    setModelsProviderFilter('__all__');
+  }, [modelsBrandFilter, modelsProviderGroups]);
+  useEffect(() => {
+    if (modelsProviderFilter === '__all__') return;
+    if (modelsMenuProviders.some((provider) => provider.id === modelsProviderFilter)) return;
+    setModelsProviderFilter('__all__');
+  }, [modelsProviderFilter, modelsMenuProviders]);
+  // 工具栏那句「当前筛选」要能一句话读出来：只选服务商时说品牌，选了账号说品牌 + 账号。
+  const modelsFilterCaption = useMemo(() => {
+    if (modelsProviderFilter !== '__all__') {
+      const provider = state.providers.find((item) => item.id === modelsProviderFilter);
+      if (!provider) return modelsProviderFilter;
+      const account = shortenAccountLabel(providerAccountLabel(provider));
+      return account && account !== provider.name ? `${provider.name} · ${account}` : provider.name;
+    }
+    return modelsActiveGroup ? modelsActiveGroup.title : '';
+  }, [modelsProviderFilter, modelsActiveGroup, state.providers]);
   const modelsSearch = useMemo(() => {
     const query = modelsSearchQuery.trim();
     if (!query) return { matcher: null as null | ((text: string) => boolean), error: '' };
@@ -705,9 +745,9 @@ function App() {
   }, [modelsSearchQuery]);
 
   const filteredModels = useMemo(() => {
-    const base = modelsProviderFilter === '__all__'
-      ? state.models
-      : state.models.filter((model) => model.providerId === modelsProviderFilter);
+    const base = modelsFilterProviderIDs
+      ? state.models.filter((model) => modelsFilterProviderIDs.has(model.providerId))
+      : state.models;
     const matched = !modelsSearch.matcher
       ? base
       : base.filter((model) => {
@@ -744,16 +784,16 @@ function App() {
       if (ca !== cb) return cb - ca;
       return a.id.localeCompare(b.id);
     });
-  }, [state.models, state.providers, modelsProviderFilter, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
+  }, [state.models, state.providers, modelsFilterProviderIDs, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
 
   // 筛选条件一变就回到第一屏，否则用户改完筛选还停在“加载了 480 个”的位置。
-  useEffect(() => { setModelsVisibleCount(60); }, [modelsProviderFilter, modelsCapabilityFilter, modelsSearchQuery]);
+  useEffect(() => { setModelsVisibleCount(60); }, [modelsBrandFilter, modelsProviderFilter, modelsCapabilityFilter, modelsSearchQuery]);
   const visibleModels = useMemo(() => filteredModels.slice(0, modelsVisibleCount), [filteredModels, modelsVisibleCount]);
 
   const modelsCapabilityCounts = useMemo(() => {
-    const base = modelsProviderFilter === '__all__'
-      ? state.models
-      : state.models.filter((model) => model.providerId === modelsProviderFilter);
+    const base = modelsFilterProviderIDs
+      ? state.models.filter((model) => modelsFilterProviderIDs.has(model.providerId))
+      : state.models;
     const matched = !modelsSearch.matcher
       ? base
       : base.filter((model) => {
@@ -778,7 +818,7 @@ function App() {
       if (isFreeModel(m)) free++;
     }
     return { all: matched.length, thinking, vision, context, free };
-  }, [state.models, state.providers, modelsProviderFilter, modelsSearch]);
+  }, [state.models, state.providers, modelsFilterProviderIDs, modelsSearch]);
 
   const modelsMenuSummary = useMemo(() => {
     const counts = new Map<string, number>();
@@ -5519,24 +5559,68 @@ function App() {
                 {modelsSearch.error ? (
                   <div className="hint-line error">正则无效，已回退为普通包含匹配：{modelsSearch.error}</div>
                 ) : null}
+                {/* 一级：服务商。同一个服务商登了几个账号就只有一个胶囊，
+                    账号数写在旁边，点开后在下面二级行里挑具体账号。 */}
                 <div className="models-filter-group">
                   <button
-                    className={`models-filter-chip ${modelsProviderFilter === '__all__' ? 'active' : ''}`}
-                    onClick={() => setModelsProviderFilter('__all__')}
+                    className={`models-filter-chip ${modelsBrandFilter === '__all__' ? 'active' : ''}`}
+                    onClick={() => {
+                      setModelsBrandFilter('__all__');
+                      setModelsProviderFilter('__all__');
+                    }}
                   >
                     全部 ({state.models.length})
                   </button>
-                  {modelsMenuProviders.map((provider) => (
-                    <button
-                      key={provider.id}
-                      className={`models-filter-chip with-icon ${modelsProviderFilter === provider.id ? 'active' : ''}`}
-                      onClick={() => setModelsProviderFilter(provider.id)}
-                    >
-                      <ProviderLabel provider={provider} size={14} />
-                      <span className="models-filter-count">{modelsMenuSummary.get(provider.id) || 0}</span>
-                    </button>
-                  ))}
+                  {modelsProviderGroups.map((group) => {
+                    const active = modelsBrandFilter === group.key;
+                    const total = group.items.reduce((sum, provider) => sum + (modelsMenuSummary.get(provider.id) || 0), 0);
+                    return (
+                      <button
+                        key={group.key}
+                        className={`models-filter-chip with-icon ${active ? 'active' : ''}`}
+                        title={group.items.length > 1 ? `${group.title} · ${group.items.length} 个账号` : group.title}
+                        onClick={() => {
+                          setModelsBrandFilter(active ? '__all__' : group.key);
+                          setModelsProviderFilter('__all__');
+                        }}
+                      >
+                        <BrandIcon icon={group.icon} name={group.title} size={14} />
+                        <span className="models-filter-brand">{group.title}</span>
+                        {group.items.length > 1 ? <span className="models-filter-chip-tag">{group.items.length} 个账号</span> : null}
+                        <span className="models-filter-count">{total}</span>
+                      </button>
+                    );
+                  })}
                 </div>
+                {/* 二级：当前服务商的账号。只有多账号的服务商才展开这一行。 */}
+                {modelsActiveGroup && modelsActiveGroup.items.length > 1 ? (
+                  <div className="models-filter-group models-filter-subgroup">
+                    <span className="filter-group-label" title={`${modelsActiveGroup.title} 的账号`}>账号：</span>
+                    <button
+                      className={`models-filter-chip ${modelsProviderFilter === '__all__' ? 'active' : ''}`}
+                      onClick={() => setModelsProviderFilter('__all__')}
+                    >
+                      全部账号
+                      {' ('}
+                      {modelsActiveGroup.items.reduce((sum, provider) => sum + (modelsMenuSummary.get(provider.id) || 0), 0)}
+                      {')'}
+                    </button>
+                    {modelsActiveGroup.items.map((provider) => {
+                      const account = shortenAccountLabel(providerAccountLabel(provider)) || provider.name;
+                      return (
+                        <button
+                          key={provider.id}
+                          className={`models-filter-chip ${modelsProviderFilter === provider.id ? 'active' : ''}`}
+                          title={account !== provider.name ? `${provider.name} · ${account}` : provider.name}
+                          onClick={() => setModelsProviderFilter(modelsProviderFilter === provider.id ? '__all__' : provider.id)}
+                        >
+                          <span className="models-filter-account">{account}</span>
+                          <span className="models-filter-count">{modelsMenuSummary.get(provider.id) || 0}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
                 <div className="models-filter-group capability-filter-group">
                   <span className="filter-group-label">能力特性：</span>
                   <button
@@ -5581,7 +5665,7 @@ function App() {
                 <div className="models-toolbar-meta">
                   当前显示 {filteredModels.length} 个模型
                   {modelsCapabilityFilter !== 'all' ? ` · 特性「${modelsCapabilityFilter === 'thinking' ? '思考/推理' : modelsCapabilityFilter === 'vision' ? '视觉多模态' : '128K+ 上下文'}」` : ''}
-                  {modelsProviderFilter !== '__all__' ? ` · ${state.providers.find((item) => item.id === modelsProviderFilter)?.name || modelsProviderFilter}` : ''}
+                  {modelsFilterCaption ? ` · ${modelsFilterCaption}` : ''}
                   {modelsSearchQuery.trim() ? ` · 检索「${modelsSearchQuery.trim()}」` : ''}
                 </div>
               </div>
@@ -5597,7 +5681,8 @@ function App() {
                     ? '没有匹配当前检索条件的模型，请调整关键字、正则或能力特性筛选。'
                     : '该 Provider 暂无模型记录。'}
                   {!isNormalUser && !modelsSearchQuery.trim() && modelsCapabilityFilter === 'all' && (() => {
-                    const provider = state.providers.find((item) => item.id === modelsProviderFilter);
+                    const provider = state.providers.find((item) => item.id === modelsProviderFilter)
+                      ?? (modelsActiveGroup?.items.length === 1 ? modelsActiveGroup.items[0] : undefined);
                     if (!provider) return null;
                     const canSync = provider.authType === 'cursor_oauth'
                       ? !!provider.cursorOAuth?.connected
