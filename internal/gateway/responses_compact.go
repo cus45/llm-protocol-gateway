@@ -245,7 +245,7 @@ func (s *Server) handleOpenAIResponsesCompact(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	decision = s.decisionForAPIKey(route, matchedKey, decision)
+	decision = s.decisionForAPIKey(route, matchedKey, decision, sessionAffinityKey(r, req, matchedKey.ID))
 
 	requestModel, _ := req["model"].(string)
 	model, logModel := resolveConsumerModel(s.router, route, matchedKey, gatewayKeyMatched, requestModel)

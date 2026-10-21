@@ -4,11 +4,13 @@ import {
     actionLabel,
     isTrafficLogError,
     providerDisplayLabel,
+    scheduleModeLabel,
     trafficLogKeyLabel,
     trafficLogKeyTitle,
     trafficLogProviderLabel,
     trafficLogServing
 } from '../lib';
+import {Badge} from './ui';
 
 /**
  * API 日志的请求表。版式照 magpie 的日志页抄：一行一条、数字等宽右对齐、
@@ -74,6 +76,70 @@ function compactFlow(label: string) {
   const [from, to] = label.split('->').map((part) => part.trim());
   const initial = (value: string) => (value ? value[0].toUpperCase() : '?');
   return to ? `${initial(from)}→${initial(to)}` : initial(from);
+}
+
+/**
+ * 调度轨迹：这次请求按什么顺序、因为什么碰过哪些 Provider。
+ *
+ * 「为什么是它服务」「为什么没用另一个」是排错时被问最多的两件事，日志里原来只有
+ * 最终那一条 providerId，看不出前面还试过谁。这里把网关在故障转移循环里记下的
+ * 每一步摊开：被丢弃的回答、根本没发出的候选，都有各自的理由。
+ * 早于这个功能的请求没有这些字段，直说未记录，不假装有。
+ */
+const SCHEDULE_REASONS: Record<string, { text: string; tone: 'green' | 'amber' | 'red' | 'slate' | 'cyan' }> = {
+  served: { text: '在服务', tone: 'green' },
+  upstream_error: { text: '上游报错', tone: 'red' },
+  transport_error: { text: '连接失败', tone: 'red' },
+  first_packet_timeout: { text: '首包超时', tone: 'amber' },
+  saturated: { text: '并发已满', tone: 'cyan' },
+  missing_model_override: { text: '未锁定模型', tone: 'slate' },
+  disabled: { text: '已禁用', tone: 'slate' },
+  not_assigned: { text: '未授权', tone: 'slate' },
+  decision_failed: { text: 'Provider 不存在', tone: 'slate' },
+  client_gone: { text: '客户端已断开', tone: 'slate' },
+};
+
+export function ScheduleTracePanel({ log, providers }: { log: LogEntry; providers: Provider[] }) {
+  const analysis = log.analysis;
+  if (!analysis?.captured) return null;
+  const attempts = analysis.attempts || [];
+  const candidates = analysis.candidates || [];
+  if (attempts.length === 0 && candidates.length === 0) {
+    return <div className="hint-line">调度轨迹：这条请求早于该功能，未记录尝试过程。</div>;
+  }
+  const labelFor = (id: string) => {
+    const provider = providers.find((item) => item.id === id);
+    return provider ? providerDisplayLabel(provider) : id;
+  };
+  const movedOn = attempts.filter((item) => !item.skipped && item.reason !== 'served').length;
+  return (
+    <div className="schedule-trace">
+      <div className="schedule-trace-head">
+        <strong>调度轨迹</strong>
+        <span className="mono">{scheduleModeLabel(analysis.scheduleMode)}</span>
+        {analysis.sessionPinned ? <span className="schedule-trace-note">会话粘滞：{labelFor(analysis.sessionPinned)}</span> : null}
+        {movedOn > 0 ? <span className="schedule-trace-note">换了 {movedOn} 个候选</span> : null}
+      </div>
+      <ol className="schedule-trace-list">
+        {attempts.map((attempt, index) => {
+          const reason = SCHEDULE_REASONS[attempt.reason || ''] || { text: attempt.reason || '未知', tone: 'slate' as const };
+          return (
+            <li key={`${attempt.providerId}-${index}`} className={`schedule-trace-row${attempt.reason === 'served' ? ' served' : ''}`}>
+              <span className="schedule-trace-rank">#{index + 1}</span>
+              <span className="schedule-trace-provider">{labelFor(attempt.providerId)}</span>
+              {attempt.model ? <span className="mono schedule-trace-model">{attempt.model}</span> : null}
+              <Badge tone={reason.tone}>{reason.text}</Badge>
+              {attempt.status ? <span className="mono">{attempt.status}</span> : null}
+              <span className="mono schedule-trace-ms">{attempt.ms ? `${(attempt.ms / 1000).toFixed(2)}s` : '—'}</span>
+              {attempt.deferred ? <span className="schedule-trace-note">回答已丢弃</span> : null}
+              {attempt.skipped ? <span className="schedule-trace-note">未发出请求</span> : null}
+              {attempt.error ? <code className="schedule-trace-error">{attempt.error}</code> : null}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
 }
 
 export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {

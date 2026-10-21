@@ -321,6 +321,24 @@ type Provider struct {
 	// This allows each provider to use a dedicated IP address, avoiding
 	// account association issues when managing multiple Claude/OpenAI accounts.
 	ProxyURL string `json:"proxyUrl,omitempty"`
+	// FirstPacketTimeoutSec bounds how long one attempt to this provider may
+	// wait for the upstream's response headers before the gateway abandons it
+	// and moves to the next provider in the key's chain. 0 (the default) means
+	// no limit. The timer covers only the wait for headers: once they arrive it
+	// is stopped, so a long reasoning stream or a slow body is never cut short,
+	// and a provider that thinks for two minutes before answering is not
+	// mistaken for a hung one.
+	FirstPacketTimeoutSec int `json:"firstPacketTimeoutSec,omitempty"`
+	// MaxConcurrentRequests caps how many upstream requests this provider serves
+	// at the same time; 0 (the default) means no cap. It is admission control,
+	// not a fairness promise: a burst is refused by the gateway with 429 before
+	// it can make the vendor answer 429 and get the account cooled down as if it
+	// had broken.
+	MaxConcurrentRequests int `json:"maxConcurrentRequests,omitempty"`
+	// QueueWaitSeconds is how long a request over the cap may wait in line for a
+	// slot before it is refused. 0 refuses immediately, which is the default:
+	// waiting is only worth it for clients that already retry slowly on their own.
+	QueueWaitSeconds int `json:"queueWaitSeconds,omitempty"`
 }
 
 // ProviderSelfRegistration is the server-side state backing the self-register
@@ -672,6 +690,18 @@ type APIKey struct {
 	// FallbackProviderIDs is an ordered list of backup input providers after the
 	// preferred provider on the bound route. Higher priority comes first.
 	FallbackProviderIDs []string `json:"fallbackProviderIds,omitempty"`
+	// ScheduleMode decides which provider of the chain (preferred + fallbacks)
+	// answers a request. Empty and "order" keep the historical behavior: the
+	// preferred provider first, then the chain in the order the administrator
+	// wrote, with the key's sticky provider taken first. "rotate" walks the
+	// chain round-robin, "least_used" picks the account that carried the
+	// smallest load in the last few minutes, and "quota" prefers the account
+	// with the most quota left (subscription windows read from the quota
+	// panels; accounts without a readable quota sit in the middle). A
+	// conversation's session pin still wins over all of them, so prompt caches
+	// survive; every mode still skips providers that are unavailable, disabled,
+	// revoked from the key's owner, or cross-protocol without a locked model.
+	ScheduleMode string `json:"scheduleMode,omitempty"`
 	// FallbackModelOverrides maps each fallback provider id to a required fixed
 	// model replacement used when that provider is active.
 	FallbackModelOverrides map[string]string `json:"fallbackModelOverrides,omitempty"`
@@ -709,6 +739,9 @@ type KeyProfile struct {
 	FallbackProviderIDs    []string          `json:"fallbackProviderIds,omitempty"`
 	FallbackModelOverrides map[string]string `json:"fallbackModelOverrides,omitempty"`
 	StreamEnabled          bool              `json:"streamEnabled"`
+	// ScheduleMode mirrors APIKey.ScheduleMode: switching a scheme switches the
+	// scheduling policy with it.
+	ScheduleMode string `json:"scheduleMode,omitempty"`
 }
 
 // UserRole enumerates console user roles.

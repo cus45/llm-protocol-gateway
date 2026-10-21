@@ -143,6 +143,67 @@ IP 被 GFW 识别，和请求频率无关。如需降频，可调大 `providerFa
 - **与主 Provider 跨协议**：必须在 `fallbackModelOverrides` 里为该备选锁定一个模型，
   否则保存会被拒绝；运行时若配置缺失也会跳过该备选，避免把 A 上游的模型名发给 B 上游。
 
+### 6.1 尝试顺序：整条链都可以回头试
+一次请求先把链路过滤成**候选集**（`failoverAttemptOrder`，`internal/gateway/provider_schedule.go`）：
+被撤销授权的、被禁用的、跨协议却没锁模型的都不进候选；被标"异常"的候选排到最后但**不会被丢掉**
+（异常来自一次真实失败或探测，可能已经过期，而它有时是唯一能服务该模型的账号）。
+
+Key 的 `activeProviderId`（粘滞）只决定起点：链被旋转成"粘滞的那条在最前"，因此
+既不会每次都回去骚扰首选，又能在粘滞备选也失败时**在同一请求内回头试前序 Provider**。
+旧实现是从粘滞下标一直往后走，停在链尾，前序 Provider 要等 5.3 的回切探测（最长 2 分钟）才用得上。
+
+### 6.2 会话粘性（prompt cache 优先于均衡）
+`ActiveProviderId` 是 Key 级的，一把 Key 同时跑几个 Agent 时会互相顶掉，
+每次换账号都把上游已经建好的 prompt cache 作废。现在按会话记：
+
+- 会话标识取自请求自己报的身份：`Session_id` / `X-Session-Id` / `X-Claude-Code-Session-Id` 头，
+  body 的 `session_id`，`metadata.session_id`，Claude Code 的 `metadata.user_id` 里
+  `_session_` 之后的后缀，以及 Codex 用来路由缓存的 `prompt_cache_key`（`requestSessionID`，
+  `internal/gateway/provider_affinity.go`）。裸 `user_id` 不算会话，它把多个会话合在一起。
+- 哈希成 `keyID + session` 的摘要后查 pin 表（纯内存，30 分钟滑动过期，上限 1 万条）。
+  谁回答了这一轮，pin 就跟到谁；pin 指向的 Provider 挂了或已不在链上，pin 立刻作废。
+- 优先级：**会话 pin > 调度模式 > Key 粘滞**。pin 生效的那一轮不回写 `activeProviderId`，
+  否则两个会话会把 Key 级粘滞来回抖动、每请求一次落库写。
+- 没带任何会话标识的请求行为不变，仍走 Key 级粘滞。
+
+### 6.3 调度模式 `scheduleMode`
+Key 级（也可存进"方案" `KeyProfile`，切方案一起切），空 = 现状：
+
+| 值 | 行为 |
+| :-- | :-- |
+| `` / `order` | 按链路顺序，粘滞的 Provider 排最前 |
+| `rotate` | 每个请求换下一个候选，内存游标，重启从头开始 |
+| `least_used` | 在飞请求数最少的先用，其次看近 6 分钟实际处理过的 token（**缓存命中不计**） |
+| `quota` | 额度余量多的先用，数据来自额度面板已缓存的快照（Claude / ChatGPT / Cursor / 智谱 / DeepSeek），读不到的排在中位，**绝不在请求路径上打上游** |
+
+非法取值在保存时被拒绝（`normalizeScheduleMode`），不会静默退化成 `order`。
+
+### 6.4 首包超时（假死的上游换掉，而不是拖死）
+Provider 上的 `firstPacketTimeoutSec`：网关等这台**响应头**的最长时间，超时即放弃这次尝试、
+继续下一个候选。定时器只管到响应头到达为止，所以开播之后思考两分钟的模型不会被误伤
+（`doUpstreamHTTP`，`internal/gateway/upstream_timeout.go`；上限 600s，0 = 不限制 = 旧行为）。
+
+实现上它返回的是自定义错误而不是 `context.Canceled`——后者会被 5.2 的判定当成
+"客户端已经断开"而停止 failover。专用接口保存：`POST /__providers/{id}/first-packet-timeout`
+`{"seconds": N}`（Provider 的 PATCH 是增量的，数字 0 分不清"没传"和"关掉"）。
+
+### 6.5 并发闸门（先由网关拒绝，别让厂商判你异常）
+Provider 上的 `maxConcurrentRequests` + `queueWaitSeconds`：
+
+- 超出的请求**在发出前**被拒，返回 429 且带 `Retry-After`；若链上还有别的候选，
+  先自动换过去，换不出去才把 429 交给客户端。
+- 被闸门挡住**不算 Provider 故障**：不写软故障计数、不标"异常"，忙碌的健康账号不会被误判。
+- `queueWaitSeconds > 0` 才排队，等不到位置同样 429；排队用广播唤醒，等待者超时或客户端断开都会退出队列。
+- 专用接口：`POST /__providers/{id}/concurrency` `{"maxConcurrentRequests": N, "queueWaitSeconds": N?}`，
+  上限 1000 / 排队上限 60s；把上限清 0 时排队秒数一并归零（`internal/gateway/provider_lanes.go`）。
+
+### 6.6 调度轨迹（为什么是它、换了谁）
+每次请求把决策过程记进请求日志的 `analysis` 里（与上下文统计同一个 JSON，无需新表）：
+`scheduleMode` / `candidates`（排好序的候选）/ `sessionPinned` / `attempts[]`
+（每个候选：provider、model、status、`reason`、耗时、`deferred` 回答被丢弃、`skipped` 根本没发出）。
+控制台在 API 日志详情的「调度轨迹」里逐条列出；早于该功能的日志没有这些字段，
+页面直说"未记录"，不补一个看起来像真相的空链。reason 取值见 `internal/gateway/schedule_trace.go`。
+
 ---
 
 ## 7. 自注册（Self-Registration）——为轮转 URL 的自建后端准备
@@ -241,6 +302,9 @@ curl -X PATCH https://<网关公网域名>/__providers/<id>/self-register \
 - 鉴权注入 / 密钥解析：`internal/gateway/server.go`（`applyProviderAuth` / `resolveProviderAuth`）
 - 模型地址推导：`internal/gateway/server.go`（`deriveModelsURL` / `fetchProviderModels`）
 - 异常判定与后台重探：`internal/gateway/provider_failover.go`
+- 候选排序 / 会话粘性 / 负载与额度 / 并发闸门 / 轨迹：`internal/gateway/provider_schedule.go`、
+  `provider_affinity.go`、`provider_load.go`、`provider_lanes.go`、`schedule_trace.go`
+- 首包超时：`internal/gateway/upstream_timeout.go`（在 `doHTTPWithTiming` 内生效）
 - 后台恢复循环启动：`internal/app/runtime.go`（`StartProviderFailoverRecovery`）
 - 自注册 / 自检 / conformance：`internal/gateway/provider_self_register.go`、`provider_conformance.go`
 - thinking 签名整流器：`internal/gateway/thinking_rectifier.go`

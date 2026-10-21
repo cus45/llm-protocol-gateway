@@ -1694,7 +1694,21 @@ export function buildApiKeyPatchBody(key: APIKey, patch: Partial<APIKey> = {}) {
     enabled: patch.enabled ?? key.enabled,
     fallbackProviderIds: patch.fallbackProviderIds ?? key.fallbackProviderIds ?? [],
     fallbackModelOverrides: patch.fallbackModelOverrides ?? key.fallbackModelOverrides ?? {},
+    scheduleMode: patch.scheduleMode ?? key.scheduleMode ?? '',
   };
+}
+
+// ScheduleModeLabels 是密钥「调度模式」的界面文案。顺序与后端接受的取值一致，
+// 空值（老密钥）就是按链路顺序。
+export const ScheduleModeOptions: { value: string; label: string; hint: string }[] = [
+  { value: '', label: '按链路顺序（默认）', hint: '首选优先，故障时顺位下移；已在承接的备选保持承接。' },
+  { value: 'rotate', label: '轮流分配（rotate）', hint: '每个请求换下一个候选，把流量摊到整条链上。' },
+  { value: 'least_used', label: '最空闲优先（least_used）', hint: '按近几分钟各账号实际处理的 token 量排序，缓存命中不计入。' },
+  { value: 'quota', label: '额度最多优先（quota）', hint: '读额度面板已缓存的窗口余量，剩得多的先用；读不到额度的账号排在中位。' },
+];
+
+export function scheduleModeLabel(mode?: string) {
+  return ScheduleModeOptions.find((item) => item.value === (mode || ''))?.label || ScheduleModeOptions[0].label;
 }
 
 export function getApiKeyBinding(key: APIKey, routes: Route[], providers: Provider[]) {

@@ -47,6 +47,12 @@ type requestTiming struct {
 
 	flagsMu sync.Mutex
 	flags   map[timingFlag]struct{}
+
+	// Scheduling trace (see schedule_trace.go): who was chosen, who was tried,
+	// and why the request moved on. Collected during the flow and read once when
+	// the request log is assembled.
+	scheduleMu sync.Mutex
+	schedule   *scheduleTrace
 }
 
 func newRequestTiming(started time.Time) *requestTiming {
@@ -288,7 +294,7 @@ func doHTTPWithTiming(ctx context.Context, client *http.Client, request *http.Re
 	if t != nil {
 		t.markUpstreamDoStart()
 	}
-	response, err := client.Do(request)
+	response, err := doUpstreamHTTP(ctx, client, request)
 	if err != nil {
 		return nil, err
 	}

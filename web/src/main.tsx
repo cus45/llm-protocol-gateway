@@ -140,7 +140,7 @@ import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
-import {TrafficLogTable} from './components/traffic_log';
+import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
 import {MultiSelectFilter, SearchableModelSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {providerConnectIcon, resolveProviderIcon} from './provider_presets';
@@ -438,6 +438,11 @@ function App() {
     teamOrganizationId: '',
     teamProjectId: '',
   });
+  // 首包超时是 Provider 的调度旋钮，走专用接口保存：Provider 的 PATCH 是增量的，
+  // 数字 0 分不清「没传」和「关掉限制」。输入框非受控，切到别的 Provider 时靠 key 重置。
+  const providerFirstPacketRef = useRef<HTMLInputElement>(null);
+  const providerConcurrencyRef = useRef<HTMLInputElement>(null);
+  const providerQueueWaitRef = useRef<HTMLInputElement>(null);
   const [claudeOAuthState, setClaudeOAuthState] = useState('');
   const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
   const [claudeOAuthBusy, setClaudeOAuthBusy] = useState(false);
@@ -3307,6 +3312,66 @@ function App() {
     }
   }
 
+  // 保存该 Provider 的首包超时（秒）。留空或 0 = 不限制：网关只约束「等不到响应头」
+  // 的那一段，已经开播的长回答/长思考不会被切断。
+  async function saveProviderFirstPacketTimeout(providerID: string) {
+    const raw = providerFirstPacketRef.current?.value.trim() ?? '';
+    const seconds = raw === '' ? 0 : Number(raw);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 600) {
+      showToast('首包超时请填 0–600 秒（0 表示不限制）');
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerID)}/first-packet-timeout`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      showToast(seconds > 0 ? `已设置首包超时 ${seconds}s` : '已取消首包超时限制');
+      await refreshState(false);
+    } catch (error) {
+      showToast(`保存首包超时失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // 保存该 Provider 的并发上限与排队等待。上限 0 = 不限并发（今天的行为）；
+  // 排队秒数只在设了上限时才有意义，超出的请求先排队、等不到就回 429。
+  async function saveProviderConcurrency(providerID: string) {
+    const rawMax = providerConcurrencyRef.current?.value.trim() ?? '';
+    const rawWait = providerQueueWaitRef.current?.value.trim() ?? '';
+    const max = rawMax === '' ? 0 : Number(rawMax);
+    const queueWaitSeconds = rawWait === '' ? 0 : Number(rawWait);
+    if (!Number.isFinite(max) || max < 0 || max > 1000) {
+      showToast('并发上限请填 0–1000（0 表示不限制）');
+      return;
+    }
+    if (!Number.isFinite(queueWaitSeconds) || queueWaitSeconds < 0 || queueWaitSeconds > 60) {
+      showToast('排队等待请填 0–60 秒（0 表示直接拒绝）');
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerID)}/concurrency`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxConcurrentRequests: max, queueWaitSeconds }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      showToast(max > 0 ? `已设置并发上限 ${max}${queueWaitSeconds > 0 ? `，排队 ${queueWaitSeconds}s` : '，超出直接拒绝'}` : '已取消并发上限');
+      await refreshState(false);
+    } catch (error) {
+      showToast(`保存并发上限失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // 生成/重置该 Provider 的自助注册令牌；原始令牌只在这次响应里出现一次，
   // 之后只能看到掩码预览（tokenPreview）。
   async function generateProviderSelfRegToken(providerID: string) {
@@ -3874,7 +3939,7 @@ function App() {
     }
   }
 
-  async function updateApiKeyField(key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'enabled', value: string | boolean | number) {
+  async function updateApiKeyField(key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) {
     setSaving(true);
     try {
       const patch: Partial<APIKey> = {};
@@ -3886,6 +3951,7 @@ function App() {
       if (field === 'streamEnabled') patch.streamEnabled = Boolean(value);
       if (field === 'codexKeepOfficialLogin') patch.codexKeepOfficialLogin = Boolean(value);
       if (field === 'codexForceFast') patch.codexForceFast = Boolean(value);
+      if (field === 'scheduleMode') patch.scheduleMode = String(value);
       if (field === 'enabled') patch.enabled = Boolean(value);
       const response = await fetch(`${API_BASE}/__apikeys/${encodeURIComponent(key.id)}`, {
         method: 'PATCH',
@@ -6865,6 +6931,8 @@ function App() {
               </div>
             )}
 
+            <ScheduleTracePanel log={trafficLogDetail} providers={state.providers || []} />
+
             {/* KPI 指标卡片 */}
             <div className="log-audit-metrics">
               <div className="log-audit-chip">
@@ -7808,6 +7876,7 @@ function App() {
             const editingProvider = state.providers.find((item) => item.id === editingProviderID);
             if (!editingProvider) return null;
             return (
+              <>
               <div className="rtk-provider-panel">
                 <label className="toggle-row">
                   <input
@@ -7824,6 +7893,62 @@ function App() {
                   GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。
                 </div>
               </div>
+              <div className="rtk-provider-panel">
+                <div className="toggle-row">
+                  <span>首包超时（秒）</span>
+                  <input
+                    ref={providerFirstPacketRef}
+                    key={`first-packet-${editingProviderID}`}
+                    type="number"
+                    min={0}
+                    max={600}
+                    step={1}
+                    defaultValue={editingProvider.firstPacketTimeoutSec || ''}
+                    placeholder="不限制"
+                    disabled={saving}
+                  />
+                  <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
+                </div>
+                <div className="hint-line">
+                  网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。
+                  它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。
+                </div>
+              </div>
+              <div className="rtk-provider-panel">
+                <div className="toggle-row">
+                  <span>并发上限（个）</span>
+                  <input
+                    ref={providerConcurrencyRef}
+                    key={`concurrency-${editingProviderID}`}
+                    type="number"
+                    min={0}
+                    max={1000}
+                    step={1}
+                    defaultValue={editingProvider.maxConcurrentRequests || ''}
+                    placeholder="不限制"
+                    disabled={saving}
+                  />
+                  <span>排队等待（秒）</span>
+                  <input
+                    ref={providerQueueWaitRef}
+                    key={`queue-wait-${editingProviderID}`}
+                    type="number"
+                    min={0}
+                    max={60}
+                    step={1}
+                    defaultValue={editingProvider.queueWaitSeconds || ''}
+                    placeholder="不排队"
+                    disabled={saving}
+                  />
+                  <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
+                </div>
+                <div className="hint-line">
+                  这台上游同时只允许这么多个请求在飞，超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；
+                  留空或 0 = 不限制。排队秒数只在设了上限时有意义：0 直接拒绝，&gt;0 先在队列里等一个空闲位。
+                  如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。
+                </div>
+              </div>
+              </>
             );
           })()}
           <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : isQoderConnectKind(providerDraft.authType) ? '创建并登录 Qoder 账号' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>

@@ -5031,6 +5031,29 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 }
 .log-status-line strong { color: var(--green); font-weight: 600; }
 
+/* 调度轨迹（API 日志详情）：一行一个候选，在服务的那条用 accent 左边框挑出来。 */
+.schedule-trace { margin: 10px 0 2px; }
+.schedule-trace-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.schedule-trace-head strong { color: var(--text-strong); font-weight: 600; }
+.schedule-trace-note { color: var(--muted); font-size: 11.5px; }
+.schedule-trace-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.schedule-trace-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  font-size: 12px;
+}
+.schedule-trace-row.served { background: var(--accent-soft); border-left: 2px solid var(--accent); }
+.schedule-trace-rank { color: var(--muted); font-family: var(--mono); min-width: 22px; }
+.schedule-trace-provider { font-weight: 600; color: var(--text-strong); }
+.schedule-trace-model { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-trace-ms { color: var(--muted); margin-left: auto; }
+.schedule-trace-error { font-size: 11px; color: var(--red); flex-basis: 100%; overflow-wrap: anywhere; }
+
 .log-status-banner-title {
   display: flex;
   align-items: baseline;
@@ -6064,8 +6087,10 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   border-radius: var(--r-md);
   background: var(--surface-soft);
 }
-.rtk-provider-panel .toggle-row { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
-.rtk-provider-panel .toggle-row input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+.rtk-provider-panel .toggle-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+.rtk-provider-panel .toggle-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+/* 面板里的数字旋钮与同排的 .btn-sm（--btn-h: 30px）等高，避免一行里 28/30 差两像素。 */
+.rtk-provider-panel .toggle-row input[type="number"] { width: 88px; height: 30px; padding: 0 8px; }
 .rtk-provider-panel .hint-line { margin-top: 6px; }
 .rtk-savings-card { margin-top: 14px; }
 .rtk-version-pill {

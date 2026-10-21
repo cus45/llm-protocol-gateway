@@ -1,0 +1,227 @@
+package gateway
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// Scheduling modes a key can choose. An empty mode is today's behavior, so a
+// key that was never touched keeps exactly the routing it has now.
+const (
+	scheduleModeOrder     = "order"
+	scheduleModeRotate    = "rotate"
+	scheduleModeLeastUsed = "least_used"
+	scheduleModeQuota     = "quota"
+)
+
+// ScheduleModes are the values the console may set ("" is accepted and means
+// the same as "order").
+var ScheduleModes = []string{"", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota}
+
+func normalizeScheduleMode(mode string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(mode))
+	switch trimmed {
+	case "", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota:
+		return trimmed, nil
+	default:
+		return "", fmt.Errorf("unknown schedule mode %q (expected order, rotate, least_used or quota)", mode)
+	}
+}
+
+// scheduleInput is what the scheduler decides from. It is deliberately a plain
+// value: the ordering is a pure function of it plus the server's runtime
+// trackers, which is what makes it testable without any HTTP traffic.
+type scheduleInput struct {
+	chain  []string
+	active string
+	mode   string
+	keyID  string
+	// advance moves the round-robin cursor. Only the request that is about to
+	// be sent may do that: the pre-flight attribution (decisionForAPIKey) asks
+	// the same question one step earlier and must not consume a step, or every
+	// request would skip an account.
+	advance bool
+}
+
+// failoverAttemptOrder is the order one request tries the chain's providers in.
+//
+// The chain order is the administrator's priority ranking and ActiveProviderID
+// is where this key's last request left off. "order" rotates the chain so the
+// active provider comes first: a key that already moved to a backup stops
+// re-burning the preferred provider on every request, while still trying the
+// providers before it once the backup fails — the loop used to stop at the end
+// of the chain, so a key parked on a dead backup could not reach a recovered
+// primary until the background probe switched it back up to two minutes later.
+// The other modes spread the traffic instead (see the mode constants).
+//
+// Providers currently tracked as unavailable go last in every mode: the mark
+// comes from a real failure or a probe that can be wrong, and a cooled-down
+// provider is sometimes the only one that can serve the requested model.
+func (s *Server) failoverAttemptOrder(input scheduleInput) []string {
+	chain := input.chain
+	if len(chain) == 0 {
+		return nil
+	}
+	var ordered []string
+	switch strings.ToLower(strings.TrimSpace(input.mode)) {
+	case scheduleModeRotate:
+		ordered = s.rotateChain(chain, input.keyID, input.advance)
+	case scheduleModeLeastUsed:
+		ordered = s.leastUsedChain(chain)
+	case scheduleModeQuota:
+		ordered = s.quotaHeadroomChain(chain)
+	default:
+		ordered = rotateChainAt(chain, input.active)
+	}
+	return s.healthyFirst(ordered)
+}
+
+// rotateChainAt returns chain with activeProviderID moved to the front, keeping
+// the relative order of everything else. An empty or unknown active id leaves
+// the chain as the administrator wrote it.
+func rotateChainAt(chain []string, activeProviderID string) []string {
+	index := apiKeyEffectiveProviderIndex(strings.TrimSpace(activeProviderID), chain)
+	if index <= 0 || index >= len(chain) {
+		return append([]string(nil), chain...)
+	}
+	return rotateChainFrom(chain, index)
+}
+
+func rotateChainFrom(chain []string, index int) []string {
+	if index <= 0 || index >= len(chain) {
+		return append([]string(nil), chain...)
+	}
+	rotated := make([]string, 0, len(chain))
+	rotated = append(rotated, chain[index:]...)
+	return append(rotated, chain[:index]...)
+}
+
+// rotateCounters remember where each key is in its round-robin. In-memory on
+// purpose: a restart starting the walk over again is not a correctness problem,
+// and persisting a counter on every request would put a write on the hot path.
+type rotateCounters struct {
+	mu      sync.Mutex
+	indices map[string]uint64
+}
+
+func (s *Server) rotateChain(chain []string, keyID string, advance bool) []string {
+	if len(chain) < 2 {
+		return append([]string(nil), chain...)
+	}
+	if s.rotate == nil {
+		return append([]string(nil), chain...)
+	}
+	s.rotate.mu.Lock()
+	if s.rotate.indices == nil {
+		s.rotate.indices = map[string]uint64{}
+	}
+	index := s.rotate.indices[keyID] % uint64(len(chain))
+	if advance {
+		s.rotate.indices[keyID] = index + 1
+	}
+	s.rotate.mu.Unlock()
+	return rotateChainFrom(chain, int(index))
+}
+
+// leastUsedChain puts the account carrying the least work first. Requests in
+// flight outrank the recent window: they are the live signal, and the window is
+// what keeps a just-freed account from being hammered again immediately. A
+// provider that has served nothing scores zero on both, so a freshly added
+// account gets used at once rather than punished for being new.
+func (s *Server) leastUsedChain(chain []string) []string {
+	ordered := append([]string(nil), chain...)
+	type load struct {
+		inflight int
+		work     int64
+	}
+	loads := make(map[string]load, len(ordered))
+	for _, providerID := range ordered {
+		loads[providerID] = load{inflight: s.providerInFlight(providerID), work: s.providerWorkload(providerID)}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := loads[ordered[i]], loads[ordered[j]]
+		if left.inflight != right.inflight {
+			return left.inflight < right.inflight
+		}
+		return left.work < right.work
+	})
+	return ordered
+}
+
+// quotaHeadroomChain prefers the subscription with the most quota left. Only
+// accounts whose quota panel has been read recently have a number: everything
+// else sits in the middle (0.5), so a mixed pool of subscription and API-key
+// accounts still works and an unread quota never looks empty.
+func (s *Server) quotaHeadroomChain(chain []string) []string {
+	ordered := append([]string(nil), chain...)
+	headroom := make(map[string]float64, len(ordered))
+	for _, providerID := range ordered {
+		score, ok := s.providerQuotaHeadroom(providerID)
+		if !ok {
+			score = 0.5
+		}
+		headroom[providerID] = score
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return headroom[ordered[i]] > headroom[ordered[j]]
+	})
+	return ordered
+}
+
+// healthyFirst keeps the incoming order inside each group and moves providers
+// currently marked unavailable to the end. They are still tried, just last.
+func (s *Server) healthyFirst(chain []string) []string {
+	if len(chain) < 2 {
+		return chain
+	}
+	healthy := make([]string, 0, len(chain))
+	unavailable := make([]string, 0, len(chain))
+	for _, providerID := range chain {
+		if _, down := s.providerUnavailableSnapshot(providerID); down {
+			unavailable = append(unavailable, providerID)
+			continue
+		}
+		healthy = append(healthy, providerID)
+	}
+	return append(healthy, unavailable...)
+}
+
+// handleSetProviderFirstPacketTimeout is the admin-only per-provider knob for
+// how long one attempt may wait for the upstream's response headers before the
+// chain moves on. It is a dedicated endpoint like /rtk and /checkin/auto
+// because the provider PATCH is partial and an int cannot tell "not sent" from
+// "cleared".
+func (s *Server) handleSetProviderFirstPacketTimeout(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var payload struct {
+		Seconds *int `json:"seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Seconds == nil {
+		writeOpenAIError(w, http.StatusBadRequest, `body must be {"seconds": N}`)
+		return
+	}
+	updated, err := s.router.SetProviderFirstPacketTimeout(r.PathValue("id"), *payload.Seconds)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.saveState(); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "failed to save configuration: "+err.Error())
+		return
+	}
+	if s.logs != nil {
+		if updated.FirstPacketTimeoutSec == 0 {
+			s.logs.AddApp("info", "provider first-packet timeout cleared", updated.ID)
+		} else {
+			s.logs.AddApp("info", "provider first-packet timeout set", updated.ID+": "+strconv.Itoa(updated.FirstPacketTimeoutSec)+"s")
+		}
+	}
+	writeJSON(w, http.StatusOK, redactProviderForClient(updated))
+}

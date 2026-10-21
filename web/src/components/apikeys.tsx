@@ -20,6 +20,8 @@ import {
     protocolFromLabel,
     protocolLabel,
     providerOptionLabel,
+    scheduleModeLabel,
+    ScheduleModeOptions,
     thinkingDepthSelectOptions
 } from '../lib';
 import {SearchableModelSelect} from './selects';
@@ -109,7 +111,7 @@ export function ApiKeyDetailPanel({
   tunnelRunning: boolean;
   livePublicURL: string;
   fixedOutputLabels: string[];
-  onUpdateField: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'enabled', value: string | boolean | number) => Promise<void>;
+  onUpdateField: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) => Promise<void>;
   onUpdateBinding: (key: APIKey, providerId: string, outputProtocol: Protocol) => Promise<void>;
   onUpdateModelAliases: (key: APIKey, modelAliases: Record<string, string>) => Promise<void>;
   onUpdateFallbacks: (key: APIKey, fallbackProviderIds: string[], fallbackModelOverrides: Record<string, string>) => Promise<void>;
@@ -165,6 +167,7 @@ export function ApiKeyDetailPanel({
       fallbackProviderIds: [...(keyItem.fallbackProviderIds || [])],
       fallbackModelOverrides: { ...(keyItem.fallbackModelOverrides || {}) },
       streamEnabled: keyItem.streamEnabled !== false,
+      scheduleMode: keyItem.scheduleMode || '',
     };
   }
 
@@ -205,6 +208,7 @@ export function ApiKeyDetailPanel({
           <Badge tone={keyItem.enabled ? 'green' : 'slate'}>{keyItem.enabled ? '启用' : '禁用'}</Badge>
           <Badge tone={bindingAction === '透传' ? 'green' : 'cyan'}>{bindingAction}</Badge>
           {usingFallback ? <Badge tone="amber">已切备选</Badge> : null}
+          {(keyItem.scheduleMode || '') !== '' ? <Badge tone="cyan">{scheduleModeLabel(keyItem.scheduleMode)}</Badge> : null}
           {route ? <CopyButton value={apiKeyClientURL} label="复制 URL" toastContent={`已复制 URL：${apiKeyClientURL}`} /> : null}
           <CopyButton value={keyItem.key} label="复制 Key" toastContent={`已复制 Key：${keyItem.key}`} />
           <button className="icon-btn" onClick={() => onClone(keyItem)} title="克隆为新 API 密钥">克隆</button>
@@ -462,6 +466,27 @@ export function ApiKeyDetailPanel({
             ) : null}
             {activeFallbackInheritsModel ? (
               <div className="fallback-active-note">当前由备选承接，模型沿用请求</div>
+            ) : null}
+            {/* 调度只在有多个候选时才有意义，所以跟着备选链放在同一节里。 */}
+            {fallbackIds.length > 0 ? (
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>调度模式</label>
+                <select
+                  value={keyItem.scheduleMode || ''}
+                  disabled={saving}
+                  onChange={(event) => void onUpdateField(keyItem, 'scheduleMode', event.target.value)}
+                >
+                  {ScheduleModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <div className="hint-line">
+                  {ScheduleModeOptions.find((option) => option.value === (keyItem.scheduleMode || ''))?.hint}
+                </div>
+                <div className="hint-line">
+                  同一段对话仍然钉在它已建好缓存的账号上（会话粘性优先于调度模式）；被标记「异常」的候选永远排在最后，但不会被跳过。
+                </div>
+              </div>
             ) : null}
           </div>
         </>
@@ -810,7 +835,7 @@ export function ApiKeyClientConfigModal({
   publicAvailable: boolean;
   onClose: () => void;
   onToast?: (message: string) => void;
-  onUpdateField?: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'enabled', value: string | boolean | number) => Promise<void>;
+  onUpdateField?: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) => Promise<void>;
 }) {
   const [networkMode, setNetworkMode] = React.useState<'lan' | 'public'>(publicAvailable ? 'public' : 'lan');
   // 绑定到具体 key（而非只在本次弹窗会话内），跨次打开保留上次选择。

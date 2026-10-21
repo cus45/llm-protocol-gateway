@@ -366,6 +366,7 @@ func (r *Router) UpdateProvider(providerID string, patch domain.Provider) (domai
 		// RTKCompress is intentionally not merged here: this is a partial
 		// update path (trae/zcode refresh only Models), and a bool cannot
 		// distinguish "false" from "not sent". The switch has its own endpoint.
+		// FirstPacketTimeoutSec follows the same rule for the same reason.
 		normalizeProvider(&updated)
 		r.state.Providers[index] = updated
 		r.rebuildModelsLocked()
@@ -377,6 +378,29 @@ func (r *Router) UpdateProvider(providerID string, patch domain.Provider) (domai
 func normalizeProvider(provider *domain.Provider) {
 	provider.APIKeySource = strings.TrimSpace(provider.APIKeySource)
 	provider.AuthType = strings.TrimSpace(provider.AuthType)
+	// A mistyped first-packet limit must not park a request for hours; the
+	// request path clamps too, so a legacy row keeps the same bound.
+	if provider.FirstPacketTimeoutSec < 0 {
+		provider.FirstPacketTimeoutSec = 0
+	}
+	if provider.FirstPacketTimeoutSec > maxFirstPacketTimeoutSec {
+		provider.FirstPacketTimeoutSec = maxFirstPacketTimeoutSec
+	}
+	if provider.MaxConcurrentRequests < 0 {
+		provider.MaxConcurrentRequests = 0
+	}
+	if provider.MaxConcurrentRequests > providerConcurrencyCap {
+		provider.MaxConcurrentRequests = providerConcurrencyCap
+	}
+	if provider.QueueWaitSeconds < 0 {
+		provider.QueueWaitSeconds = 0
+	}
+	if provider.QueueWaitSeconds > int(providerQueueWaitCap/time.Second) {
+		provider.QueueWaitSeconds = int(providerQueueWaitCap / time.Second)
+	}
+	if provider.MaxConcurrentRequests == 0 {
+		provider.QueueWaitSeconds = 0
+	}
 	if provider.AuthType == "" {
 		provider.AuthType = domain.AuthTypeAPIKey
 	}
@@ -613,6 +637,11 @@ func (r *Router) AddAPIKey(key domain.APIKey) (domain.APIKey, error) {
 	}
 	key.ActiveProviderID = strings.TrimSpace(key.ActiveProviderID)
 	key.OwnerUserID = strings.TrimSpace(key.OwnerUserID)
+	mode, err := normalizeScheduleMode(key.ScheduleMode)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	key.ScheduleMode = mode
 	key.Enabled = true
 	if key.CreatedAt == "" {
 		key.CreatedAt = nowRFC3339()
@@ -666,6 +695,11 @@ func (r *Router) UpdateAPIKey(keyID string, patch domain.APIKey) (domain.APIKey,
 		updated.StreamEnabled = patch.StreamEnabled
 		updated.CodexKeepOfficialLogin = patch.CodexKeepOfficialLogin
 		updated.CodexForceFast = patch.CodexForceFast
+		mode, err := normalizeScheduleMode(patch.ScheduleMode)
+		if err != nil {
+			return domain.APIKey{}, err
+		}
+		updated.ScheduleMode = mode
 		preferredProviderID := ""
 		if route, ok := r.routeLocked(updated.RouteID); ok {
 			preferredProviderID = route.ProviderID
@@ -741,6 +775,7 @@ func keyProfileFromKey(key domain.APIKey, id, name string) domain.KeyProfile {
 		FallbackProviderIDs:    cloneStringSlice(key.FallbackProviderIDs),
 		FallbackModelOverrides: cloneStringMap(key.FallbackModelOverrides),
 		StreamEnabled:          key.StreamEnabled,
+		ScheduleMode:           key.ScheduleMode,
 	}
 }
 
@@ -915,6 +950,9 @@ func (r *Router) normalizeProfileLocked(profile domain.KeyProfile) domain.KeyPro
 	}
 	profile.FallbackProviderIDs = normalizeFallbackProviderIDs(profile.FallbackProviderIDs, preferredProviderID)
 	profile.FallbackModelOverrides = normalizeFallbackModelOverrides(profile.FallbackProviderIDs, profile.FallbackModelOverrides)
+	if mode, err := normalizeScheduleMode(profile.ScheduleMode); err == nil {
+		profile.ScheduleMode = mode
+	}
 	return profile
 }
 
@@ -938,6 +976,14 @@ func (r *Router) activateProfileLocked(key *domain.APIKey, profileID string) {
 	key.FallbackProviderIDs = normalizeFallbackProviderIDs(profile.FallbackProviderIDs, preferredProviderID)
 	key.FallbackModelOverrides = normalizeFallbackModelOverrides(key.FallbackProviderIDs, profile.FallbackModelOverrides)
 	key.StreamEnabled = profile.StreamEnabled
+	// A profile with a mode the key-level form would have rejected degrades to
+	// the default order rather than breaking routing: normalizeProfileLocked is
+	// called on paths that cannot return an error.
+	if mode, err := normalizeScheduleMode(profile.ScheduleMode); err == nil {
+		key.ScheduleMode = mode
+	} else {
+		key.ScheduleMode = ""
+	}
 	key.ActiveProviderID = "" // reset failover position; chain may differ
 	key.ActiveProfileID = profileID
 }
@@ -1740,6 +1786,65 @@ func (r *Router) SetProviderCheckin(providerID string, enabled bool) (domain.Pro
 			continue
 		}
 		r.state.Providers[index].CheckinEnabled = enabled
+		return r.state.Providers[index], nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderFirstPacketTimeout bounds how long one attempt to this provider
+// may wait for the upstream's response headers (0 clears it). Like the RTK and
+// check-in switches it has its own setter so a partial provider patch cannot
+// reset it — and so that patch semantics stay unusable here: an int cannot tell
+// "not sent" from "cleared".
+func (r *Router) SetProviderFirstPacketTimeout(providerID string, seconds int) (domain.Provider, error) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds > maxFirstPacketTimeoutSec {
+		seconds = maxFirstPacketTimeoutSec
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		r.state.Providers[index].FirstPacketTimeoutSec = seconds
+		return r.state.Providers[index], nil
+	}
+	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
+}
+
+// SetProviderConcurrency sets this provider's admission lane: at most
+// maxConcurrentRequests upstream requests at a time, with over-cap requests
+// waiting up to queueWaitSeconds for a slot (0 refuses immediately). 0/0 removes
+// the lane, which is every provider's default.
+func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests, queueWaitSeconds int) (domain.Provider, error) {
+	if maxConcurrentRequests < 0 {
+		maxConcurrentRequests = 0
+	}
+	if maxConcurrentRequests > providerConcurrencyCap {
+		maxConcurrentRequests = providerConcurrencyCap
+	}
+	if queueWaitSeconds < 0 {
+		queueWaitSeconds = 0
+	}
+	if queueWaitSeconds > int(providerQueueWaitCap/time.Second) {
+		queueWaitSeconds = int(providerQueueWaitCap / time.Second)
+	}
+	// No lane means nothing to queue for: clearing the cap clears the wait too,
+	// so a provider never carries a setting that does nothing.
+	if maxConcurrentRequests == 0 {
+		queueWaitSeconds = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.state.Providers {
+		if r.state.Providers[index].ID != providerID {
+			continue
+		}
+		r.state.Providers[index].MaxConcurrentRequests = maxConcurrentRequests
+		r.state.Providers[index].QueueWaitSeconds = queueWaitSeconds
 		return r.state.Providers[index], nil
 	}
 	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)

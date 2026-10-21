@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
 // failoverClass distinguishes transient upstream issues from hard quota/auth
@@ -529,16 +531,22 @@ func (s *Server) persistAPIKeyActiveProvider(keyID, providerID string) {
 var errProviderNotAssigned = errors.New("permission denied")
 
 // upstreamErrorStatus maps an execute-flow error to the client-facing status.
-// Permission denials are 403; everything else stays a 502 upstream failure.
+// Permission denials are 403, a provider at its own concurrent limit is 429
+// (with Retry-After), everything else stays a 502 upstream failure.
 func upstreamErrorStatus(err error) int {
 	if errors.Is(err, errProviderNotAssigned) {
 		return http.StatusForbidden
 	}
+	if errors.Is(err, errProviderSaturated) {
+		return http.StatusTooManyRequests
+	}
 	return http.StatusBadGateway
 }
 
-// executeProtocolFlowWithFailover tries the sticky/active provider then ordered
-// backups when the upstream failure looks like quota/auth/availability.
+// executeProtocolFlowWithFailover works through the key's whole provider chain
+// (see failoverAttemptOrder) when an upstream failure looks like
+// quota/auth/availability, instead of stopping at the end of the chain behind
+// the sticky provider.
 func (s *Server) executeProtocolFlowWithFailover(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -552,21 +560,27 @@ func (s *Server) executeProtocolFlowWithFailover(
 	gatewayKeyMatched bool,
 ) (int, TokenUsage, []byte, domain.RouteDecision, string, error) {
 	if !gatewayKeyMatched {
+		timer := startAttempt()
 		status, usage, body, err := s.executeProtocolFlow(w, r, route, decision, model, req, clientProtocol, skipIncomingAuth)
 		s.recordProviderRequestOutcome(decision.ProviderID, status, body, err)
+		s.noteProviderUsage(decision.ProviderID, usage)
+		noteSingleAttemptTrace(r.Context(), decision.ProviderID, model, status, usage, err, timer.millis())
 		return status, usage, body, decision, model, err
 	}
 
 	chain := apiKeyProviderChain(route.ProviderID, matchedKey.FallbackProviderIDs)
 	if len(chain) == 0 {
+		timer := startAttempt()
 		status, usage, body, err := s.executeProtocolFlow(w, r, route, decision, model, req, clientProtocol, skipIncomingAuth)
 		s.recordProviderRequestOutcome(decision.ProviderID, status, body, err)
+		s.noteProviderUsage(decision.ProviderID, usage)
+		noteSingleAttemptTrace(r.Context(), decision.ProviderID, model, status, usage, err, timer.millis())
 		return status, usage, body, decision, model, err
 	}
 	// 普通用户的 Key 只能使用管理员当前授权的 Provider。授权是在“用户”页面随时可
 	// 改的，而 Key 的路由/兜底链是创建时写死的，所以必须在每次请求时重新校验，
 	// 不能只依赖创建 Key 时的校验（否则撤销授权后旧 Key 会一直可用）。
-	// 先过滤整条链再计算起点，这样即使 ActiveProviderID 指向已被撤销的 Provider，
+	// 先过滤整条链再排尝试顺序，这样即使 ActiveProviderID 指向已被撤销的 Provider，
 	// 也不会跳过链上仍被授权的首选 Provider。
 	if allowedChain := s.allowedProviderChainForKey(matchedKey, chain); len(allowedChain) != len(chain) {
 		for _, providerID := range chain {
@@ -580,10 +594,19 @@ func (s *Server) executeProtocolFlowWithFailover(
 				fmt.Errorf("%w: provider %q is not assigned to your account", errProviderNotAssigned, strings.TrimSpace(route.ProviderID))
 		}
 	}
-	start := apiKeyEffectiveProviderIndex(matchedKey.ActiveProviderID, chain)
-	if start < 0 || start >= len(chain) {
-		start = 0
-	}
+	attempts := s.failoverAttemptOrder(scheduleInput{
+		chain:   chain,
+		active:  matchedKey.ActiveProviderID,
+		mode:    matchedKey.ScheduleMode,
+		keyID:   matchedKey.ID,
+		advance: true,
+	})
+	// A conversation stays on the account that has its prompt cache, even when
+	// another conversation on this same key has moved the key-level sticky
+	// provider somewhere else.
+	sessionKey := sessionAffinityKey(r, req, matchedKey.ID)
+	attempts, pinnedProviderID := s.applySessionPin(sessionKey, attempts)
+	noteScheduleDecision(r.Context(), matchedKey.ScheduleMode, attempts, pinnedProviderID)
 
 	var lastStatus int
 	var lastUsage TokenUsage
@@ -596,18 +619,19 @@ func (s *Server) executeProtocolFlowWithFailover(
 	// 管理员自己的 Key（无归属）不受限制。
 	ownerRestricted := strings.TrimSpace(matchedKey.OwnerUserID) != ""
 
-	for i := start; i < len(chain); i++ {
-		providerID := chain[i]
+	for i, providerID := range attempts {
 		if ownerRestricted {
 			if provider, err := s.router.ProviderByID(providerID); err == nil && provider.Disabled {
 				lastErr = fmt.Errorf("provider %q is disabled by administrator", providerID)
 				s.logs.AddApp("warn", "provider disabled, skipped for user key", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, providerID))
+				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Reason: attemptReasonDisabled, Skipped: true})
 				continue
 			}
 		}
 		attemptDecision, err := s.router.DecideForProvider(route.ID, providerID)
 		if err != nil {
 			lastErr = err
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Reason: attemptReasonUndecidable, Error: truncateReason(err.Error()), Skipped: true})
 			continue
 		}
 		lastDecision = attemptDecision
@@ -623,6 +647,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 			// 上游 A 的模型名发给协议不同的上游 B 只会换来一个 400。
 			if override == "" && s.router.fallbackModelRequired(route.ProviderID, providerID) {
 				s.logs.AddApp("warn", "provider failover skipped missing model override", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, providerID))
+				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Reason: attemptReasonMissingModel, Skipped: true})
 				continue
 			}
 			if override != "" {
@@ -636,9 +661,11 @@ func (s *Server) executeProtocolFlowWithFailover(
 		attemptReq := cloneRequestMap(req)
 		attemptReq["model"] = attemptModel
 
-		canDefer := i < len(chain)-1
+		canDefer := i < len(attempts)-1
 		writer := newFailoverResponseWriter(w, canDefer)
+		timer := startAttempt()
 		status, usage, body, execErr := s.executeProtocolFlow(writer, r, route, attemptDecision, attemptModel, attemptReq, clientProtocol, skipIncomingAuth)
+		elapsed := timer.millis()
 		if execErr != nil {
 			lastStatus, lastUsage, lastBody, lastErr, lastModel = status, usage, nil, execErr, attemptModel
 			// Client already gone: never advance the chain (backup would reuse the
@@ -649,9 +676,34 @@ func (s *Server) executeProtocolFlowWithFailover(
 				} else {
 					writer.FlushError()
 				}
+				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonClientGone, Error: truncateReason(execErr.Error())})
 				return status, usage, body, attemptDecision, attemptModel, execErr
 			}
+			// Busy, not broken: an admission refusal moves to the next account
+			// and must never be counted as a provider failure, or a busy but
+			// healthy account would be painted 异常 and cooled down.
+			if errors.Is(execErr, errProviderSaturated) {
+				lastStatus = http.StatusTooManyRequests
+				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: http.StatusTooManyRequests, Ms: elapsed, Reason: attemptReasonSaturated, Error: truncateReason(execErr.Error()), Deferred: canDefer})
+				if canDefer {
+					writer.Discard()
+					markTimingFlag(r.Context(), timingFlagFailoverRetry)
+					if t := requestTimingFrom(r.Context()); t != nil {
+						t.resetUpstreamMarks()
+					}
+					s.logs.AddApp("info", "provider skipped at concurrent limit", fmt.Sprintf("key=%s provider=%s err=%s", matchedKey.ID, providerID, execErr.Error()))
+					continue
+				}
+				writer.Discard()
+				w.Header().Set("Retry-After", strconv.Itoa(providerRetryAfterSeconds))
+				return http.StatusTooManyRequests, TokenUsage{}, nil, attemptDecision, attemptModel, execErr
+			}
 			transportFailoverWorthy := s.applyProviderFailoverOutcome(providerID, 0, nil, execErr)
+			transportReason := attemptReasonTransportError
+			if errors.Is(execErr, errUpstreamFirstPacketTimeout) {
+				transportReason = attemptReasonFirstPacketTimeout
+			}
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Ms: elapsed, Reason: transportReason, Error: truncateReason(execErr.Error()), Deferred: canDefer && transportFailoverWorthy})
 			if canDefer && transportFailoverWorthy {
 				writer.Discard()
 				markTimingFlag(r.Context(), timingFlagFailoverRetry)
@@ -659,6 +711,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 					t.resetUpstreamMarks()
 				}
 				s.logs.AddApp("warn", "provider failover after transport error", fmt.Sprintf("key=%s from=%s err=%s", matchedKey.ID, providerID, execErr.Error()))
+				s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
 				continue
 			}
 			// 尚未向客户端提交任何字节时交给上层写错误响应（例如空流重试耗尽）。
@@ -682,26 +735,34 @@ func (s *Server) executeProtocolFlowWithFailover(
 			if !writer.passthrough {
 				writer.FlushError()
 			}
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonClientGone})
 			return status, usage, respBody, attemptDecision, attemptModel, r.Context().Err()
 		}
 
 		attemptFailoverWorthy := s.applyProviderFailoverOutcome(providerID, status, respBody, nil)
 		if canDefer && attemptFailoverWorthy {
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonUpstreamError, Error: truncateReason(summarizeUpstreamHTTPError(status, respBody)), Deferred: true})
 			writer.Discard()
 			markTimingFlag(r.Context(), timingFlagFailoverRetry)
 			if t := requestTimingFrom(r.Context()); t != nil {
 				t.resetUpstreamMarks()
 			}
 			s.logs.AddApp("warn", "provider failover after upstream error", fmt.Sprintf("key=%s from=%s status=%d", matchedKey.ID, providerID, status))
+			s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
 			continue
 		}
 
-		// Stick to the provider that served this request.
+		// Stick to the provider that served this request — unless a session pin
+		// is what chose it. Two conversations pinned to two different accounts
+		// would otherwise rewrite ActiveProviderID on every turn, and the
+		// key-level stickiness would flap between them without either
+		// conversation having moved.
 		desiredActive := ""
 		if providerID != strings.TrimSpace(route.ProviderID) {
 			desiredActive = providerID
 		}
-		if strings.TrimSpace(matchedKey.ActiveProviderID) != desiredActive {
+		pinnedThisTurn := pinnedProviderID != "" && providerID == pinnedProviderID
+		if !pinnedThisTurn && strings.TrimSpace(matchedKey.ActiveProviderID) != desiredActive {
 			s.persistAPIKeyActiveProvider(matchedKey.ID, desiredActive)
 			if desiredActive != "" {
 				s.logs.AddApp("info", "api key active provider updated", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, desiredActive))
@@ -709,6 +770,11 @@ func (s *Server) executeProtocolFlowWithFailover(
 				s.logs.AddApp("info", "api key restored preferred provider", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, route.ProviderID))
 			}
 		}
+		// The conversation now belongs to the account that answered it, and that
+		// account has now carried this request's work.
+		s.setSessionPin(sessionKey, providerID)
+		s.noteProviderUsage(providerID, usage)
+		noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonServed})
 		if !writer.passthrough {
 			writer.FlushError()
 		}
@@ -854,7 +920,10 @@ func (s *Server) probeProviderAvailable(ctx context.Context, provider domain.Pro
 	return result.Success
 }
 
-func (s *Server) decisionForAPIKey(route domain.Route, key domain.APIKey, fallback domain.RouteDecision) domain.RouteDecision {
+// decisionForAPIKey is the provider the request is attributed to before it is
+// sent: the conversation's pinned account when there is one, otherwise the
+// first provider the failover loop would try.
+func (s *Server) decisionForAPIKey(route domain.Route, key domain.APIKey, fallback domain.RouteDecision, sessionKey string) domain.RouteDecision {
 	chain := apiKeyProviderChain(route.ProviderID, key.FallbackProviderIDs)
 	// Mirror the request-time authorization filter in
 	// executeProtocolFlowWithFailover so the pre-flight decision (used for
@@ -865,11 +934,16 @@ func (s *Server) decisionForAPIKey(route domain.Route, key domain.APIKey, fallba
 	if len(chain) == 0 {
 		return fallback
 	}
-	idx := apiKeyEffectiveProviderIndex(key.ActiveProviderID, chain)
-	if idx < 0 || idx >= len(chain) {
-		idx = 0
-	}
-	decision, err := s.router.DecideForProvider(route.ID, chain[idx])
+	// Attribute the request to the provider the failover loop will actually try
+	// first, so the log line matches the traffic.
+	attempts := s.failoverAttemptOrder(scheduleInput{
+		chain:  chain,
+		active: key.ActiveProviderID,
+		mode:   key.ScheduleMode,
+		keyID:  key.ID,
+	})
+	attempts, _ = s.applySessionPin(sessionKey, attempts)
+	decision, err := s.router.DecideForProvider(route.ID, attempts[0])
 	if err != nil {
 		return fallback
 	}

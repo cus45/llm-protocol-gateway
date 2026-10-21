@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -665,6 +667,29 @@ func (s *Server) executeProtocolFlow(
 			return 0, TokenUsage{}, nil, err
 		}
 	}
+
+	// The per-provider first-packet deadline rides on the request context so
+	// every upstream send below — pass-through, conversion, and the subscription
+	// adapters that build their own request — enforces it without knowing about
+	// scheduling. Providers that answer headers and then think for minutes are
+	// unaffected: the timer only covers the wait for headers.
+	if timeout := providerFirstPacketTimeout(provider); timeout > 0 {
+		r = r.WithContext(withFirstPacketTimeout(r.Context(), timeout))
+	}
+
+	// Admission: this provider's lane, held for the whole upstream exchange so
+	// the cap means "requests actually in flight", not "requests started".
+	// Releasing on return is correct for streaming too — the stream is written
+	// before executeProtocolFlow returns.
+	releaseSlot, admissionErr := s.acquireProviderSlot(r.Context(), provider)
+	if admissionErr != nil {
+		w.Header().Set("Retry-After", strconv.Itoa(providerRetryAfterSeconds))
+		if errors.Is(admissionErr, errProviderSaturated) {
+			return http.StatusTooManyRequests, TokenUsage{}, nil, admissionErr
+		}
+		return 0, TokenUsage{}, nil, admissionErr
+	}
+	defer releaseSlot()
 
 	// Provider-level RTK compression runs on the client-format request, before
 	// both pass-through marshaling and protocol conversion. The helper returns a

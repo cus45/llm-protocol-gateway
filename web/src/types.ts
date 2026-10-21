@@ -431,6 +431,14 @@ export type Provider = {
   // RTK 工具输出压缩开关（管理员，通过 POST /__providers/{id}/rtk 单独切换）：
   // 开启后网关转发前用 rtk pipe 过滤 tool_result 里的命令输出。
   rtkCompress?: boolean;
+  // 首包超时（秒，管理员，通过 POST /__providers/{id}/first-packet-timeout 单独保存）：
+  // 网关等这台上游返回响应头的最长时间，超时即换下一个 Provider。0/缺省 = 不限制，
+  // 且只约束开流前的等待，不会切断已经在输出的回答。
+  firstPacketTimeoutSec?: number;
+  // 并发上限与排队等待（管理员，通过 POST /__providers/{id}/concurrency 单独保存）：
+  // 这台上游同时在飞的最大请求数，0/缺省 = 不限制；排队秒数只在设了上限时有意义。
+  maxConcurrentRequests?: number;
+  queueWaitSeconds?: number;
   // 自助注册（内网穿透场景）：owner/admin 生成一个 Provider 专属令牌后，
   // 用户自己的脚本可用该令牌调用 PATCH /__providers/{id}/self-register
   // 更新 baseUrl/apiKeySource，无需登录控制台。原始令牌只在生成那一刻返回，
@@ -545,6 +553,8 @@ export type APIKey = {
   fallbackProviderIds?: string[];
   fallbackModelOverrides?: Record<string, string>;
   activeProviderId?: string;
+  /** 调度模式：'' / order 按链路顺序，rotate 轮流，least_used 挑近几分钟干活最少的，quota 挑额度剩得最多的。会话粘性始终优先。 */
+  scheduleMode?: string;
   ownerUserId?: string;
   profiles?: KeyProfile[];
   activeProfileId?: string;
@@ -564,6 +574,7 @@ export type KeyProfile = {
   fallbackProviderIds?: string[];
   fallbackModelOverrides?: Record<string, string>;
   streamEnabled?: boolean;
+  scheduleMode?: string;
 };
 
 export type Model = {
@@ -619,9 +630,30 @@ export type GatewayState = {
   cursorBridge?: CursorBridgeRuntime;
 };
 
+/** 一次请求碰到过的每个 Provider：谁在服务、谁被跳过、为什么换下一个。 */
+export type ScheduleAttempt = {
+  providerId: string;
+  model?: string;
+  status?: number;
+  reason?: string;
+  error?: string;
+  ms?: number;
+  /** 回答被丢弃、继续下一个候选 */
+  deferred?: boolean;
+  /** 根本没发出去（未授权 / 未锁定模型 / Provider 已删除等） */
+  skipped?: boolean;
+};
+
 export type RequestAnalysis = {
   sessionId?: string; stream: boolean; captured: boolean; messages: number; tools: number; toolResults: number;
   systemBytes: number; messageBytes: number; toolBytes: number;
+  // 调度轨迹（早于该功能的日志没有这些字段）
+  scheduleMode?: string;
+  /** 这次是按哪条链排的 */
+  candidates?: string[];
+  /** 会话粘滞命中的 Provider，空表示这次没有粘滞 */
+  sessionPinned?: string;
+  attempts?: ScheduleAttempt[];
 };
 export type UsageAnalysisResponse = { items: LogEntry[]; total: number; from: string; to: string; retentionDays: number };
 

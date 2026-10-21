@@ -136,6 +136,20 @@ type Server struct {
 	providerAvailability   map[string]providerUnavailableState
 	providerSoftFailures   map[string]providerSoftFailureState
 
+	// Session affinity (see provider_affinity.go): which provider each
+	// conversation is sticky to. Runtime-only like the availability tracker —
+	// a restart drops the pins and each key's sticky provider takes over.
+	sessionPins *sessionPinStore
+
+	// Scheduling (see provider_schedule.go / provider_load.go): the round-robin
+	// cursors and the recent per-provider workload. Both runtime-only by
+	// design; neither may put a write on the request path.
+	rotate        *rotateCounters
+	providerLoads *providerLoadTracker
+
+	// Admission lanes (see provider_lanes.go): per-provider in-flight budgets.
+	providerLanes *providerLanes
+
 	// userActivity tracks each console user's latest API request time.
 	// In-memory values are exact; StartUserActivityFlush persists them at most
 	// once per userActivityPersistMinGap per user (see user_activity.go).
@@ -168,6 +182,10 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		qoderSignIns:            newQoderSignInStore(),
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
+		sessionPins:             newSessionPinStore(),
+		rotate:                  &rotateCounters{indices: map[string]uint64{}},
+		providerLoads:           newProviderLoadTracker(),
+		providerLanes:           newProviderLanes(),
 		rtk:                     newRTKCompressor(),
 		requestLogRetentionDays: 7,
 	}
@@ -328,6 +346,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__providers/{id}/test", s.handleTestProvider)
 	mux.HandleFunc("POST /__providers/{id}/enabled", s.handleSetProviderEnabled)
 	mux.HandleFunc("POST /__providers/{id}/rtk", s.handleSetProviderRTK)
+	mux.HandleFunc("POST /__providers/{id}/first-packet-timeout", s.handleSetProviderFirstPacketTimeout)
+	mux.HandleFunc("POST /__providers/{id}/concurrency", s.handleSetProviderConcurrency)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token", s.handleGenerateProviderSelfRegistrationToken)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token/revoke", s.handleRevokeProviderSelfRegistration)
 	mux.HandleFunc("PATCH /__providers/{id}/self-register", s.handleProviderSelfRegister)
@@ -1310,6 +1330,13 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		ClientIP:              clientIP,
 		AccessSource:          accessSource,
 		RequestBody:           truncateForLog(requestBody, requestBodyCap),
+	}
+	// Attach what the scheduler did to the same JSON blob the context stats
+	// already ride in, so a request log can answer "why this account".
+	// r is nil on the synthetic log paths (retention backfill), which have no
+	// scheduler to report.
+	if r != nil {
+		scheduleTraceOf(r.Context()).applyTo(&entry.Analysis)
 	}
 	if gatewayKeyMatched {
 		entry.APIKeyID = matchedKey.ID
@@ -3853,7 +3880,7 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if gatewayKeyMatched {
-		decision = s.decisionForAPIKey(route, matchedKey, decision)
+		decision = s.decisionForAPIKey(route, matchedKey, decision, sessionAffinityKey(r, req, matchedKey.ID))
 	}
 
 	requestModel, _ := req["model"].(string)
@@ -3970,7 +3997,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if gatewayKeyMatched {
-		decision = s.decisionForAPIKey(route, matchedKey, decision)
+		decision = s.decisionForAPIKey(route, matchedKey, decision, sessionAffinityKey(r, req, matchedKey.ID))
 	}
 
 	requestModel, _ := req["model"].(string)
@@ -4171,7 +4198,7 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if gatewayKeyMatched {
-		decision = s.decisionForAPIKey(route, matchedKey, decision)
+		decision = s.decisionForAPIKey(route, matchedKey, decision, sessionAffinityKey(r, req, matchedKey.ID))
 	}
 
 	requestModel, _ := req["model"].(string)
