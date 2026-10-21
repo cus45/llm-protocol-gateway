@@ -16,8 +16,8 @@ import {
     OAUTH_USAGE_POLL_MS,
     OAUTH_USAGE_STORAGE_PREFIX,
     providerConnectKind,
-    retrySecondsLabel,
     resetHint,
+    retrySecondsLabel,
     useNowTick
 } from '../lib';
 import {
@@ -377,7 +377,7 @@ export function ZhipuUsagePanel({ providerId, compact, subtitle }: { providerId:
   } else if (report?.unsupported) {
     return (
       <div className="claude-usage-panel" onClick={(event) => event.stopPropagation()}>
-        <div className="hint-line">该密钥非智谱编程套餐，无额度面板（按量转发不受影响）。</div>
+        <div className="hint-text">该密钥非智谱编程套餐，无额度面板（按量转发不受影响）。</div>
       </div>
     );
   }
@@ -438,7 +438,7 @@ export function DeepSeekBalancePanel({ providerId, compact, subtitle }: { provid
   } else if (report?.unsupported) {
     return (
       <div className="claude-usage-panel" onClick={(event) => event.stopPropagation()}>
-        <div className="hint-line">{report.error || '该地址不支持余额查询（可能是第三方中转），转发不受影响。'}</div>
+        <div className="hint-text">{`${report.error || '该地址不支持余额查询（可能是第三方中转），转发不受影响。'}`}</div>
       </div>
     );
   }

@@ -63,11 +63,11 @@ func (s *Store) AppendRequestLogs(logs []monitor.RequestLog) error {
 // batched insert paths so the column list can only ever drift in one place.
 const requestLogInsertSQL = `INSERT INTO request_logs (
 	time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-	status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
+	status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced, latency_ms, ttft_ms,
 	prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
 	client_host, client_ip, access_source, reasoning_effort,
 	error_description, request_body, response_body, analysis_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 func requestLogInsertArgs(log monitor.RequestLog) []any {
 	analysis, _ := json.Marshal(log.Analysis)
@@ -86,6 +86,8 @@ func requestLogInsertArgs(log monitor.RequestLog) []any {
 		log.OutputTokens,
 		log.CacheTokens,
 		log.CacheWriteTokens,
+		log.CostMicros,
+		boolToInt(log.Priced),
 		log.LatencyMillis,
 		log.TTFTMillis,
 		log.PrepMillis,
@@ -271,7 +273,7 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 	offset := (page - 1) * pageSize
 	args = append(args, pageSize, offset)
 	selectCols := `id, time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
+		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced, latency_ms, ttft_ms,
 		prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
 		client_host, client_ip, access_source, reasoning_effort,
 		error_description, analysis_json`
@@ -309,7 +311,7 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 // ok is false if the id does not exist.
 func (s *Store) RequestLogByID(id int64) (monitor.RequestLog, bool, error) {
 	row := s.reader().QueryRow(`SELECT id, time, api_key_id, api_key_name, route_id, provider_id, model, action, protocol_flow, path,
-		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, latency_ms, ttft_ms,
+		status, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced, latency_ms, ttft_ms,
 		prep_ms, pre_upstream_ms, upstream_ttfb_ms, gateway_overhead_ms, convert_out_ms, post_ms, timing_flags,
 		client_host, client_ip, access_source, reasoning_effort,
 		error_description, analysis_json, request_body, response_body
@@ -329,6 +331,7 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 	var timeValue, analysis string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64
 	var timingFlags, clientHost, clientIP, accessSource, reasoning sql.NullString
+	var pricedValue int
 	if err := rows.Scan(
 		&item.ID,
 		&timeValue,
@@ -345,6 +348,8 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 		&item.OutputTokens,
 		&item.CacheTokens,
 		&item.CacheWriteTokens,
+		&item.CostMicros,
+		&pricedValue,
 		&item.LatencyMillis,
 		&ttft,
 		&prep,
@@ -368,6 +373,7 @@ func scanRequestLog(rows rowScanner) (monitor.RequestLog, error) {
 	if err := json.Unmarshal([]byte(analysis), &item.Analysis); err != nil {
 		return monitor.RequestLog{}, fmt.Errorf("decode request analysis: %w", err)
 	}
+	item.Priced = pricedValue != 0
 	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource, reasoning)
 	return item, nil
 }
@@ -377,6 +383,7 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 	var timeValue, analysis string
 	var ttft, prep, preUp, upTTFB, overhead, convertOut, post sql.NullInt64
 	var timingFlags, clientHost, clientIP, accessSource, reasoning sql.NullString
+	var pricedValue int
 	if err := rows.Scan(
 		&item.ID,
 		&timeValue,
@@ -393,6 +400,8 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 		&item.OutputTokens,
 		&item.CacheTokens,
 		&item.CacheWriteTokens,
+		&item.CostMicros,
+		&pricedValue,
 		&item.LatencyMillis,
 		&ttft,
 		&prep,
@@ -414,6 +423,7 @@ func scanRequestLogSummary(rows rowScanner) (monitor.RequestLog, error) {
 	if err := json.Unmarshal([]byte(analysis), &item.Analysis); err != nil {
 		return monitor.RequestLog{}, fmt.Errorf("decode request analysis: %w", err)
 	}
+	item.Priced = pricedValue != 0
 	applyRequestLogScan(&item, timeValue, ttft, prep, preUp, upTTFB, overhead, convertOut, post, timingFlags, clientHost, clientIP, accessSource, reasoning)
 	return item, nil
 }
@@ -486,6 +496,8 @@ func ensureRequestLogsTable(tx *sql.Tx) error {
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		cost_micros INTEGER NOT NULL DEFAULT 0,
+		priced INTEGER NOT NULL DEFAULT 0,
 		latency_ms INTEGER NOT NULL DEFAULT 0,
 		ttft_ms INTEGER NOT NULL DEFAULT 0,
 		client_host TEXT NOT NULL DEFAULT '',
@@ -515,6 +527,8 @@ func ensureRequestLogsTable(tx *sql.Tx) error {
 		{"access_source", "TEXT NOT NULL DEFAULT ''"},
 		{"reasoning_effort", "TEXT NOT NULL DEFAULT ''"},
 		{"cache_write_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"cost_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"priced", "INTEGER NOT NULL DEFAULT 0"},
 		{"analysis_json", "TEXT NOT NULL DEFAULT '{}'"},
 	} {
 		if err := addColumnIfMissing(tx, "request_logs", col.name, col.def); err != nil {

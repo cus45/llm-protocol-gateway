@@ -1,9 +1,10 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
-import { createPortal } from 'react-dom';
-import { modelSelectOptionLabel, reportIfLooksLikeAutofill } from '../lib';
-import { Model, MultiFilterOption, SearchableModelOption } from '../types';
-import { BrandIcon } from './ui';
+import {createPortal} from 'react-dom';
+import {modelSelectOptionLabel, reportIfLooksLikeAutofill} from '../lib';
+import {Model, MultiFilterOption, SearchableModelOption} from '../types';
+import {BrandIcon, InfoTip} from './ui';
+
 export function filterModelOptions(models: Model[], queryRaw: string): SearchableModelOption[] {
   const needle = queryRaw.trim().toLowerCase();
   const options = models.map((model) => ({ id: model.id, label: modelSelectOptionLabel(model) }));
@@ -417,6 +418,161 @@ export function SearchableModelSelect({
           ))}
         </SelectMenuPortal>
       ) : null}
+    </div>
+  );
+}
+
+export type IconSelectOption = {
+  value: string;
+  label: string;
+  // 品牌图标名（与 provider preset 的 icon 同一套文件）；空 = 没有厂商可指。
+  icon?: string;
+};
+
+/**
+ * IconSelect：能带品牌图标的单选框。原生 <select> 的 <option> 放不进图标，所以
+ * 触发器和菜单都自己画；外观直接复用 .searchable-select（高度、边框、聚焦环、
+ * 下拉开合），和筛选栏里的下拉是同一套观感。
+ */
+export function IconSelect({
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+  fullWidth,
+  hint,
+  placeholder = '请选择',
+}: {
+  label?: string;
+  value: string;
+  options: IconSelectOption[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  fullWidth?: boolean;
+  // 字段说明：收进标签旁的 InfoTip，不占一行纵向空间。
+  hint?: string;
+  placeholder?: string;
+}) {
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const [highlight, setHighlight] = React.useState(0);
+
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+
+  const close = React.useCallback(() => setOpen(false), []);
+
+  const pick = React.useCallback((index: number) => {
+    const option = options[index];
+    if (!option) return;
+    onChange(option.value);
+    close();
+  }, [close, onChange, options]);
+
+  React.useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setHighlight(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [open, selectedIndex]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    // 捕获阶段监听，理由同 MultiSelectFilter：Modal 的 modal-card 在冒泡阶段
+    // stopPropagation，挂在冒泡阶段的「点击外部关闭」收不到弹窗内的点击。
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      close();
+    };
+    document.addEventListener('mousedown', onPointerDown, true);
+    return () => document.removeEventListener('mousedown', onPointerDown, true);
+  }, [close, open]);
+
+  React.useEffect(() => {
+    if (!open || !listRef.current) return;
+    const active = listRef.current.querySelector<HTMLElement>('[data-active="true"]');
+    active?.scrollIntoView({ block: 'nearest' });
+  }, [highlight, open]);
+
+  const move = (delta: number) => {
+    setHighlight((prev) => (options.length === 0 ? 0 : (prev + delta + options.length) % options.length));
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!open) { setOpen(true); return; }
+      move(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (!open) { setOpen(true); return; }
+      pick(highlight);
+      return;
+    }
+    if (event.key === 'Escape') {
+      // 下拉展开时 ESC 只收起下拉框，不能冒泡到 Modal 的全局 ESC 把弹窗关掉。
+      if (open) {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      }
+    }
+  };
+
+  return (
+    <div className={`field${fullWidth ? ' field-full' : ''}`}>
+      {label ? (
+        <div className="field-label-row">
+          <label>{label}</label>
+          {hint ? <InfoTip text={hint} /> : null}
+        </div>
+      ) : null}
+      <div className={`searchable-select icon-select${open ? ' open' : ''}`} ref={rootRef}>
+        <button
+          type="button"
+          className="icon-select-trigger"
+          role="combobox"
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          disabled={disabled}
+          onClick={() => setOpen((current) => !current)}
+          onKeyDown={onKeyDown}
+        >
+          {selected ? <BrandIcon icon={selected.icon} name={selected.label} size={16} /> : null}
+          <span className="icon-select-value">{selected?.label ?? placeholder}</span>
+        </button>
+        <SelectMenuPortal anchorRef={rootRef} open={open} menuRef={listRef}>
+          {options.map((option, index) => {
+            const isSelected = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                data-active={index === highlight ? 'true' : 'false'}
+                className={`searchable-select-option${isSelected ? ' selected' : ''}${index === highlight ? ' active' : ''}`}
+                onMouseEnter={() => setHighlight(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pick(index);
+                }}
+              >
+                <BrandIcon icon={option.icon} name={option.label} size={16} className="filter-option-icon" />
+                <span className="searchable-select-option-label">{option.label}</span>
+              </button>
+            );
+          })}
+        </SelectMenuPortal>
+      </div>
     </div>
   );
 }

@@ -150,6 +150,15 @@ type Server struct {
 	// Admission lanes (see provider_lanes.go): per-provider in-flight budgets.
 	providerLanes *providerLanes
 
+	// Per-key quota (see key_quota.go): the prompt tokens already committed by
+	// requests in flight. Runtime-only, like the scheduler's cursors — the window's
+	// completed usage lives in the monitor store's day buckets.
+	keyQuota *quotaReservations
+
+	// Cost ledger (see pricing.go): the price table cache and the store behind it.
+	priceStore PriceStore
+	prices     *priceTable
+
 	// userActivity tracks each console user's latest API request time.
 	// In-memory values are exact; StartUserActivityFlush persists them at most
 	// once per userActivityPersistMinGap per user (see user_activity.go).
@@ -186,6 +195,8 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		rotate:                  &rotateCounters{indices: map[string]uint64{}},
 		providerLoads:           newProviderLoadTracker(),
 		providerLanes:           newProviderLanes(),
+		keyQuota:                newQuotaReservations(),
+		prices:                  &priceTable{rows: map[string]domain.ModelPrice{}},
 		rtk:                     newRTKCompressor(),
 		requestLogRetentionDays: 7,
 	}
@@ -199,6 +210,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 			server.apiKeyStore = store
 			// Coalesce last_used_at writes off the request hot path.
 			server.apiKeyToucher = newAPIKeyToucher(store, router, 2*time.Second)
+		}
+		if ps, ok := stateSaver[0].(PriceStore); ok {
+			server.priceStore = ps
 		}
 		if pos, ok := stateSaver[0].(ProviderOAuthSaver); ok {
 			server.providerOAuthSaver = pos
@@ -348,6 +362,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__providers/{id}/rtk", s.handleSetProviderRTK)
 	mux.HandleFunc("POST /__providers/{id}/first-packet-timeout", s.handleSetProviderFirstPacketTimeout)
 	mux.HandleFunc("POST /__providers/{id}/concurrency", s.handleSetProviderConcurrency)
+	mux.HandleFunc("GET /__prices", s.handleListPrices)
+	mux.HandleFunc("POST /__prices", s.handleSavePrice)
+	mux.HandleFunc("DELETE /__prices/{providerID}/{modelID}", s.handleDeletePrice)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token", s.handleGenerateProviderSelfRegistrationToken)
 	mux.HandleFunc("POST /__providers/{id}/self-register-token/revoke", s.handleRevokeProviderSelfRegistration)
 	mux.HandleFunc("PATCH /__providers/{id}/self-register", s.handleProviderSelfRegister)
@@ -986,6 +1003,11 @@ func (s *Server) fillUsageUserBreakdown(rangeStats *monitor.PeriodStatsSnapshot,
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 	out := make([]monitor.UserDayStats, 0, len(byUser))
 	for _, stats := range byUser {
@@ -1168,6 +1190,19 @@ func (s *Server) rebuildUsageStatsFromLogs(since time.Time, target *monitor.Stor
 		if key, ok := lookupLogAPIKey(log, keysByID, keysByName); ok {
 			usageUserID = ownerUserIDForStats(key.OwnerUserID)
 		}
+		// A replayed row carries its own cost when it was priced at the time; a
+		// row written before the ledger existed is priced now, from the token
+		// counts the log still holds. Nothing invents a cost for a model with no
+		// price row.
+		costMicros, priced := log.CostMicros, log.Priced
+		if !priced {
+			costMicros, priced = s.costOf(log.ProviderID, resolved, TokenUsage{
+				InputTokens:      log.InputTokens,
+				OutputTokens:     log.OutputTokens,
+				CacheTokens:      log.CacheTokens,
+				CacheWriteTokens: log.CacheWriteTokens,
+			})
+		}
 		deltas = append(deltas, target.ApplyUsageEventSync(monitor.UsageEvent{
 			Time:           log.Time,
 			APIKeyID:       log.APIKeyID,
@@ -1182,6 +1217,11 @@ func (s *Server) rebuildUsageStatsFromLogs(since time.Time, target *monitor.Stor
 			CacheTokens:    log.CacheTokens,
 			LatencyMs:      log.LatencyMillis,
 			TTFTMs:         log.TTFTMillis,
+			// The stored row is the authority on cache-write tokens; without it the
+			// day would silently lose the most expensive tier.
+			CacheWriteTokens: log.CacheWriteTokens,
+			CostMicros:       costMicros,
+			Priced:           priced,
 		}))
 	}
 	if s.requestLogStore == nil {
@@ -1302,6 +1342,9 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 	case logSuccessBodies:
 		requestBodyCap = logBodyCapOK
 	}
+	// Cost is priced here, at the moment the request finished: editing a price
+	// later must not rewrite what a past request cost.
+	costMicros, priced := s.costOf(providerID, model, usage)
 	entry := monitor.RequestLog{
 		Time:                  started,
 		Analysis:              captureRequestAnalysis(r, matchedKey.ID, requestBody),
@@ -1317,6 +1360,8 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		OutputTokens:          usage.OutputTokens,
 		CacheTokens:           usage.CacheTokens,
 		CacheWriteTokens:      usage.CacheWriteTokens,
+		CostMicros:            costMicros,
+		Priced:                priced,
 		LatencyMillis:         latency,
 		TTFTMillis:            ttftMs,
 		PrepMillis:            prepMs,
@@ -1370,6 +1415,12 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		InputTokens:    usage.InputTokens,
 		OutputTokens:   usage.OutputTokens,
 		CacheTokens:    usage.CacheTokens,
+		// The daily aggregate needs the cache-write half and the cost separately:
+		// both are billed at their own rate and neither can be recovered from
+		// InputTokens alone.
+		CacheWriteTokens: usage.CacheWriteTokens,
+		CostMicros:       costMicros,
+		Priced:           priced,
 		// Forwarded payload sizes. For streaming responses the logged body is
 		// capped at passThroughLogBufferMax, so prefer the true streamed count
 		// recorded during the copy; fall back to the buffered length otherwise.
@@ -3559,6 +3610,36 @@ func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	} else if patch.FallbackModelOverrides == nil {
 		patch.FallbackModelOverrides = map[string]string{}
 	}
+	// Quota is governance, not preference: only an administrator may set or raise
+	// it. A key's owner deciding their own budget is exactly the escalation this
+	// check exists to prevent.
+	quotaSent := jsonHasKey(body, "quotaWindow") || jsonHasKey(body, "quotaTokens") || jsonHasKey(body, "quotaCostMicros")
+	if quotaSent && !identity.isAdmin() {
+		writeOpenAIError(w, http.StatusForbidden, "额度只能由管理员设置")
+		return
+	}
+	// The three quota fields only mean something as a set (a limit needs a window),
+	// so a partial patch carries the fields the caller did not send in from the
+	// current key. The console re-sends everything; a script does not, and silently
+	// clearing a budget because one number was patched would be the worst outcome.
+	if current, ok := s.router.APIKeyByID(keyID); ok {
+		// Same trap, worse consequence: Enabled absent used to mean "false", which
+		// silently switches a key off for any caller that patches one field — and
+		// a disabled key stops matching at all, so the traffic then falls through
+		// to the route's default provider instead of returning 401.
+		if !jsonHasKey(body, "enabled") {
+			patch.Enabled = current.Enabled
+		}
+		if !jsonHasKey(body, "quotaWindow") {
+			patch.QuotaWindow = current.QuotaWindow
+		}
+		if !jsonHasKey(body, "quotaTokens") {
+			patch.QuotaTokens = current.QuotaTokens
+		}
+		if !jsonHasKey(body, "quotaCostMicros") {
+			patch.QuotaCostMicros = current.QuotaCostMicros
+		}
+	}
 	if !identity.isAdmin() {
 		// Provider whitelist check for role=user (route + fallbacks).
 		if err := s.validateKeyProvidersForUser(identity, patch); err != nil {
@@ -4117,6 +4198,18 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+
+	// 图像生成也计入密钥额度：不拦住的话，成本上限对会用 images 的客户端只是个建议。
+	// 这条路径不走 failover 流程，所以额度拒绝由本处理器自己写出响应。
+	if gatewayKeyMatched && keyHasQuota(matchedKey) {
+		admission := s.admitKeyQuota(matchedKey, quotaPromptEstimate(body), time.Now())
+		if refusal := admission.refusal; refusal != nil {
+			rejectKeyQuota(w, domain.ProtocolOpenAIChat, refusal)
+			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, http.StatusTooManyRequests, TokenUsage{}, body, []byte(refusal.Message))
+			return
+		}
+		defer admission.release()
 	}
 
 	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body, gatewayKeyMatched)

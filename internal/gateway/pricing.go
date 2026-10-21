@@ -1,0 +1,260 @@
+package gateway
+
+import (
+	"encoding/json"
+	"errors"
+	"math"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
+)
+
+// The gateway's own cost ledger.
+//
+// Prices here are what the gateway charges itself for a request's tokens, taken
+// from the vendor's published rate card and entered by the operator. They are
+// not the vendor's invoice, and they are deliberately not fetched from a third
+// party catalogue: most of what this gateway fronts (coding plans, subscription
+// logins, domestic relays) is not in any public per-token table, and a guessed
+// price is worse than an absent one — an absent price is reported as 未计价,
+// while a wrong one is silently summed into a total someone then acts on.
+//
+// Cost is computed when the request finishes and stored per request and per day
+// aggregate, so editing a price later never rewrites what a past request cost.
+
+// PriceStore is the persistence the ledger needs; *store.Store satisfies it.
+type PriceStore interface {
+	LoadModelPrices() ([]domain.ModelPrice, error)
+	SaveModelPrice(domain.ModelPrice) error
+	DeleteModelPrice(providerID, modelID string) error
+}
+
+// priceTable is the lookup cache. One map read per request, never a query: the
+// alternative is a SQLite read on the hot path for a number that changes a few
+// times a year.
+type priceTable struct {
+	mu     sync.RWMutex
+	rows   map[string]domain.ModelPrice
+	loaded bool
+}
+
+func priceKey(providerID, modelID string) string {
+	return strings.TrimSpace(providerID) + "\x00" + strings.TrimSpace(modelID)
+}
+
+func (s *Server) SetPriceStore(store PriceStore) {
+	if s == nil {
+		return
+	}
+	s.priceStore = store
+	s.prices = &priceTable{rows: map[string]domain.ModelPrice{}}
+}
+
+// priceRows returns the cached table, loading it once on first use. A store that
+// cannot be read is reported through the API rather than silently pricing
+// everything at zero.
+func (s *Server) priceRows() (map[string]domain.ModelPrice, error) {
+	if s == nil || s.prices == nil {
+		return nil, errors.New("price table not configured")
+	}
+	s.prices.mu.RLock()
+	loaded, rows := s.prices.loaded, s.prices.rows
+	s.prices.mu.RUnlock()
+	if loaded {
+		return rows, nil
+	}
+	if s.priceStore == nil {
+		return rows, nil
+	}
+	stored, err := s.priceStore.LoadModelPrices()
+	if err != nil {
+		return nil, err
+	}
+	indexed := make(map[string]domain.ModelPrice, len(stored))
+	for _, price := range stored {
+		indexed[priceKey(price.ProviderID, price.ModelID)] = price
+	}
+	s.prices.mu.Lock()
+	s.prices.rows = indexed
+	s.prices.loaded = true
+	s.prices.mu.Unlock()
+	return indexed, nil
+}
+
+// lookupPrice finds the row that prices one model: the exact model row, else the
+// provider's "*" default, else nothing.
+func (s *Server) lookupPrice(providerID, model string) (domain.ModelPrice, bool) {
+	rows, err := s.priceRows()
+	if err != nil || len(rows) == 0 {
+		return domain.ModelPrice{}, false
+	}
+	model = upstreamModelForPricing(model)
+	if model != "" {
+		if price, ok := rows[priceKey(providerID, model)]; ok {
+			return price, true
+		}
+	}
+	price, ok := rows[priceKey(providerID, storePriceWildcard)]
+	return price, ok
+}
+
+// storePriceWildcard mirrors store.PriceWildcard without importing store here.
+const storePriceWildcard = "*"
+
+// costOf prices one request's usage. It returns priced=false when no row covers
+// the model, so callers can tell "free" from "we do not know".
+//
+// The subtraction is the whole point: InputTokens already contains the cache
+// reads and the cache writes (see TokenUsage), so pricing the full input at the
+// uncached rate and then adding the cache tiers on top would bill those tokens
+// twice.
+func (s *Server) costOf(providerID, model string, usage TokenUsage) (int64, bool) {
+	price, ok := s.lookupPrice(providerID, model)
+	if !ok {
+		return 0, false
+	}
+	cached := usage.CacheTokens
+	if cached < 0 {
+		cached = 0
+	}
+	if cached > usage.InputTokens {
+		cached = usage.InputTokens
+	}
+	writes := usage.CacheWriteTokens
+	if writes < 0 {
+		writes = 0
+	}
+	if writes > usage.InputTokens-cached {
+		writes = usage.InputTokens - cached
+	}
+	plain := usage.InputTokens - cached - writes
+	// Rates are per million tokens, so the product is a fraction of a dollar;
+	// rounding to whole micros keeps a day's sum equal to the sum of its
+	// requests instead of drifting with each display rounding.
+	costUSD := (float64(plain)*price.InputUSDPerMTok +
+		float64(usage.OutputTokens)*price.OutputUSDPerMTok +
+		float64(cached)*price.CacheReadUSDPerMTok +
+		float64(writes)*price.CacheWriteUSDPerMTok) / 1e6
+	cost := int64(math.Round(costUSD * 1e6))
+	if cost < 0 {
+		cost = 0
+	}
+	return cost, true
+}
+
+// upstreamModelForPricing mirrors the first step of resolveRequestLogModelForUsage:
+// the logged model is the upstream id, or the historical "alias -> upstream"
+// pair whose right side is what the vendor actually billed.
+func upstreamModelForPricing(loggedModel string) string {
+	raw := strings.TrimSpace(loggedModel)
+	if _, right, ok := strings.Cut(raw, "->"); ok {
+		if real := strings.TrimSpace(right); real != "" {
+			return real
+		}
+	}
+	return raw
+}
+
+// ── console API ──────────────────────────────────────────────────────────────
+
+func (s *Server) handleListPrices(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	rows, err := s.priceRows()
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "failed to read price table: "+err.Error())
+		return
+	}
+	prices := make([]domain.ModelPrice, 0, len(rows))
+	for _, price := range rows {
+		prices = append(prices, price)
+	}
+	sort.Slice(prices, func(i, j int) bool {
+		if prices[i].ProviderID != prices[j].ProviderID {
+			return prices[i].ProviderID < prices[j].ProviderID
+		}
+		return prices[i].ModelID < prices[j].ModelID
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"prices": prices})
+}
+
+func (s *Server) handleSavePrice(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.priceStore == nil {
+		writeOpenAIError(w, http.StatusConflict, "price table requires the SQLite store")
+		return
+	}
+	var price domain.ModelPrice
+	if err := json.NewDecoder(r.Body).Decode(&price); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid price json: "+err.Error())
+		return
+	}
+	price.ProviderID = strings.TrimSpace(price.ProviderID)
+	price.ModelID = strings.TrimSpace(price.ModelID)
+	if price.ProviderID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "price needs providerId")
+		return
+	}
+	if price.ModelID == "" {
+		price.ModelID = storePriceWildcard
+	}
+	if _, err := s.router.ProviderByID(price.ProviderID); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "provider "+price.ProviderID+" not found")
+		return
+	}
+	for _, rate := range []float64{price.InputUSDPerMTok, price.OutputUSDPerMTok, price.CacheReadUSDPerMTok, price.CacheWriteUSDPerMTok} {
+		if rate < 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "rates can not be negative; omit the row to leave a model unpriced")
+			return
+		}
+	}
+	if err := s.priceStore.SaveModelPrice(price); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "failed to save price: "+err.Error())
+		return
+	}
+	s.invalidatePrices()
+	writeJSON(w, http.StatusOK, price)
+}
+
+func (s *Server) handleDeletePrice(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	if s.priceStore == nil {
+		writeOpenAIError(w, http.StatusConflict, "price table requires the SQLite store")
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerID"))
+	modelID := strings.TrimSpace(r.PathValue("modelID"))
+	if providerID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "missing provider id")
+		return
+	}
+	if modelID == "" {
+		modelID = storePriceWildcard
+	}
+	if err := s.priceStore.DeleteModelPrice(providerID, modelID); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "failed to delete price: "+err.Error())
+		return
+	}
+	s.invalidatePrices()
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// invalidatePrices drops the cache after a write. The next request reloads the
+// whole table, which is fine at this size and avoids keeping two copies in sync.
+func (s *Server) invalidatePrices() {
+	if s.prices == nil {
+		return
+	}
+	s.prices.mu.Lock()
+	s.prices.rows = nil
+	s.prices.loaded = false
+	s.prices.mu.Unlock()
+}

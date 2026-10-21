@@ -15,11 +15,26 @@ type UsagePersistDelta struct {
 	InputTokens    int64
 	OutputTokens   int64
 	CacheTokens    int64
-	RxBytes        int64
-	TxBytes        int64
-	LatencyMs      int64
-	TTFTMs         int64
-	LastRequest    *RequestLog
+	// CacheWriteTokens is the cache-creation half of the prompt; CostMicros is
+	// the request's priced cost (micro US dollars), summed across a day's
+	// requests. Both stay 0 for history aggregated before they existed.
+	CacheWriteTokens int64
+	CostMicros       int64
+	// PricedCount is how many of the delta's requests had a price row, so the
+	// console can say what share of a period the cost actually covers.
+	PricedCount int64
+	RxBytes     int64
+	TxBytes     int64
+	LatencyMs   int64
+	TTFTMs      int64
+	LastRequest *RequestLog
+}
+
+func pricedIncrement(priced bool) int64 {
+	if priced {
+		return 1
+	}
+	return 0
 }
 
 // UsageDayBuckets is a serializable daily usage snapshot for DB load/bootstrap.

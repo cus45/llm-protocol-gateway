@@ -142,6 +142,53 @@ func TestImportProvidersNameMatchAndOAuthSecretMerge(t *testing.T) {
 	}
 }
 
+func TestImportProvidersMergesChatGPTOAuth(t *testing.T) {
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{
+			ID: "cg", Name: "cccc", Protocol: domain.ProtocolOpenAIResponses, AuthType: domain.AuthTypeChatGPTOAuth,
+			BaseURL: "https://chatgpt.com/backend-api/codex/responses",
+			ChatGPTOAuth: &domain.ChatGPTOAuthCredential{
+				AccessToken: "expired", RefreshToken: "old-refresh", ExpiresAt: "2026-10-01T00:00:00+08:00",
+			},
+		},
+	},
+	})
+	result := router.ImportProviders(ProvidersExportBundle{
+		Version: providersExportVersion,
+		Providers: []domain.Provider{{
+			ID: "cccc", Name: "cccc", Protocol: domain.ProtocolOpenAIResponses, AuthType: domain.AuthTypeChatGPTOAuth,
+			BaseURL: "https://chatgpt.com/backend-api/codex/responses",
+			ChatGPTOAuth: &domain.ChatGPTOAuthCredential{
+				AccessToken: "fresh", RefreshToken: "fresh-refresh", ExpiresAt: "2026-10-13T20:40:02+08:00",
+				ChatGPTAccountID: "acct-1", AccountLabel: "me@example.com",
+			},
+		}},
+	})
+	if len(result.Updated) != 1 || len(result.Created) != 0 || len(result.Errors) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	provider, err := router.ProviderByID("cg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := provider.ChatGPTOAuth
+	if cred == nil || cred.AccessToken != "fresh" || cred.RefreshToken != "fresh-refresh" || cred.ChatGPTAccountID != "acct-1" {
+		t.Fatalf("bundle tokens not merged: %+v", cred)
+	}
+
+	// A bundle without tokens (redacted copy) must not wipe the live pair.
+	result = router.ImportProviders(ProvidersExportBundle{Providers: []domain.Provider{{
+		ID: "cg", Name: "cccc", AuthType: domain.AuthTypeChatGPTOAuth,
+		ChatGPTOAuth: &domain.ChatGPTOAuthCredential{Connected: true, AccountLabel: "renamed@example.com"},
+	}}})
+	if len(result.Updated) != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	provider, _ = router.ProviderByID("cg")
+	if provider.ChatGPTOAuth.AccessToken != "fresh" || provider.ChatGPTOAuth.AccountLabel != "renamed@example.com" || provider.ChatGPTOAuth.Connected {
+		t.Fatalf("metadata-only import disturbed the pair: %+v", provider.ChatGPTOAuth)
+	}
+}
 func TestImportProvidersRejectsBadVersionAndProtocol(t *testing.T) {
 	router := NewRouter(domain.GatewayState{})
 	result := router.ImportProviders(ProvidersExportBundle{Version: 99, Providers: []domain.Provider{}})

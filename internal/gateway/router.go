@@ -642,6 +642,13 @@ func (r *Router) AddAPIKey(key domain.APIKey) (domain.APIKey, error) {
 		return domain.APIKey{}, err
 	}
 	key.ScheduleMode = mode
+	quota, quotaTokens, quotaCost, err := normalizeKeyQuota(key.QuotaWindow, key.QuotaTokens, key.QuotaCostMicros)
+	if err != nil {
+		return domain.APIKey{}, err
+	}
+	key.QuotaWindow = string(quota)
+	key.QuotaTokens = quotaTokens
+	key.QuotaCostMicros = quotaCost
 	key.Enabled = true
 	if key.CreatedAt == "" {
 		key.CreatedAt = nowRFC3339()
@@ -700,6 +707,13 @@ func (r *Router) UpdateAPIKey(keyID string, patch domain.APIKey) (domain.APIKey,
 			return domain.APIKey{}, err
 		}
 		updated.ScheduleMode = mode
+		quota, quotaTokens, quotaCost, err := normalizeKeyQuota(patch.QuotaWindow, patch.QuotaTokens, patch.QuotaCostMicros)
+		if err != nil {
+			return domain.APIKey{}, err
+		}
+		updated.QuotaWindow = string(quota)
+		updated.QuotaTokens = quotaTokens
+		updated.QuotaCostMicros = quotaCost
 		preferredProviderID := ""
 		if route, ok := r.routeLocked(updated.RouteID); ok {
 			preferredProviderID = route.ProviderID
@@ -1168,6 +1182,23 @@ func (r *Router) APIKeyByToken(token string) (domain.APIKey, bool) {
 	defer r.mu.RUnlock()
 	for _, key := range r.state.APIKeys {
 		if key.Enabled && key.Key == token {
+			return key, true
+		}
+	}
+	return domain.APIKey{}, false
+}
+
+// APIKeyByID looks a key up by its id, disabled ones included: the console patches
+// a key it is showing, and a paused key still has to be readable to be edited.
+func (r *Router) APIKeyByID(keyID string) (domain.APIKey, bool) {
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return domain.APIKey{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, key := range r.state.APIKeys {
+		if key.ID == keyID {
 			return key, true
 		}
 	}

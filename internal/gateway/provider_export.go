@@ -397,6 +397,7 @@ func mergeProviderImport(existing, incoming domain.Provider) domain.Provider {
 	updated.RequestAdapter = cloneRequestAdapter(incoming.RequestAdapter)
 	updated.ClaudeOAuth = mergeClaudeOAuthImport(existing.ClaudeOAuth, incoming.ClaudeOAuth)
 	updated.CursorOAuth = mergeCursorOAuthImport(existing.CursorOAuth, incoming.CursorOAuth)
+	updated.ChatGPTOAuth = mergeChatGPTOAuthImport(existing.ChatGPTOAuth, incoming.ChatGPTOAuth)
 	updated.QoderPAT = mergeQoderPATImport(existing.QoderPAT, incoming.QoderPAT)
 	updated.WorkBuddy = mergeWorkBuddyImport(existing.WorkBuddy, incoming.WorkBuddy)
 	return updated
@@ -503,6 +504,36 @@ func mergeCursorOAuthImport(existing, incoming *domain.CursorOAuthCredential) *d
 	return &merged
 }
 
+func mergeChatGPTOAuthImport(existing, incoming *domain.ChatGPTOAuthCredential) *domain.ChatGPTOAuthCredential {
+	if incoming == nil {
+		return cloneChatGPTOAuth(existing)
+	}
+	if strings.TrimSpace(incoming.AccessToken) != "" || strings.TrimSpace(incoming.RefreshToken) != "" {
+		return cloneChatGPTOAuth(incoming)
+	}
+	if existing == nil {
+		return nil
+	}
+	merged := *existing
+	if incoming.ExpiresAt != "" {
+		merged.ExpiresAt = incoming.ExpiresAt
+	}
+	if incoming.AccountLabel != "" {
+		merged.AccountLabel = incoming.AccountLabel
+	}
+	if merged.ChatGPTAccountID == "" {
+		merged.ChatGPTAccountID = incoming.ChatGPTAccountID
+	}
+	return &merged
+}
+
+func cloneChatGPTOAuth(cred *domain.ChatGPTOAuthCredential) *domain.ChatGPTOAuthCredential {
+	if cred == nil {
+		return nil
+	}
+	cloned := *cred
+	return &cloned
+}
 func cloneProviderForExport(provider domain.Provider) domain.Provider {
 	cloned := provider
 	cloned.Models = cloneModels(provider.Models)

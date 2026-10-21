@@ -2,7 +2,12 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './styles.css';
-import {ApiKeyDetailPanel, ApiKeyFixedModelField, ApiKeyModelMappingControl} from './components/apikeys';
+import {
+    ApiKeyDetailPanel,
+    ApiKeyEditableField,
+    ApiKeyFixedModelField,
+    ApiKeyModelMappingControl
+} from './components/apikeys';
 import {LogTimingWaterfall, MachineMetric, UsageRangeCalendar} from './components/charts';
 import {UsagePage} from './components/usage';
 import {
@@ -42,6 +47,7 @@ import {
     findRouteForBinding,
     fixedOutputLabels,
     formatBytes,
+    formatCostMicros,
     formatDuration,
     formatJsonDisplay,
     formatLocalISODate,
@@ -82,6 +88,7 @@ import {
     pickCustomDomainRoot,
     previewRequestAdapterCurl,
     protocolFromLabel,
+    protocolIcon,
     protocolLabel,
     protocolTone,
     PROVIDER_CONNECT_FILTERS,
@@ -141,9 +148,9 @@ import {providerIcon, ProviderLabel} from './components/provider_label';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
 import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
-import {MultiSelectFilter, SearchableModelSelect} from './components/selects';
+import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
-import {providerConnectIcon, resolveProviderIcon} from './provider_presets';
+import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
 import {
     AdminAuthStatus,
     AlertPage,
@@ -190,12 +197,14 @@ import {
     BrandIcon,
     CopyButton,
     Field,
+    InfoTip,
     Modal,
     ModelPriceTags,
     NavIcon,
     readStoredTheme,
     resolveTheme,
     SelectField,
+    Switch,
     THEME_STORAGE_KEY,
     ThemeSwitch,
     URLRow
@@ -385,6 +394,9 @@ function App() {
   const [providerModelsID, setProviderModelsID] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  // 导入单独一个 busy 标记：设置 saving 会把右侧面板顶部四个按钮全禁用，`导入` 按钮被禁后
+  // chip 从鼠标下方消失，浏览器随即丢掉按钮的 hover，一次性结果气泡刚出现就跟着消失。
+  const [importingProviders, setImportingProviders] = useState(false);
   const [testingProviderID, setTestingProviderID] = useState('');
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [editingProviderID, setEditingProviderID] = useState('');
@@ -499,6 +511,8 @@ function App() {
   const [modelsSearchQuery, setModelsSearchQuery] = useState('');
   const [modelsCapabilityFilter, setModelsCapabilityFilter] = useState<'all' | 'thinking' | 'vision' | 'context' | 'free'>('all');
   const [modelsViewMode, setModelsViewMode] = useState<'grid' | 'table'>('grid');
+  // 模型可能上百个：网格先渲一屏，其余按需追加，避免一次挂上全部卡片。
+  const [modelsVisibleCount, setModelsVisibleCount] = useState(60);
   const [providersSearchQuery, setProvidersSearchQuery] = useState('');
   const [providersConnectFilter, setProvidersConnectFilter] = useState<'' | ProviderConnectKind>('');  const [providersStatusFilter, setProvidersStatusFilter] = useState<'all' | 'healthy' | 'unavailable' | 'disabled' | 'oauth'>('all');
   // 卡片密度只影响本机视觉，持久化在 localStorage（与主题/侧边栏一致）。
@@ -721,6 +735,10 @@ function App() {
       return a.id.localeCompare(b.id);
     });
   }, [state.models, state.providers, modelsProviderFilter, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
+
+  // 筛选条件一变就回到第一屏，否则用户改完筛选还停在“加载了 480 个”的位置。
+  useEffect(() => { setModelsVisibleCount(60); }, [modelsProviderFilter, modelsCapabilityFilter, modelsSearchQuery]);
+  const visibleModels = useMemo(() => filteredModels.slice(0, modelsVisibleCount), [filteredModels, modelsVisibleCount]);
 
   const modelsCapabilityCounts = useMemo(() => {
     const base = modelsProviderFilter === '__all__'
@@ -3779,7 +3797,7 @@ function App() {
   }
 
   async function importProvidersFromFile(file: File) {
-    setSaving(true);
+    setImportingProviders(true);
     try {
       const text = await file.text();
       let bundle: unknown;
@@ -3810,6 +3828,7 @@ function App() {
     } finally {
       setSaving(false);
       if (providerImportInputRef.current) providerImportInputRef.current.value = '';
+      setImportingProviders(false);
     }
   }
 
@@ -3939,7 +3958,7 @@ function App() {
     }
   }
 
-  async function updateApiKeyField(key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) {
+  async function updateApiKeyField(key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) {
     setSaving(true);
     try {
       const patch: Partial<APIKey> = {};
@@ -3953,6 +3972,9 @@ function App() {
       if (field === 'codexForceFast') patch.codexForceFast = Boolean(value);
       if (field === 'scheduleMode') patch.scheduleMode = String(value);
       if (field === 'enabled') patch.enabled = Boolean(value);
+      if (field === 'quotaWindow') patch.quotaWindow = String(value);
+      if (field === 'quotaTokens') patch.quotaTokens = Math.max(0, Math.round(Number(value) || 0));
+      if (field === 'quotaCostMicros') patch.quotaCostMicros = Math.max(0, Math.round(Number(value) || 0));
       const response = await fetch(`${API_BASE}/__apikeys/${encodeURIComponent(key.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -4449,12 +4471,13 @@ function App() {
               return (
                 <div className="nav-group" key={group.label}>
                   <div className="nav-group-label">{group.label}</div>
+                  <div className="nav-group-rule" aria-hidden="true" title={group.label} />
                   {items.map((item) => (
                     <a
                       className={`nav-item ${activeNav === item.id ? 'active' : ''}`}
                       href={navPathForID(item.id)}
                       key={item.id}
-                      title={sidebarCollapsed ? item.label : undefined}
+                      title={item.label}
                       onClick={(event) => {
                         event.preventDefault();
                         goToPage(item.id);
@@ -4670,7 +4693,7 @@ function App() {
                       })}
                     </div>
                     {apiKeyTotalPages > 1 ? (
-                      <div className="hint-line" style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                         <span>第 {currentApiKeyPage} / {apiKeyTotalPages} 页 · 每页 {API_KEYS_PAGE_SIZE} 个</span>
                         <span style={{ display: 'flex', gap: 8 }}>
                           <button className="mini-btn" type="button" disabled={currentApiKeyPage <= 1} onClick={() => setApiKeyPage(currentApiKeyPage - 1)}>上一页</button>
@@ -4688,6 +4711,7 @@ function App() {
                       models={state.models}
                       endpoints={state.endpoints}
                       saving={saving}
+                      canWriteQuota={!isNormalUser}
                       testingProviderID={testingProviderID}
                       tunnelRunning={tunnelRunning}
                       livePublicURL={livePublicURL}
@@ -4737,7 +4761,7 @@ function App() {
                   <div className="panel-header-actions">
                     <button className="btn" disabled={saving || selectedExportProviderIDs.length === 0} onClick={() => void exportProviders(selectedExportProviderIDs)}>导出选中{selectedExportProviderIDs.length > 0 ? ` (${selectedExportProviderIDs.length})` : ''}</button>
                     <button className="btn" disabled={saving || sortedProviders.length === 0} onClick={() => void exportProviders()}>导出全部</button>
-                    <button className="btn" disabled={saving} onClick={() => providerImportInputRef.current?.click()}>导入</button>
+                    <button className="btn" disabled={saving || importingProviders} onClick={() => providerImportInputRef.current?.click()}>导入</button>
                     <button className="btn primary" disabled={saving} onClick={() => setProviderSheetOpen(true)}>添加输入 Provider</button>
                     <input
                       ref={providerImportInputRef}
@@ -4989,7 +5013,7 @@ function App() {
                   })}
                 </div>
               )}
-              {selectedProvider && !isNormalUser ? <div className="hint-line">当前 Provider 被 {activeProviderRouteCount} 个 API 密钥引用（含备选）。删除时这些密钥的 Provider 绑定会自动重置为空。</div> : null}
+              {selectedProvider && !isNormalUser ? <div className="hint-text">{`当前 Provider 被 ${activeProviderRouteCount} 个 API 密钥引用（含备选）。删除时这些密钥的 Provider 绑定会自动重置为空。`}</div> : null}
               <ProviderCatalogDialog
                 open={providerSheetOpen}
                 providers={state.providers}
@@ -5194,11 +5218,9 @@ function App() {
                   />
                   <span>开启局域网 / 穿透访问</span>
                 </label>
-                <div className="hint-line">
-                  {webExposed
+                <div className="hint-text">{webExposed
                     ? '管理页公网需管理员密码；模型 API 使用 API Key。可在下方分别开启管理页或 API 公网。'
-                    : '关闭后局域网与穿透均不可用；若公网隧道在跑会自动停止。'}
-                </div>
+                    : '关闭后局域网与穿透均不可用；若公网隧道在跑会自动停止。'}</div>
                 <URLRow label="局域网地址" value={lanAccessURL} onCopy={webExposed && lanHostHint ? () => copy(lanAccessURL) : undefined} />
               </div>
             </div>
@@ -5239,7 +5261,7 @@ function App() {
                     )}
                   </div>
                 </div>
-                <div className="hint-line">管理页面：{composedUIDomain ? `https://${composedUIDomain}` : '—'}</div>
+                <div className="hint-text">{`管理页面：${composedUIDomain ? `https://${composedUIDomain}` : '—'}`}</div>
                 {customTunnelActive && liveUIPublicURL ? (
                   <URLRow label="管理页公网" value={liveUIPublicURL} onCopy={() => copy(liveUIPublicURL)} />
                 ) : null}
@@ -5274,7 +5296,7 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <div className="hint-line">模型 API：{composedCustomDomain ? `https://${composedCustomDomain}` : '—'}</div>
+                <div className="hint-text">{`模型 API：${composedCustomDomain ? `https://${composedCustomDomain}` : '—'}`}</div>
                 {customTunnelActive && livePublicURL && publicDraft.exposeApi !== false ? (
                   <URLRow label="模型 API 公网" value={livePublicURL} onCopy={() => copy(livePublicURL)} />
                 ) : null}
@@ -5297,9 +5319,9 @@ function App() {
                   <div className="hint-line error">API 与管理页不能使用同一子域名</div>
                 ) : null}
                 {cloudflareAuthPending ? (
-                  <div className="hint-line">正在等待 Cloudflare 授权，请在浏览器中完成登录并选择要绑定的域名…</div>
+                  <div className="hint-text">正在等待 Cloudflare 授权，请在浏览器中完成登录并选择要绑定的域名…</div>
                 ) : (
-                  <div className="hint-line">根域名来自 Cloudflare 授权。管理页域名只服务控制台，API 域名只服务模型协议。</div>
+                  <div className="hint-text">根域名来自 Cloudflare 授权。管理页域名只服务控制台，API 域名只服务模型协议。</div>
                 )}
                 <div className="public-simple-actions">
                   {customTunnelActive ? (
@@ -5322,11 +5344,11 @@ function App() {
                   >
                     {cloudflareAuthPending ? '等待授权…' : tunnelBusy ? '绑定中…' : (customTunnelActive ? '重新绑定并应用' : '连接 Cloudflare 并绑定')}
                   </button>
-                  {!webExposed ? <span className="hint-line">请先开启局域网 / 穿透访问。</span> : null}
+                  {!webExposed ? <div className="hint-text">请先开启局域网 / 穿透访问。</div> : null}
                   {publicDraft.exposeApi === false && publicDraft.exposeUi === false ? (
-                    <span className="hint-line">请先开启「管理页公网」或「模型 API 公网」至少一个开关。</span>
+                    <div className="hint-text">请先开启「管理页公网」或「模型 API 公网」至少一个开关。</div>
                   ) : null}
-                  {quickTunnelActive ? <span className="hint-line">当前正在使用快速隧道，需先关闭后再启域名隧道。</span> : null}
+                  {quickTunnelActive ? <div className="hint-text">当前正在使用快速隧道，需先关闭后再启域名隧道。</div> : null}
                 </div>
                 {tunnel?.status === 'error' && publicAccess.mode === 'custom_domain' ? <div className="hint-line error">{tunnel.message}</div> : null}
                 <details className="public-advanced" open={showManualToken} onToggle={(event) => setShowManualToken((event.currentTarget as HTMLDetailsElement).open)}>
@@ -5338,7 +5360,7 @@ function App() {
                       onChange={setCustomTunnelToken}
                       placeholder={publicDraft.tunnelToken ? '已保存 token，留空则复用' : '从 Cloudflare Zero Trust 复制 token'}
                     />
-                    <div className="hint-line">若你已在 Zero Trust 手动创建隧道，可粘贴 token 后直接启动，无需浏览器授权。</div>
+                    <div className="hint-text">若你已在 Zero Trust 手动创建隧道，可粘贴 token 后直接启动，无需浏览器授权。</div>
                     <div className="public-simple-actions">
                       <button
                         className="btn"
@@ -5358,7 +5380,7 @@ function App() {
                     {quickTunnelActive && livePublicURL ? (
                       <URLRow label="快速隧道地址" value={livePublicURL} onCopy={() => copy(livePublicURL)} />
                     ) : (
-                      <div className="hint-line">快速隧道为临时单地址，管理页与 API 共用，适合测试。</div>
+                      <div className="hint-text">快速隧道为临时单地址，管理页与 API 共用，适合测试。</div>
                     )}
                     {tunnel?.status === 'error' && publicAccess.mode === 'random_tunnel' ? <div className="hint-line error">{tunnel.message}</div> : null}
                   </div>
@@ -5381,11 +5403,9 @@ function App() {
                 </Badge>
               </div>
               <div className="public-simple-card">
-                <div className="hint-line">
-                  {publicControlTokenConfigured
+                <div className="hint-text">{publicControlTokenConfigured
                     ? `已启用 · 令牌尾号 ****${publicControlTokenPreview || '----'}`
-                    : '尚未生成令牌，生成后才能远程开关。'}
-                </div>
+                    : '尚未生成令牌，生成后才能远程开关。'}</div>
                 {publicControlRawToken ? (
                   <div className="field field-full">
                     <label>新令牌（只显示这一次，请立即复制保存）</label>
@@ -5395,10 +5415,7 @@ function App() {
                     </div>
                   </div>
                 ) : null}
-                <div className="hint-line">
-                  操作：购买域名（custom_domain）与免费随机域名（random_tunnel）各自开关，底层只有一条隧道。
-                  安全限制：接口只在本机 / 局域网可用，公网调用一律 403；关掉公网后需回本机重新打开。
-                </div>
+                <div className="hint-text">操作：购买域名（custom_domain）与免费随机域名（random_tunnel）各自开关，底层只有一条隧道。安全限制：接口只在本机 / 局域网可用，公网调用一律 403；关掉公网后需回本机重新打开。</div>
                 <div className="field field-full">
                   <label>调用示例（把 {'<令牌>'} 换成上面复制到的值）</label>
                   <pre className="curl-preview">{publicControlCurlExamples}</pre>
@@ -5581,7 +5598,7 @@ function App() {
                           : isQoderConnectKind(provider.authType)
                           ? !!provider.qoderPat?.connected
                         : true;
-                    if (!canSync) return <div className="hint-line">请先完成 OAuth 连接后再同步模型。</div>;
+                    if (!canSync) return <div className="hint-text">请先完成 OAuth 连接后再同步模型。</div>;
                     return (
                       <div style={{ marginTop: 12 }}>
                         <button className="btn primary" type="button" disabled={testingProviderID === provider.id} onClick={() => void fetchProviderModels(provider.id, provider.name, false)}>
@@ -5606,7 +5623,7 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredModels.map((model) => {
+                      {visibleModels.map((model) => {
                         const provider = state.providers.find((item) => item.id === model.providerId);
                         const isThinking = isThinkingModel(model.id);
                         const isVision = isVisionModel(model.id);
@@ -5654,53 +5671,61 @@ function App() {
                   </table>
                 </div>
               ) : (
-                <div className="model-grid">
-                  {filteredModels.map((model) => {
-                    const provider = state.providers.find((item) => item.id === model.providerId);
-                    const isThinking = isThinkingModel(model.id);
-                    const isVision = isVisionModel(model.id);
-                    const isLongContext = (model.contextLength || 0) >= 128000;
-                    return (
-                      <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
-                        <div className="model-card-head">
-                          <div className="model-card-title-row">
-                            <div className="model-id-main">
-                              <span
-                                className="provider-name model-id-clickable"
-                                title={`点击复制模型 ID：${model.id}`}
-                                onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
-                              >
-                                <span className="model-id-text">{model.id}</span>
-                                <span className="model-id-copy-hint" aria-hidden="true">📋</span>
-                              </span>
-                              {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
+                <>
+                  <div className="model-grid">
+                    {visibleModels.map((model) => {
+                      const provider = state.providers.find((item) => item.id === model.providerId);
+                      const isThinking = isThinkingModel(model.id);
+                      const isVision = isVisionModel(model.id);
+                      const isLongContext = (model.contextLength || 0) >= 128000;
+                      return (
+                        <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
+                          <div className="model-card-head">
+                            <div className="model-card-title-row">
+                              <div className="model-id-main">
+                                <span
+                                  className="provider-name model-id-clickable"
+                                  title={`点击复制模型 ID：${model.id}`}
+                                  onClick={() => void copy(model.id, `已复制模型 ID：${model.id}`)}
+                                >
+                                  <span className="model-id-text">{model.id}</span>
+                                  <span className="model-id-copy-hint" aria-hidden="true">📋</span>
+                                </span>
+                                {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
+                              </div>
+                              <Badge tone="slate">{model.inMenu ? '菜单' : '隐藏'}</Badge>
                             </div>
-                            <Badge tone="slate">{model.inMenu ? '菜单' : '隐藏'}</Badge>
+                            <CopyButton
+                              value={model.id}
+                              label="复制"
+                              className="copy-model-btn"
+                              toastContent={`已复制模型 ID：${model.id}`}
+                            />
                           </div>
-                          <CopyButton
-                            value={model.id}
-                            label="复制"
-                            className="copy-model-btn"
-                            toastContent={`已复制模型 ID：${model.id}`}
-                          />
+                          <div className="provider-meta" title={provider?.name || model.providerId}>
+                            {provider ? <ProviderLabel provider={provider} size={14} /> : model.providerId}
+                          </div>
+                          <div className="model-tags-row">
+                            {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
+                            {isVision ? <span className="model-tag vision">视觉多模态</span> : null}
+                            {isLongContext ? <span className="model-tag context">128K+ 上下文</span> : null}
+                            <ModelPriceTags model={model} />
+                          </div>
+                          <div className="model-card-stats">
+                            <span>上下文 {model.contextLength.toLocaleString()}</span>
+                            <span>{protocolLabel(model.protocol)}</span>
+                          </div>
                         </div>
-                        <div className="provider-meta" title={provider?.name || model.providerId}>
-                          {provider ? <ProviderLabel provider={provider} size={14} /> : model.providerId}
-                        </div>
-                        <div className="model-tags-row">
-                          {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
-                          {isVision ? <span className="model-tag vision">视觉多模态</span> : null}
-                          {isLongContext ? <span className="model-tag context">128K+ 上下文</span> : null}
-                          <ModelPriceTags model={model} />
-                        </div>
-                        <div className="model-card-stats">
-                          <span>上下文 {model.contextLength.toLocaleString()}</span>
-                          <span>{protocolLabel(model.protocol)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                  {filteredModels.length > visibleModels.length ? (
+                    <div className="models-more">
+                      <button className="btn" type="button" onClick={() => setModelsVisibleCount((n) => n + 60)}>加载更多</button>
+                      <span className="models-more-count">已显示 {visibleModels.length} / {filteredModels.length} 个</span>
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           </section>
@@ -5753,11 +5778,6 @@ function App() {
                       <span className="traffic-meta-stat">日志总数: <b>{logsTotal}</b> 条</span>
                       <span className="traffic-meta-stat">当前页码: <b>{logsPage}</b> / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))}</span>
                       <span className="traffic-meta-stat">历史留存: <b>{requestLogRetentionDays} 天</b></span>
-                      {dataFetchedAt && (
-                        <span className="traffic-meta-stat" style={{ color: 'var(--subtle)' }}>
-                          更新于 <b>{dataFetchedAt.toLocaleTimeString()}</b>
-                        </span>
-                      )}
                     </div>
                     {!isNormalUser && (
                       <label
@@ -5774,9 +5794,15 @@ function App() {
                         <Badge tone={log2xxBodies ? 'green' : 'slate'}>{log2xxBodies ? '已开启' : '已关闭'}</Badge>
                       </label>
                     )}
+                      {/* 「更新于」放在尾部：和「记录 2xx 正文」开关并排时会把开关顶到第二行，行高翻倍 */}
+                      {dataFetchedAt && (
+                        <span className="traffic-meta-stat" style={{ color: 'var(--subtle)' }}>
+                          更新于 <b>{dataFetchedAt.toLocaleTimeString()}</b>
+                        </span>
+                      )}
                   </div>
 
-                  {/* 第二行：即时关键词搜索 */}
+                  {/* 第二行：即时关键词搜索 + 主操作按钮 */}
                   <div className="traffic-search-row">
                     <svg className="traffic-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="11" cy="11" r="8" />
@@ -5798,9 +5824,39 @@ function App() {
                         ×
                       </button>
                     )}
+                    <div className="traffic-action-group">
+                      <button
+                        className="btn primary"
+                        type="button"
+                        title="回到第 1 页并刷新日志"
+                        onClick={() => { setLogsPage(1); void refreshLogs(1); }}
+                      >
+                        应用筛选
+                      </button>
+                      {logsUsageTarget && <span className="muted">{logsUsageTarget.type === 'model' ? '模型' : 'API 密钥'}：{logsUsageTarget.label}</span>}
+                      {(logsUsageTarget || logsApiKeyName || logsProviderFilter || logsOwnerFilter || logsStatusFilter !== 'all' || logsKeyword) && (
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          title="重置所有筛选项"
+                          onClick={() => {
+                            setLogsUsageTarget(null);
+                            setLogsApiKeyName('');
+                            setLogsProviderFilter('');
+                            setLogsOwnerFilter('');
+                            setLogsStatusFilter('all');
+                            setLogsKeyword('');
+                            setLogsPage(1);
+                            void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' });
+                          }}
+                        >
+                          重置
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  {/* 第三行：状态过滤芯片 */}
+                  {/* 第三行：状态筛选芯片；「应用筛选 / 重置」与搜索框同排，避免再来一行把控件挤到日历下方 */}
                   <div className="traffic-chips-row">
                     <span className="traffic-chips-label">状态筛选：</span>
                     {[
@@ -5823,7 +5879,7 @@ function App() {
                     ))}
                   </div>
 
-                  {/* 第四行：下拉表单项与操作按钮 */}
+                  {/* 第三行：下拉表单项 */}
                   <div className="traffic-fields-grid">
                     <label className="field">
                       <span>API 密钥</span>
@@ -5866,37 +5922,6 @@ function App() {
                         </select>
                       </label>
                     )}
-
-                    <div className="traffic-action-group">
-                      <button
-                        className="btn primary"
-                        type="button"
-                        title="回到第 1 页并刷新日志"
-                        onClick={() => { setLogsPage(1); void refreshLogs(1); }}
-                      >
-                        应用筛选
-                      </button>
-                      {logsUsageTarget && <span className="muted">{logsUsageTarget.type === 'model' ? '模型' : 'API 密钥'}：{logsUsageTarget.label}</span>}
-                      {(logsUsageTarget || logsApiKeyName || logsProviderFilter || logsOwnerFilter || logsStatusFilter !== 'all' || logsKeyword) && (
-                        <button
-                          className="btn secondary"
-                          type="button"
-                          title="重置所有筛选项"
-                          onClick={() => {
-                            setLogsUsageTarget(null);
-                            setLogsApiKeyName('');
-                            setLogsProviderFilter('');
-                            setLogsOwnerFilter('');
-                            setLogsStatusFilter('all');
-                            setLogsKeyword('');
-                            setLogsPage(1);
-                            void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' });
-                          }}
-                        >
-                          重置
-                        </button>
-                      )}
-                    </div>
                   </div>
                 </div>
               </div>
@@ -5923,7 +5948,7 @@ function App() {
                       apiKeys={state.apiKeys || []}
                       onOpen={(log) => void openTrafficLogDetail(log)}
                     />
-                    <div className="hint-line" style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                       <span>
                         共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
                         {logsKeyword ? ` · 当前关键词过滤匹配 ${displayedLogs.length} 条` : ''}
@@ -6034,7 +6059,7 @@ function App() {
                         </div>
                       </div>
                     ))}
-                    <div className="hint-line" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span>共 {alertPage.total} 条 · 第 {alertPage.page} 页 · 每页 {alertPage.pageSize} 条</span>
                       <span style={{ display: 'flex', gap: 8 }}>
                         <button className="mini-btn" type="button" disabled={alertPage.page <= 1} onClick={() => void refreshAlerts(alertPage.page - 1)}>上一页</button>
@@ -6160,10 +6185,7 @@ function App() {
                         />
                       </label>
                     </div>
-                    <p className="hint-line">
-                      判定依据是请求的真实时间区间 [开始, 开始+耗时) 是否重叠，只统计回溯窗口内的记录。
-                      同一 IP 的并发（客户端并行工具调用）不计入。
-                    </p>
+                    <div className="hint-text">判定依据是请求的真实时间区间 [开始, 开始+耗时) 是否重叠，只统计回溯窗口内的记录。同一 IP 的并发（客户端并行工具调用）不计入。</div>
                   </div>
 
                   <div className="detail-section">
@@ -6180,10 +6202,7 @@ function App() {
                         />
                       </label>
                     </div>
-                    <p className="hint-line">
-                      冷却期按「规则 + 密钥」独立计算：同一密钥在冷却期内每条规则各只告警一次，
-                      避免同一次泄露反复推送；但若出现全新 IP，会立即再告一次。
-                    </p>
+                    <div className="hint-text">冷却期按「规则 + 密钥」独立计算：同一密钥在冷却期内每条规则各只告警一次，避免同一次泄露反复推送；但若出现全新 IP，会立即再告一次。</div>
                   </div>
 
                   <div className="detail-section">
@@ -6198,9 +6217,9 @@ function App() {
                       <span>启用 Telegram 推送</span>
                     </label>
                     {alertSettings.telegram.botTokenConfigured ? (
-                      <p className="hint-line">已配置 Bot Token · 令牌尾号 ****{alertSettings.telegram.botTokenPreview || '----'}</p>
+                      <div className="hint-text">{`已配置 Bot Token · 令牌尾号 ****${alertSettings.telegram.botTokenPreview || '----'}`}</div>
                     ) : (
-                      <p className="hint-line">尚未配置 Bot Token。在 Telegram 里找 @BotFather 创建机器人获取 token，再向机器人发一条消息以取得 chat id。</p>
+                      <div className="hint-text">尚未配置 Bot Token。在 Telegram 里找 @BotFather 创建机器人获取 token，再向机器人发一条消息以取得 chat id。</div>
                     )}
                     <div className="form-grid compact">
                       <label className="field">
@@ -6407,16 +6426,16 @@ function App() {
                   </label>
                 </div>
 
-                <div className="hint-line">
-                  CLI 可用性：
-                  {selfcheckTools.length === 0
-                    ? '加载中…'
-                    : selfcheckTools.map((tool) => (
-                      <span key={tool.id} style={{ marginLeft: 10 }}>
-                        {tool.label}{' '}
-                        <Badge tone={tool.found ? 'green' : 'red'}>{tool.found ? '可用' : '缺失'}</Badge>
-                      </span>
-                    ))}
+                <div className="hint-text">
+                    CLI 可用性：
+                    {selfcheckTools.length === 0
+                      ? '加载中…'
+                      : selfcheckTools.map((tool) => (
+                        <span key={tool.id} style={{ marginLeft: 10 }}>
+                          {tool.label}{' '}
+                          <Badge tone={tool.found ? 'green' : 'red'}>{tool.found ? '可用' : '缺失'}</Badge>
+                        </span>
+                      ))}
                 </div>
               </div>
 
@@ -6578,11 +6597,9 @@ function App() {
                 </p>
               </div>
               <div className="panel-header-actions">
-                <span className="hint-line">
-                  {hostMetrics?.collectedAt
+                <div className="hint-text">{hostMetrics?.collectedAt
                     ? `采样于 ${new Date(hostMetrics.collectedAt).toLocaleTimeString()}`
-                    : '正在读取…'}
-                </span>
+                    : '正在读取…'}</div>
               </div>
             </div>
 
@@ -6658,7 +6675,7 @@ function App() {
                 !hostMetrics.netAvailable ? '网络速率' : null,
               ].filter(Boolean);
               return missing.length > 0 ? (
-                <div className="hint-line">本机未提供的指标已隐藏：{missing.join(' / ')}</div>
+                <div className="hint-text">{`本机未提供的指标已隐藏：${missing.join(' / ')}`}</div>
               ) : null;
             })() : null}
 
@@ -6695,10 +6712,10 @@ function App() {
                   </div>
                   <button className="btn primary" type="button" onClick={() => goToPage('public-access')}>打开公网访问</button>
                 </div>
-                <div className="hint-line">
-                  当前：局域网 {webExposed ? '开' : '关'}
-                  {' · '}管理页公网 {publicDraft.exposeUi === false ? '关' : (liveUIPublicURL ? '开' : '待绑定')}
-                  {' · '}API 公网 {publicDraft.exposeApi === false ? '关' : (livePublicURL && customTunnelActive ? '开' : '待绑定')}
+                <div className="hint-text">
+                    当前：局域网 {webExposed ? '开' : '关'}
+                    {' · '}管理页公网 {publicDraft.exposeUi === false ? '关' : (liveUIPublicURL ? '开' : '待绑定')}
+                    {' · '}API 公网 {publicDraft.exposeApi === false ? '关' : (livePublicURL && customTunnelActive ? '开' : '待绑定')}
                 </div>
               </div>
               <div className="card panel">
@@ -6719,7 +6736,7 @@ function App() {
                       />
                     </label>
                   </div>
-                  <div className="hint-line">仅影响请求明细（流量日志正文等）。用量统计的每日 Token / 请求次数汇总会永久保留。</div>
+                  <div className="hint-text">仅影响请求明细（流量日志正文等）。用量统计的每日 Token / 请求次数汇总会永久保留。</div>
                   <label className="toggle-row" style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', marginTop: 8 }}>
                     <input
                       type="checkbox"
@@ -6729,7 +6746,7 @@ function App() {
                     />
                     <span>记录成功请求正文</span>
                   </label>
-                  <div className="hint-line">默认关闭：成功请求只记元数据、不落正文（省磁盘）；失败请求始终保留正文。</div>
+                  <div className="hint-text">默认关闭：成功请求只记元数据、不落正文（省磁盘）；失败请求始终保留正文。</div>
                 </div>
                 <div className="detail-section">
                   <div className="detail-section-title">用量统计攒批</div>
@@ -6757,7 +6774,7 @@ function App() {
                       />
                     </label>
                   </div>
-                  <div className="hint-line">攒够条数或到时间就落库一次（默认 500 条 / 60 秒），值越大写盘越少。修改后需重启网关生效；正常关闭会先落盘，不丢数据。</div>
+                  <div className="hint-text">攒够条数或到时间就落库一次（默认 500 条 / 60 秒），值越大写盘越少。修改后需重启网关生效；正常关闭会先落盘，不丢数据。</div>
                 </div>
                 <div className="detail-section">
                   <div className="detail-section-title">最近日志</div>
@@ -6784,11 +6801,9 @@ function App() {
                 <Badge tone={authStatus?.configured ? 'green' : 'amber'}>{authStatus?.configured ? '已设置' : '未设置'}</Badge>
               </div>
               <div className="public-simple-card">
-                <div className="hint-line">
-                  {authStatus?.localBypass
+                <div className="hint-text">{authStatus?.localBypass
                     ? '当前为本机访问，可直接设置或重置管理密码。'
-                    : '当前为远程访问，修改密码需验证当前密码。'}
-                </div>
+                    : '当前为远程访问，修改密码需验证当前密码。'}</div>
                 {authStatus?.configured && !authStatus.localBypass ? (
                   <label className="field">
                     <span>当前密码</span>
@@ -6848,7 +6863,7 @@ function App() {
                 </div>
                 {state.dataPaths?.dataDir ? <CopyButton value={state.dataPaths.dataDir} label="复制根目录" /> : null}
               </div>
-              <div className="hint-line">{state.dataPaths?.note || '更新或重装 App 不会删除此目录中的数据；数据独立于 .app 包。'}</div>
+              <div className="hint-text">{state.dataPaths?.note || '更新或重装 App 不会删除此目录中的数据；数据独立于 .app 包。'}</div>
               {state.dataPaths ? (
                 <>
                   {state.dataPaths.dataDir ? <URLRow label="数据根目录" value={state.dataPaths.dataDir} onCopy={() => void copy(state.dataPaths!.dataDir)} /> : null}
@@ -6964,6 +6979,12 @@ function App() {
                 <b>{trafficLogDetail.cacheTokens ?? 0}{trafficLogDetail.cacheWriteTokens ? ` · 写 ${trafficLogDetail.cacheWriteTokens}` : ''}</b>
               </div>
               <div className="log-audit-chip">
+                <span>成本</span>
+                <b title={trafficLogDetail.priced ? '按请求结束时价格表算出，之后改价不回算' : '这条请求没有价格行（或早于成本功能）：是「未计价」，不是免费'}>
+                  {trafficLogDetail.priced ? formatCostMicros(trafficLogDetail.costMicros) : '未计价'}
+                </b>
+              </div>
+              <div className="log-audit-chip">
                 <span>客户端来源</span>
                 <b title={`${trafficLogDetail.clientIp || '-'}${trafficLogDetail.accessSource ? ` (${trafficLogDetail.accessSource})` : ''}`}>
                   {trafficLogDetail.clientIp || trafficLogDetail.accessSource || '-'}
@@ -7010,7 +7031,7 @@ function App() {
               </button>
             </div>
 
-            {trafficLogDetailLoading ? <div className="hint-line" style={{ margin: '6px 0' }}>⏳ 正在加载完整请求与响应报文…</div> : null}
+            {trafficLogDetailLoading ? <div className="hint-text">⏳ 正在加载完整请求与响应报文…</div> : null}
 
             {/* Tab: APM */}
             {trafficLogDetailTab === 'apm' && (
@@ -7038,7 +7059,7 @@ function App() {
                         <label>请求正文 (Request Body)</label>
                         <span className="badge slate" style={{ fontSize: 11 }}>{formatBytes(trafficLogDetail.requestBody!.length)}</span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="field-label-spacer">
                         <div className="view-toggle-capsule">
                           <button
                             type="button"
@@ -7116,7 +7137,7 @@ function App() {
                           {isRespSSE ? ' · Server-Sent Events 流' : ''}
                         </span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="field-label-spacer">
                         {isRespSSE && sseParsedText ? (
                           <div className="view-toggle-capsule">
                             <button
@@ -7232,7 +7253,7 @@ function App() {
                     <label>完整链路排错元数据</label>
                     <span className="badge slate" style={{ fontSize: 11 }}>Structured Context</span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="field-label-spacer">
                     <CopyButton value={jsonMetadata} label="复制全部元数据 (JSON)" />
                     <CopyButton value={formatTrafficLogDetail(trafficLogDetail, state.providers || [])} label="复制文本简报" />
                   </div>
@@ -7359,7 +7380,7 @@ function App() {
             {selfcheckCaseDetail.error ? <div className="hint-line error">{selfcheckCaseDetail.error}</div> : null}
             <div className="field-label-row">
               <label>完整诊断信息</label>
-              <CopyButton value={formatSelfcheckCaseDetail(selfcheckCaseDetail)} label="复制全部" />
+              <CopyButton className="field-label-spacer" value={formatSelfcheckCaseDetail(selfcheckCaseDetail)} label="复制全部" />
             </div>
             <pre className="json-preview">{formatSelfcheckCaseDetail(selfcheckCaseDetail)}</pre>
           </div>
@@ -7370,15 +7391,34 @@ function App() {
       )}
 
       {providerModalOpen && (
-        <Modal title={editingProviderID ? '编辑输入 Provider' : '创建输入 Provider'} description="API Key Source 可留空：留空时透传客户端 Authorization；也可直接填 sk-xxx，或填 env:VAR_NAME / literal:sk-xxx。Fallback Model 只在模型接口不可用时兜底。" onClose={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetChatGPTOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>
-          <div className="form-grid modal-form">
+        <Modal title={editingProviderID ? '编辑输入 Provider' : '创建输入 Provider'} description={editingProviderID ? '修改后保存即生效。' : '选好连接方式与接入地址即可；订阅类保存后在下方登录一次。'} onClose={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetChatGPTOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>
+          <div className="form-grid modal-form provider-form">
             <Field fullWidth label="Provider 名称" value={providerDraft.name} onChange={(value) => setProviderDraft((current) => ({ ...current, name: value }))} />
             {(() => {
               // 连接方式与它的展示文案都取自 lib 里的那一张表：目录磁贴、筛选条与
               // 这个下拉框共用同一份标签，新增一种订阅不用再改这里。
-              const connectChoices: ProviderConnectKind[] = ['api_key', 'claude_oauth', 'cursor_oauth', 'chatgpt_oauth', 'qoder_pat', 'qoder_cn', 'workbuddy', 'workbuddy_ai', 'zcode', 'zcode_bigmodel', 'trae_cn', 'trae_global', 'opencode_zen_free', 'self_register'];
+              const connectChoices = PROVIDER_CONNECT_CHOICES;
               const connectLocked = providerDraft.authType !== 'api_key' && providerDraft.authType !== 'self_register';
-              const connectValue = providerConnectLabel(providerDraft.authType);
+              const connectValue = providerDraft.authType;
+              const protocolHint = '该平台必须原生兼容这里选中的上游协议（本网关只实现了这三种）：OpenAI Chat 最常见（DeepSeek、智谱、多数中转站），Responses 用于 Codex 一类上游，Claude 用于 Anthropic 及兼容端点。自定义或私有协议请改用「内网穿透自助注册」。';
+              // 各连接方式的说明不再占表单行：按当前选择折成一句，挂到「连接方式」标签旁。
+              const connectHints: Record<ProviderConnectKind, string> = {
+                api_key: "本网关只实现了 OpenAI Chat、OpenAI Responses、Claude 三种上游协议。密钥所属平台不限，但该平台必须原生兼容上面选中的协议（例如 DeepSeek、智谱、各类中转站多为 OpenAI Chat 兼容）。若上游是自定义或私有协议，请改用「内网穿透自助注册」，由你的脚本自行适配后再接入。",
+                cursor_oauth: "Cursor OAuth 上游固定为 OpenAI Chat（本地 bridge `/v1/chat/completions`）；客户端若要 Responses/Claude，请在路由输出协议里转换。",
+                claude_oauth: "Claude OAuth 上游固定为 Claude 协议。",
+                chatgpt_oauth: "ChatGPT OAuth 上游固定为 OpenAI Responses（chatgpt.com/backend-api/codex/responses）。",
+                qoder_pat: "Qoder 的模型跑在它客户端自己的接口上：网关会把请求改写成 agent_chat_generation 并加上账号签名，对客户端仍表现为 OpenAI Chat（要 Responses/Claude 请在路由输出协议里转换）。保存后在下方登录；没有浏览器的部署（headless 服务器）可改用个人访问令牌。",
+                qoder_cn: "Qoder CN 与 Qoder 同一套协议，跑在它客户端自己的接口上：网关会把请求改写成 agent_chat_generation 并加上账号签名，对客户端仍表现为 OpenAI Chat。保存后在下方登录；没有浏览器的部署（headless 服务器）可改用个人访问令牌。",
+                workbuddy: "WorkBuddy 订阅（腾讯 CodeBuddy 套餐）上游原生兼容 OpenAI Chat，协议固定为 OpenAI Chat；客户端若要 Responses/Claude，请在路由输出协议里转换。保存后会自动跳转 WorkBuddy 登录页，在浏览器完成后网关自动轮询取回令牌；令牌到期自动续期，不会回传到浏览器。",
+                workbuddy_ai: "WorkBuddy AI 是同一套 API 的国际版，上游原生兼容 OpenAI Chat，协议固定为 OpenAI Chat。保存后会自动跳转 WorkBuddy 登录页，网关自动轮询取回令牌并自动续期，令牌不会回传到浏览器。",
+                zcode: "ZCode 不是一种模型接口，而是登录铸造密钥：用浏览器登录 zcode.z.ai 后，网关会取回（或新建）账号默认项目里的 GLM 编程套餐密钥，之后按 Claude 协议转发到该套餐的 Anthropic 端点。密钥与业务令牌都只留在网关，不会回传到浏览器。账号没有个人套餐时会自动找团队席位。",
+                zcode_bigmodel: "同一套登录流程，取的是智谱 BigModel 站点的 GLM 编程套餐密钥，按 Claude 协议转发到该站点的 Anthropic 端点。密钥与业务令牌只留在网关，不会回传到浏览器。",
+                trae_cn: "Trae 走 IDE 自己的协议：登录、令牌续期、模型列表与额度都由网关代为完成，客户端看到的仍是 OpenAI Chat。Trae 的授权页只接受 127.0.0.1 的回调，所以请在运行网关的这台机器上点登录；网关会临时监听一个本地端口，拿到令牌后即关闭。",
+                trae_global: "与 Trae CN 同一套协议的国际部署（节点随账号走）：登录、令牌续期、模型列表与额度都由网关代为完成，客户端看到的仍是 OpenAI Chat。授权页只接受 127.0.0.1 的回调，请在运行网关的这台机器上点登录。",
+                opencode_zen_free: "OpenCode Zen 的免费模型（-free 结尾、big-pickle、grok-code）无需任何密钥：网关会按 OpenCode 自己的客户端形状发出，并改走它的推理入口。免费档只接受流式请求，客户端要求一次性返回时网关会在上游把流收回来拼成一条回复。付费模型在下方填入自己的 OpenCode 密钥即可，两种模型可共用这一个 Provider。",
+                self_register: "适合“用户自己内网穿透暴露服务”的场景：无需现在填写 Base URL / API Key Source / 协议，保存后会自动生成一个专属令牌 + 一段配置 Prompt，交给对方脚本使用——协议不限（chat/response/claude 任选，脚本已有哪种代码就用哪种），脚本调用接口时把实际用的 baseUrl / 协议一并声明即可。",
+              };
+              const connectHint = connectHints[providerDraft.authType] ?? '';
               // 自助注册类 Provider：协议只能由脚本通过 self-register 接口的
               // protocol 字段声明，控制台不提供选择/修改入口。
               // resolveProviderAuthType 已根据 selfRegistration 回填 self_register。
@@ -7388,13 +7428,14 @@ function App() {
                 <>
                   {/* 先选连接方式，协议由连接方式决定：OAuth 三选一时协议自动锁定，
                       自助注册协议交给脚本自己声明，只有 API Key 能自由选协议。 */}
-                  <SelectField
+                  <IconSelect
                     fullWidth
                     label="连接方式"
-                    values={connectChoices.map((kind) => providerConnectLabel(kind))}
+                    hint={connectHint}
+                    options={connectChoices}
                     value={connectValue}
                     onChange={(value) => setProviderDraft((current) => {
-                      const picked = connectChoices[connectChoices.map((kind) => providerConnectLabel(kind)).indexOf(value)];
+                      const picked = value as ProviderConnectKind;
                       const authType = picked ?? 'api_key';
                       const protocol = authType === 'claude_oauth' ? 'claude'
                         : authType === 'cursor_oauth' ? 'openai_chat'
@@ -7419,102 +7460,42 @@ function App() {
                   />
                   {protocolManagedByAPI ? (
                     <div className="field field-full">
-                      <label>协议</label>
-                      <div className="hint-line" style={{ margin: 0 }}>
-                        当前：{protocolLabel(editingProviderRecord?.protocol ?? providerDraft.protocol)}
-                        （由脚本通过自助注册接口的 protocol 字段声明，控制台不提供协议选择/修改，
-                        避免和脚本实际实现的协议对不上；要换协议请让脚本下次注册时改传新的 protocol）
+                      <div className="field-label-row">
+                        <label>协议</label>
+                        <InfoTip text="由脚本通过自助注册接口的 protocol 字段声明，控制台不提供协议选择/修改；要换协议请让脚本下次注册时改传新的 protocol。" />
                       </div>
+                      <div className="static-field">当前：{protocolLabel(editingProviderRecord?.protocol ?? providerDraft.protocol)}</div>
                     </div>
                   ) : (
-                    <SelectField
+                    <IconSelect
                       fullWidth
                       label="协议"
+                      hint={protocolHint}
                       disabled={connectLocked}
-                      values={connectLocked ? [protocolLabel(providerDraft.protocol)] : fixedOutputLabels}
                       value={protocolLabel(providerDraft.protocol)}
+                      options={(connectLocked ? [protocolLabel(providerDraft.protocol)] : fixedOutputLabels).map((label) => ({value: label, label, icon: protocolIcon(label)}))}
                       onChange={(value) => setProviderDraft((current) => ({ ...current, protocol: protocolFromLabel(value) }))}
                     />
                   )}
                 </>
               );
             })()}
-            {providerDraft.authType === 'api_key' && (
-              <div className="hint-line">
-                本网关只实现了 OpenAI Chat、OpenAI Responses、Claude 三种上游协议。
-                密钥所属平台不限，但该平台必须原生兼容上面选中的协议（例如 DeepSeek、
-                智谱、各类中转站多为 OpenAI Chat 兼容）。若上游是自定义或私有协议，
-                请改用「内网穿透自助注册」，由你的脚本自行适配后再接入。
-              </div>
-            )}
-            {providerDraft.authType === 'cursor_oauth' && (
-              <div className="hint-line">Cursor OAuth 上游固定为 OpenAI Chat（本地 bridge `/v1/chat/completions`）；客户端若要 Responses/Claude，请在路由输出协议里转换。</div>
-            )}
-            {providerDraft.authType === 'claude_oauth' && (
-              <div className="hint-line">Claude OAuth 上游固定为 Claude 协议。</div>
-            )}
-            {providerDraft.authType === 'chatgpt_oauth' && (
-              <div className="hint-line">ChatGPT OAuth 上游固定为 OpenAI Responses（chatgpt.com/backend-api/codex/responses）。</div>
-            )}
             {isQoderConnectKind(providerDraft.authType) && (
-              <>
-                <div className="hint-line">Qoder 的模型跑在它客户端自己的接口上：网关会把请求改写成 agent_chat_generation 并加上账号签名，对客户端仍表现为 OpenAI Chat（要 Responses/Claude 请在路由输出协议里转换）。保存后在下方登录；没有浏览器的部署（headless 服务器）可改用个人访问令牌。</div>
-                <Field fullWidth label="Base URL（默认该站点的推理主机，主机变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
-              </>
+              <Field fullWidth label="Base URL（默认该站点的推理主机，主机变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
             )}
             {isWorkBuddyConnectKind(providerDraft.authType) && (
-              <>
-                <div className="hint-line">
-                  WorkBuddy 订阅（腾讯 CodeBuddy 套餐）上游原生兼容 OpenAI Chat，协议固定为 OpenAI Chat；
-                  客户端若要 Responses/Claude，请在路由输出协议里转换。保存后会自动跳转 WorkBuddy 登录页，
-                  在浏览器完成后网关自动轮询取回令牌；令牌到期自动续期，不会回传到浏览器。
-                </div>
-                <Field fullWidth label="Base URL（默认 WorkBuddy 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
-              </>
+              <Field fullWidth label="Base URL（默认 WorkBuddy 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
             )}
             {isZCodeConnectKind(providerDraft.authType) && (
-              <>
-                <div className="hint-line">
-                  ZCode 不是一种模型接口，而是登录铸造密钥：用浏览器登录 zcode.z.ai 后，网关会取回（或新建）
-                  账号默认项目里的 GLM 编程套餐密钥，之后按 Claude 协议转发到该套餐的 Anthropic 端点。
-                  密钥与业务令牌都只留在网关，不会回传到浏览器。账号没有个人套餐时会自动找团队席位。
-                </div>
-                <Field fullWidth label="Base URL（默认套餐的 Anthropic 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
-              </>
+              <Field fullWidth label="Base URL（默认套餐的 Anthropic 端点，端点变更时可改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
             )}
             {isTraeConnectKind(providerDraft.authType) && (
-              <>
-                <div className="hint-line">
-                  Trae 走 IDE 自己的协议：登录、令牌续期、模型列表与额度都由网关代为完成，客户端看到的仍是
-                  OpenAI Chat。Trae 的授权页只接受 127.0.0.1 的回调，所以请在运行网关的这台机器上点登录；
-                  网关会临时监听一个本地端口，拿到令牌后即关闭。
-                </div>
-                <Field fullWidth label="Base URL（默认该站点的模型主机，可在登录后再改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
-              </>
-            )}
-            {providerDraft.authType === 'opencode_zen_free' && (
-              <>
-                <div className="hint-line">
-                  OpenCode Zen 的免费模型（-free 结尾、big-pickle、grok-code）无需任何密钥：网关会按 OpenCode
-                  自己的客户端形状发出，并改走它的推理入口。付费模型不满足这个形状，想用的话在下面填入自己的
-                  OpenCode 密钥即可，两种模型仍可共用这一个 Provider。
-                </div>
-                <div className="hint-line">
-                  免费档只接受流式请求；客户端如果要求一次性返回，网关会在上游把流收回来拼成一条回复再返回。
-                </div>
-              </>
-            )}
-            {providerDraft.authType === 'self_register' && (
-              <div className="hint-line">
-                适合"用户自己内网穿透暴露服务"的场景：无需现在填写 Base URL / API Key Source / 协议，
-                保存后会自动生成一个专属令牌 + 一段配置 Prompt，交给对方脚本使用——协议不限（chat/response/
-                claude 任选，脚本已有哪种代码就用哪种），脚本调用接口时把实际用的 baseUrl / 协议一并声明即可。
-              </div>
+              <Field fullWidth label="Base URL（默认该站点的模型主机，可在登录后再改）" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
             )}
             {providerDraft.authType === 'api_key' && (
               <>
                 <Field fullWidth label="Base URL" value={providerDraft.baseUrl} onChange={(value) => setProviderDraft((current) => ({ ...current, baseUrl: value }))} />
-                <Field fullWidth label="API Key Source（可选）" value={providerDraft.apiKeySource} onChange={(value) => setProviderDraft((current) => ({ ...current, apiKeySource: value }))} />
+                <Field fullWidth label="API Key Source（可选）" hint="留空时透传客户端 Authorization；也可直接填 sk-xxx，或填 env:VAR_NAME / literal:sk-xxx。" value={providerDraft.apiKeySource} onChange={(value) => setProviderDraft((current) => ({ ...current, apiKeySource: value }))} />
                 {/(?:bigmodel\.cn|z\.ai)/i.test(providerDraft.baseUrl) && (
                   <>
                     <Field label="智谱组织 ID（团队版填，个人版留空）" value={providerDraft.teamOrganizationId} onChange={(value) => setProviderDraft((current) => ({ ...current, teamOrganizationId: value }))} />
@@ -7527,29 +7508,30 @@ function App() {
                 指定即可。字段本身保留（后端仍用于模型别名兜底、{model} URL 模板
                 填充与控制台各项测试），编辑时原值原样带走，不会被这个表单清空。 */}
           </div>
+          <div className="claude-oauth-panel">
           {editingProviderID && providerDraft.authType === 'api_key' && /(?:bigmodel\.cn|z\.ai)/i.test(providerDraft.baseUrl) && (
-            <div className="claude-oauth-panel">
-              <div className="hint-line">智谱编程套餐额度{providerDraft.teamOrganizationId.trim() && providerDraft.teamProjectId.trim() ? '（团队版 · 需先保存组织/项目 ID）' : '（个人版）'}</div>
+            <div className="provider-account-block">
+              <div className="hint-text">{`智谱编程套餐额度${providerDraft.teamOrganizationId.trim() && providerDraft.teamProjectId.trim() ? '（团队版 · 需先保存组织/项目 ID）' : '（个人版）'}`}</div>
               <ZhipuUsagePanel providerId={editingProviderID} />
             </div>
           )}
           {editingProviderID && providerDraft.authType === 'api_key' && /deepseek\.com/i.test(providerDraft.baseUrl) && (
             <div className="claude-oauth-panel">
-              <div className="hint-line">DeepSeek 账户余额（来自官方 /user/balance 接口）</div>
+              <div className="hint-text">DeepSeek 账户余额（来自官方 /user/balance 接口）</div>
               <DeepSeekBalancePanel providerId={editingProviderID} />
             </div>
           )}
           {providerDraft.protocol === 'claude' && providerDraft.authType === 'claude_oauth' && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">点击下方按钮保存后会自动跳转 Claude 授权页面。</div>
+                <div className="hint-text">点击下方按钮保存后会自动跳转 Claude 授权页面。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
                 const connected = editingProvider?.claudeOAuth?.connected;
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.claudeOAuth?.accountLabel ? ` · ${editingProvider.claudeOAuth.accountLabel}` : ''}{editingProvider?.claudeOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.claudeOAuth.expiresAt)}` : ''}</div>
+                      <div className="hint-text">{`已连接${editingProvider?.claudeOAuth?.accountLabel ? ` · ${editingProvider.claudeOAuth.accountLabel}` : ''}${editingProvider?.claudeOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.claudeOAuth.expiresAt)}` : ''}`}</div>
                       <ClaudeOAuthUsagePanel providerId={editingProviderID} connected />
                       <button className="btn danger" disabled={claudeOAuthBusy} onClick={() => void disconnectClaudeOAuth()}>{claudeOAuthBusy ? '处理中…' : '断开连接'}</button>
                     </>
@@ -7557,14 +7539,14 @@ function App() {
                 }
                 return (
                   <>
-                    <div className="hint-line">点「连接」后跳转 Claude 授权；网关就在你这台机器上时，浏览器回调会自动完成连接。回调进不来的（网关在服务器或容器里）用下面的地址栏粘贴收尾，两条路等价。</div>
+                    <div className="hint-text">点「连接」后跳转 Claude 授权；网关就在你这台机器上时，浏览器回调会自动完成连接。回调进不来的（网关在服务器或容器里）用下面的地址栏粘贴收尾，两条路等价。</div>
                     <button className="btn primary" disabled={claudeOAuthBusy || claudeOAuthPolling} onClick={() => void startClaudeOAuthConnect()}>{claudeOAuthBusy || claudeOAuthPolling ? '等待授权…' : '连接 Claude 账号'}</button>
-                    <div className="hint-line" style={{ marginTop: 8 }}>{claudeOAuthCallbackHint || '授权完成后浏览器会停在回调地址（形如 http://localhost:18093/callback?code=…&state=…）：那个页面打不开也没关系，把地址栏里整条地址复制粘贴到下面即可。'}</div>
+                    <div className="hint-text">{claudeOAuthCallbackHint || '授权完成后浏览器会停在回调地址（形如 http://localhost:18093/callback?code=…&state=…）：那个页面打不开也没关系，把地址栏里整条地址复制粘贴到下面即可。'}</div>
                     <div className="field-inline" style={{ marginTop: 8 }}>
                       <input placeholder="粘贴浏览器停住的整条地址（或 code#state）" value={claudeOAuthCode} onChange={(event) => setClaudeOAuthCode(event.target.value)} />
                       <button className="mini-btn" disabled={claudeOAuthBusy || !claudeOAuthCode.trim()} onClick={() => void completeClaudeOAuthConnect()}>{claudeOAuthBusy ? '连接中…' : '完成连接'}</button>
                     </div>
-                    <details className="hint-line">
+                    <details>
                       <summary>走 Anthropic 的手动授权页（另一条路）</summary>
                       <div className="field-inline" style={{ marginTop: 8 }}>
                         <button className="mini-btn" disabled={claudeOAuthBusy || claudeOAuthPolling} onClick={() => void startClaudeOAuthManualConnect()}>打开手动授权页</button>
@@ -7579,14 +7561,14 @@ function App() {
           {providerDraft.protocol === 'openai_chat' && providerDraft.authType === 'cursor_oauth' && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">点击下方按钮保存后会自动跳转 Cursor 授权页面。需要本机安装 bun。</div>
+                <div className="hint-text">点击下方按钮保存后会自动跳转 Cursor 授权页面。需要本机安装 bun。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
                 const connected = editingProvider?.cursorOAuth?.connected;
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.cursorOAuth?.accountLabel ? ` · ${editingProvider.cursorOAuth.accountLabel}` : ''}{editingProvider?.cursorOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.cursorOAuth.expiresAt)}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
+                      <div className="hint-text">{`已连接${editingProvider?.cursorOAuth?.accountLabel ? ` · ${editingProvider.cursorOAuth.accountLabel}` : ''}${editingProvider?.cursorOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.cursorOAuth.expiresAt)}` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
                       <CursorOAuthUsagePanel providerId={editingProviderID} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
@@ -7597,7 +7579,7 @@ function App() {
                 }
                 return (
                   <>
-                    <div className="hint-line">点击连接后跳转 Cursor 授权页，在浏览器完成登录后网关会自动轮询并完成连接。</div>
+                    <div className="hint-text">点击连接后跳转 Cursor 授权页，在浏览器完成登录后网关会自动轮询并完成连接。</div>
                     <button className="btn primary" disabled={cursorOAuthBusy || cursorOAuthPolling} onClick={() => void startCursorOAuthConnect()}>{cursorOAuthBusy || cursorOAuthPolling ? '等待授权…' : '连接 Cursor 账号'}</button>
                     {cursorOAuthError && <div className="hint-line error">{cursorOAuthError}</div>}
                   </>
@@ -7608,14 +7590,14 @@ function App() {
           {providerDraft.protocol === 'openai_responses' && providerDraft.authType === 'chatgpt_oauth' && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">点击下方按钮保存后会自动跳转 ChatGPT 授权页面。</div>
+                <div className="hint-text">点击下方按钮保存后会自动跳转 ChatGPT 授权页面。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
                 const connected = editingProvider?.chatgptOAuth?.connected;
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.chatgptOAuth?.accountLabel ? ` · ${chatgptAccountLabelFriendly(editingProvider.chatgptOAuth.accountLabel)}` : ''}{editingProvider?.chatgptOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.chatgptOAuth.expiresAt)}` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
+                      <div className="hint-text">{`已连接${editingProvider?.chatgptOAuth?.accountLabel ? ` · ${chatgptAccountLabelFriendly(editingProvider.chatgptOAuth.accountLabel)}` : ''}${editingProvider?.chatgptOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.chatgptOAuth.expiresAt)}` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
                       <ChatGPTOAuthUsagePanel providerId={editingProviderID} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
@@ -7626,11 +7608,11 @@ function App() {
                 }
                 return (
                   <>
-                    <div className="hint-line">点「连接」后跳转 ChatGPT 授权；网关在本机时浏览器回调会自动完成，回调进不来的（网关在服务器或容器里）用下面的地址栏粘贴收尾，两条路等价。</div>
+                    <div className="hint-text">点「连接」后跳转 ChatGPT 授权；网关在本机时浏览器回调会自动完成，回调进不来的（网关在服务器或容器里）用下面的地址栏粘贴收尾，两条路等价。</div>
                     {chatgptOAuthCallbackBlocked === 'reserved' ? <div className="hint-line error">Windows 把 1455 端口整段保留了，这台机器监听不到浏览器回调 —— 授权完成后请把浏览器地址栏里的整条地址粘贴到下面。</div> : null}
                     {chatgptOAuthCallbackBlocked === 'busy' ? <div className="hint-line error">1455 端口被其他程序占着（常见是没退干净的 codex login）—— 授权完成后请把浏览器地址栏里的整条地址粘贴到下面。</div> : null}
                     <button className="btn primary" disabled={chatgptOAuthBusy || chatgptOAuthPolling} onClick={() => void startChatGPTOAuthConnect()}>{chatgptOAuthBusy || chatgptOAuthPolling ? '等待授权…' : '连接 ChatGPT 账号'}</button>
-                    <div className="hint-line" style={{ marginTop: 8 }}>{chatgptOAuthCallbackHint || '授权完成后浏览器会停在 http://localhost:1455/auth/callback?code=… ：那个页面打不开也没关系，把地址栏里整条地址复制粘贴到下面即可。'}</div>
+                    <div className="hint-text">{chatgptOAuthCallbackHint || '授权完成后浏览器会停在 http://localhost:1455/auth/callback?code=… ：那个页面打不开也没关系，把地址栏里整条地址复制粘贴到下面即可。'}</div>
                     <div className="field-inline" style={{ marginTop: 8 }}>
                       <input placeholder="粘贴浏览器停住的整条地址（或 code）" value={chatgptOAuthCode} onChange={(event) => setChatgptOAuthCode(event.target.value)} />
                       <button className="mini-btn" disabled={chatgptOAuthBusy || !chatgptOAuthCode.trim()} onClick={() => void completeChatGPTOAuthConnect()}>{chatgptOAuthBusy ? '连接中…' : '完成连接'}</button>
@@ -7644,14 +7626,14 @@ function App() {
           {providerDraft.protocol === 'openai_chat' && isWorkBuddyConnectKind(providerDraft.authType) && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">保存后会自动跳转 WorkBuddy 登录页；如果浏览器拦截了新窗口，可以复制面板里的链接手动打开。</div>
+                <div className="hint-text">保存后会自动跳转 WorkBuddy 登录页；如果浏览器拦截了新窗口，可以复制面板里的链接手动打开。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
                 const connected = editingProvider?.workbuddyOAuth?.connected;
                 if (connected) {
                   return (
                     <>
-                      <div className="hint-line">已连接{editingProvider?.workbuddyOAuth?.accountLabel ? ` · ${editingProvider.workbuddyOAuth.accountLabel}` : ''}{editingProvider?.workbuddyOAuth?.expiresAt ? ` · 令牌到期：${formatClaudeUsageResetAt(editingProvider.workbuddyOAuth.expiresAt)}（到期自动续）` : ''} · 模型 {editingProvider?.models?.length ?? 0} 个</div>
+                      <div className="hint-text">{`已连接${editingProvider?.workbuddyOAuth?.accountLabel ? ` · ${editingProvider.workbuddyOAuth.accountLabel}` : ''}${editingProvider?.workbuddyOAuth?.expiresAt ? ` · 令牌到期：${formatClaudeUsageResetAt(editingProvider.workbuddyOAuth.expiresAt)}（到期自动续）` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
                       <WorkBuddyUsagePanel providerId={editingProviderID} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
@@ -7670,7 +7652,7 @@ function App() {
                 }
                 return (
                   <>
-                    <div className="hint-line">点击登录会跳转 WorkBuddy 登录页，在浏览器完成登录后网关会自动轮询取回令牌并连接（约 5 分钟内有效）。</div>
+                    <div className="hint-text">点击登录会跳转 WorkBuddy 登录页，在浏览器完成登录后网关会自动轮询取回令牌并连接（约 5 分钟内有效）。</div>
                     <button className="btn primary" disabled={workbuddyOAuthBusy || workbuddyOAuthPolling} onClick={() => void startWorkBuddyOAuthConnect()}>{workbuddyOAuthBusy || workbuddyOAuthPolling ? '等待授权…' : '登录 WorkBuddy 账号'}</button>
                     {workbuddyOAuthUrl && (
                       <div className="field-inline" style={{ marginTop: 8 }}>
@@ -7711,7 +7693,7 @@ function App() {
           {providerDraft.protocol === 'openai_chat' && isQoderConnectKind(providerDraft.authType) && (
             <div className="claude-oauth-panel">
               {!editingProviderID ? (
-                <div className="hint-line">保存后会留在编辑态：点「登录」在浏览器里授权即可；没有浏览器的部署可展开下面的「用个人访问令牌连接」。</div>
+                <div className="hint-text">保存后会留在编辑态：点「登录」在浏览器里授权即可；没有浏览器的部署可展开下面的「用个人访问令牌连接」。</div>
               ) : (() => {
                 const editingProvider = state.providers.find((item) => item.id === editingProviderID);
                 const qoder = editingProvider?.qoderPat;
@@ -7732,18 +7714,18 @@ function App() {
                       }}
                       onPaused={() => void refreshState(false)}
                     />
-                    <div className="hint-line" style={{ marginTop: 8 }}>
-                      模型 {editingProvider?.models?.length ?? 0} 个（登录时自动取该账号可用的清单）
-                      <button className="mini-btn" style={{ marginLeft: 8 }} disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '重新同步'}</button>
+                    <div className="hint-text" style={{ marginTop: 8 }}>
+                        模型 {editingProvider?.models?.length ?? 0} 个（登录时自动取该账号可用的清单）
+                        <button className="mini-btn" style={{ marginLeft: 8 }} disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '重新同步'}</button>
                     </div>
                     {/* 备用门：Qoder 的个人访问令牌长期有效，headless 部署打不开
                         浏览器时用它换同一个作业令牌；两个门连的是同一个账号结构。 */}
                     <details className="usage-details">
                       <summary>用个人访问令牌连接（没有浏览器时）</summary>
-                      <div className="hint-line" style={{ marginTop: 8 }}>
-                        {qoder?.signInMode === 'pat' && qoder?.hasStoredToken
-                          ? '当前就是令牌连接；换账号可粘贴另一个 pt- 开头的令牌覆盖。'
-                          : `在 ${providerDraft.authType === 'qoder_cn' ? 'qoder.cn' : 'qoder.com'}/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里。令牌只用来兑换短期作业令牌，不会回传到浏览器。`}
+                      <div className="hint-text" style={{ marginTop: 8 }}>
+                          {qoder?.signInMode === 'pat' && qoder?.hasStoredToken
+                            ? '当前就是令牌连接；换账号可粘贴另一个 pt- 开头的令牌覆盖。'
+                            : `在 ${providerDraft.authType === 'qoder_cn' ? 'qoder.cn' : 'qoder.com'}/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里。令牌只用来兑换短期作业令牌，不会回传到浏览器。`}
                       </div>
                       <div className="field-inline" style={{ marginTop: 8 }}>
                         <input type="text" placeholder="粘贴 pt- 开头的个人访问令牌" value={qoderPatInput} onChange={(event) => setQoderPatInput(event.target.value)} />
@@ -7769,23 +7751,11 @@ function App() {
             const promptText = buildSelfRegistrationPrompt(editingProvider, selfRegToken, window.location.origin);
             return (
               <div className="self-register-panel">
-                <div className="hint-line">
-                  适合"用户自己内网穿透暴露服务"的场景：生成专属令牌后，对方脚本可直接调用接口更新
-                  baseUrl / apiKeySource，协议（chat/responses/claude 三选一）也由脚本在这次调用里
-                  声明——这是唯一的协议来源，控制台不提供协议选择/修改入口；还能顺带声明自定义
-                  authHeader，无需登录控制台账号。同一个令牌应调用协议 conformance
-                  （/self-check/conformance）直到 success=true，按 cases[].hint 修本地实现。
-                  令牌只能操作这一个 Provider，改不了别的。是否异常仍按真实请求失败判定，这里不做
-                  心跳超时告警。
-                </div>
+                <div className="hint-text">{'适合\u201c用户自己内网穿透暴露服务\u201d的场景：生成专属令牌后，对方脚本可直接调用接口更新 baseUrl / apiKeySource，协议（chat/responses/claude 三选一）也由脚本在这次调用里声明——这是唯一的协议来源，控制台不提供协议选择/修改入口；还能顺带声明自定义 authHeader，无需登录控制台账号。同一个令牌应调用协议 conformance（/self-check/conformance）直到 success=true，按 cases[].hint 修本地实现。令牌只能操作这一个 Provider，改不了别的。是否异常仍按真实请求失败判定，这里不做心跳超时告警。'}</div>
                 {selfReg ? (
-                  <div className="hint-line">
-                    已启用 · 令牌尾号 ****{selfReg.tokenPreview || '----'}
-                    {selfReg.createdAt ? ` · 生成于 ${selfReg.createdAt}` : ''}
-                    {selfReg.lastSeenAt ? ` · 上次自助注册 ${new Date(selfReg.lastSeenAt).toLocaleString()}` : ' · 尚未收到过注册请求'}
-                  </div>
+                  <div className="hint-text">{`已启用 · 令牌尾号 ****${selfReg.tokenPreview || '----'}${selfReg.createdAt ? ` · 生成于 ${selfReg.createdAt}` : ''}${selfReg.lastSeenAt ? ` · 上次自助注册 ${new Date(selfReg.lastSeenAt).toLocaleString()}` : ' · 尚未收到过注册请求'}`}</div>
                 ) : (
-                  <div className="hint-line">尚未启用自助注册。</div>
+                  <div className="hint-text">尚未启用自助注册。</div>
                 )}
                 {selfRegToken ? (
                   <div className="field field-full">
@@ -7814,10 +7784,7 @@ function App() {
           })()}
                     <details className="adapter-editor" open={!!providerDraft.requestAdapterJSON.trim() || providerDraft.baseUrl.includes('{model}') || providerDraft.baseUrl.includes('deployments/')}>
             <summary>自定义适配（非标准上游）</summary>
-            <div className="hint-line">
-              用于 tuyadev / Azure deployment 等非标准上游。字段：urlTemplate、headers、bodyTemplate、modelMapping。
-              占位符：{'{model}'}、{'{baseUrl}'}、{'{body}'}。运行时会把请求体里的 model 改写成映射后的上游模型名。
-            </div>
+            <div className="hint-text">{'用于 tuyadev / Azure deployment 等非标准上游。字段：urlTemplate、headers、bodyTemplate、modelMapping。占位符：{model}、{baseUrl}、{body}。运行时会把请求体里的 model 改写成映射后的上游模型名。'}</div>
             <div className="models-filter-group" style={{ margin: '10px 0' }}>
               {REQUEST_ADAPTER_PRESETS.map((preset) => (
                 <button
@@ -7886,71 +7853,75 @@ function App() {
                     onChange={() => void toggleProviderRTK(editingProvider)}
                   />
                   <span>RTK 工具输出压缩（本 Provider）</span>
+                  <InfoTip text="开启后网关在转发前用 rtk pipe 过滤 tool_result 里的命令输出（git status/diff、go test、grep 等），节省量会累计到用量页的「RTK 节省」卡片。需要网关主机已安装 rtk CLI（或设置 GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。" />
                 </label>
-                <div className="hint-line">
-                  开启后网关在转发前用 rtk pipe 过滤 tool_result 里的命令输出（git status/diff、go test、grep 等），
-                  节省量会累计到用量页的「RTK 节省」卡片。需要网关主机已安装 rtk CLI（或设置
-                  GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。
+              </div>
+              <div className="rtk-provider-panel">
+                <div className="toggle-row">
+                  <span>首包超时</span>
+                  <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
+                  <div className="provider-knob-control">
+                    <input
+                      ref={providerFirstPacketRef}
+                      key={`first-packet-${editingProviderID}`}
+                      type="number"
+                      min={0}
+                      max={600}
+                      step={1}
+                      defaultValue={editingProvider.firstPacketTimeoutSec || ''}
+                      placeholder="不限制"
+                      disabled={saving}
+                      aria-label="首包超时（秒）"
+                    />
+                    <span className="provider-knob-unit">秒</span>
+                    <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
+                  </div>
                 </div>
               </div>
               <div className="rtk-provider-panel">
                 <div className="toggle-row">
-                  <span>首包超时（秒）</span>
-                  <input
-                    ref={providerFirstPacketRef}
-                    key={`first-packet-${editingProviderID}`}
-                    type="number"
-                    min={0}
-                    max={600}
-                    step={1}
-                    defaultValue={editingProvider.firstPacketTimeoutSec || ''}
-                    placeholder="不限制"
-                    disabled={saving}
-                  />
-                  <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
-                </div>
-                <div className="hint-line">
-                  网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。
-                  它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。
-                </div>
-              </div>
-              <div className="rtk-provider-panel">
-                <div className="toggle-row">
-                  <span>并发上限（个）</span>
-                  <input
-                    ref={providerConcurrencyRef}
-                    key={`concurrency-${editingProviderID}`}
-                    type="number"
-                    min={0}
-                    max={1000}
-                    step={1}
-                    defaultValue={editingProvider.maxConcurrentRequests || ''}
-                    placeholder="不限制"
-                    disabled={saving}
-                  />
-                  <span>排队等待（秒）</span>
-                  <input
-                    ref={providerQueueWaitRef}
-                    key={`queue-wait-${editingProviderID}`}
-                    type="number"
-                    min={0}
-                    max={60}
-                    step={1}
-                    defaultValue={editingProvider.queueWaitSeconds || ''}
-                    placeholder="不排队"
-                    disabled={saving}
-                  />
-                  <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
-                </div>
-                <div className="hint-line">
-                  这台上游同时只允许这么多个请求在飞，超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；
-                  留空或 0 = 不限制。排队秒数只在设了上限时有意义：0 直接拒绝，&gt;0 先在队列里等一个空闲位。
-                  如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。
+                  <span>并发上限</span>
+                  <InfoTip text="这台上游同时只允许这么多个请求在飞，超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制。排队秒数只在设了上限时有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。" />
+                  <div className="provider-knob-control">
+                    <label className="provider-knob-field">
+                      <span>上限</span>
+                      <input
+                        ref={providerConcurrencyRef}
+                        key={`concurrency-${editingProviderID}`}
+                        type="number"
+                        min={0}
+                        max={1000}
+                        step={1}
+                        defaultValue={editingProvider.maxConcurrentRequests || ''}
+                        placeholder="不限制"
+                        disabled={saving}
+                      />
+                      <span className="provider-knob-unit">个</span>
+                    </label>
+                    <label className="provider-knob-field">
+                      <span>排队</span>
+                      <input
+                        ref={providerQueueWaitRef}
+                        key={`queue-wait-${editingProviderID}`}
+                        type="number"
+                        min={0}
+                        max={60}
+                        step={1}
+                        defaultValue={editingProvider.queueWaitSeconds || ''}
+                        placeholder="不排队"
+                        disabled={saving}
+                      />
+                      <span className="provider-knob-unit">秒</span>
+                    </label>
+                    <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
+                  </div>
                 </div>
               </div>
+
               </>
             );
           })()}
+          </div>
           <div className="actions modal-actions"><button className="btn" onClick={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>取消</button><button className="btn primary" disabled={saving} onClick={() => void createProvider()}>{saving ? '保存中…' : editingProviderID ? '保存修改' : providerDraft.authType === 'claude_oauth' ? '创建并连接 Claude 账号' : providerDraft.authType === 'cursor_oauth' ? '创建并连接 Cursor 账号' : providerDraft.authType === 'chatgpt_oauth' ? '创建并连接 ChatGPT 账号' : isQoderConnectKind(providerDraft.authType) ? '创建并登录 Qoder 账号' : providerDraft.authType === 'workbuddy' || providerDraft.authType === 'workbuddy_ai' ? '创建并登录 WorkBuddy 账号' : isSubscriptionConnectKind(providerDraft.authType) ? '创建并登录订阅账号' : providerDraft.authType === 'self_register' ? '创建并生成注册令牌' : '创建 Provider'}</button></div>
         </Modal>
       )}
@@ -8090,75 +8061,82 @@ function App() {
 
       {apiKeyModalOpen && (
         <Modal title="新建 API 密钥" description="选择输入 Provider 与输出协议；网关会自动创建转发规则并完成透传或协议转换。" onClose={() => setApiKeyModalOpen(false)}>
-          <div className="form-grid modal-form">
-            <Field label="名称" value={apiKeyDraft.name} onChange={(value) => setApiKeyDraft((current) => ({ ...current, name: value }))} />
-            <div className="field">
-              <label>输入 Provider</label>
-              <select
-                value={apiKeyDraft.providerId}
-                onChange={(event) => setApiKeyDraft((current) => ({ ...current, providerId: event.target.value, modelOverride: '' }))}
-              >
-                {state.providers.map((provider) => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
-              </select>
-            </div>
-            <SelectField
-              label="输出协议"
-              values={fixedOutputLabels}
-              value={protocolLabel(apiKeyDraft.outputProtocol)}
-              onChange={(value) => setApiKeyDraft((current) => ({ ...current, outputProtocol: protocolFromLabel(value) }))}
-            />
-            <ApiKeyFixedModelField
-              value={apiKeyDraft.modelOverride}
-              models={apiKeyDraftModels}
-              disabled={!apiKeyDraftProvider}
-              refreshing={refreshingApiKeyModels}
-              onChange={(value) => setApiKeyDraft((current) => ({ ...current, modelOverride: value }))}
-              onRefresh={() => void refreshApiKeyDraftModels()}
-            />
-            <div className="field field-full">
-              <label>思考深度（可选）</label>
-              <select value={apiKeyDraft.thinkingDepthOverride} onChange={(event) => setApiKeyDraft((current) => ({ ...current, thinkingDepthOverride: event.target.value }))}>
-                {thinkingDepthSelectOptions({ value: '', label: '（不覆盖）' })}
-              </select>
-            </div>
-            <div className="field field-full">
-              <label>最大输出 Token（可选）</label>
-              <input
-                type="number"
-                min={0}
-                max={200000}
-                placeholder="0 = 自动（按模型）"
-                value={apiKeyDraft.maxOutputTokens > 0 ? apiKeyDraft.maxOutputTokens : ''}
-                onChange={(event) => {
-                  const raw = event.target.value.trim();
-                  const n = raw === '' ? 0 : Number.parseInt(raw, 10);
-                  setApiKeyDraft((current) => ({ ...current, maxOutputTokens: Number.isFinite(n) && n > 0 ? Math.min(n, 200000) : 0 }));
-                }}
+          <div className="form-stack api-key-form">
+            <div className="form-row">
+              <Field label="名称" value={apiKeyDraft.name} onChange={(value) => setApiKeyDraft((current) => ({ ...current, name: value }))} />
+              <div className="field">
+                <div className="field-label-row">
+                  <label>输入 Provider</label>
+                  <InfoTip text="这条 Key 默认转发到的上游；请求落到它时，网关按「输出协议」决定透传还是转换。" />
+                </div>
+                <select
+                  value={apiKeyDraft.providerId}
+                  onChange={(event) => setApiKeyDraft((current) => ({ ...current, providerId: event.target.value, modelOverride: '' }))}
+                >
+                  {state.providers.map((provider) => <option key={provider.id} value={provider.id}>{providerOptionLabel(provider)}</option>)}
+                </select>
+              </div>
+              <IconSelect
+                fullWidth
+                label="输出协议"
+                hint="客户端看到的协议。与输入 Provider 的原生协议不同时由网关双向转换（流式与非流式都覆盖）。"
+                value={protocolLabel(apiKeyDraft.outputProtocol)}
+                options={fixedOutputLabels.map((label) => ({ value: label, label, icon: protocolIcon(label) }))}
+                onChange={(value) => setApiKeyDraft((current) => ({ ...current, outputProtocol: protocolFromLabel(value) }))}
               />
-              <div className="hint-line">留空表示按模型自动解析；新模型若下拉显示偏小，可在此覆盖（上限 200000）。</div>
+              <ApiKeyFixedModelField
+                value={apiKeyDraft.modelOverride}
+                models={apiKeyDraftModels}
+                disabled={!apiKeyDraftProvider}
+                refreshing={refreshingApiKeyModels}
+                onChange={(value) => setApiKeyDraft((current) => ({ ...current, modelOverride: value }))}
+                onRefresh={() => void refreshApiKeyDraftModels()}
+              />
             </div>
-            <div className="field field-full">
-              <label>流式响应（SSE）</label>
-              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="form-row">
+              <div className="field">
+                <div className="field-label-row">
+                  <label>思考深度</label>
+                  <InfoTip text="不覆盖时按客户端请求里的 reasoning 参数走；选定后统一覆盖思考档位。可选，通常保持「不覆盖」。" />
+                </div>
+                <select value={apiKeyDraft.thinkingDepthOverride} onChange={(event) => setApiKeyDraft((current) => ({ ...current, thinkingDepthOverride: event.target.value }))}>
+                  {thinkingDepthSelectOptions({ value: '', label: '（不覆盖）' })}
+                </select>
+              </div>
+              <div className="field">
+                <div className="field-label-row">
+                  <label>最大输出 Token</label>
+                  <InfoTip text="留空表示按模型自动解析；新模型若下拉显示偏小，可在此覆盖（上限 200000）。" />
+                </div>
                 <input
-                  type="checkbox"
-                  checked={apiKeyDraft.streamEnabled}
-                  onChange={(event) => setApiKeyDraft((current) => ({ ...current, streamEnabled: event.target.checked }))}
+                  type="number"
+                  min={0}
+                  max={200000}
+                  placeholder="0 = 自动（按模型）"
+                  value={apiKeyDraft.maxOutputTokens > 0 ? apiKeyDraft.maxOutputTokens : ''}
+                  onChange={(event) => {
+                    const raw = event.target.value.trim();
+                    const n = raw === '' ? 0 : Number.parseInt(raw, 10);
+                    setApiKeyDraft((current) => ({ ...current, maxOutputTokens: Number.isFinite(n) && n > 0 ? Math.min(n, 200000) : 0 }));
+                  }}
                 />
-                允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）
-              </label>
+              </div>
             </div>
-            <div className="field field-full">
-              <label>Codex Fast 档（强制）</label>
-              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={apiKeyDraft.codexForceFast === true}
-                  onChange={(event) => setApiKeyDraft((current) => ({ ...current, codexForceFast: event.target.checked }))}
-                />
-                开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发
-                （service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。
-              </label>
+            <div className="api-key-switch-row">
+              <div className="field">
+                <div className="field-label-row">
+                  <label>流式响应（SSE）</label>
+                  <InfoTip text="允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）" />
+                </div>
+                <Switch checked={apiKeyDraft.streamEnabled} label="允许 stream:true" onChange={(value) => setApiKeyDraft((current) => ({ ...current, streamEnabled: value }))} />
+              </div>
+              <div className="field">
+                <div className="field-label-row">
+                  <label>Codex Fast 档</label>
+                  <InfoTip text="开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发（service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。" />
+                </div>
+                <Switch checked={apiKeyDraft.codexForceFast === true} label="强制 fast 档" onChange={(value) => setApiKeyDraft((current) => ({ ...current, codexForceFast: value }))} />
+              </div>
             </div>
             <ApiKeyModelMappingControl
               aliases={apiKeyDraft.modelAliases}
@@ -8188,10 +8166,10 @@ function App() {
           >
             <div className="field field-full">
               <label>已授权用户（{authorizedUsers.length}）</label>
-              {authorizedUsers.length === 0 ? <div className="hint-line">暂无用户被授权使用该 Provider。</div> : null}
+              {authorizedUsers.length === 0 ? <div className="hint-text">暂无用户被授权使用该 Provider。</div> : null}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {authorizedUsers.map((user) => (
-                  <div key={user.id} className="hint-line" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span>
                       <span style={{ fontWeight: 700 }}>{user.username}</span>
                       <span className={user.enabled ? 'ok' : 'err'} style={{ marginLeft: 8 }}>{user.enabled ? '启用' : '禁用'}</span>
@@ -8210,11 +8188,11 @@ function App() {
             </div>
             <div className="field field-full" style={{ marginTop: 12 }}>
               <label>新增授权</label>
-              {normalUsers.length === 0 ? <div className="hint-line">暂无普通用户账号，可先到「用户管理」页新建。</div> : null}
-              {normalUsers.length > 0 && candidateUsers.length === 0 ? <div className="hint-line">所有普通用户均已授权。</div> : null}
+              {normalUsers.length === 0 ? <div className="hint-text">暂无普通用户账号，可先到「用户管理」页新建。</div> : null}
+              {normalUsers.length > 0 && candidateUsers.length === 0 ? <div className="hint-text">所有普通用户均已授权。</div> : null}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {candidateUsers.map((user) => (
-                  <div key={user.id} className="hint-line" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span>
                       <span style={{ fontWeight: 700 }}>{user.username}</span>
                       <span className={user.enabled ? 'ok' : 'err'} style={{ marginLeft: 8 }}>{user.enabled ? '启用' : '禁用'}</span>
@@ -8264,16 +8242,14 @@ function App() {
                 <button type="button" className={userFormRole === 'user' ? 'active' : ''} onClick={() => setUserFormRole('user')}>普通用户</button>
                 <button type="button" className={userFormRole === 'admin' ? 'active' : ''} onClick={() => setUserFormRole('admin')}>管理员</button>
               </div>
-              <div className="hint-line" style={{ marginTop: 6 }}>
-                {userFormRole === 'admin'
+              <div className="hint-text">{userFormRole === 'admin'
                   ? '管理员可用全部输入 Provider，并进入所有管理页面（含用户管理）。改角色立即生效，无需对方重新登录。'
-                  : '普通用户只能管理自己的 API 密钥，以及自己 Key 的日志与用量；下方勾选决定他能用哪些输入 Provider。'}
-              </div>
+                  : '普通用户只能管理自己的 API 密钥，以及自己 Key 的日志与用量；下方勾选决定他能用哪些输入 Provider。'}</div>
             </div>
             {userFormRole === 'admin' ? null : (
               <div className="field field-full">
                 <label>可用输入 Provider（未选中的不可用）</label>
-                {state.providers.length === 0 ? <div className="hint-line">暂无输入 Provider。</div> : (
+                {state.providers.length === 0 ? <div className="hint-text">暂无输入 Provider。</div> : (
                   <>
                     <MultiSelectFilter
                       options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider), icon: providerIcon(provider) }))}
@@ -8302,7 +8278,7 @@ function App() {
                         })}
                       </div>
                     ) : (
-                      <div className="hint-line">尚未选择任何 Provider，该用户将没有可用的输入 Provider。</div>
+                      <div className="hint-text">尚未选择任何 Provider，该用户将没有可用的输入 Provider。</div>
                     )}
                   </>
                 )}

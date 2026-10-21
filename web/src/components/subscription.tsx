@@ -111,11 +111,8 @@ export function SubscriptionConnect({ providerId, kind, connected, accountLabel,
   if (connected && !state.authUrl) {
     return (
       <>
-        <div className="hint-line">
-          已登录{accountLabel ? ` · ${accountLabel}` : ''}{plan ? ` · ${plan}` : ''}
-          {expiresAt ? ` · 令牌到期：${new Date(expiresAt).toLocaleString()}` : ''}
-        </div>
-        {hint ? <div className="hint-line">{hint}</div> : null}
+        <div className="hint-text">{`已登录${accountLabel ? ` · ${accountLabel}` : ''}${plan ? ` · ${plan}` : ''}${expiresAt ? ` · 令牌到期：${new Date(expiresAt).toLocaleString()}` : ''}`}</div>
+        {hint ? <div className="hint-text">{hint}</div> : null}
         {state.error ? <div className="hint-line error">{state.error}</div> : null}
         <div className="actions" style={{ gap: 8 }}>
           <button className="btn" disabled={waiting} onClick={() => void start()}>{waiting ? '等待授权…' : '换账号登录'}</button>
@@ -129,7 +126,7 @@ export function SubscriptionConnect({ providerId, kind, connected, accountLabel,
     // 已登录，但这次「换账号」正等着新授权：显示链接与等待状态。
     return (
       <>
-        <div className="hint-line">{state.polling ? '已打开登录页面，等待完成授权…' : '正在发起登录…'}</div>
+        <div className="hint-text">{state.polling ? '已打开登录页面，等待完成授权…' : '正在发起登录…'}</div>
         <SubscriptionAuthLink url={state.authUrl} onReopen={() => window.open(state.authUrl, '_blank', 'noopener,noreferrer')} />
         {state.error ? <div className="hint-line error">{state.error}</div> : null}
       </>
@@ -142,7 +139,7 @@ export function SubscriptionConnect({ providerId, kind, connected, accountLabel,
         {waiting ? '等待授权…' : '登录'}
       </button>
       {state.authUrl ? <SubscriptionAuthLink url={state.authUrl} onReopen={() => window.open(state.authUrl, '_blank', 'noopener,noreferrer')} /> : null}
-      {hint ? <div className="hint-line">{hint}</div> : null}
+      {hint ? <div className="hint-text">{hint}</div> : null}
       {state.error ? <div className="hint-line error">{state.error}</div> : null}
     </>
   );

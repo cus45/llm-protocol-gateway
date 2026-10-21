@@ -105,7 +105,7 @@ export function ScheduleTracePanel({ log, providers }: { log: LogEntry; provider
   const attempts = analysis.attempts || [];
   const candidates = analysis.candidates || [];
   if (attempts.length === 0 && candidates.length === 0) {
-    return <div className="hint-line">调度轨迹：这条请求早于该功能，未记录尝试过程。</div>;
+    return <div className="hint-text">调度轨迹：这条请求早于该功能，未记录尝试过程。</div>;
   }
   const labelFor = (id: string) => {
     const provider = providers.find((item) => item.id === id);

@@ -1,5 +1,5 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
-import React, {useEffect, useRef} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {copyToClipboard, isFreeModel, modelContextLabel, modelRateLabel} from '../lib';
 import {BadgeTone, ModalLayer, Model, NavItemID, ThemeMode} from '../types';
@@ -331,12 +331,85 @@ export function brandMonogram(name: string): string {
   return source.slice(0, 1) || '?';
 }
 
-export function Field({ label, value, onChange, placeholder, fullWidth, multiline, rows = 2 }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; fullWidth?: boolean; multiline?: boolean; rows?: number }) {
+/**
+ * InfoTip：字段说明悬浮提示。在标签旁放一个 ⊙ 图标，鼠标悬浮弹出说明文字，
+ * 替代原来始终占据垂直空间的 hint-line，让页面更紧凑。
+ * 纯 CSS 实现，不需要 JS 状态。错误提示（error variant）不应使用此组件。
+ */
+export function InfoTip({ text, children }: { text: string; children?: React.ReactNode }) {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const hideTimer = useRef<number | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; below: boolean } | null>(null);
+  useEffect(() => () => { if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }, []);
+  if (!text) return null;
+  // 气泡挂到 body 上：字段可能处在带 overflow 的弹窗/面板里，就地绝对定位会被裁掉。
+  const show = () => {
+    if (hideTimer.current !== null) window.clearTimeout(hideTimer.current);
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const below = rect.top < 120;
+    const half = Math.min(160, window.innerWidth / 2 - 12);
+    const left = Math.min(Math.max(rect.left + rect.width / 2, half), window.innerWidth - half);
+    setPos({ left, top: below ? rect.bottom + 8 : rect.top - 8, below });
+  };
+  const hide = () => { hideTimer.current = window.setTimeout(() => setPos(null), 120); };
+  return (
+    <span
+      ref={anchorRef}
+      className="info-tip"
+      aria-label={text}
+      tabIndex={0}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+    >
+      {children ?? <span className="info-tip-icon" aria-hidden="true">⊙</span>}
+      {pos && createPortal(
+        <span
+          className={`info-tip-popup${pos.below ? ' tip-below' : ''}`}
+          role="tooltip"
+          style={{ left: pos.left, top: pos.top }}
+          onMouseEnter={() => { if (hideTimer.current !== null) window.clearTimeout(hideTimer.current); }}
+          onMouseLeave={hide}
+        >
+          {text}
+        </span>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
+// Switch：表单里的布尔项。原生 checkbox 只有 13px、在深色主题下几乎看不见，
+// 开关做成 34×20 的轨道，右侧带一句状态文案，和输入框同一行高。
+export function Switch({ checked, label, onChange, disabled }: { checked: boolean; label?: string; onChange: (value: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`switch-control${checked ? ' on' : ''}`}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+      {label ? <span className="switch-label">{label}</span> : null}
+    </button>
+  );
+}
+
+export function Field({ label, hint, value, onChange, placeholder, fullWidth, multiline, rows = 2 }: { label: string; hint?: string; value: string; onChange: (value: string) => void; placeholder?: string; fullWidth?: boolean; multiline?: boolean; rows?: number }) {
   // 多行字段（提示词一类）沿用 .field 的控件外观，只放开高度与纵向拉伸。
   const control = multiline
     ? <textarea value={value} placeholder={placeholder} rows={rows} onChange={(event) => onChange(event.target.value)} />
     : <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />;
-  return <div className={`field${fullWidth ? ' field-full' : ''}`}><label>{label}</label>{control}</div>;
+  // hint：字段说明。给了就收进标签旁的 InfoTip，不再占一行纵向空间。
+  const labelRow = hint
+    ? <div className="field-label-row"><label>{label}</label><InfoTip text={hint} /></div>
+    : <label>{label}</label>;
+  return <div className={`field${fullWidth ? ' field-full' : ''}`}>{labelRow}{control}</div>;
 }
 
 export function CopyButton({ value, label = '复制', toastContent, className = '' }: { value: string; label?: string; toastContent?: string; className?: string }) {

@@ -81,6 +81,14 @@ type UsageEvent struct {
 	InputTokens    int64
 	OutputTokens   int64
 	CacheTokens    int64
+	// CacheWriteTokens is the cache-creation part already inside InputTokens;
+	// CostMicros is what the gateway's price table says the request cost, in
+	// micro US dollars, and 0 with no price row means 未计价 rather than free.
+	CacheWriteTokens int64
+	CostMicros       int64
+	// Priced says a price row existed, so a cost of 0 can be told apart from an
+	// unpriced request.
+	Priced bool
 	// RxBytes/TxBytes are the forwarded request/response payload sizes.
 	RxBytes   int64
 	TxBytes   int64
@@ -210,6 +218,10 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 	providerID := normalizeProviderForStats(event.ProviderID)
 	userID := normalizeUserForStats(event.UserID)
 	inputTokens, cacheTokens := normalizeUsageTokens(event.InputTokens, event.CacheTokens)
+	cacheWriteTokens := event.CacheWriteTokens
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -224,6 +236,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 	day.total.InputTokens += inputTokens
 	day.total.OutputTokens += event.OutputTokens
 	day.total.CacheTokens += cacheTokens
+	day.total.CacheWriteTokens += cacheWriteTokens
+	day.total.CostMicros += event.CostMicros
+	if event.Priced {
+		day.total.PricedCount++
+	}
 	day.total.RxBytes += event.RxBytes
 	day.total.TxBytes += event.TxBytes
 	day.latencySum += event.LatencyMs
@@ -237,6 +254,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 	keyStats.InputTokens += inputTokens
 	keyStats.OutputTokens += event.OutputTokens
 	keyStats.CacheTokens += cacheTokens
+	keyStats.CacheWriteTokens += cacheWriteTokens
+	keyStats.CostMicros += event.CostMicros
+	if event.Priced {
+		keyStats.PricedCount++
+	}
 	keyStats.RxBytes += event.RxBytes
 	keyStats.TxBytes += event.TxBytes
 
@@ -249,6 +271,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 	providerStats.InputTokens += inputTokens
 	providerStats.OutputTokens += event.OutputTokens
 	providerStats.CacheTokens += cacheTokens
+	providerStats.CacheWriteTokens += cacheWriteTokens
+	providerStats.CostMicros += event.CostMicros
+	if event.Priced {
+		providerStats.PricedCount++
+	}
 
 	userStats, ok := day.byUser[userID]
 	if !ok {
@@ -259,6 +286,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 	userStats.InputTokens += inputTokens
 	userStats.OutputTokens += event.OutputTokens
 	userStats.CacheTokens += cacheTokens
+	userStats.CacheWriteTokens += cacheWriteTokens
+	userStats.CostMicros += event.CostMicros
+	if event.Priced {
+		userStats.PricedCount++
+	}
 
 	if model, ok := NormalizeModelForStats(event.Model); ok {
 		modelStats, ok := day.byModel[model]
@@ -270,6 +302,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 		modelStats.InputTokens += inputTokens
 		modelStats.OutputTokens += event.OutputTokens
 		modelStats.CacheTokens += cacheTokens
+		modelStats.CacheWriteTokens += cacheWriteTokens
+		modelStats.CostMicros += event.CostMicros
+		if event.Priced {
+			modelStats.PricedCount++
+		}
 	}
 
 	event.OutputProtocol = strings.TrimSpace(event.OutputProtocol)
@@ -285,6 +322,11 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 		protoStats.InputTokens += inputTokens
 		protoStats.OutputTokens += event.OutputTokens
 		protoStats.CacheTokens += cacheTokens
+		protoStats.CacheWriteTokens += cacheWriteTokens
+		protoStats.CostMicros += event.CostMicros
+		if event.Priced {
+			protoStats.PricedCount++
+		}
 	}
 
 	switch statusBucket(event.Status) {
@@ -314,6 +356,8 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 			InputTokens:   inputTokens,
 			OutputTokens:  event.OutputTokens,
 			CacheTokens:   cacheTokens,
+			CostMicros:    event.CostMicros,
+			Priced:        event.Priced,
 			LatencyMillis: event.LatencyMs,
 			TTFTMillis:    event.TTFTMs,
 		}
@@ -340,11 +384,16 @@ func (s *Store) applyUsageEventLocked(event UsageEvent) UsagePersistDelta {
 		InputTokens:    inputTokens,
 		OutputTokens:   event.OutputTokens,
 		CacheTokens:    cacheTokens,
-		RxBytes:        event.RxBytes,
-		TxBytes:        event.TxBytes,
-		LatencyMs:      event.LatencyMs,
-		TTFTMs:         event.TTFTMs,
-		LastRequest:    lastCopy,
+		// Cost is carried per request, and PricedCount says whether it counted:
+		// a day's cost sum alone cannot tell "cheap" from "mostly unpriced".
+		CacheWriteTokens: cacheWriteTokens,
+		CostMicros:       event.CostMicros,
+		PricedCount:      pricedIncrement(event.Priced),
+		RxBytes:          event.RxBytes,
+		TxBytes:          event.TxBytes,
+		LatencyMs:        event.LatencyMs,
+		TTFTMs:           event.TTFTMs,
+		LastRequest:      lastCopy,
 	}
 }
 
@@ -545,6 +594,9 @@ func (s *Store) dailyStatsInRangeLocked(from, to time.Time) []DailyRequestPoint 
 		point.InputTokens = dayStats.total.InputTokens
 		point.OutputTokens = dayStats.total.OutputTokens
 		point.CacheTokens = dayStats.total.CacheTokens
+		point.CacheWriteTokens = dayStats.total.CacheWriteTokens
+		point.CostMicros = dayStats.total.CostMicros
+		point.PricedCount = dayStats.total.PricedCount
 		point.RxBytes = dayStats.total.RxBytes
 		point.TxBytes = dayStats.total.TxBytes
 		latencySum[dayKey] = dayStats.latencySum
@@ -624,6 +676,9 @@ func mergeProtocolDays(byDay map[string]*usageDayStats, from, to time.Time) map[
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 		}
 	}
 	return byProtocol
@@ -655,6 +710,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 		total.InputTokens += dayStats.total.InputTokens
 		total.OutputTokens += dayStats.total.OutputTokens
 		total.CacheTokens += dayStats.total.CacheTokens
+		total.CacheWriteTokens += dayStats.total.CacheWriteTokens
+		total.CostMicros += dayStats.total.CostMicros
+		total.PricedCount += dayStats.total.PricedCount
 
 		for id, stats := range dayStats.byAPIKey {
 			out, ok := byAPIKey[id]
@@ -668,6 +726,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 		}
 		for id, stats := range dayStats.byProvider {
 			out, ok := byProvider[id]
@@ -681,6 +742,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 		}
 		for model, stats := range dayStats.byModel {
 			out, ok := byModel[model]
@@ -694,6 +758,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 		}
 		for id, stats := range dayStats.byUser {
 			out, ok := byUser[id]
@@ -707,6 +774,9 @@ func mergeUsageDays(byDay map[string]*usageDayStats, from, to time.Time) (APIKey
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 		}
 	}
 	return total, byAPIKey, byProvider, byModel, byUser
@@ -744,6 +814,9 @@ func mergeUsageDaysForKeys(byDay map[string]*usageDayStats, from, to time.Time, 
 			total.InputTokens += stats.InputTokens
 			total.OutputTokens += stats.OutputTokens
 			total.CacheTokens += stats.CacheTokens
+			total.CacheWriteTokens += stats.CacheWriteTokens
+			total.CostMicros += stats.CostMicros
+			total.PricedCount += stats.PricedCount
 			total.RxBytes += stats.RxBytes
 			total.TxBytes += stats.TxBytes
 
@@ -757,6 +830,9 @@ func mergeUsageDaysForKeys(byDay map[string]*usageDayStats, from, to time.Time, 
 			out.InputTokens += stats.InputTokens
 			out.OutputTokens += stats.OutputTokens
 			out.CacheTokens += stats.CacheTokens
+			out.CacheWriteTokens += stats.CacheWriteTokens
+			out.CostMicros += stats.CostMicros
+			out.PricedCount += stats.PricedCount
 			out.RxBytes += stats.RxBytes
 			out.TxBytes += stats.TxBytes
 		}
@@ -812,6 +888,9 @@ func dailyStatsForKeysLocked(byDay map[string]*usageDayStats, from, to time.Time
 			point.InputTokens += stats.InputTokens
 			point.OutputTokens += stats.OutputTokens
 			point.CacheTokens += stats.CacheTokens
+			point.CacheWriteTokens += stats.CacheWriteTokens
+			point.CostMicros += stats.CostMicros
+			point.PricedCount += stats.PricedCount
 			point.RxBytes += stats.RxBytes
 			point.TxBytes += stats.TxBytes
 		}

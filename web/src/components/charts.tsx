@@ -3,6 +3,7 @@ import React from 'react';
 import {
     copyToClipboard,
     formatBytes,
+    formatCostMicros,
     formatEnCompact,
     formatLocalISODate,
     formatTokenCount,
@@ -819,6 +820,9 @@ export function UsageComboTrendChart({
                   <span>入: {formatTokenCount(activePoint.inputTokens || 0)}</span>
                   <span>出: {formatTokenCount(activePoint.outputTokens || 0)}</span>
                   {(activePoint.cacheTokens || 0) > 0 ? <span>缓: {formatTokenCount(activePoint.cacheTokens)}</span> : null}
+                  {activePoint.costMicros
+                    ? <span>成本: {formatCostMicros(activePoint.costMicros)}{activePoint.pricedCount && activePoint.pricedCount < activePoint.requestCount ? `（${activePoint.pricedCount}/${activePoint.requestCount} 次已计价）` : ''}</span>
+                    : activePoint.requestCount > 0 ? <span title="这一天的请求都没有价格行，所以没有成本，不是免费">成本: 未计价</span> : null}
                 </div>
                 {(activePoint.rxBytes || activePoint.txBytes) ? (
                   <div className="tooltip-traffic-row">
@@ -1267,8 +1271,12 @@ export function UsageModelLeaderboard({
     inputTokens: number;
     outputTokens: number;
     cacheTokens: number;
+    /** 已计价成本（微美元）。旧数据与未计价缺省，成本口径下按 0 参与排序。 */
+    costMicros?: number;
+    /** 有价格行的请求数，用来说明这一行为什么只有部分成本。 */
+    pricedCount?: number;
   }>;
-  metric?: 'tokens' | 'requests';
+  metric?: 'tokens' | 'requests' | 'cost';
   models?: Model[];
   providers?: Provider[];
   onSelectModel?: (model: string) => void;
@@ -1277,8 +1285,9 @@ export function UsageModelLeaderboard({
   const providerByID = new Map(providers.map((provider) => [provider.id, provider]));
   const modelByID = new Map(models.map((model) => [model.id, model]));
   const visible = items.filter((m) => m.model && m.model !== '_unknown');
-  const valueOf = (item: { requestCount: number; inputTokens: number; outputTokens: number }) =>
-    metric === 'tokens' ? item.inputTokens + item.outputTokens : item.requestCount;
+  const valueOf = (item: { requestCount: number; inputTokens: number; outputTokens: number; costMicros?: number }) =>
+    metric === 'tokens' ? item.inputTokens + item.outputTokens : metric === 'cost' ? item.costMicros || 0 : item.requestCount;
+  const metricName = metric === 'tokens' ? 'Token' : metric === 'cost' ? '已计价成本' : '请求次数';
   const sorted = [...visible].sort((a, b) => valueOf(b) - valueOf(a)).slice(0, 10);
   const maxValue = Math.max(1, ...sorted.map(valueOf));
   const totalValue = visible.reduce((sum, m) => sum + valueOf(m), 0);
@@ -1290,7 +1299,7 @@ export function UsageModelLeaderboard({
         <div>
           <div className="usage-section-title">{title}</div>
           <div className="usage-section-subtitle">
-            Top 10 · 占全部 {metric === 'tokens' ? 'Token' : '请求'} 的 {covered.toFixed(1)}%
+            Top 10 · 占全部 {metricName} 的 {covered.toFixed(1)}%
           </div>
         </div>
         <div className="usage-leaderboard-legend">
@@ -1299,6 +1308,8 @@ export function UsageModelLeaderboard({
               <span className="prompt-legend"><i />输入 Prompt</span>
               <span className="completion-legend"><i />输出 Completion</span>
             </>
+          ) : metric === 'cost' ? (
+            <span className="requests-legend"><i />已计价成本 · 未计价记 0</span>
           ) : (
             <span className="requests-legend"><i />请求次数</span>
           )}
@@ -1365,12 +1376,12 @@ export function UsageModelLeaderboard({
                       >
                         复制
                       </button>
-                      <span className="leaderboard-share-badge font-mono" title={`占区间${metric === 'tokens' ? ' Token' : '请求次数'}的 ${pctOfTotal.toFixed(1)}%`}>
+                      <span className="leaderboard-share-badge font-mono" title={`占区间${metricName}的 ${pctOfTotal.toFixed(1)}%`}>
                         {pctOfTotal.toFixed(1)}%
                       </span>
                     </div>
                   </div>
-                  <div className={`leaderboard-split-track${metric === 'requests' ? ' is-requests' : ''}`} style={{ width: `${Math.max(12, pctOfMax)}%` }}>
+                  <div className={`leaderboard-split-track${metric !== 'tokens' ? ' is-requests' : ''}`} style={{ width: `${Math.max(12, pctOfMax)}%` }}>
                     {metric === 'tokens' ? (
                       <>
                         <div
@@ -1385,7 +1396,11 @@ export function UsageModelLeaderboard({
                         />
                       </>
                     ) : (
-                      <div className="split-fill requests" style={{ width: '100%' }} title={`${item.requestCount} 次请求`} />
+                      <div
+                        className="split-fill requests"
+                        style={{ width: '100%' }}
+                        title={metric === 'cost' ? `${formatCostMicros(item.costMicros)} · ${item.requestCount} 次请求` : `${item.requestCount} 次请求`}
+                      />
                     )}
                   </div>
                 </div>
@@ -1396,6 +1411,15 @@ export function UsageModelLeaderboard({
                       <span className="leaderboard-token-meta font-mono">
                         入 {formatTokenCount(item.inputTokens)} · 出 {formatTokenCount(item.outputTokens)}
                         {item.cacheTokens > 0 ? ` · 缓 ${formatTokenCount(item.cacheTokens)}` : ''} · {item.requestCount} 次
+                      </span>
+                    </>
+                  ) : metric === 'cost' ? (
+                    <>
+                      <span className="leaderboard-token-total font-mono">{formatCostMicros(item.costMicros)}</span>
+                      <span className="leaderboard-token-meta font-mono">
+                        {item.requestCount.toLocaleString()} 次 · {item.pricedCount
+                          ? `${item.pricedCount.toLocaleString()} 次已计价`
+                          : '全部未计价'}
                       </span>
                     </>
                   ) : (

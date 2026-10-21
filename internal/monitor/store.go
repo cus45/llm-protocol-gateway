@@ -33,8 +33,15 @@ type RequestLog struct {
 	OutputTokens     int64  `json:"outputTokens"`
 	CacheTokens      int64  `json:"cacheTokens"`                // cache-read/hit portion only
 	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"` // cache-creation portion, billed inside input
-	LatencyMillis    int64  `json:"latencyMs"`
-	TTFTMillis       int64  `json:"ttftMs,omitempty"`
+	// CostMicros is what the gateway's own price table says this request cost,
+	// in micro US dollars. Priced says whether a price row existed: an
+	// unpriced request is 未计价 in the console, never a $0.00 that looks like a
+	// free model. Costs are computed at request time so a later price edit does
+	// not rewrite what a past request cost.
+	CostMicros    int64 `json:"costMicros,omitempty"`
+	Priced        bool  `json:"priced,omitempty"`
+	LatencyMillis int64 `json:"latencyMs"`
+	TTFTMillis    int64 `json:"ttftMs,omitempty"`
 	// Observational latency breakdown (ms). Zero means unset / unavailable.
 	PrepMillis            int64           `json:"prepMs,omitempty"`
 	PreUpstreamMillis     int64           `json:"preUpstreamMs,omitempty"`
@@ -152,48 +159,68 @@ type APIKeyDayStats struct {
 	InputTokens  int64  `json:"inputTokens"`
 	OutputTokens int64  `json:"outputTokens"`
 	CacheTokens  int64  `json:"cacheTokens"`
+	// CacheWriteTokens and CostMicros are absent on buckets aggregated before
+	// they existed; the console shows 未计价 for a day whose cost was never
+	// computed rather than reading the missing total as free.
+	CacheWriteTokens int64 `json:"cacheWriteTokens,omitempty"`
+	CostMicros       int64 `json:"costMicros,omitempty"`
+	// PricedCount is how many of RequestCount had a price row when they ran.
+	// CostMicros alone cannot tell a cheap period from a mostly-unpriced one.
+	PricedCount int64 `json:"pricedCount,omitempty"`
 	// Forwarded payload bytes: Rx from downstream clients, Tx back to them.
 	RxBytes int64 `json:"rxBytes,omitempty"`
 	TxBytes int64 `json:"txBytes,omitempty"`
 }
 
 type ProviderDayStats struct {
-	ProviderID   string `json:"providerId"`
-	RequestCount int64  `json:"requestCount"`
-	InputTokens  int64  `json:"inputTokens"`
-	OutputTokens int64  `json:"outputTokens"`
-	CacheTokens  int64  `json:"cacheTokens"`
+	ProviderID       string `json:"providerId"`
+	RequestCount     int64  `json:"requestCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheTokens      int64  `json:"cacheTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"`
+	CostMicros       int64  `json:"costMicros,omitempty"`
+	PricedCount      int64  `json:"pricedCount,omitempty"`
 }
 
 // UserDayStats aggregates token/request usage for one owner user id. UserID is
 // stable (keys are bucketed by their OwnerUserID); UserName is resolved for
 // display at query time so renames never corrupt historical aggregates.
 type UserDayStats struct {
-	UserID       string `json:"userId"`
-	UserName     string `json:"userName"`
-	RequestCount int64  `json:"requestCount"`
-	InputTokens  int64  `json:"inputTokens"`
-	OutputTokens int64  `json:"outputTokens"`
-	CacheTokens  int64  `json:"cacheTokens"`
+	UserID           string `json:"userId"`
+	UserName         string `json:"userName"`
+	RequestCount     int64  `json:"requestCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheTokens      int64  `json:"cacheTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"`
+	CostMicros       int64  `json:"costMicros,omitempty"`
+	PricedCount      int64  `json:"pricedCount,omitempty"`
 }
 
 // ModelDayStats aggregates request/token usage for one model id.
 type ModelDayStats struct {
-	Model        string `json:"model"`
-	RequestCount int64  `json:"requestCount"`
-	InputTokens  int64  `json:"inputTokens"`
-	OutputTokens int64  `json:"outputTokens"`
-	CacheTokens  int64  `json:"cacheTokens"`
+	Model            string `json:"model"`
+	RequestCount     int64  `json:"requestCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheTokens      int64  `json:"cacheTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"`
+	CostMicros       int64  `json:"costMicros,omitempty"`
+	PricedCount      int64  `json:"pricedCount,omitempty"`
 }
 
 // ProtocolDayStats aggregates request/token usage for one output protocol
 // (OpenAI Chat / OpenAI Responses / Claude — the protocol the client called).
 type ProtocolDayStats struct {
-	Protocol     string `json:"protocol"`
-	RequestCount int64  `json:"requestCount"`
-	InputTokens  int64  `json:"inputTokens"`
-	OutputTokens int64  `json:"outputTokens"`
-	CacheTokens  int64  `json:"cacheTokens"`
+	Protocol         string `json:"protocol"`
+	RequestCount     int64  `json:"requestCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CacheTokens      int64  `json:"cacheTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens,omitempty"`
+	CostMicros       int64  `json:"costMicros,omitempty"`
+	PricedCount      int64  `json:"pricedCount,omitempty"`
 }
 
 type TodayStatsSnapshot struct {
@@ -223,6 +250,14 @@ type DailyRequestPoint struct {
 	InputTokens  int64  `json:"inputTokens"`
 	OutputTokens int64  `json:"outputTokens"`
 	CacheTokens  int64  `json:"cacheTokens"`
+	// CacheWriteTokens is the day's cache-creation prompt tokens: billed at a
+	// different rate than a cache read, so it is not folded into either total.
+	CacheWriteTokens int64 `json:"cacheWriteTokens,omitempty"`
+	// CostMicros is the day's priced cost in micro US dollars. PricedCount says
+	// how many of that day's requests had a price row: a small cost next to a
+	// large RequestCount means the period was mostly unpriced, not cheap.
+	CostMicros  int64 `json:"costMicros,omitempty"`
+	PricedCount int64 `json:"pricedCount,omitempty"`
 	// RxBytes/TxBytes are gateway-forwarded payload bytes for the day: Rx is what
 	// downstream clients sent us, Tx is what we returned. Unlike the host-metrics
 	// NIC counters these are business traffic only and are kept forever.
@@ -489,6 +524,11 @@ func aggregateByProvider(logs []RequestLog, since time.Time) []ProviderDayStats 
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 
 	out := make([]ProviderDayStats, 0, len(byProvider))
@@ -561,6 +601,9 @@ func MergeModelDayStats(items []ModelDayStats, canonical func(string) string) []
 		stats.InputTokens += item.InputTokens
 		stats.OutputTokens += item.OutputTokens
 		stats.CacheTokens += item.CacheTokens
+		stats.CacheWriteTokens += item.CacheWriteTokens
+		stats.CostMicros += item.CostMicros
+		stats.PricedCount += item.PricedCount
 	}
 	return sortModelDayStats(byModel)
 }
@@ -624,6 +667,11 @@ func aggregateByProtocol(logs []RequestLog, since time.Time) []ProtocolDayStats 
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 	return sortProtocolStats(byProto)
 }
@@ -670,6 +718,11 @@ func aggregateByModel(logs []RequestLog, since time.Time) []ModelDayStats {
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 
 	out := make([]ModelDayStats, 0, len(byModel))
@@ -702,6 +755,11 @@ func aggregateLogsSince(logs []RequestLog, since time.Time, periodLabel string) 
 		total.InputTokens += log.InputTokens
 		total.OutputTokens += log.OutputTokens
 		total.CacheTokens += log.CacheTokens
+		total.CacheWriteTokens += log.CacheWriteTokens
+		total.CostMicros += log.CostMicros
+		if log.Priced {
+			total.PricedCount++
+		}
 
 		keyID := log.APIKeyID
 		keyName := log.APIKeyName
@@ -718,6 +776,11 @@ func aggregateLogsSince(logs []RequestLog, since time.Time, periodLabel string) 
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 
 	byAPIKey := make([]APIKeyDayStats, 0, len(byKey))
@@ -919,6 +982,11 @@ func AggregateLogsInRange(logs []RequestLog, from, to time.Time, periodLabel str
 		total.InputTokens += log.InputTokens
 		total.OutputTokens += log.OutputTokens
 		total.CacheTokens += log.CacheTokens
+		total.CacheWriteTokens += log.CacheWriteTokens
+		total.CostMicros += log.CostMicros
+		if log.Priced {
+			total.PricedCount++
+		}
 		keyID := log.APIKeyID
 		keyName := log.APIKeyName
 		if keyID == "" {
@@ -934,6 +1002,11 @@ func AggregateLogsInRange(logs []RequestLog, from, to time.Time, periodLabel str
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 	byAPIKey := make([]APIKeyDayStats, 0, len(byKey))
 	for _, stats := range byKey {
@@ -980,6 +1053,11 @@ func AggregateDaily(logs []RequestLog, from, to time.Time) []DailyRequestPoint {
 		point.InputTokens += log.InputTokens
 		point.OutputTokens += log.OutputTokens
 		point.CacheTokens += log.CacheTokens
+		point.CacheWriteTokens += log.CacheWriteTokens
+		point.CostMicros += log.CostMicros
+		if log.Priced {
+			point.PricedCount++
+		}
 		latencySum[label] += log.LatencyMillis
 		if log.TTFTMillis > 0 {
 			ttftSum[label] += log.TTFTMillis
@@ -1082,6 +1160,11 @@ func (s *Store) TodayStatsFromLogs(logs []RequestLog, now time.Time) TodayStatsS
 		total.InputTokens += log.InputTokens
 		total.OutputTokens += log.OutputTokens
 		total.CacheTokens += log.CacheTokens
+		total.CacheWriteTokens += log.CacheWriteTokens
+		total.CostMicros += log.CostMicros
+		if log.Priced {
+			total.PricedCount++
+		}
 
 		keyID := log.APIKeyID
 		keyName := log.APIKeyName
@@ -1098,6 +1181,11 @@ func (s *Store) TodayStatsFromLogs(logs []RequestLog, now time.Time) TodayStatsS
 		stats.InputTokens += log.InputTokens
 		stats.OutputTokens += log.OutputTokens
 		stats.CacheTokens += log.CacheTokens
+		stats.CacheWriteTokens += log.CacheWriteTokens
+		stats.CostMicros += log.CostMicros
+		if log.Priced {
+			stats.PricedCount++
+		}
 	}
 
 	byAPIKey := make([]APIKeyDayStats, 0, len(byKey))

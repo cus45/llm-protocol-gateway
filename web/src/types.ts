@@ -555,6 +555,12 @@ export type APIKey = {
   activeProviderId?: string;
   /** 调度模式：'' / order 按链路顺序，rotate 轮流，least_used 挑近几分钟干活最少的，quota 挑额度剩得最多的。会话粘性始终优先。 */
   scheduleMode?: string;
+  /** 额度窗口：'' 不限 / 'day' 每天（网关本机时区 0 点重置）/ 'month' 每月 1 号 0 点。 */
+  quotaWindow?: string;
+  /** 窗口内 token 上限（输入含缓存 + 输出，与用量页同口径）。0 = 不限。 */
+  quotaTokens?: number;
+  /** 窗口内成本上限，微美元（1e-6 USD），只累计已计价请求。0 = 不限。 */
+  quotaCostMicros?: number;
   ownerUserId?: string;
   profiles?: KeyProfile[];
   activeProfileId?: string;
@@ -591,6 +597,24 @@ export type Model = {
   free?: boolean;
   rate?: number;
   rateWas?: number;
+};
+
+/**
+ * 网关自己的成本账本价格行（USD / 百万 Token），与 ModelPriceTags 展示的「上游
+ * 积分倍率」是两回事：这里是我们给请求记账用的单价。
+ * inputUsdPerMTok 只算未命中缓存的那部分 prompt——cacheTokens/cacheWriteTokens
+ * 已经含在 inputTokens 里，重复按全价计会翻倍。
+ * modelId "*" 是该 Provider 的默认行；没有行的 Provider/模型一律「未计价」，
+ * 不是 $0。订阅制（按积分计费）的 Provider 应当留空。
+ */
+export type ModelUSDPrice = {
+  providerId: string;
+  modelId: string;
+  inputUsdPerMTok: number;
+  outputUsdPerMTok: number;
+  cacheReadUsdPerMTok: number;
+  cacheWriteUsdPerMTok: number;
+  updatedAt?: string;
 };
 
 export type DataPaths = {
@@ -678,6 +702,10 @@ export type LogEntry = {
   cacheTokens?: number;
   /** 缓存写入（cache_creation），已含在 inputTokens 内，单独展示因为单价不同。 */
   cacheWriteTokens?: number;
+  /** 该请求按网关价格表算出的成本，单位微美元（1e-6 USD）。 */
+  costMicros?: number;
+  /** true 表示当时存在价格行；缺省即未计价，绝不能当成 $0.00 的免费模型。 */
+  priced?: boolean;
   latencyMs: number;
   ttftMs?: number;
   prepMs?: number;
@@ -758,6 +786,12 @@ export type APIKeyDayStats = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type ProviderDayStats = {
@@ -766,6 +800,12 @@ export type ProviderDayStats = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type ModelDayStats = {
@@ -774,6 +814,12 @@ export type ModelDayStats = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type ProtocolDayStats = {
@@ -782,6 +828,12 @@ export type ProtocolDayStats = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type UserDayStats = {
@@ -791,6 +843,12 @@ export type UserDayStats = {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type DailyRequestPoint = {
@@ -805,6 +863,12 @@ export type DailyRequestPoint = {
   txBytes?: number;
   avgLatencyMs?: number;
   avgTtftMs?: number;
+  /** 缓存写入 token（已含在 inputTokens 内，单价不同）。旧数据缺省。 */
+  cacheWriteTokens?: number;
+  /** 按网关价格表算出的成本（微美元）。旧数据与未计价一律缺省，不显示成 0。 */
+  costMicros?: number;
+  /** 有价格行的请求数：成本除以它才是覆盖率，光看成本会把未计价当成便宜。 */
+  pricedCount?: number;
 };
 
 export type StatusBucketStats = {

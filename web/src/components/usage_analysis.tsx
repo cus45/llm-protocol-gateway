@@ -161,7 +161,7 @@ export function RequestAnalysisPanel({rows, providers, onOpenLogs}: {rows: LogEn
   const errors = filtered.filter(r => r.status >= 400).length;
   const success = filtered.filter(r => r.status >= 200 && r.status < 300).length;
   const selects = (label: string, value: string, update: (v: string) => void, options: [string, string][]) => <select aria-label={label} value={value} onChange={e => update(e.target.value)}><option value="">全部{label}</option>{options.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>;
-  const exportRows = () => downloadCSV('gateway-requests.csv', [['时间', '模型', 'Provider', '密钥名称', '状态', '输入', '输出', '缓存读取', '缓存写入', '耗时ms', '首字ms', '推理设置'], ...filtered.map(r => [r.time, r.model, providerUsageLabel(r.providerId, providers), r.apiKeyName || '', r.status, r.inputTokens, r.outputTokens, r.cacheTokens || 0, r.cacheWriteTokens || 0, r.latencyMs, streamed.includes(r) ? r.ttftMs! : '', r.reasoningEffort || ''])].map(r => r.map(csv).join(',')).join('\r\n'));
+  const exportRows = () => downloadCSV('gateway-requests.csv', [['时间', '模型', 'Provider', '密钥名称', '状态', '输入', '输出', '缓存读取', '缓存写入', '成本USD', '已计价', '耗时ms', '首字ms', '推理设置'], ...filtered.map(r => [r.time, r.model, providerUsageLabel(r.providerId, providers), r.apiKeyName || '', r.status, r.inputTokens, r.outputTokens, r.cacheTokens || 0, r.cacheWriteTokens || 0, r.priced ? (r.costMicros || 0) / 1_000_000 : '', r.priced ? 'y' : '', r.latencyMs, streamed.includes(r) ? r.ttftMs! : '', r.reasoningEffort || ''])].map(r => r.map(csv).join(',')).join('\r\n'));
   const openLogs = () => onOpenLogs({
     model: model || undefined,
     provider: provider || undefined,

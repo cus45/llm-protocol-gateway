@@ -531,13 +531,17 @@ func (s *Server) persistAPIKeyActiveProvider(keyID, providerID string) {
 var errProviderNotAssigned = errors.New("permission denied")
 
 // upstreamErrorStatus maps an execute-flow error to the client-facing status.
-// Permission denials are 403, a provider at its own concurrent limit is 429
-// (with Retry-After), everything else stays a 502 upstream failure.
+// Permission denials are 403, a provider at its own concurrent limit or a key at
+// its own quota is 429 (both with Retry-After), everything else stays a 502
+// upstream failure.
 func upstreamErrorStatus(err error) int {
 	if errors.Is(err, errProviderNotAssigned) {
 		return http.StatusForbidden
 	}
 	if errors.Is(err, errProviderSaturated) {
+		return http.StatusTooManyRequests
+	}
+	if errors.Is(err, errKeyQuotaExceeded) {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway
@@ -559,6 +563,21 @@ func (s *Server) executeProtocolFlowWithFailover(
 	matchedKey domain.APIKey,
 	gatewayKeyMatched bool,
 ) (int, TokenUsage, []byte, domain.RouteDecision, string, error) {
+	// The key's own quota is decided before any provider is touched: switching
+	// accounts would not help, since every provider on the chain is refused by the
+	// same key, and a refusal that reaches an upstream spends that account's
+	// quota for nothing. Headers go on `w` here because the handlers still own the
+	// body — they write it in their own protocol shape once WriteHeader is called.
+	if gatewayKeyMatched && keyHasQuota(matchedKey) {
+		admission := s.admitKeyQuota(matchedKey, estimateKeyQuotaPrompt(req), time.Now())
+		if refusal := admission.refusal; refusal != nil {
+			w.Header().Set("Retry-After", strconv.FormatInt(refusal.RetryAfterSeconds, 10))
+			w.Header().Set("X-Quota-Reset-At", refusal.ResetAt)
+			return http.StatusTooManyRequests, TokenUsage{}, nil, decision, model, refusal
+		}
+		defer admission.release()
+	}
+
 	if !gatewayKeyMatched {
 		timer := startAttempt()
 		status, usage, body, err := s.executeProtocolFlow(w, r, route, decision, model, req, clientProtocol, skipIncomingAuth)

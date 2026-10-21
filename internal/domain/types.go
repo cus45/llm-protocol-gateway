@@ -634,6 +634,29 @@ type Model struct {
 	RateWas float64 `json:"rateWas,omitempty"`
 }
 
+// ModelPrice is what the gateway charges itself for one model's tokens, so the
+// console can say what a request cost. It is not the vendor's invoice: the
+// numbers are entered here (from the vendor's published price list) and applied
+// to the token counts the gateway actually saw.
+//
+// All four rates are US dollars per million tokens, and the tiers are mutually
+// exclusive — InputUSDPerMTok is the *uncached* part of the prompt, because our
+// InputTokens total already contains the cache reads and the cache writes and
+// billing them again would double-count. ModelID "*" is the provider default,
+// used for any model of that provider without its own row; a provider or model
+// with no row at all is not priced, and the console says 未计价 rather than
+// showing a cost of zero. Subscription providers that bill in credits rather
+// than dollars should stay unpriced for the same reason.
+type ModelPrice struct {
+	ProviderID           string  `json:"providerId"`
+	ModelID              string  `json:"modelId"`
+	InputUSDPerMTok      float64 `json:"inputUsdPerMTok"`
+	OutputUSDPerMTok     float64 `json:"outputUsdPerMTok"`
+	CacheReadUSDPerMTok  float64 `json:"cacheReadUsdPerMTok"`
+	CacheWriteUSDPerMTok float64 `json:"cacheWriteUsdPerMTok"`
+	UpdatedAt            string  `json:"updatedAt,omitempty"`
+}
+
 type OutputEndpoint struct {
 	ID                  string   `json:"id"`
 	Name                string   `json:"name"`
@@ -669,6 +692,20 @@ type APIKey struct {
 	// MaxOutputTokens 可选覆盖上游 max_tokens / max_output_tokens。
 	// 0 表示按实际上游模型自动解析；>0 时优先使用该值（用于新模型或临时调高/压低）。
 	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	// QuotaWindow 是额度口径："day"（按网关本机时区的 0 点重置）或 "month"
+	// （1 号 0 点）。空表示不设额度，也是升级前所有密钥的行为。
+	// 按本机日历而不是 UTC：这套网关是一个运维给自己的客户端用的，「每天 0 点重新开始」
+	// 是他会对用户说的话，UTC 日界会让 +08:00 的部署早上 8 点才"新的一天"。
+	QuotaWindow string `json:"quotaWindow,omitempty"`
+	// QuotaTokens 是窗口内可用的 token 总量，口径与用量页一致：输入（已含缓存）+ 输出。
+	// 0 = 不限。它是治理闸门而不是预付费钱包：入口只预扣请求里已经确定的 prompt 部分，
+	// 回答的 token 要等上游结束才计入，所以一波并发最多超出「这些在途请求真实产生的量」，
+	// 下一个请求就会被拒。
+	QuotaTokens int64 `json:"quotaTokens,omitempty"`
+	// QuotaCostMicros 是窗口内的成本上限，单位微美元（1e-6 USD），按价格表逐请求算出的
+	// 已计价成本累计。0 = 不限。只对设过价格行的上游有效——未计价的请求贡献 0，
+	// 永远不会触达这条上限，所以要用成本限额时最好同时给一个 QuotaTokens。
+	QuotaCostMicros int64 `json:"quotaCostMicros,omitempty"`
 	// StreamEnabled controls whether requests authenticated with this API key
 	// may use SSE streaming. Default true; when false, stream:true requests are
 	// rejected. Bound to the API key (not the output endpoint) so streaming can

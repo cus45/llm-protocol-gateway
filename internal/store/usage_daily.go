@@ -35,7 +35,10 @@ func ensureUsageDailyTables(tx *sql.Tx) error {
 	}
 	// rx_bytes / tx_bytes were added with the per-day traffic chart; existing
 	// installs get them via ALTER TABLE rather than a table rebuild.
-	for _, col := range []string{"rx_bytes", "tx_bytes"} {
+	// cache_write_tokens / cost_micros / priced_count join them: a day aggregated
+	// before they existed reads back as 0, which the console reports as 未计价
+	// instead of a free day.
+	for _, col := range []string{"rx_bytes", "tx_bytes", "cache_write_tokens", "cost_micros", "priced_count"} {
 		if err := addColumnIfMissing(tx, "usage_daily_buckets", col, "INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("usage_daily_buckets.%s: %w", col, err)
 		}
@@ -231,16 +234,19 @@ func upsertUsageBucket(tx *sql.Tx, day, bucketType, bucketID, bucketName string,
 	}
 	_, err := tx.Exec(`INSERT INTO usage_daily_buckets (
 		day, bucket_type, bucket_id, bucket_name,
-		request_count, input_tokens, output_tokens, cache_tokens,
+		request_count, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced_count,
 		status_2xx, status_4xx, status_5xx, status_other,
 		latency_sum, ttft_sum, ttft_count, rx_bytes, tx_bytes
-	) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(day, bucket_type, bucket_id) DO UPDATE SET
 		bucket_name = CASE WHEN excluded.bucket_name != '' THEN excluded.bucket_name ELSE usage_daily_buckets.bucket_name END,
 		request_count = usage_daily_buckets.request_count + 1,
 		input_tokens = usage_daily_buckets.input_tokens + excluded.input_tokens,
 		output_tokens = usage_daily_buckets.output_tokens + excluded.output_tokens,
 		cache_tokens = usage_daily_buckets.cache_tokens + excluded.cache_tokens,
+		cache_write_tokens = usage_daily_buckets.cache_write_tokens + excluded.cache_write_tokens,
+		cost_micros = usage_daily_buckets.cost_micros + excluded.cost_micros,
+		priced_count = usage_daily_buckets.priced_count + excluded.priced_count,
 		status_2xx = usage_daily_buckets.status_2xx + excluded.status_2xx,
 		status_4xx = usage_daily_buckets.status_4xx + excluded.status_4xx,
 		status_5xx = usage_daily_buckets.status_5xx + excluded.status_5xx,
@@ -251,7 +257,7 @@ func upsertUsageBucket(tx *sql.Tx, day, bucketType, bucketID, bucketName string,
 		rx_bytes = usage_daily_buckets.rx_bytes + excluded.rx_bytes,
 		tx_bytes = usage_daily_buckets.tx_bytes + excluded.tx_bytes`,
 		day, bucketType, bucketID, bucketName,
-		delta.InputTokens, delta.OutputTokens, delta.CacheTokens,
+		delta.InputTokens, delta.OutputTokens, delta.CacheTokens, delta.CacheWriteTokens, delta.CostMicros, delta.PricedCount,
 		status2xx, status4xx, status5xx, statusOther,
 		latencySum, ttftSum, ttftCount, delta.RxBytes, delta.TxBytes,
 	)
@@ -265,14 +271,14 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 	)
 	if since.IsZero() {
 		rows, err = s.reader().Query(`SELECT day, bucket_type, bucket_id, bucket_name,
-			request_count, input_tokens, output_tokens, cache_tokens,
+			request_count, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced_count,
 			status_2xx, status_4xx, status_5xx, status_other,
 			latency_sum, ttft_sum, ttft_count, rx_bytes, tx_bytes
 			FROM usage_daily_buckets ORDER BY day`)
 	} else {
 		sinceDay := since.Local().Format("2006-01-02")
 		rows, err = s.reader().Query(`SELECT day, bucket_type, bucket_id, bucket_name,
-			request_count, input_tokens, output_tokens, cache_tokens,
+			request_count, input_tokens, output_tokens, cache_tokens, cache_write_tokens, cost_micros, priced_count,
 			status_2xx, status_4xx, status_5xx, status_other,
 			latency_sum, ttft_sum, ttft_count, rx_bytes, tx_bytes
 			FROM usage_daily_buckets WHERE day >= ? ORDER BY day`, sinceDay)
@@ -287,11 +293,14 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 		var (
 			day, bucketType, bucketID, bucketName string
 			reqCount, inTok, outTok, cacheTok     int64
+			cacheWriteTok, costMicros             int64
+			pricedCount                           int64
 			s2xx, s4xx, s5xx, sOther              int64
 			latSum, ttftSum, ttftCount            int64
 			rxBytes, txBytes                      int64
 		)
 		if err := rows.Scan(&day, &bucketType, &bucketID, &bucketName, &reqCount, &inTok, &outTok, &cacheTok,
+			&cacheWriteTok, &costMicros, &pricedCount,
 			&s2xx, &s4xx, &s5xx, &sOther, &latSum, &ttftSum, &ttftCount, &rxBytes, &txBytes); err != nil {
 			return nil, nil, err
 		}
@@ -307,12 +316,15 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 			}
 		}
 		stats := monitor.APIKeyDayStats{
-			RequestCount: reqCount,
-			InputTokens:  inTok,
-			OutputTokens: outTok,
-			CacheTokens:  cacheTok,
-			RxBytes:      rxBytes,
-			TxBytes:      txBytes,
+			RequestCount:     reqCount,
+			InputTokens:      inTok,
+			OutputTokens:     outTok,
+			CacheTokens:      cacheTok,
+			CacheWriteTokens: cacheWriteTok,
+			CostMicros:       costMicros,
+			PricedCount:      pricedCount,
+			RxBytes:          rxBytes,
+			TxBytes:          txBytes,
 		}
 		switch bucketType {
 		case "total":
@@ -350,50 +362,71 @@ func (s *Store) LoadUsageSince(since time.Time) (map[string]monitor.UsageDayBuck
 				if child.ByProvider == nil {
 					child.ByProvider = make(map[string]monitor.ProviderDayStats)
 				}
-				child.ByProvider[id] = monitor.ProviderDayStats{ProviderID: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+				child.ByProvider[id] = monitor.ProviderDayStats{
+					ProviderID: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok,
+					CacheTokens: cacheTok, CacheWriteTokens: cacheWriteTok, CostMicros: costMicros, PricedCount: pricedCount,
+				}
 			case "key_model":
 				if child.ByModel == nil {
 					child.ByModel = make(map[string]monitor.ModelDayStats)
 				}
-				child.ByModel[id] = monitor.ModelDayStats{Model: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+				child.ByModel[id] = monitor.ModelDayStats{
+					Model: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok,
+					CacheTokens: cacheTok, CacheWriteTokens: cacheWriteTok, CostMicros: costMicros, PricedCount: pricedCount,
+				}
 			case "key_protocol":
 				if child.ByProtocol == nil {
 					child.ByProtocol = make(map[string]monitor.ProtocolDayStats)
 				}
-				child.ByProtocol[id] = monitor.ProtocolDayStats{Protocol: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok, CacheTokens: cacheTok}
+				child.ByProtocol[id] = monitor.ProtocolDayStats{
+					Protocol: id, RequestCount: reqCount, InputTokens: inTok, OutputTokens: outTok,
+					CacheTokens: cacheTok, CacheWriteTokens: cacheWriteTok, CostMicros: costMicros, PricedCount: pricedCount,
+				}
 			}
 			dayBuckets.ByKey[identity[0]] = child
 		case "provider":
 			dayBuckets.ByProvider[bucketID] = monitor.ProviderDayStats{
-				ProviderID:   bucketID,
-				RequestCount: reqCount,
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				CacheTokens:  cacheTok,
+				ProviderID:       bucketID,
+				RequestCount:     reqCount,
+				InputTokens:      inTok,
+				OutputTokens:     outTok,
+				CacheTokens:      cacheTok,
+				CacheWriteTokens: cacheWriteTok,
+				CostMicros:       costMicros,
+				PricedCount:      pricedCount,
 			}
 		case "model":
 			dayBuckets.ByModel[bucketID] = monitor.ModelDayStats{
-				Model:        bucketID,
-				RequestCount: reqCount,
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				CacheTokens:  cacheTok,
+				Model:            bucketID,
+				RequestCount:     reqCount,
+				InputTokens:      inTok,
+				OutputTokens:     outTok,
+				CacheTokens:      cacheTok,
+				CacheWriteTokens: cacheWriteTok,
+				CostMicros:       costMicros,
+				PricedCount:      pricedCount,
 			}
 		case "user":
 			dayBuckets.ByUser[bucketID] = monitor.UserDayStats{
-				UserID:       bucketID,
-				RequestCount: reqCount,
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				CacheTokens:  cacheTok,
+				UserID:           bucketID,
+				RequestCount:     reqCount,
+				InputTokens:      inTok,
+				OutputTokens:     outTok,
+				CacheTokens:      cacheTok,
+				CacheWriteTokens: cacheWriteTok,
+				CostMicros:       costMicros,
+				PricedCount:      pricedCount,
 			}
 		case "output_protocol":
 			dayBuckets.ByProtocol[bucketID] = monitor.ProtocolDayStats{
-				Protocol:     bucketID,
-				RequestCount: reqCount,
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				CacheTokens:  cacheTok,
+				Protocol:         bucketID,
+				RequestCount:     reqCount,
+				InputTokens:      inTok,
+				OutputTokens:     outTok,
+				CacheTokens:      cacheTok,
+				CacheWriteTokens: cacheWriteTok,
+				CostMicros:       costMicros,
+				PricedCount:      pricedCount,
 			}
 		}
 		out[day] = dayBuckets

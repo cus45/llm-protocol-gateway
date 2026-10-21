@@ -296,7 +296,87 @@ curl -X PATCH https://<网关公网域名>/__providers/<id>/self-register \
 
 ---
 
-## 9. 代码索引
+## 10. 成本账本（价格表）
+
+网关按自己的价格表给每次请求算成本，让用量页能回答「这周花了多少」。价格由操作员
+按厂商公布的费率卡录入，**不是账单**，也不会去抓第三方价目表：这个网关前置的大多是
+编程套餐、订阅登录和国内中转，任何公开按 token 报价的表都盖不住它们，而猜出来的单价
+会被静悄悄加进总额——比「没有价」危险得多。
+
+- 单位：**美元 / 百万 token**，四档互斥：`inputUsdPerMTok`（未命中缓存的输入）、
+  `outputUsdPerMTok`、`cacheReadUsdPerMTok`、`cacheWriteUsdPerMTok`。
+- 键是 `providerId + modelId`，`modelId: "*"` 是该 Provider 的默认档，具体模型行优先。
+- 我们记的 `inputTokens` 已包含缓存读与缓存写，计价时**必须先减掉这两块**再按
+  未缓存单价算，否则同一批 token 被计两次（`costOf` 有专门的回归测试钉住这点）。
+- 成本在请求结束时算定并落到请求日志（`costMicros` + `priced`）与永久日桶
+  （`cost_micros`、`cache_write_tokens`、`priced_count`），所以事后改价不会重写历史
+  请求的成本；升级之前的历史数据没有成本列，页面显示「未计价」而不是 $0.00。
+- 日桶同时记 `priced_count`（当时有价格行的请求数）。**成本总额只累加已计价的那部分**，
+  所以金额必须和覆盖率一起读：控制台在 KPI 角标上写「部分未计价」，把「大半没设价」
+  显示成「很便宜」是这本账最不能犯的错。
+- 积分制订阅（Qoder / WorkBuddy 等）**不要**填美元价：留空即未计价。
+
+接口（管理员）：`GET /__prices`、`POST /__prices`（整体 upsert）、
+`DELETE /__prices/{providerId}/{modelId}`。删除 Provider 时它的价格行随之下架
+（全量保存时清理），避免回收后的 id 继承到别人的单价。
+
+控制台（用量页）：
+
+- 概览多一张「区间已计价成本」KPI，附覆盖角标与「已计价的每次」均价；份额口径可切到
+  **成本份额**，Provider 环图、协议环图、模型排行与密钥/用户排行一起换轨，没有金额的
+  行显示 `—`，不写 `$0.0000`。
+- 走势图的每日气泡里带当天成本与覆盖率。
+- 头部「价格表」打开录入面板：列已设价的行、逐行编辑/删除，并把**本区间有用量但一行价
+  都没有**的 Provider 排在前面（按请求量降序）供一键跳转。普通用户看不到入口（`/__prices`
+  是管理员接口）。
+- API 日志的请求详情里成本是一枚 chip：`$0.0270` 或「未计价」，鼠标悬浮说明「按请求结束时
+  的价格表算出，改价不回算」。日志密集表刻意不加第 14 列——列宽是按不横向滚动倒推的，
+  成本在详情、日聚合与 CSV 里给。
+- CSV 导出（概览与请求面板）都带「已计价成本 USD」与「已计价请求数」两列。
+
+> 加成本列时踩过的坑：日聚合的成本要穿过十几个「一行一行累加」的合并循环，漏一个不报错，
+> 只是那一维的金额静默变 0。`internal/monitor/usage_cost_test.go` 与
+> `internal/store/model_prices_test.go` 因此把每个维度、每别名合并（`MergeModelDayStats`）
+> 和按密钥下钻视图（`UsageStatsRangeForKeys`）都逐一断言了金额，而不只是总数。
+
+---
+
+## 11. 每密钥额度
+
+密钥可以自己带一份预算，用完就在网关被拒，不再打到上游。它是**治理闸门**，不是预付费钱包：
+目的是「这把 Key 今天最多花这么多」，不是精确计费。
+
+- 三个字段一起才有意义：`quotaWindow`（`day` / `month`）、`quotaTokens`、`quotaCostMicros`。
+  两个上限都是 0 时窗口一并清空（不门控任何东西的窗口只是界面噪声）；设了上限却没给窗口一律
+  **400 拒绝**，因为这种配置只能回一个「不知何时恢复」的 429。
+- 窗口按**网关本机时区**的日历重置：日本地 0 点、月 1 号 0 点，上界独占。生产 VPS 是
+  `TZ=Asia/Shanghai`，所以「每天 0 点重新开始」就是他会对用户说的那句话；用 UTC 日界会让
+  +08:00 的部署早上 8 点才"新的一天"。
+- 判定口径与用量页一致：**输入（已含缓存）+ 输出**。`InputTokens` 落库时已归一化，
+  所以额度计算绝不再加 `CacheTokens`，否则缓存命中的那部分被算两遍。
+- **入口只预扣 prompt**：请求的 prompt 在入口就能估出来（字符类估算，中文按约 1 token/字，
+  不用 `bytes/4`——那会把中文 prompt 少算约 4 倍），而回答的 token 与成本要等上游结束才知道。
+  所以一波并发的超出量是「这些在途请求真实产生的量」，下一个请求即被拒。预扣在响应结束后释放。
+- 成本额度只跟**已完成**的已计价用量比较：在途请求还没有价格。上游没设价格行时成本恒为 0，
+  这条上限永远不会触发，所以要用成本限额最好同时给一个 `quotaTokens`。
+- 拒绝是 429 + `Retry-After`（到重置的秒数）+ `X-Quota-Reset-At`（RFC3339），响应体按**客户端
+  协议**形状写（Claude 用 `{"type":"error"}`，OpenAI 两种用 `{"error":{...}}`）。它走
+  `errKeyQuotaExceeded` → `upstreamErrorStatus`，**不会**被当成上游故障：不换账号（换到哪个
+  Provider 都会被同一把 Key 拒）、不把账号判死、不扣上游的额度。
+- 拦截点在 `executeProtocolFlowWithFailover` 开头（Chat / Responses / Claude / compact 四条流
+  共用一处），`/v1/images/generations` 走自己的路径所以单独门一次；`/v1/messages/count_tokens`
+  不打上游，不门。
+- 额度只能**管理员**设置：普通用户给自己提预算就是权限提升。`PATCH /__apikeys/{id}` 是部分更新，
+  三个额度字段没出现在请求体里时从当前密钥带回（脚本调用不像控制台那样重发全部字段）。
+
+顺带修掉一个同类的老坑：`PATCH` 不带 `enabled` 从前等于把它写成 `false`，密钥会**静默停用**；
+停用的密钥在 token 解析阶段就不匹配了，于是流量不再报 401，而是落到路由的默认 Provider 上继续跑。
+现在缺省即保留原值，`key_quota_test.go` 钉住这一点。
+
+窗口用量从监控的日桶读（`KeyWindowUsage` 只走窗口内的几天，不重建控制台快照）；重启后由
+`usage_daily_buckets` 回填，所以额度不会被一次重启洗白。
+
+## 12. 代码索引
 
 - 结构与常量：`internal/domain/types.go`
 - 鉴权注入 / 密钥解析：`internal/gateway/server.go`（`applyProviderAuth` / `resolveProviderAuth`）
@@ -305,6 +385,9 @@ curl -X PATCH https://<网关公网域名>/__providers/<id>/self-register \
 - 候选排序 / 会话粘性 / 负载与额度 / 并发闸门 / 轨迹：`internal/gateway/provider_schedule.go`、
   `provider_affinity.go`、`provider_load.go`、`provider_lanes.go`、`schedule_trace.go`
 - 首包超时：`internal/gateway/upstream_timeout.go`（在 `doHTTPWithTiming` 内生效）
+- 成本账本：`internal/gateway/pricing.go`、`internal/store/model_prices.go`
+- 每密钥额度：`internal/gateway/key_quota.go`（窗口 / 预扣 / 429 形状），
+  `internal/monitor/usage_key_window.go`（窗口用量读取）
 - 后台恢复循环启动：`internal/app/runtime.go`（`StartProviderFailoverRecovery`）
 - 自注册 / 自检 / conformance：`internal/gateway/provider_self_register.go`、`provider_conformance.go`
 - thinking 签名整流器：`internal/gateway/thinking_rectifier.go`

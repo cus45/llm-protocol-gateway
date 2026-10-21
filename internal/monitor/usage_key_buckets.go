@@ -14,6 +14,11 @@ func recordKeyUsage(day *usageDayStats, keyID string, event UsageEvent, input, c
 	child.total.InputTokens += input
 	child.total.OutputTokens += event.OutputTokens
 	child.total.CacheTokens += cache
+	child.total.CacheWriteTokens += event.CacheWriteTokens
+	child.total.CostMicros += event.CostMicros
+	if event.Priced {
+		child.total.PricedCount++
+	}
 	child.total.RxBytes += event.RxBytes
 	child.total.TxBytes += event.TxBytes
 	child.latencySum += event.LatencyMs
@@ -40,6 +45,11 @@ func recordKeyUsage(day *usageDayStats, keyID string, event UsageEvent, input, c
 	p.InputTokens += input
 	p.OutputTokens += event.OutputTokens
 	p.CacheTokens += cache
+	p.CacheWriteTokens += event.CacheWriteTokens
+	p.CostMicros += event.CostMicros
+	if event.Priced {
+		p.PricedCount++
+	}
 	if model, ok := NormalizeModelForStats(event.Model); ok {
 		if child.byModel[model] == nil {
 			child.byModel[model] = &ModelDayStats{Model: model}
@@ -49,6 +59,11 @@ func recordKeyUsage(day *usageDayStats, keyID string, event UsageEvent, input, c
 		m.InputTokens += input
 		m.OutputTokens += event.OutputTokens
 		m.CacheTokens += cache
+		m.CacheWriteTokens += event.CacheWriteTokens
+		m.CostMicros += event.CostMicros
+		if event.Priced {
+			m.PricedCount++
+		}
 	}
 	if protocol := event.OutputProtocol; protocol != "" {
 		if child.byProtocol[protocol] == nil {
@@ -59,6 +74,11 @@ func recordKeyUsage(day *usageDayStats, keyID string, event UsageEvent, input, c
 		p.InputTokens += input
 		p.OutputTokens += event.OutputTokens
 		p.CacheTokens += cache
+		p.CacheWriteTokens += event.CacheWriteTokens
+		p.CostMicros += event.CostMicros
+		if event.Priced {
+			p.PricedCount++
+		}
 	}
 }
 
@@ -112,6 +132,9 @@ func keyDimensionDays(days map[string]*usageDayStats, keys map[string]struct{}) 
 				p.InputTokens += v.InputTokens
 				p.OutputTokens += v.OutputTokens
 				p.CacheTokens += v.CacheTokens
+				p.CacheWriteTokens += v.CacheWriteTokens
+				p.CostMicros += v.CostMicros
+				p.PricedCount += v.PricedCount
 			}
 			for id, v := range child.byModel {
 				if merged.byModel[id] == nil {
@@ -122,6 +145,9 @@ func keyDimensionDays(days map[string]*usageDayStats, keys map[string]struct{}) 
 				m.InputTokens += v.InputTokens
 				m.OutputTokens += v.OutputTokens
 				m.CacheTokens += v.CacheTokens
+				m.CacheWriteTokens += v.CacheWriteTokens
+				m.CostMicros += v.CostMicros
+				m.PricedCount += v.PricedCount
 			}
 			for id, v := range child.byProtocol {
 				if merged.byProtocol[id] == nil {
@@ -132,6 +158,9 @@ func keyDimensionDays(days map[string]*usageDayStats, keys map[string]struct{}) 
 				p.InputTokens += v.InputTokens
 				p.OutputTokens += v.OutputTokens
 				p.CacheTokens += v.CacheTokens
+				p.CacheWriteTokens += v.CacheWriteTokens
+				p.CostMicros += v.CostMicros
+				p.PricedCount += v.PricedCount
 			}
 		}
 		selected[date] = merged

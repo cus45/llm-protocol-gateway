@@ -1111,6 +1111,14 @@ export function protocolFromLabel(label: string): Protocol {
   return 'openai_chat';
 }
 
+// 协议下拉的品牌图标：三种上游各自的厂商标，和连接方式下拉同一套资产。
+export function protocolIcon(label: string): string {
+  const protocol = protocolFromLabel(label);
+  if (protocol === 'claude') return 'claude-color';
+  if (protocol === 'openai_responses') return 'codex-color';
+  return 'openai';
+}
+
 export function actionLabel(action: string) {
   if (action === 'not_configured') return '未配置';
   if (action === 'pass_through' || action.includes('pass')) return '透传';
@@ -1695,7 +1703,24 @@ export function buildApiKeyPatchBody(key: APIKey, patch: Partial<APIKey> = {}) {
     fallbackProviderIds: patch.fallbackProviderIds ?? key.fallbackProviderIds ?? [],
     fallbackModelOverrides: patch.fallbackModelOverrides ?? key.fallbackModelOverrides ?? {},
     scheduleMode: patch.scheduleMode ?? key.scheduleMode ?? '',
+    // 额度三件套必须一起重发：后端把「没带字段」当成「保留原值」，但控制台走的是
+    // 全量重发，这里漏一个就等于把别的字段顺手抹掉。
+    quotaWindow: patch.quotaWindow ?? key.quotaWindow ?? '',
+    quotaTokens: patch.quotaTokens ?? key.quotaTokens ?? 0,
+    quotaCostMicros: patch.quotaCostMicros ?? key.quotaCostMicros ?? 0,
   };
+}
+
+// QuotaWindowOptions 是密钥额度的重置口径。窗口按网关进程的本机时区算：
+// 生产 VPS 固定 TZ=Asia/Shanghai，所以「每天 0 点」就是北京时间 0 点。
+export const QuotaWindowOptions: { value: string; label: string; hint: string }[] = [
+  { value: '', label: '不限额度', hint: '该密钥不受额度门约束（升级前所有密钥的默认状态）。' },
+  { value: 'day', label: '每天（0 点重置）', hint: '按网关本机时区的自然日累计，跨过 0 点重新计。' },
+  { value: 'month', label: '每月（1 号 0 点重置）', hint: '按网关本机时区的自然月累计。' },
+];
+
+export function quotaWindowLabel(value?: string) {
+  return QuotaWindowOptions.find((option) => option.value === (value || ''))?.label ?? '不限额度';
 }
 
 // ScheduleModeLabels 是密钥「调度模式」的界面文案。顺序与后端接受的取值一致，
@@ -2873,6 +2898,30 @@ export function formatTokenCount(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
+}
+
+/**
+ * 成本在网关侧以微美元（1e-6 USD）整数落库：按请求取整再相加才不会与日聚合漂移，
+ * 所以换算只发生在这里。undefined 是「这一行没有成本字段」（旧数据或未计价），
+ * 与 $0.0000（设了价、算出来就是零）必须区分开，调用方先用 priced 判过再传。
+ */
+export function formatCostMicros(micros: number | undefined): string {
+  if (micros == null) return '—';
+  const usd = micros / 1_000_000;
+  if (Math.abs(usd) < 1) return `$${usd.toFixed(4)}`;
+  return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * 计价覆盖率。成本总额只累加了有价格行的请求，光看金额会把「大半没设价」读成
+ * 「很便宜」，所以金额旁边必须跟着这个比例。
+ */
+export function formatCostCoverage(pricedCount: number | undefined, requestCount: number): string {
+  const priced = pricedCount || 0;
+  if (!requestCount) return '暂无请求';
+  if (priced === 0) return '本区间全部未计价';
+  if (priced === requestCount) return '全部请求已计价';
+  return `已计价 ${priced.toLocaleString()} / ${requestCount.toLocaleString()} 次请求`;
 }
 
 export function formatModelOutputBudget(n: number | undefined) {

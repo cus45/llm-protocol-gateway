@@ -1,5 +1,5 @@
 import type {Provider, ProviderConnectKind, ProviderPreset, ProviderPresetSection} from './types';
-import {presetMatchesProvider} from './lib';
+import {presetMatchesProvider, providerConnectLabel} from './lib';
 
 // 添加 Provider 的可选目录：点一个磁贴即填好连接方式、协议与接入地址，
 // 省掉手抄 URL。端点取自上游厂商公开文档（与参考项目 magpie 的预设表一致），
@@ -103,12 +103,33 @@ export function providerConnectIcon(kind: '' | ProviderConnectKind): string {
   return PROVIDER_PRESETS.find((preset) => preset.section === 'subscription' && preset.authType === kind)?.icon || '';
 }
 
+// 连接方式下拉用：标签 + 品牌图标成对给出，图标表与目录磁贴共用同一张表，
+// 避免同一个厂商在目录里是一个图标、在编辑弹窗里又是空白。
+export type ProviderConnectChoice = {value: ProviderConnectKind; label: string; icon: string};
+
 export type ProviderPresetGroup = {
   id: ProviderPresetSection | 'all';
   title: string;
   desc: string;
   presets: ProviderPreset[];
 };
+
+export const PROVIDER_CONNECT_CHOICES: ProviderConnectChoice[] = [
+  {value: 'api_key', label: providerConnectLabel('api_key'), icon: 'openai'},
+  {value: 'claude_oauth', label: providerConnectLabel('claude_oauth'), icon: providerConnectIcon('claude_oauth')},
+  {value: 'cursor_oauth', label: providerConnectLabel('cursor_oauth'), icon: providerConnectIcon('cursor_oauth')},
+  {value: 'chatgpt_oauth', label: providerConnectLabel('chatgpt_oauth'), icon: providerConnectIcon('chatgpt_oauth')},
+  {value: 'qoder_pat', label: providerConnectLabel('qoder_pat'), icon: providerConnectIcon('qoder_pat')},
+  {value: 'qoder_cn', label: providerConnectLabel('qoder_cn'), icon: providerConnectIcon('qoder_cn')},
+  {value: 'workbuddy', label: providerConnectLabel('workbuddy'), icon: providerConnectIcon('workbuddy')},
+  {value: 'workbuddy_ai', label: providerConnectLabel('workbuddy_ai'), icon: providerConnectIcon('workbuddy_ai')},
+  {value: 'zcode', label: providerConnectLabel('zcode'), icon: providerConnectIcon('zcode')},
+  {value: 'zcode_bigmodel', label: providerConnectLabel('zcode_bigmodel'), icon: providerConnectIcon('zcode_bigmodel')},
+  {value: 'trae_cn', label: providerConnectLabel('trae_cn'), icon: providerConnectIcon('trae_cn')},
+  {value: 'trae_global', label: providerConnectLabel('trae_global'), icon: providerConnectIcon('trae_global')},
+  {value: 'opencode_zen_free', label: providerConnectLabel('opencode_zen_free'), icon: providerConnectIcon('opencode_zen_free')},
+  {value: 'self_register', label: providerConnectLabel('self_register'), icon: 'yylx'},
+];
 
 const SECTION_META: Array<{ id: ProviderPresetSection; title: string; desc: string }> = [
   { id: 'subscription', title: '订阅账号', desc: '登录一次即可，无需粘贴密钥' },

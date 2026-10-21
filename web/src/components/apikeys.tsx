@@ -1,6 +1,7 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {
+    API_BASE,
     apiKeyClientBaseURL,
     apiKeyGatewayRoot,
     buildApiKeyClientConfig,
@@ -14,20 +15,43 @@ import {
     clientConfigsForProtocol,
     clientConfigTitle,
     copyToClipboard,
+    formatCostMicros,
+    formatTokenCount,
     getApiKeyBinding,
     localGatewayRoot,
     modelAlias,
     protocolFromLabel,
     protocolLabel,
     providerOptionLabel,
+    QuotaWindowOptions,
     scheduleModeLabel,
     ScheduleModeOptions,
-    thinkingDepthSelectOptions
+    thinkingDepthSelectOptions,
+    usageStatsForKey
 } from '../lib';
 import {SearchableModelSelect} from './selects';
-import {APIKey, ConsoleUser, KeyProfile, Model, OutputEndpoint, Protocol, Provider, Route} from '../types';
-import {Badge, CopyButton, Modal} from './ui';
+import {
+    APIKey,
+    ConsoleUser,
+    KeyProfile,
+    Model,
+    OutputEndpoint,
+    Protocol,
+    Provider,
+    RequestStatsSnapshot,
+    Route
+} from '../types';
+import {Badge, CopyButton, InfoTip, Modal, Switch} from './ui';
 import {ProviderLabel} from './provider_label';
+
+/**
+ * 密钥面板可以单独 PATCH 的字段。这里只有一处定义：以前三个地方各抄一遍，
+ * 加一个字段就得同步改三处，漏一处表现为「下拉框选了就报类型错」这种难查的问题。
+ */
+export type ApiKeyEditableField =
+  | 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens'
+  | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled'
+  | 'quotaWindow' | 'quotaTokens' | 'quotaCostMicros';
 
 /** 方案命名弹窗：替代 window.prompt——嵌入式浏览器/被浏览器拦截时 prompt 会静默
  *  返回 null，表现为按钮点了没反应；应用内弹窗不依赖原生对话框。 */
@@ -82,6 +106,7 @@ export function ApiKeyDetailPanel({
   models,
   endpoints,
   saving,
+  canWriteQuota,
   testingProviderID,
   tunnelRunning,
   livePublicURL,
@@ -107,11 +132,13 @@ export function ApiKeyDetailPanel({
   models: Model[];
   endpoints: OutputEndpoint[];
   saving: boolean;
+  // 额度只能管理员写（后端也会拒）；非管理员传 false，只读展示已用量。
+  canWriteQuota: boolean;
   testingProviderID: string;
   tunnelRunning: boolean;
   livePublicURL: string;
   fixedOutputLabels: string[];
-  onUpdateField: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) => Promise<void>;
+  onUpdateField: (key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) => Promise<void>;
   onUpdateBinding: (key: APIKey, providerId: string, outputProtocol: Protocol) => Promise<void>;
   onUpdateModelAliases: (key: APIKey, modelAliases: Record<string, string>) => Promise<void>;
   onUpdateFallbacks: (key: APIKey, fallbackProviderIds: string[], fallbackModelOverrides: Record<string, string>) => Promise<void>;
@@ -209,6 +236,8 @@ export function ApiKeyDetailPanel({
           <Badge tone={bindingAction === '透传' ? 'green' : 'cyan'}>{bindingAction}</Badge>
           {usingFallback ? <Badge tone="amber">已切备选</Badge> : null}
           {(keyItem.scheduleMode || '') !== '' ? <Badge tone="cyan">{scheduleModeLabel(keyItem.scheduleMode)}</Badge> : null}
+          {keyItem.quotaWindow === 'day' ? <Badge tone="amber">日额度</Badge> : null}
+          {keyItem.quotaWindow === 'month' ? <Badge tone="amber">月额度</Badge> : null}
           {route ? <CopyButton value={apiKeyClientURL} label="复制 URL" toastContent={`已复制 URL：${apiKeyClientURL}`} /> : null}
           <CopyButton value={keyItem.key} label="复制 Key" toastContent={`已复制 Key：${keyItem.key}`} />
           <button className="icon-btn" onClick={() => onClone(keyItem)} title="克隆为新 API 密钥">克隆</button>
@@ -263,9 +292,7 @@ export function ApiKeyDetailPanel({
           <div className="api-key-client-configs">
             <div className="field-label-row">
               <label>一键复制客户端配置</label>
-            </div>
-            <div className="hint-line">
-              仅显示与当前输出协议匹配的客户端；点击复制并预览配置，弹窗内可切换内网 / 公网域名。
+              <InfoTip text="仅显示与当前输出协议匹配的客户端；点击复制并预览配置，弹窗内可切换内网 / 公网域名。" />
             </div>
             <div className="api-key-client-config-actions">
               {clientConfigsForProtocol(route?.outputProtocol).map((client) => (
@@ -276,19 +303,12 @@ export function ApiKeyDetailPanel({
                   disabled={!route}
                   onClick={() => openClientConfigModal(client)}
                 >
-                  {client === 'opencode' ? '复制 OpenCode 配置' : client === 'codex' ? '复制 Codex 配置' : '复制 Claude 配置'}
+                  {client === 'opencode' ? '复制 OpenCode' : client === 'codex' ? '复制 Codex' : '复制 Claude'}配置
                 </button>
               ))}
             </div>
             {route ? (
-              <div className="hint-line">
-                当前输出协议：{protocolLabel(route.outputProtocol)}
-                {route.outputProtocol === 'openai_responses'
-                  ? ' · 适配 Codex / OpenCode。'
-                  : route.outputProtocol === 'claude'
-                    ? ' · 适配 Claude Code / OpenCode（Messages）；不走 OpenAI Responses。'
-                    : ' · 适配 OpenCode（Chat Completions）。'}
-              </div>
+              <div className="hint-text">{`当前输出协议：${protocolLabel(route.outputProtocol)}${route.outputProtocol === 'openai_responses' ? ' · 适配 Codex / OpenCode。' : route.outputProtocol === 'claude' ? ' · 适配 Claude Code / OpenCode（Messages）；不走 OpenAI Responses。' : ' · 适配 OpenCode（Chat Completions）。'}`}</div>
             ) : null}
           </div>
 
@@ -298,11 +318,7 @@ export function ApiKeyDetailPanel({
                 <label>{tunnelRunning ? '公网调用示例' : '局域网调用示例'}</label>
                 <CopyButton value={buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)} label="复制 curl" />
               </div>
-              <div className="hint-line">
-                协议：{protocolLabel(route.outputProtocol)} · 客户端 Base URL：{apiKeyClientURL}
-                {route.outputProtocol === 'openai_chat' ? ' · 完整路径：/v1/chat/completions' : route.outputProtocol === 'claude' ? ' · 完整路径：/anthropic/v1/messages（Base URL 不要带 /v1）' : ' · 完整路径：/openai/v1/responses'}
-                {keyItem.modelOverride ? ` · 固定模型：${keyItem.modelOverride}` : routeProvider?.defaultModel ? ` · 默认模型：${routeProvider.defaultModel}` : ''}
-              </div>
+              <div className="hint-text">{`协议：${protocolLabel(route.outputProtocol)} · 客户端 Base URL：${apiKeyClientURL}${route.outputProtocol === 'openai_chat' ? ' · 完整路径：/v1/chat/completions' : route.outputProtocol === 'claude' ? ' · 完整路径：/anthropic/v1/messages（Base URL 不要带 /v1）' : ' · 完整路径：/openai/v1/responses'}${keyItem.modelOverride ? ` · 固定模型：${keyItem.modelOverride}` : routeProvider?.defaultModel ? ` · 默认模型：${routeProvider.defaultModel}` : ''}`}</div>
               <pre className="curl-preview">{buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)}</pre>
             </div>
           ) : null}
@@ -314,6 +330,7 @@ export function ApiKeyDetailPanel({
           <div className="api-key-profile-selector">
             <div className="field-label-row">
               <label>转发方案</label>
+              <InfoTip text="同一 Key（token 不变）可切换多套完整转发配置。下方整页表单即当前生效方案（Provider / 备选 / 模型映射等）；切换方案后新请求立即走新配置。" />
               <div className="api-key-profile-toolbar">
                 <button className="btn" type="button" disabled={saving} onClick={() => setProfileDialog('create')}>
                   新建方案
@@ -329,9 +346,6 @@ export function ApiKeyDetailPanel({
                   </button>
                 ) : null}
               </div>
-            </div>
-            <div className="hint-line">
-              同一 Key（token 不变）可切换多套完整转发配置。下方整页表单即当前生效方案（Provider / 备选 / 模型映射等）；切换方案后新请求立即走新配置。
             </div>
             <div className="api-key-profile-tabs" role="tablist" aria-label="转发方案">
               {profiles.length === 0 ? (
@@ -380,15 +394,15 @@ export function ApiKeyDetailPanel({
                 >
                   {providers.map((item) => <option key={item.id} value={item.id}>{providerOptionLabel(item)}</option>)}
                 </select>
-                <div className="hint-line binding-provider-hint">
+                {/* 原生 <option> 里放不进图标，就把署名列在下方：选完立刻能看到是哪个服务商、什么协议。
+                    账号名可能很长，单独一行，不跟标签抢宽度。 */}
+                <div className="binding-provider-hint">
                   {routeProvider ? (
                     <>
-                      {/* 原生 <option> 里放不进图标，就把署名放在下拉下方：
-                          选完立刻能看到是哪个服务商、什么协议。 */}
                       <ProviderLabel provider={routeProvider} size={15} />
-                      <span>输入协议：{protocolLabel(routeProvider.protocol)}</span>
+                      <span className="binding-provider-protocol">输入协议：{protocolLabel(routeProvider.protocol)}</span>
                     </>
-                  ) : '未绑定'}
+                  ) : <span>未绑定</span>}
                 </div>
               </div>
               {owners && onUpdateOwner ? (
@@ -470,7 +484,10 @@ export function ApiKeyDetailPanel({
             {/* 调度只在有多个候选时才有意义，所以跟着备选链放在同一节里。 */}
             {fallbackIds.length > 0 ? (
               <div className="field" style={{ marginTop: 10 }}>
-                <label>调度模式</label>
+                <div className="field-label-row">
+                  <label>调度模式</label>
+                  <InfoTip text={ScheduleModeOptions.find((option) => option.value === (keyItem.scheduleMode || ''))?.hint ?? ''} />
+                </div>
                 <select
                   value={keyItem.scheduleMode || ''}
                   disabled={saving}
@@ -480,14 +497,16 @@ export function ApiKeyDetailPanel({
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
-                <div className="hint-line">
-                  {ScheduleModeOptions.find((option) => option.value === (keyItem.scheduleMode || ''))?.hint}
-                </div>
-                <div className="hint-line">
-                  同一段对话仍然钉在它已建好缓存的账号上（会话粘性优先于调度模式）；被标记「异常」的候选永远排在最后，但不会被跳过。
-                </div>
+                <div className="hint-text">同一段对话仍然钉在它已建好缓存的账号上（会话粘性优先于调度模式）；被标记「异常」的候选永远排在最后，但不会被跳过。</div>
               </div>
             ) : null}
+            {/* 额度也是「这把 Key 能干什么」的治理项，和调度放同一节。 */}
+            <ApiKeyQuotaSection
+              keyItem={keyItem}
+              saving={saving}
+              canWrite={canWriteQuota}
+              onUpdateField={onUpdateField}
+            />
           </div>
         </>
       )}
@@ -516,29 +535,18 @@ export function ApiKeyDetailPanel({
               onSave={(n) => onUpdateField(keyItem, 'maxOutputTokens', n)}
             />
             <div className="field">
-              <label>流式响应（SSE）</label>
-              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={keyItem.streamEnabled !== false}
-                  disabled={saving}
-                  onChange={(event) => void onUpdateField(keyItem, 'streamEnabled', event.target.checked)}
-                />
-                允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）
-              </label>
+              <div className="field-label-row">
+                <label>流式响应（SSE）</label>
+                <InfoTip text="允许流式响应（关闭后该 Key 的 stream:true 请求将被拒绝）" />
+              </div>
+              <Switch checked={keyItem.streamEnabled !== false} label="允许 stream:true" disabled={saving} onChange={(value) => void onUpdateField(keyItem, 'streamEnabled', value)} />
             </div>
             <div className="field">
-              <label>Codex Fast 档（强制）</label>
-              <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={keyItem.codexForceFast === true}
-                  disabled={saving}
-                  onChange={(event) => void onUpdateField(keyItem, 'codexForceFast', event.target.checked)}
-                />
-                开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发
-                （service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。
-              </label>
+              <div className="field-label-row">
+                <label>Codex Fast 档（强制）</label>
+                <InfoTip text="开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发（service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x），与客户端传参无关；其他类型 Provider 不受影响。默认关闭。" />
+              </div>
+              <Switch checked={keyItem.codexForceFast === true} label="强制 fast 档" disabled={saving} onChange={(value) => void onUpdateField(keyItem, 'codexForceFast', value)} />
             </div>
             <ApiKeyModelMappingControl
               aliases={keyItem.modelAliases || {}}
@@ -709,7 +717,9 @@ export function ApiKeyFallbackProvidersModal({
       size="wide"
     >
       <div className="api-key-fallback-modal">
-        <div className="hint-line">首选 Provider 不在此列表中。已选按优先级从上到下排列；同协议备选可以留空模型，跨协议备选保存前必须选好。</div>
+        <div className="field-label-row">
+          <div className="hint-text">首选 Provider 不在此列表中。已选按优先级从上到下排列；同协议备选可以留空模型，跨协议备选保存前必须选好。</div>
+        </div>
         {candidates.length === 0 ? (
           <div className="empty-state compact">没有可配置的备选 Provider，请先添加更多输入 Provider。</div>
         ) : (
@@ -759,10 +769,10 @@ export function ApiKeyFallbackProvidersModal({
                       crossProtocol ? (
                         <div className="hint-line error">与首选协议不同，必须为该备选选择固定模型</div>
                       ) : (
-                        <div className="hint-line">与首选同协议：留空则沿用请求模型；模型名对不上时再选一个固定替换</div>
+                        <div className="hint-text">与首选同协议：留空则沿用请求模型；模型名对不上时再选一个固定替换</div>
                       )
                     ) : (
-                      <div className="hint-line">切换到此备选时，将强制使用该模型</div>
+                      <div className="hint-text">切换到此备选时，将强制使用该模型</div>
                     )}
                   </div>
                 </div>
@@ -835,7 +845,7 @@ export function ApiKeyClientConfigModal({
   publicAvailable: boolean;
   onClose: () => void;
   onToast?: (message: string) => void;
-  onUpdateField?: (key: APIKey, field: 'name' | 'routeId' | 'modelOverride' | 'thinkingDepthOverride' | 'maxOutputTokens' | 'streamEnabled' | 'codexKeepOfficialLogin' | 'codexForceFast' | 'scheduleMode' | 'enabled', value: string | boolean | number) => Promise<void>;
+  onUpdateField?: (key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) => Promise<void>;
 }) {
   const [networkMode, setNetworkMode] = React.useState<'lan' | 'public'>(publicAvailable ? 'public' : 'lan');
   // 绑定到具体 key（而非只在本次弹窗会话内），跨次打开保留上次选择。
@@ -899,9 +909,7 @@ export function ApiKeyClientConfigModal({
             <CopyButton value={filePath} label="复制路径" />
           </div>
           {configExtras.length > 0 ? (
-            <div className="hint-line">
-              同时写入：{configExtras.map((item) => item.display).join('、')}（Codex 模型元数据，消除 Model metadata not found）
-            </div>
+            <div className="hint-text">{`同时写入：${configExtras.map((item) => item.display).join('、')}（Codex 模型元数据，消除 Model metadata not found）`}</div>
           ) : null}
         </div>
 
@@ -936,16 +944,16 @@ export function ApiKeyClientConfigModal({
               公网域名
             </button>
           </div>
-          <div className="hint-line">
-            当前根地址：{gatewayRoot}
-            {!publicAvailable ? ' · 公网域名不可用（请先在「公网访问」开启隧道/域名）' : ''}
-          </div>
+          <div className="hint-text">{`当前根地址：${gatewayRoot}${!publicAvailable ? ' · 公网域名不可用（请先在「公网访问」开启隧道/域名）' : ''}`}</div>
         </div>
 
         {client === 'codex' ? (
           <div className="field">
-            <label>保持账号登录</label>
-            <label className="hint-line" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="field-label-row">
+              <label>保持账号登录</label>
+              <InfoTip text={'开启后 provider 表会对齐 Codex 官方 provider 形状（name = "OpenAI"），尽量保留 Codex 官方插件市场 / 移动端远程控制；不写入也不影响 ~/.codex/auth.json，实际模型流量仍走本网关。默认关闭；若不需要这些官方能力可保持关闭。（`supports_websockets` 固定为 false，不受此开关影响——见下方生成脚本注释。）'} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
                 type="checkbox"
                 checked={keepOfficialLogin}
@@ -959,9 +967,6 @@ export function ApiKeyClientConfigModal({
                   void onUpdateField?.(keyItem, 'codexKeepOfficialLogin', next);
                 }}
               />
-              开启后 provider 表会对齐 Codex 官方 provider 形状（name = "OpenAI"），
-              尽量保留 Codex 官方插件市场 / 移动端远程控制；不写入也不影响 ~/.codex/auth.json，实际模型流量仍走本网关。
-              默认关闭；若不需要这些官方能力可保持关闭。（`supports_websockets` 固定为 false，不受此开关影响——见下方生成脚本注释。）
             </label>
           </div>
         ) : null}
@@ -970,26 +975,9 @@ export function ApiKeyClientConfigModal({
 
         <div className="field">
           <label>配置修改脚本（Python）</label>
-          <div className="hint-line">
-            {client === 'codex' ? (
-              <>
-                终端粘贴执行后会增量合并进 {filePath}：只替换本工具用一对多个 # 号分界线包起来的那一段
-                （provider 相关配置，其中包含 approval_policy = "never" / sandbox_mode =
-                "danger-full-access"，即关闭沙箱、跳过审批确认）；文件里其他任何区块（比如
-                [features]、[memories]、personality 等你自己的配置）原样保留、不会被改动或
-                挪动位置——对 Codex App 做最小改动。
-                {configExtras.length > 0 ? ` 同时整份覆盖 ${configExtras.map((item) => item.display).join('、')}（本工具独占的模型元数据文件，不影响其他配置）。` : ''}
-                {' '}执行前会先备份为同目录 <code>.bak.时间戳</code>。脚本为 Python（macOS 自带 python3），不再依赖 bash/awk。
-              </>
-            ) : (
-              <>
-                终端粘贴执行后会增量合并进 {filePath}
-                {configExtras.length > 0 ? `，并写入 ${configExtras.map((item) => item.display).join('、')}` : ''}
-                ：只更新本工具管理的键，保留你其它配置；若文件已存在，会先备份为同目录 <code>.bak.时间戳</code>。
-                脚本为 Python（macOS 自带 python3）。
-              </>
-            )}
-          </div>
+          <div className="hint-text">{client === 'codex'
+            ? `终端粘贴执行后会增量合并进 ${filePath}：只替换本工具用一对多个 # 号分界线包起来的那一段（provider 相关配置，其中包含 approval_policy = "never" / sandbox_mode = "danger-full-access"，即关闭沙箱、跳过审批确认）；文件里其他任何区块（比如 [features]、[memories]、personality 等你自己的配置）原样保留、不会被改动或挪动位置——对 Codex App 做最小改动。${configExtras.length > 0 ? ` 同时整份覆盖 ${configExtras.map((item) => item.display).join('、')}（本工具独占的模型元数据文件，不影响其他配置）。` : ''} 执行前会先备份为同目录 .bak.时间戳。脚本为 Python（macOS 自带 python3），不再依赖 bash/awk。`
+            : `终端粘贴执行后会增量合并进 ${filePath}${configExtras.length > 0 ? `，并写入 ${configExtras.map((item) => item.display).join('、')}` : ''}：只更新本工具管理的键，保留你其它配置；若文件已存在，会先备份为同目录 .bak.时间戳。脚本为 Python（macOS 自带 python3）。`}</div>
           <pre className="curl-preview api-key-client-config-preview">{installScript}</pre>
         </div>
       </div>
@@ -1281,10 +1269,13 @@ export function ApiKeyModelMappingControl({
   return (
     <>
       <div className="field">
-        <label>模型映射</label>
-        <div className="model-mapping-trigger">
-          <button className="btn model-mapping-btn" type="button" disabled={disabled} onClick={() => setOpen(true)}>模型映射</button>
+        <div className="field-label-row">
+          <label>模型映射</label>
+          <InfoTip text="把客户端请求的 model 名改写成上游真实模型名（按 Key 生效）；打开后按上游模型逐个配置。" />
           <span className="model-mapping-summary">{count > 0 ? `已配置 ${count} 个别名` : '未配置别名'}</span>
+        </div>
+        <div className="model-mapping-trigger">
+          <button className="btn model-mapping-btn" type="button" disabled={disabled} onClick={() => setOpen(true)}>配置映射</button>
         </div>
       </div>
       <ApiKeyModelMappingModal
@@ -1319,7 +1310,10 @@ export function ApiKeyFixedModelField({
 }) {
   return (
     <div className="field">
-      <label>固定模型替换</label>
+      <div className="field-label-row">
+        <label>固定模型替换</label>
+        <InfoTip text={`设置后将忽略请求体中的 model，统一替换为所选模型。${models.length > 0 ? ` · 共 ${models.length} 个，点开后输入关键字筛选；选项含网关解析的 max output` : ''}`} />
+      </div>
       <div className="field-inline">
         <SearchableModelSelect
           value={value}
@@ -1331,10 +1325,6 @@ export function ApiKeyFixedModelField({
         <button className="mini-btn" type="button" disabled={disabled || refreshing} onClick={onRefresh} title="从绑定路由的 Provider 重新获取模型列表">
           {refreshing ? '刷新中…' : '刷新模型'}
         </button>
-      </div>
-      <div className="hint-line">
-        设置后将忽略请求体中的 model，统一替换为所选模型。
-        {models.length > 0 ? ` · 共 ${models.length} 个，点开后输入关键字筛选；选项含网关解析的 max output` : ''}
       </div>
     </div>
   );
@@ -1365,7 +1355,10 @@ export function ApiKeyMaxOutputTokensField({
 
   return (
     <div className="field">
-      <label>最大输出 Token</label>
+      <div className="field-label-row">
+        <label>最大输出 Token</label>
+        <InfoTip text="留空或 0 按模型自动解析；填写后覆盖上游 max_tokens（上限 200000）。" />
+      </div>
       <input
         type="number"
         min={0}
@@ -1382,7 +1375,6 @@ export function ApiKeyMaxOutputTokensField({
           }
         }}
       />
-      <div className="hint-line">留空或 0 按模型自动解析；填写后覆盖上游 max_tokens（上限 200000）。</div>
     </div>
   );
 }
@@ -1414,6 +1406,145 @@ export function ApiKeyNameField({ name, disabled, onSave }: { name: string; disa
           }
         }}
       />
+    </div>
+  );
+}
+
+/**
+ * 密钥额度区：重置窗口 + token / 成本上限 + 当前窗口已用量。
+ *
+ * 已用量直接从 /__request-stats 的按密钥聚合里取（今天 / 本月），与用量页同源同口径，
+ * 不在这里另算一份——两处算法不一致是这类面板最难查的 bug。数字只包含**已完成**的请求：
+ * 正在飞的请求按 prompt 预扣，界面如实说明，不做假精确。
+ */
+export function ApiKeyQuotaSection({ keyItem, saving, canWrite, onUpdateField }: {
+  keyItem: APIKey;
+  saving: boolean;
+  canWrite: boolean;
+  onUpdateField: (key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) => Promise<void>;
+}) {
+  const windowValue = keyItem.quotaWindow || '';
+  const [snapshot, setSnapshot] = useState<RequestStatsSnapshot | null>(null);
+  const [tokensDraft, setTokensDraft] = useState('');
+  const [usdDraft, setUsdDraft] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setTokensDraft(keyItem.quotaTokens ? String(keyItem.quotaTokens) : '');
+    setUsdDraft(keyItem.quotaCostMicros ? (keyItem.quotaCostMicros / 1_000_000).toFixed(2) : '');
+  }, [keyItem.id, keyItem.quotaTokens, keyItem.quotaCostMicros]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // 窗口变了就必须重取：今天和本月是两个不同的桶。
+    void fetch(`${API_BASE}/__request-stats`, { credentials: 'same-origin' })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+      .then((data: RequestStatsSnapshot) => { if (!cancelled) { setSnapshot(data); setError(''); } })
+      .catch((reason: unknown) => { if (!cancelled) setError(String(reason)); });
+    return () => { cancelled = true; };
+  }, [keyItem.id, windowValue]);
+
+  const buckets = usageStatsForKey(snapshot, keyItem.id);
+  const bucket = windowValue === 'month' ? buckets.month : windowValue === 'day' ? buckets.today : undefined;
+  const usedTokens = bucket ? bucket.inputTokens + bucket.outputTokens : 0;
+  const usedCost = bucket?.costMicros || 0;
+  const tokenLimit = keyItem.quotaTokens || 0;
+  const costLimit = keyItem.quotaCostMicros || 0;
+
+  const percent = (used: number, limit: number) => (limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0);
+  const toneFor = (pct: number) => (pct >= 100 ? 'full' : pct >= 80 ? 'warn' : 'ok');
+
+  const saveTokens = () => {
+    const next = Math.max(0, Math.round(Number(tokensDraft.replace(/[,\s]/g, '')) || 0));
+    if (next === tokenLimit) return;
+    void onUpdateField(keyItem, 'quotaTokens', next);
+  };
+  const saveCost = () => {
+    const usd = Math.max(0, Number(usdDraft.replace(/[$\s,]/g, '')) || 0);
+    const next = Math.round(usd * 1_000_000);
+    if (next === costLimit) return;
+    void onUpdateField(keyItem, 'quotaCostMicros', next);
+  };
+
+  return (
+    <div className="field" style={{ marginTop: 10 }}>
+      <div className="field-label-row">
+        <label>额度窗口</label>
+        <InfoTip text="按网关进程的本机时区累计并重置（生产固定 Asia/Shanghai，即北京时间 0 点 / 每月 1 号 0 点）。它是治理闸门，不是预付费：并发的在途请求只按 prompt 预扣，可能小幅超出上限，之后的下一个请求即被拒。" />
+      </div>
+      <select
+        value={windowValue}
+        disabled={saving || !canWrite}
+        onChange={(event) => void onUpdateField(keyItem, 'quotaWindow', event.target.value)}
+      >
+        {QuotaWindowOptions.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+
+      {!windowValue ? (
+        <div className="key-quota-none">该密钥不受额度门约束。</div>
+      ) : (
+        <div className="key-quota-grid">
+          <div className="key-quota-cell">
+            <div className="key-quota-head">
+              <span>Token</span>
+              <b className="font-mono">{formatTokenCount(usedTokens)}</b>
+              <small>{tokenLimit ? ` / ${formatTokenCount(tokenLimit)}` : ' / 不限'}</small>
+            </div>
+            {tokenLimit > 0 ? (
+              <div className={`key-quota-track key-quota-track--${toneFor(percent(usedTokens, tokenLimit))}`}>
+                <i style={{ width: `${percent(usedTokens, tokenLimit)}%` }} />
+              </div>
+            ) : null}
+            {canWrite ? (
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="0 = 不限"
+                value={tokensDraft}
+                disabled={saving}
+                onChange={(event) => setTokensDraft(event.target.value)}
+                onBlur={saveTokens}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+              />
+            ) : null}
+          </div>
+          <div className="key-quota-cell">
+            <div className="key-quota-head">
+              <span>成本</span>
+              <b className="font-mono">{formatCostMicros(usedCost)}</b>
+              <small>{costLimit ? ` / ${formatCostMicros(costLimit)}` : ' / 不限'}</small>
+            </div>
+            {costLimit > 0 ? (
+              <div className={`key-quota-track key-quota-track--${toneFor(percent(usedCost, costLimit))}`}>
+                <i style={{ width: `${percent(usedCost, costLimit)}%` }} />
+              </div>
+            ) : null}
+            {canWrite ? (
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="0 = 不限（USD）"
+                value={usdDraft}
+                disabled={saving}
+                onChange={(event) => setUsdDraft(event.target.value)}
+                onBlur={saveCost}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+              />
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {canWrite && (tokenLimit > 0 || costLimit > 0) ? (
+        <div className="key-quota-note">
+          已用只含已完成的请求；成本上限只统计「价格表」里设过价的请求，未计价流量不受它约束——
+          要卡成本请同时给一个 Token 上限。
+        </div>
+      ) : null}
+      {!canWrite ? <div className="key-quota-note">额度只能由管理员设置。</div> : null}
+      {error ? <div className="hint-line error">额度用量读取失败：{error}</div> : null}
     </div>
   );
 }

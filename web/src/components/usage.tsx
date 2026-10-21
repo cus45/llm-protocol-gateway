@@ -1,22 +1,33 @@
-import {useState, type ReactNode} from 'react';
+import {type ReactNode, useState} from 'react';
 import type {Model, Provider, RequestStatsSnapshot, RTKStatsResponse} from '../types';
-import {formatBytes, formatCompactCount, formatLocalISODate, formatTokenCount, normalizePromptTokenStats, providerUsageLabel} from '../lib';
 import {
-  downloadCSV,
-  Metric,
-  RTKSavingsChart,
-  UsageComboTrendChart,
-  UsageDailyTrafficLines,
-  UsageDonutChart,
-  UsageHourlyDistribution,
-  UsageModelLeaderboard,
-  UsageStatusChart,
+    formatBytes,
+    formatCompactCount,
+    formatCostCoverage,
+    formatCostMicros,
+    formatLocalISODate,
+    formatTokenCount,
+    normalizePromptTokenStats,
+    providerUsageLabel,
+} from '../lib';
+import {
+    downloadCSV,
+    Metric,
+    RTKSavingsChart,
+    UsageComboTrendChart,
+    UsageDailyTrafficLines,
+    UsageDonutChart,
+    UsageHourlyDistribution,
+    UsageModelLeaderboard,
+    UsageStatusChart,
 } from './charts';
 import './usage.css';
-import {ContextAnalysisPanel, RequestAnalysisPanel, useUsageAnalysis, type LogFilters} from './usage_analysis';
+import {ContextAnalysisPanel, type LogFilters, RequestAnalysisPanel, useUsageAnalysis} from './usage_analysis';
 import {PerformanceAnalysisPanel} from './usage_performance';
+import {PriceTablePanel} from './pricing';
 
-type Metric = 'tokens' | 'requests';
+/** 概览份额图按哪个口径切：Token、请求次数，或已计价成本。 */
+type Metric = 'tokens' | 'requests' | 'cost';
 type LogTarget = { type: 'model' | 'provider' | 'apiKey'; value: string; label: string };
 
 function csvCell(value: string | number) {
@@ -24,12 +35,44 @@ function csvCell(value: string | number) {
   return `"${(/^[=+@\-\t\r]/.test(text) ? "'" : '') + text.replace(/"/g, '""')}"`;
 }
 
+/** 导出用美元：CSV 里放换算后的金额，不再放微美元，Excel 直接可读。 */
+function usdOf(costMicros?: number) {
+  return costMicros ? (costMicros / 1_000_000).toFixed(6) : '';
+}
+
+/** 份额口径的中文名，图标题与副标题共用，避免切了口径标题还写 Token。 */
+function metricLabel(metric: Metric) {
+  return metric === 'requests' ? '请求' : metric === 'cost' ? '已计价成本' : 'Token';
+}
+
+type ShareRow = { requestCount: number; inputTokens?: number; outputTokens?: number; costMicros?: number };
+
+/**
+ * 一行用量在当前口径下的数值。未计价行的 costMicros 缺省，按 0 参与排序：
+ * 成本口径下没有价格的对象本来就贡献不了金额，覆盖率另有 KPI 说明。
+ */
+function metricValue(row: ShareRow, metric: Metric) {
+  if (metric === 'requests') return row.requestCount || 0;
+  if (metric === 'cost') return row.costMicros || 0;
+  return (row.inputTokens || 0) + (row.outputTokens || 0);
+}
+
+/** 成本用美元格式，Token 用万亿缩写，请求数保持原始数字（沿用 undefined 走默认格式化）。 */
+function metricFormat(metric: Metric): ((value: number) => string) | undefined {
+  if (metric === 'cost') {
+    // 没有金额的行显示 —，不写 $0.0000：未计价不等于免费。
+    return (value: number) => (value > 0 ? formatCostMicros(value) : '—');
+  }
+  if (metric === 'tokens') return formatCompactCount;
+  return undefined;
+}
+
 function exportUsage(stats: RequestStatsSnapshot, from: string, to: string) {
   const period = stats.range;
   const lines: (string | number)[][] = [
     ['统计区间', from, to],
-    ['日期', '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token', '接收字节', '发送字节', '平均耗时 ms', '平均首字 ms'],
-    ...(stats.daily || []).map(d => [d.date, d.requestCount, d.inputTokens, d.outputTokens, d.cacheTokens, d.rxBytes || 0, d.txBytes || 0, d.avgLatencyMs || 0, d.avgTtftMs || 0]),
+    ['日期', '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token', '已计价成本 USD', '已计价请求数', '接收字节', '发送字节', '平均耗时 ms', '平均首字 ms'],
+    ...(stats.daily || []).map(d => [d.date, d.requestCount, d.inputTokens, d.outputTokens, d.cacheTokens, usdOf(d.costMicros), d.pricedCount || 0, d.rxBytes || 0, d.txBytes || 0, d.avgLatencyMs || 0, d.avgTtftMs || 0]),
   ];
   for (const [name, rows] of [
     ['模型', (period?.byModel || []).map(r => ({ ...r, name: r.model }))],
@@ -38,8 +81,8 @@ function exportUsage(stats: RequestStatsSnapshot, from: string, to: string) {
     ['输出协议', (period?.byProtocol || []).map(r => ({ ...r, name: r.protocol }))],
     ['用户', (period?.byUser || []).map(r => ({ ...r, name: r.userName || r.userId }))],
   ] as const) {
-    lines.push([], [name, '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token']);
-    for (const r of rows) lines.push([r.name, r.requestCount, r.inputTokens, r.outputTokens, r.cacheTokens]);
+    lines.push([], [name, '请求数', '输入 Token（含缓存）', '输出 Token', '缓存读取 Token', '已计价成本 USD', '已计价请求数']);
+    for (const r of rows) lines.push([r.name, r.requestCount, r.inputTokens, r.outputTokens, r.cacheTokens, usdOf(r.costMicros), r.pricedCount || 0]);
   }
   downloadCSV(`gateway-usage-${from}-to-${to}.csv`, lines.map(row => row.map(csvCell).join(',')).join('\r\n'));
 }
@@ -117,16 +160,24 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
   const sparkCache = daily.map(d => d.cacheTokens || 0);
   const sparkLatency = daily.map(d => Math.round(d.avgLatencyMs || 0));
   const sparkTtft = daily.map(d => Math.round(d.avgTtftMs || 0));
-  const providerItems = (range?.byProvider || []).map(p => ({ label: providerUsageLabel(p.providerId, providers), value: metric === 'tokens' ? p.inputTokens + p.outputTokens : p.requestCount }));
-  const protocolItems = (range?.byProtocol || []).map(p => ({ label: p.protocol, value: metric === 'tokens' ? p.inputTokens + p.outputTokens : p.requestCount }));
+  const sparkCost = daily.map(d => d.costMicros || 0);
+  const costMicros = total?.costMicros || 0;
+  const pricedCount = total?.pricedCount || 0;
+  const providerItems = (range?.byProvider || []).map(p => ({ label: providerUsageLabel(p.providerId, providers), value: metricValue(p, metric) }));
+  const protocolItems = (range?.byProtocol || []).map(p => ({ label: p.protocol, value: metricValue(p, metric) }));
   const activeModels = (range?.byModel || []).filter(m => m.requestCount > 0).length;
   const activeProviders = (range?.byProvider || []).filter(p => p.requestCount > 0).length;
   const topModel = [...(range?.byModel || [])].sort((a, b) => b.requestCount - a.requestCount)[0];
   const topModelShare = topModel && requests ? topModel.requestCount / requests * 100 : null;
-  const keyItems = (range?.byApiKey || []).slice(0, 8).map(k => ({ label: k.apiKeyName || k.apiKeyId || '未命名密钥', value: metric === 'tokens' ? k.inputTokens + k.outputTokens : k.requestCount }));
-  const userItems = (range?.byUser || []).slice(0, 8).map(u => ({ label: u.userName || u.userId || '未绑定用户', value: metric === 'tokens' ? u.inputTokens + u.outputTokens : u.requestCount }));
+  const keyItems = (range?.byApiKey || []).slice(0, 8).map(k => ({ label: k.apiKeyName || k.apiKeyId || '未命名密钥', value: metricValue(k, metric) }));
+  const userItems = (range?.byUser || []).slice(0, 8).map(u => ({ label: u.userName || u.userId || '未绑定用户', value: metricValue(u, metric) }));
   const successBadge = successRate == null ? undefined : successRate >= 99 ? '健康' : successRate >= 95 ? '注意' : '异常';
   const successTone = successRate == null ? 'blue' : successRate >= 99 ? 'green' : successRate >= 95 ? 'amber' : 'red';
+  // 成本只累加了有价格行的请求，所以金额必须配着覆盖率读：把「大半没设价」显示成
+  // 「很便宜」是这个账本唯一不可原谅的错。
+  const costBadge = !requests ? undefined : pricedCount === 0 ? '未计价' : pricedCount < requests ? '部分未计价' : '全部已计价';
+  const costTone = costBadge === '全部已计价' ? 'green' : costBadge === '部分未计价' ? 'amber' : 'red';
+  const coverageSummary = formatCostCoverage(pricedCount, requests);
   return <>
     <div className="usage-metric-grid">
       <Metric label="区间请求" value={requests.toLocaleString()} note={`覆盖 ${rangeDays} 天 · 活跃 ${activeDays} 天 · 日均 ${Math.round(requests / rangeDays).toLocaleString()} 次`} sparkline={sparkRequests} sparklineColor="#38bdf8" />
@@ -135,6 +186,7 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
       <Metric label="平均往返耗时" value={avgLatency == null ? '—' : `${avgLatency.toLocaleString()} ms`} note={avgLatency == null ? '当前区间暂无耗时样本' : '按请求加权 · 含上游与网关耗时'} sparkline={sparkLatency} sparklineColor="#f59e0b" />
       <Metric label="平均首字耗时" value={avgTtft == null ? '—' : `${avgTtft.toLocaleString()} ms`} note={avgTtft == null ? '当前区间暂无首字样本' : '按日加权 · 非流式请求按总耗时计入'} sparkline={sparkTtft} sparklineColor="#a855f7" />
       <Metric label="请求成功率" value={successRate == null ? '—' : `${successRate.toFixed(1)}%`} note={statusTotal ? `2xx ${successful.toLocaleString()} / ${statusTotal.toLocaleString()} 次` : '当前区间暂无状态记录'} badge={successBadge} badgeTone={successTone} />
+      <Metric label="区间已计价成本" value={formatCostMicros(costMicros || undefined)} note={requests ? `${coverageSummary} · 已计价的每次 ${pricedCount ? formatCostMicros(Math.round(costMicros / pricedCount)) : '—'}` : '当前区间暂无请求'} sparkline={sparkCost} sparklineColor="#f43f5e" badge={costBadge} badgeTone={costTone} />
     </div>
     <PulseStrip stats={stats} todayMismatch={todayMismatch} />
     <div className="usage-charts-full">
@@ -145,14 +197,15 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
       <UsageStatusChart title="状态码与健康度分布" items={stats.status || []} />
     </div>
     <div className="overview-distribution-row">
-      <UsageDonutChart title={`Provider 份额（${metric === 'tokens' ? 'Token' : '请求'}）`} subtitle="各上游服务商承载占比" items={providerItems} formatValue={metric === 'tokens' ? formatCompactCount : undefined} />
-      <UsageDonutChart title={`输出协议分布（${metric === 'tokens' ? 'Token' : '请求'}）`} subtitle="网关输出协议转换份额" items={protocolItems} formatValue={metric === 'tokens' ? formatCompactCount : undefined} />
+      <UsageDonutChart title={`Provider 份额（${metricLabel(metric)}）`} subtitle="各上游服务商承载占比" items={providerItems} formatValue={metricFormat(metric)} />
+      <UsageDonutChart title={`输出协议分布（${metricLabel(metric)}）`} subtitle="网关输出协议转换份额" items={protocolItems} formatValue={metricFormat(metric)} />
       <div className="usage-chart-card usage-profile-card">
         <div className="usage-section-title-row"><div><div className="usage-section-title">请求画像</div><div className="usage-section-subtitle">区间内每次调用的平均消耗与集中度</div></div></div>
         <dl className="usage-facts usage-profile-facts">
           <div><dt>每次请求 Token</dt><dd>{requests ? formatTokenCount(Math.round((input + output) / requests)) : '—'}</dd></div>
           <div><dt>每次输入 / 输出</dt><dd>{requests ? `${formatTokenCount(Math.round(input / requests))} / ${formatTokenCount(Math.round(output / requests))}` : '—'}</dd></div>
           <div><dt>输出 / 输入</dt><dd>{input ? `${(output / input * 100).toFixed(1)}%` : '—'}</dd></div>
+          <div><dt>已计价请求的均价</dt><dd title={coverageSummary}>{pricedCount ? formatCostMicros(Math.round(costMicros / pricedCount)) : '—'}</dd></div>
           <div><dt>Top 模型请求占比</dt><dd title={topModel?.model}>{topModelShare == null ? '—' : `${topModelShare.toFixed(1)}%`}</dd></div>
           <div><dt>活跃模型</dt><dd>{activeModels}</dd></div>
           <div><dt>活跃 Provider</dt><dd>{activeProviders}</dd></div>
@@ -163,9 +216,9 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
       <UsageModelLeaderboard title="核心模型用量排行" items={range?.byModel || []} metric={metric} models={models} providers={providers} />
       <RankBars
         title={rankTab === 'keys' ? 'API 密钥消耗排行' : '用户消耗排行'}
-        subtitle={metric === 'tokens' ? '按 Token 消耗 Top 8' : '按请求次数 Top 8'}
+        subtitle={`按${metricLabel(metric)} Top 8`}
         items={rankTab === 'keys' ? keyItems : userItems}
-        formatValue={metric === 'tokens' ? formatCompactCount : undefined}
+        formatValue={metricFormat(metric)}
         toggle={<div className="usage-segments usage-rank-toggle">
           <button type="button" className={rankTab === 'keys' ? 'active' : ''} onClick={() => setRankTab('keys')}>密钥</button>
           {!isNormalUser && <button type="button" className={rankTab === 'users' ? 'active' : ''} onClick={() => setRankTab('users')}>用户</button>}
@@ -207,6 +260,7 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
 }) {
   const [tab, setTab] = useState<Tab>('overview');
   const [metric, setMetric] = useState<Metric>('tokens');
+  const [priceOpen, setPriceOpen] = useState(false);
   const today = formatLocalISODate(new Date());
   const analysisTab = tab === 'requests' || tab === 'context' || tab === 'performance';
   const analysis = useUsageAnalysis(from, to, analysisTab);
@@ -229,6 +283,13 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
     if (analysisTab) analysis.reload();
   }
   const exportButton = ready && tab === 'overview' ? <button className="mini-btn" type="button" onClick={() => exportUsage(stats!, from, to)}>导出 CSV 报表</button> : null;
+  // 价格表只有管理员读得动（/__prices 走 requireAdmin），普通用户不显示入口。
+  const priceButton = !isNormalUser ? <button className="mini-btn" type="button" onClick={() => setPriceOpen(true)}>价格表</button> : null;
+  const priceCoverage = (stats?.range?.byProvider || []).map(row => ({
+    providerId: row.providerId,
+    requestCount: row.requestCount || 0,
+    pricedCount: row.pricedCount || 0,
+  }));
   const syncing = loading || analysis.refreshing;
   return <section className="section-full usage-page"><div className="card panel">
     <div className="panel-header usage-hero-header">
@@ -239,6 +300,7 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
       <div className="usage-header-actions">
         <span className={`usage-sync-state${syncing ? ' is-syncing' : ''}`}>{syncing ? <><i className="live-dot" aria-hidden="true" />更新中…</> : fetchedAt ? `更新于 ${fetchedAt.toLocaleTimeString()}` : ''}</span>
         {exportButton}
+        {priceButton}
         <button className="mini-btn" type="button" disabled={loading} onClick={refreshAll}>刷新</button>
       </div>
     </div>
@@ -254,6 +316,7 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
       <div className="usage-segments usage-metric-switch" hidden={tab !== 'overview'}>
         <button type="button" aria-pressed={metric === 'tokens'} className={metric === 'tokens' ? 'active' : ''} onClick={() => setMetric('tokens')}>Token 份额</button>
         <button type="button" aria-pressed={metric === 'requests'} className={metric === 'requests' ? 'active' : ''} onClick={() => setMetric('requests')}>请求份额</button>
+        <button type="button" aria-pressed={metric === 'cost'} className={metric === 'cost' ? 'active' : ''} onClick={() => setMetric('cost')} title="按网关价格表算出的成本排序；未计价的对象记为 0">成本份额</button>
       </div>
     </div>}
     {error && <p className="usage-error" role="alert">{error}</p>}
@@ -269,7 +332,8 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
         {analysis.error && <p className="usage-error" role="alert">分析明细加载失败：{analysis.error}</p>}
         {(analysis.loading || analysis.stale) ? <div className="usage-empty">正在读取分析明细…</div> : tab === 'requests' ? <RequestAnalysisPanel rows={analysis.data?.items || []} providers={providers} onOpenLogs={onOpenLogs} /> : tab === 'context' ? <ContextAnalysisPanel rows={analysis.data?.items || []} providers={providers} /> : <PerformanceAnalysisPanel rows={analysis.data?.items || []} providers={providers} onNavigateLogs={onNavigateLogs} />}
       </>}
-      <p className="usage-note">统计网关记录的请求。账户订阅额度在 Provider 页面查看；请求、上下文与性能明细受日志保留天数限制，升级前已过期日志的分类与状态可能不完整。RTK 压缩统计按自己的时间窗独立计算。</p>
+      <p className="usage-note">统计网关记录的请求。账户订阅额度在 Provider 页面查看；请求、上下文与性能明细受日志保留天数限制，升级前已过期日志的分类与状态可能不完整。RTK 压缩统计按自己的时间窗独立计算。成本按「价格表」里的美元单价逐请求算出，只增不改：改价之后的请求用新价，历史仍按当时价格记账。</p>
     </div>}
+    {priceOpen ? <PriceTablePanel providers={providers} models={models} coverage={priceCoverage} onClose={() => setPriceOpen(false)} /> : null}
   </div></section>;
 }

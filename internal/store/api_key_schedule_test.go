@@ -67,3 +67,46 @@ func TestAPIKeyScheduleModeRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// api_keys is written and read through four positional lists (SELECT / Scan /
+// INSERT / UPDATE). CodexForceFast is the standing proof that missing one silently
+// loses a field across a restart, and a lost quota is worse than a lost flag: the
+// key starts spending again the morning after.
+func TestAPIKeyQuotaRoundTrip(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	key := domain.APIKey{ID: "kq", Name: "kq", Key: "sk-kq", RouteID: "r1", Enabled: true,
+		StreamEnabled: true, QuotaWindow: "month", QuotaTokens: 2_000_000, QuotaCostMicros: 12_500_000}
+	if err := store.CreateAPIKey(key); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.APIKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one key, got %d", len(loaded))
+	}
+	if got := loaded[0]; got.QuotaWindow != "month" || got.QuotaTokens != 2_000_000 || got.QuotaCostMicros != 12_500_000 {
+		t.Fatalf("CreateAPIKey lost the quota: %+v", got)
+	}
+
+	// The update path must be able to change it, and to clear it.
+	updated := loaded[0]
+	updated.QuotaWindow, updated.QuotaTokens, updated.QuotaCostMicros = "day", 500, 0
+	if err := store.UpdateAPIKey(updated); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.APIKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded[0]; got.QuotaWindow != "day" || got.QuotaTokens != 500 || got.QuotaCostMicros != 0 {
+		t.Fatalf("UpdateAPIKey lost the quota: %+v", got)
+	}
+}

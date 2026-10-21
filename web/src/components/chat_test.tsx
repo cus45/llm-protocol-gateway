@@ -1,24 +1,24 @@
-import { useState } from 'react';
+import {useState} from 'react';
 import {
-  chatTestAnswer,
-  defaultThinkingValueForField,
-  formatChatTestResponse,
-  formatProviderCacheTestDetail,
-  formatProviderThinkingTestDetail,
-  httpStatusLabel,
-  statusTone,
-  testResultBadge,
+    chatTestAnswer,
+    defaultThinkingValueForField,
+    formatChatTestResponse,
+    formatProviderCacheTestDetail,
+    formatProviderThinkingTestDetail,
+    httpStatusLabel,
+    statusTone,
+    testResultBadge,
+    thinkingPresetsForProtocol,
 } from '../lib';
 import type {
-  Model,
-  Protocol,
-  ProviderChatTestOptions,
-  ProviderCacheTestResult,
-  ProviderThinkingTestResult,
-  RouteTestResult,
+    Model,
+    Protocol,
+    ProviderCacheTestResult,
+    ProviderChatTestOptions,
+    ProviderThinkingTestResult,
+    RouteTestResult,
 } from '../types';
-import { Badge, CopyButton, Field, Modal } from './ui';
-import { thinkingPresetsForProtocol } from '../lib';
+import {Badge, CopyButton, Field, Modal} from './ui';
 
 /** 一种协议下可选的 thinking 字段与其枚举值。 */
 export type ThinkingFieldPreset = ReturnType<typeof thinkingPresetsForProtocol>['fields'][number];
@@ -160,8 +160,11 @@ export function ChatTestDialog(props: ChatTestDialogProps) {
           </span>
         </div>
 
-        {props.hintLine || props.authWarning ? (
-          <div className={`hint-line${props.authWarning ? ' error' : ''}`}>{props.authWarning || props.hintLine}</div>
+        {props.authWarning ? (
+          <div className="hint-line error">{props.authWarning}</div>
+        ) : null}
+        {props.hintLine ? (
+          <div className="hint-text">{props.hintLine}</div>
         ) : null}
 
         {props.kind === 'provider' && props.supportsExtraTests ? (
