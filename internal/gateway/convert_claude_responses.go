@@ -423,15 +423,16 @@ func responsesToClaudeResponseDirect(responsesBody []byte, model string) ([]byte
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
+		// usage.InputTokens already includes the cache reads (see
+		// normalizeInclusiveInputTokens), and Anthropic wants them separate, so
+		// subtract them exactly once. Clamped through the shared helper: the old
+		// inline subtraction fell back to the inclusive figure on underflow.
 		"usage": map[string]any{
-			"input_tokens":                usage.InputTokens - usage.CacheTokens,
+			"input_tokens":                claudeExclusiveInputTokens(usage, 0),
 			"output_tokens":               usage.OutputTokens,
 			"cache_read_input_tokens":     usage.CacheTokens,
 			"cache_creation_input_tokens": 0,
 		},
-	}
-	if usage.InputTokens-usage.CacheTokens < 0 {
-		response["usage"].(map[string]any)["input_tokens"] = usage.InputTokens
 	}
 	body, err := json.Marshal(response)
 	return body, usage, err
