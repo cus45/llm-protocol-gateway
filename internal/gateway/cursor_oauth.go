@@ -241,17 +241,39 @@ func pollCursorAuth(ctx context.Context, uuid, verifier string) (domain.CursorOA
 }
 
 func refreshCursorOAuthToken(refreshToken string) (domain.CursorOAuthCredential, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cursorOAuthRefreshTimeout)
+	defer cancel()
+	return refreshCursorOAuthTokenContext(ctx, refreshToken)
+}
+
+// cursorOAuthRefreshTimeout 是续期请求的上限：原来直接用 http.DefaultClient，
+// 上游卡住时持锁的 goroutine 会一直等下去，同令牌的其它请求全被堵在锁上。
+const cursorOAuthRefreshTimeout = 30 * time.Second
+
+var cursorOAuthRefreshHTTPClient = &http.Client{}
+
+// cursorOAuthRefreshURLFor 返回续期地址；测试用它把请求指到本地 listener。
+func cursorOAuthRefreshURLFor() string {
+	if override := strings.TrimSpace(cursorOAuthRefreshURLOverride); override != "" {
+		return override
+	}
+	return cursorOAuthRefreshURL
+}
+
+var cursorOAuthRefreshURLOverride string
+
+func refreshCursorOAuthTokenContext(ctx context.Context, refreshToken string) (domain.CursorOAuthCredential, error) {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
 		return domain.CursorOAuthCredential{}, fmt.Errorf("cursor refresh token is empty")
 	}
-	req, err := http.NewRequest(http.MethodPost, cursorOAuthRefreshURL, strings.NewReader("{}"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorOAuthRefreshURLFor(), strings.NewReader("{}"))
 	if err != nil {
 		return domain.CursorOAuthCredential{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+refreshToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cursorOAuthRefreshHTTPClient.Do(req)
 	if err != nil {
 		return domain.CursorOAuthCredential{}, err
 	}
@@ -306,14 +328,19 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	}
 	// Cursor 的 refresh token 只能用一次：并发续期会让其中一个失败并作废整条
 	// 令牌链。按令牌串行，等锁期间别人续好的直接用。
-	mutex := oauthRenewLock(provider.ID, provider.CursorOAuth.RefreshToken)
-	mutex.Lock()
-	defer mutex.Unlock()
-	if fresh, ok := s.freshCursorCredential(provider.ID); ok && !cursorTokenNeedsRefresh(&fresh) {
-		provider.CursorOAuth = &fresh
-		return provider, nil
+	renewLock := oauthRenewLock(provider.ID, provider.CursorOAuth.RefreshToken)
+	renewLock.Lock()
+	defer renewLock.Unlock()
+	// 等锁期间别人可能已经续好了：以路由里的最新凭证为准。
+	current := *provider.CursorOAuth
+	if fresh, ok := s.freshCursorCredential(provider.ID); ok {
+		current = fresh
+		if !cursorTokenNeedsRefresh(&fresh) {
+			provider.CursorOAuth = &fresh
+			return provider, nil
+		}
 	}
-	refreshed, err := refreshCursorOAuthToken(provider.CursorOAuth.RefreshToken)
+	refreshed, err := refreshCursorOAuthToken(current.RefreshToken)
 	if err != nil {
 		return provider, err
 	}
@@ -321,6 +348,7 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	if err != nil {
 		return provider, err
 	}
+	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 	_ = s.persistProviderOAuth(updated)
 	return updated, nil
 }

@@ -662,16 +662,23 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 	}
 	// WorkBuddy 的 refresh token 轮换：并发续期里后到的那个会被判无效。按令牌
 	// 串行；等锁期间别人续好的直接用。
-	mutex := oauthRenewLock(provider.ID, credential.RefreshToken)
-	mutex.Lock()
-	defer mutex.Unlock()
-	if fresh, ok := s.freshWorkBuddyCredential(provider.ID); ok && !workBuddyTokenNeedsRefresh(&fresh) {
-		provider.WorkBuddy = &fresh
-		return provider, nil
+	renewLock := oauthRenewLock(provider.ID, credential.RefreshToken)
+	renewLock.Lock()
+	defer renewLock.Unlock()
+	// 等锁期间别人可能已经续过了：以路由里的最新凭证为准，续期也只花它。手上
+	// 这枚 refresh token 可能已被别人花掉、整条令牌链都换了，再拿它去换只会被
+	// 判无效（严重的还会把链作废）。新令牌若仍判过期，用新令牌再续一次。
+	current := *credential
+	if fresh, ok := s.freshWorkBuddyCredential(provider.ID); ok {
+		current = fresh
+		if !workBuddyTokenNeedsRefresh(&fresh) {
+			provider.WorkBuddy = &fresh
+			return provider, nil
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	refreshed, err := refreshWorkBuddyCredential(ctx, site, *credential)
+	refreshed, err := refreshWorkBuddyCredential(ctx, site, current)
 	if err != nil {
 		// A refresh hiccup is not fatal: the current token may still work.
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
@@ -684,6 +691,7 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 	if err := s.persistProviderOAuth(updated); err != nil {
 		s.logs.AddApp("warn", "failed to persist workbuddy token refresh", err.Error())
 	}
+	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 	markTimingFlag(context.Background(), timingFlagOAuthRefresh)
 	markTimingFlag(context.Background(), timingFlagSaveState)
 	return updated, nil
