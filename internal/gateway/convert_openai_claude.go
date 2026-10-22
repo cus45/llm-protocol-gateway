@@ -259,6 +259,9 @@ func claudeRequestToOpenAIChat(claudeReq map[string]any, model string) (map[stri
 			openAIReq["user"] = userID
 		}
 	}
+	if format := outputConfigFormatToChatResponseFormat(claudeReq["output_config"]); format != nil {
+		openAIReq["response_format"] = format
+	}
 	normalizeOpenAIChatMaxTokensField(openAIReq, model)
 	copyToolsField(claudeReq, openAIReq, false)
 	copyToolChoiceField(claudeReq, openAIReq, false)

@@ -204,6 +204,10 @@ func openAIChatToClaudeRequest(openAIReq map[string]any, model string, maxTokens
 			claudeReq[key] = value
 		}
 	}
+	// 结构化输出：Chat response_format ⇄ Claude output_config.format。
+	if format := chatResponseFormatToOutputConfigFormat(openAIReq["response_format"]); format != nil {
+		setClaudeOutputConfigFormat(claudeReq, format)
+	}
 	copyToolsField(openAIReq, claudeReq, true)
 	copyToolChoiceField(openAIReq, claudeReq, true)
 	applyOpenAIThinkingToClaudeRequest(openAIReq, claudeReq, model)
