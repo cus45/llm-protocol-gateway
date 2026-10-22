@@ -466,6 +466,7 @@ function App() {
   const providerFirstPacketRef = useRef<HTMLInputElement>(null);
   const providerConcurrencyRef = useRef<HTMLInputElement>(null);
   const providerQueueWaitRef = useRef<HTMLInputElement>(null);
+  const providerRPMRef = useRef<HTMLInputElement>(null);
   const [claudeOAuthState, setClaudeOAuthState] = useState('');
   const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
   const [claudeOAuthBusy, setClaudeOAuthBusy] = useState(false);
@@ -3407,15 +3408,22 @@ function App() {
     }
   }
 
-  // 保存该 Provider 的并发上限与排队等待。上限 0 = 不限并发（今天的行为）；
-  // 排队秒数只在设了上限时才有意义，超出的请求先排队、等不到就回 429。
+  // 保存该 Provider 的并发上限、排队等待与每分钟请求预算。上限 0 = 不限并发；
+  // 每分钟请求数 0 = 不限速，单独设置时只限速不限并发。排队秒数在任一限制存在时
+  // 才有意义：超出的请求先排队、等不到就回 429。
   async function saveProviderConcurrency(providerID: string) {
     const rawMax = providerConcurrencyRef.current?.value.trim() ?? '';
     const rawWait = providerQueueWaitRef.current?.value.trim() ?? '';
+    const rawRPM = providerRPMRef.current?.value.trim() ?? '';
     const max = rawMax === '' ? 0 : Number(rawMax);
     const queueWaitSeconds = rawWait === '' ? 0 : Number(rawWait);
+    const requestsPerMinute = rawRPM === '' ? 0 : Number(rawRPM);
     if (!Number.isFinite(max) || max < 0 || max > 1000) {
       showToast('并发上限请填 0–1000（0 表示不限制）');
+      return;
+    }
+    if (!Number.isFinite(requestsPerMinute) || requestsPerMinute < 0 || requestsPerMinute > 100000) {
+      showToast('每分钟请求数请填 0–100000（0 表示不限制）');
       return;
     }
     if (!Number.isFinite(queueWaitSeconds) || queueWaitSeconds < 0 || queueWaitSeconds > 60) {
@@ -3428,10 +3436,17 @@ function App() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxConcurrentRequests: max, queueWaitSeconds }),
+        body: JSON.stringify({ maxConcurrentRequests: max, queueWaitSeconds, requestsPerMinute }),
       });
       if (!response.ok) throw new Error(await response.text());
-      showToast(max > 0 ? `已设置并发上限 ${max}${queueWaitSeconds > 0 ? `，排队 ${queueWaitSeconds}s` : '，超出直接拒绝'}` : '已取消并发上限');
+      const parts: string[] = [];
+      if (max > 0) parts.push(`并发 ${max}`);
+      if (requestsPerMinute > 0) parts.push(`${requestsPerMinute} 次/分钟`);
+      if (parts.length === 0) {
+        showToast('已取消并发与限速');
+      } else {
+        showToast(`已设置${parts.join('、')}${queueWaitSeconds > 0 ? `，排队 ${queueWaitSeconds}s` : '，超出直接拒绝'}`);
+      }
       await refreshState(false);
     } catch (error) {
       showToast(`保存并发上限失败：${String(error)}`);
@@ -7979,7 +7994,7 @@ function App() {
               <div className="rtk-provider-panel">
                 <div className="toggle-row">
                   <span>并发上限</span>
-                  <InfoTip text="这台上游同时只允许这么多个请求在飞，超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制。排队秒数只在设了上限时有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。" />
+                  <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。" />
                   <div className="provider-knob-control">
                     <label className="provider-knob-field">
                       <span>上限</span>
@@ -8013,6 +8028,23 @@ function App() {
                           disabled={saving}
                         />
                         <span className="knob-input-unit">秒</span>
+                      </span>
+                    </label>
+                    <label className="provider-knob-field">
+                      <span>每分钟</span>
+                      <span className="knob-input">
+                        <input
+                          ref={providerRPMRef}
+                          key={`rpm-${editingProviderID}`}
+                          type="number"
+                          min={0}
+                          max={100000}
+                          step={1}
+                          defaultValue={editingProvider.requestsPerMinute || ''}
+                          placeholder="不限速"
+                          disabled={saving}
+                        />
+                        <span className="knob-input-unit">次</span>
                       </span>
                     </label>
                     <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>

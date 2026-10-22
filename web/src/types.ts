@@ -439,6 +439,9 @@ export type Provider = {
   // 这台上游同时在飞的最大请求数，0/缺省 = 不限制；排队秒数只在设了上限时有意义。
   maxConcurrentRequests?: number;
   queueWaitSeconds?: number;
+  // 每分钟请求预算（管理员，同上接口保存）：滚动一分钟内最多准入的请求数，
+  // 0/缺省 = 不限速；可以只限速不限并发，超出返回 429。
+  requestsPerMinute?: number;
   // 自助注册（内网穿透场景）：owner/admin 生成一个 Provider 专属令牌后，
   // 用户自己的脚本可用该令牌调用 PATCH /__providers/{id}/self-register
   // 更新 baseUrl/apiKeySource，无需登录控制台。原始令牌只在生成那一刻返回，
