@@ -3442,11 +3442,22 @@ func (s *Server) handlePurgeProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	providerID := r.PathValue("id")
+	// Read the provider before it is removed: if the Save fails it has to go back
+	// exactly as it was (soft-deleted, still in the trash), and only a copy taken
+	// beforehand can do that.
+	provider, err := s.router.ProviderByIDIncludingDeleted(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err := s.router.PurgeProvider(providerID); err != nil {
 		writeOpenAIError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err := s.saveState(); err != nil {
+		// A purge that reports success without reaching the store is worse than
+		// one that fails loudly: put the provider back and let the admin retry.
+		s.router.RestoreProviderSnapshot(provider)
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to save configuration: "+err.Error())
 		return
 	}

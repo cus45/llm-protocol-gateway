@@ -1346,6 +1346,24 @@ func (r *Router) PurgeProvider(providerID string) error {
 	return fmt.Errorf("provider %q not found", providerID)
 }
 
+// RestoreProviderSnapshot puts a provider removed by PurgeProvider back exactly
+// as it was, including its soft-deleted marker, its position, and the models it
+// contributed. It exists for the one caller that can fail after the removal: the
+// purge handler, when persisting the new state fails. A provider that is still
+// present is left alone.
+func (r *Router) RestoreProviderSnapshot(provider domain.Provider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, existing := range r.state.Providers {
+		if existing.ID == provider.ID {
+			return
+		}
+	}
+	r.state.Providers = append(r.state.Providers, provider)
+	r.rebuildModelsLocked()
+}
+
 // SetProviderClaudeOAuth stores (or replaces) the Claude OAuth credential for
 // a provider and forces it into claude_oauth auth mode.
 func (r *Router) SetProviderClaudeOAuth(providerID string, credential domain.ClaudeOAuthCredential) (domain.Provider, error) {
