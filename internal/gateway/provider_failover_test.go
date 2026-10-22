@@ -70,14 +70,14 @@ func TestApplyProviderFailoverOutcomeSoftThreshold(t *testing.T) {
 	providerID := "hj-claude"
 
 	for i := 1; i <= providerSoftFailureThreshold-1; i++ {
-		if !s.applyProviderFailoverOutcome(providerID, 429, nil, nil) {
+		if !s.applyProviderFailoverOutcome(providerID, 429, nil, "", nil) {
 			t.Fatalf("soft failure %d should still failover", i)
 		}
 		if _, ok := s.providerNextRetry(providerID); ok {
 			t.Fatalf("soft failure %d must not mark unavailable yet", i)
 		}
 	}
-	if !s.applyProviderFailoverOutcome(providerID, 429, nil, nil) {
+	if !s.applyProviderFailoverOutcome(providerID, 429, nil, "", nil) {
 		t.Fatal("threshold hit should still failover")
 	}
 	if _, ok := s.providerNextRetry(providerID); !ok {
@@ -93,7 +93,7 @@ func TestApplyProviderFailoverOutcomeHardImmediate(t *testing.T) {
 	t.Parallel()
 	s := &Server{}
 	body := []byte(`{"error":{"message":"insufficient_quota"}}`)
-	if !s.applyProviderFailoverOutcome("p1", 400, body, nil) {
+	if !s.applyProviderFailoverOutcome("p1", 400, body, "", nil) {
 		t.Fatal("expected failover")
 	}
 	st, ok := s.providerUnavailableSnapshot("p1")
@@ -110,7 +110,7 @@ func TestApplyProviderFailoverOutcomeUsageSoftedByCache(t *testing.T) {
 		FiveHour:  &ClaudeOAuthUsageBucket{Utilization: 42},
 	})
 	body := []byte(`{"error":{"message":"You've hit your usage limit"}}`)
-	if !s.applyProviderFailoverOutcome("hj-claude", 429, body, nil) {
+	if !s.applyProviderFailoverOutcome("hj-claude", 429, body, "", nil) {
 		t.Fatal("expected failover")
 	}
 	if _, ok := s.providerNextRetry("hj-claude"); ok {
@@ -121,8 +121,8 @@ func TestApplyProviderFailoverOutcomeUsageSoftedByCache(t *testing.T) {
 func TestApplyProviderFailoverOutcomeSuccessClears(t *testing.T) {
 	t.Parallel()
 	s := &Server{}
-	_ = s.applyProviderFailoverOutcome("p1", 400, []byte(`{"error":{"message":"insufficient_quota"}}`), nil)
-	if s.applyProviderFailoverOutcome("p1", 200, nil, nil) {
+	_ = s.applyProviderFailoverOutcome("p1", 400, []byte(`{"error":{"message":"insufficient_quota"}}`), "", nil)
+	if s.applyProviderFailoverOutcome("p1", 200, nil, "", nil) {
 		t.Fatal("200 must not failover")
 	}
 	if _, ok := s.providerNextRetry("p1"); ok {
@@ -134,14 +134,14 @@ func TestSoftFailureWindowResets(t *testing.T) {
 	t.Parallel()
 	s := &Server{}
 	providerID := "p-soft"
-	_ = s.applyProviderFailoverOutcome(providerID, 503, nil, nil)
+	_ = s.applyProviderFailoverOutcome(providerID, 503, nil, "", nil)
 	s.providerAvailabilityMu.Lock()
 	st := s.providerSoftFailures[providerID]
 	st.windowStart = time.Now().Add(-providerSoftFailureWindow - time.Second)
 	s.providerSoftFailures[providerID] = st
 	s.providerAvailabilityMu.Unlock()
 
-	_ = s.applyProviderFailoverOutcome(providerID, 503, nil, nil)
+	_ = s.applyProviderFailoverOutcome(providerID, 503, nil, "", nil)
 	s.providerAvailabilityMu.Lock()
 	count := s.providerSoftFailures[providerID].count
 	s.providerAvailabilityMu.Unlock()
@@ -159,7 +159,7 @@ func TestReprobeUnavailableProvidersSkipsDisabled(t *testing.T) {
 		},
 	})
 	s := NewServer(router, nil)
-	s.markProviderUnavailable("tuya-claude-pro", true, "usage_limit")
+	s.markProviderUnavailable("tuya-claude-pro", true, "usage_limit", "", nil)
 	if _, ok := s.providerNextRetry("tuya-claude-pro"); !ok {
 		t.Fatal("precondition: tuya should be tracked unavailable")
 	}
@@ -179,7 +179,7 @@ func TestApplyProviderFailoverOutcomeIgnoresDisabled(t *testing.T) {
 	})
 	s := NewServer(router, nil)
 	body := []byte(`{"error":{"message":"insufficient_quota"}}`)
-	if !s.applyProviderFailoverOutcome("tuya-claude-pro", 400, body, nil) {
+	if !s.applyProviderFailoverOutcome("tuya-claude-pro", 400, body, "", nil) {
 		t.Fatal("failover class should still be true for chain advance decisions")
 	}
 	if _, ok := s.providerNextRetry("tuya-claude-pro"); ok {

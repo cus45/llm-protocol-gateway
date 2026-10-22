@@ -342,7 +342,7 @@ func TestWorkBuddyPromptRefusalAsksTheNextOneButRestsNobody(t *testing.T) {
 	}
 	server := &Server{}
 	for attempt := 0; attempt < 3; attempt++ {
-		if !server.applyProviderFailoverOutcome("workbuddy-1", http.StatusBadRequest, refusal, nil) {
+		if !server.applyProviderFailoverOutcome("workbuddy-1", http.StatusBadRequest, refusal, "", nil) {
 			t.Fatal("the backup chain did not move on")
 		}
 	}

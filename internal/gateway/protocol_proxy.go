@@ -541,6 +541,14 @@ func (s *Server) finishConvertedProxyWithEmptyStreamRetry(w http.ResponseWriter,
 			return 0, TokenUsage{}, nil, err
 		}
 		status, usage, body, finishErr, retryable := s.finishConvertedProxy(w, response, model, stream, convert, streamConvert)
+		if attempt < attempts {
+			// A retry reuses the same client writer (and its failover buffer), so
+			// the failed attempt's upstream headers must not outlive it: a stale
+			// Retry-After would outlive a 429 that a retry then succeeded past.
+			for key := range response.Header {
+				w.Header().Del(key)
+			}
+		}
 		_ = response.Body.Close()
 		lastStatus, lastUsage, lastBody, lastErr = status, usage, body, finishErr
 		if finishErr == nil || !retryable || attempt >= attempts {
@@ -605,6 +613,11 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 	responseBody, readErr := io.ReadAll(response.Body)
 	if readErr != nil {
 		return 0, TokenUsage{}, nil, readErr, false
+	}
+	if up := response.Header.Get("Retry-After"); up != "" {
+		// The client's own 429 should say when to come back; the cooldown reads
+		// the same header through the failover writer.
+		w.Header().Set("Retry-After", up)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

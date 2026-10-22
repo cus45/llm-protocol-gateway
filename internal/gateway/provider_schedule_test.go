@@ -45,14 +45,14 @@ func TestFailoverAttemptOrderMovesUnavailableLast(t *testing.T) {
 	if got := order(); got != "p1,p2,p3" {
 		t.Fatalf("all healthy should keep the configured order, got %v", got)
 	}
-	s.markProviderUnavailable("p1", true, "test")
+	s.markProviderUnavailable("p1", true, "test", "", nil)
 	if got := order(); got != "p2,p3,p1" {
 		t.Fatalf("unavailable preferred should go last, got %v", got)
 	}
 	// Even when everything is cooled down the chain is still tried in order:
 	// the mark comes from a real failure and may be stale.
-	s.markProviderUnavailable("p2", true, "test")
-	s.markProviderUnavailable("p3", true, "test")
+	s.markProviderUnavailable("p2", true, "test", "", nil)
+	s.markProviderUnavailable("p3", true, "test", "", nil)
 	if got := order(); got != "p1,p2,p3" {
 		t.Fatalf("all unavailable should keep trying in order, got %v", got)
 	}
@@ -312,7 +312,7 @@ func TestFailoverRetriesProvidersAheadOfSticky(t *testing.T) {
 // failure on the preferred provider does not make every request pay for it.
 func TestFailoverTriesHealthyBackupBeforeUnavailablePreferred(t *testing.T) {
 	f := newFailoverFixture(t, 0, 0, "")
-	f.server.markProviderUnavailable(f.preferredID, true, "test")
+	f.server.markProviderUnavailable(f.preferredID, true, "test", "", nil)
 	rec := f.request(t)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected the healthy backup to serve, got %d: %s", rec.Code, rec.Body.String())
@@ -333,8 +333,8 @@ func TestFailoverTriesHealthyBackupBeforeUnavailablePreferred(t *testing.T) {
 // still tried in the configured order when nothing else is healthy.
 func TestFailoverStillTriesAllWhenEverythingIsMarkedUnavailable(t *testing.T) {
 	f := newFailoverFixture(t, 0, 0, "")
-	f.server.markProviderUnavailable(f.preferredID, true, "test")
-	f.server.markProviderUnavailable(f.backupID, true, "test")
+	f.server.markProviderUnavailable(f.preferredID, true, "test", "", nil)
+	f.server.markProviderUnavailable(f.backupID, true, "test", "", nil)
 	rec := f.request(t)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected the chain to still be tried, got %d: %s", rec.Code, rec.Body.String())

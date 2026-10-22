@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,13 +44,17 @@ const (
 // hardQuotaHints are narrow subscription/billing exhaustion signals. Broad
 // tokens like bare "quota" / "exceeded" / "rate limit" are intentionally
 // omitted — those usually mean short-lived throttling, not a dead provider.
+//
+// Bare "billing" is deliberately absent: "billing not enabled on this
+// workspace", "billing address missing" and the like are configuration
+// mistakes that the next account on the chain answers fine, and treating the
+// word as quota death cooled a healthy provider down for a whole cycle.
 var hardQuotaHints = []string{
 	"insufficient_quota",
 	"usage limit",
 	"you've hit your",
 	"you have hit your",
 	"credit balance",
-	"billing",
 	"tokens exhausted",
 	"out of credits",
 	"quota exceeded",
@@ -204,6 +209,15 @@ func newFailoverResponseWriter(base http.ResponseWriter, canDefer bool) *failove
 	}
 }
 
+// UpstreamHeader returns a header the upstream sent with the buffered error
+// attempt (Retry-After), empty once the writer took over the real response.
+func (w *failoverResponseWriter) UpstreamHeader(name string) string {
+	if w.passthrough || w.discarded {
+		return ""
+	}
+	return strings.TrimSpace(w.header.Get(name))
+}
+
 func (w *failoverResponseWriter) Header() http.Header {
 	if w.passthrough {
 		return w.base.Header()
@@ -301,48 +315,14 @@ func (w *failoverResponseWriter) FlushError() {
 // "unavailable"/"异常" until the background recovery loop re-probes it.
 // hard failures use the longer recovery interval; soft (repeated transient)
 // failures use a shorter TTL. Safe for concurrent use.
-func (s *Server) markProviderUnavailable(providerID string, hard bool, reason string) {
-	s.setProviderUnavailable(providerID, hard, reason, true)
+func (s *Server) markProviderUnavailable(providerID string, hard bool, reason, retryAfter string, body []byte) {
+	s.setProviderUnavailable(providerID, hard, reason, retryAfter, body, true)
 }
 
 // refreshProviderUnavailableCountdown extends nextRetryAt without re-logging
 // a fresh "marked unavailable" event (used by the recovery loop).
-func (s *Server) refreshProviderUnavailableCountdown(providerID string, hard bool, reason string) {
-	s.setProviderUnavailable(providerID, hard, reason, false)
-}
-
-func (s *Server) setProviderUnavailable(providerID string, hard bool, reason string, logMark bool) {
-	providerID = strings.TrimSpace(providerID)
-	if providerID == "" {
-		return
-	}
-	ttl := providerFailoverRecoveryInterval
-	if !hard {
-		ttl = providerSoftUnavailableTTL
-	}
-	reason = truncateReason(reason)
-	s.providerAvailabilityMu.Lock()
-	if s.providerAvailability == nil {
-		s.providerAvailability = make(map[string]providerUnavailableState)
-	}
-	s.providerAvailability[providerID] = providerUnavailableState{
-		nextRetry: time.Now().Add(ttl),
-		hard:      hard,
-		reason:    reason,
-	}
-	s.providerAvailabilityMu.Unlock()
-	if !logMark {
-		return
-	}
-	kind := "soft"
-	if hard {
-		kind = "hard"
-	}
-	msg := fmt.Sprintf("provider=%s kind=%s reason=%s retry_in=%s", providerID, kind, reason, ttl)
-	if s.logs != nil {
-		s.logs.AddApp("warn", "provider marked unavailable", msg)
-	}
-	slog.Warn("provider marked unavailable", "provider", providerID, "hard", hard, "reason", reason)
+func (s *Server) refreshProviderUnavailableCountdown(providerID string, hard bool, reason, retryAfter string, body []byte) {
+	s.setProviderUnavailable(providerID, hard, reason, retryAfter, body, false)
 }
 
 // markProviderAvailable clears any tracked "unavailable" cooldown for
@@ -441,6 +421,285 @@ func (s *Server) classifyProviderFailover(providerID string, status int, body []
 	return classifyProviderFailover(status, body, err, utilPtr)
 }
 
+const (
+	// providerCooldownFloor is the shortest rest any cooldown lasts, even when
+	// the upstream says "retry now".
+	providerCooldownFloor = 5 * time.Second
+	// providerCooldownCap bounds what an upstream may talk the gateway into: a
+	// vendor that answers "reset in three days" must not take an account out of
+	// rotation until then, because the recovery loop is what proves it back.
+	providerCooldownCap = 60 * time.Minute
+)
+
+// providerCooldownHint is what an upstream says about when to come back.
+type providerCooldownHint struct {
+	retryAfter time.Duration
+	// resetsAt is an absolute moment (ms epoch) when the account's window
+	// reopens; zero when the vendor did not say.
+	resetsAt time.Time
+}
+
+func (h providerCooldownHint) ok() bool {
+	return h.retryAfter > 0 || !h.resetsAt.IsZero()
+}
+
+// cooldownHint reads the upstream's own retry timing: the Retry-After header,
+// plus what the vendor already told the usage panel — Claude's unified 5h/7d
+// window and ChatGPT's primary/secondary rate-limit window both carry the exact
+// moment the account reopens, which beats any guess when the 429 body is terse.
+func (s *Server) cooldownHint(providerID, retryAfter string, body []byte, now time.Time) providerCooldownHint {
+	hint := parseProviderCooldownHint(retryAfter, body, now)
+	if s == nil || s.oauthUsageCache == nil {
+		return hint
+	}
+	if cached, ok := s.oauthUsageCache.getAllowStale("claude:" + providerID); ok {
+		if report, ok := cached.(ClaudeOAuthUsageReport); ok && report.Available {
+			for _, bucket := range []*ClaudeOAuthUsageBucket{report.FiveHour, report.SevenDay} {
+				if bucket == nil {
+					continue
+				}
+				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
+					hint.resetsAt = at
+				}
+			}
+		}
+	}
+	if cached, ok := s.oauthUsageCache.getAllowStale("chatgpt:" + providerID); ok {
+		if report, ok := cached.(ChatGPTOAuthUsageReport); ok && report.Available {
+			for _, bucket := range report.Buckets {
+				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
+					hint.resetsAt = at
+				}
+			}
+		}
+	}
+	return hint
+}
+
+// cooldownTTL is how long providerID rests: the upstream's own hint when it
+// names a time, the class default otherwise. Only "how long" comes from the
+// upstream — whether the mark shows as hard still comes from the classifier,
+// so a vendor phrase alone never paints an account 异常.
+func (s *Server) cooldownTTL(providerID, retryAfter string, body []byte, hard bool, now time.Time) time.Duration {
+	ttl := providerFailoverRecoveryInterval
+	if !hard {
+		ttl = providerSoftUnavailableTTL
+	}
+	hint := s.cooldownHint(providerID, retryAfter, body, now)
+	want := hint.retryAfter
+	if !hint.resetsAt.IsZero() {
+		if until := hint.resetsAt.Sub(now); until > want {
+			want = until
+		}
+	}
+	if !hint.ok() || want <= 0 {
+		return ttl
+	}
+	if hard {
+		// Spent until the vendor says otherwise: between the soft default and a
+		// quarter hour there is no reason to probe a dead quota.
+		if ttl < providerCooldownFloor*3 {
+			ttl = providerCooldownFloor * 3
+		}
+	}
+	if want < ttl {
+		want = ttl
+	}
+	if want > providerCooldownCap {
+		want = providerCooldownCap
+	}
+	return want
+}
+
+// parseProviderCooldownHint extracts the upstream's retry timing from a
+// Retry-After header (seconds or HTTP date) and from the body's reset hints:
+// Anthropic's unified `resets_at` (RFC3339 or ms epoch), Codex's
+// `resets_in_seconds` / `resets_at`, and the same fields under `error` or
+// `error.details`. Bodies that name no time fall back to the class default.
+func parseProviderCooldownHint(retryAfter string, body []byte, now time.Time) providerCooldownHint {
+	var hint providerCooldownHint
+	if d, ok := parseRetryAfterHeader(retryAfter, now); ok {
+		hint.retryAfter = d
+	}
+	payload := decodeErrorPayload(body)
+	resetCandidates := []string{
+		payloadString(payload, "resets_at"),
+		payloadString(payload, "error", "details", "resets_at"),
+		payloadString(payload, "error", "resets_at"),
+	}
+	for _, raw := range resetCandidates {
+		if at, ok := parseResetsAt(raw); ok && at.After(now) {
+			hint.resetsAt = at
+			break
+		}
+	}
+	// Resets are usually carried beside the error code at the top level, but
+	// some envelopes nest them one level down.
+	for _, src := range []map[string]any{
+		payload,
+		payloadMap(payload, "error"),
+		payloadMap(payload, "error", "details"),
+	} {
+		if secs, ok := numericSeconds(src["resets_in_seconds"]); ok && secs > 0 {
+			if d := secondsDuration(secs); d > hint.retryAfter {
+				hint.retryAfter = d
+			}
+			break
+		}
+	}
+	return hint
+}
+
+// decodeErrorPayload unwraps the handful of envelope shapes upstreams use
+// ({"error":{...}}, {"error":{"details":{...}}}, a bare object, an SSE
+// "data:" line) down to the innermost error object worth reading hints from.
+func decodeErrorPayload(body []byte) map[string]any {
+	text := strings.TrimSpace(string(body))
+	if idx := strings.Index(text, "data:"); idx >= 0 && !strings.HasPrefix(text, "{") {
+		text = strings.TrimSpace(text[idx+len("data:"):])
+	}
+	var top map[string]any
+	if err := json.Unmarshal([]byte(text), &top); err != nil {
+		// Some vendors wrap the JSON in prose; read what round-trips.
+		start := strings.Index(text, "{")
+		end := strings.LastIndex(text, "}")
+		if start < 0 || end <= start {
+			return map[string]any{}
+		}
+		if err := json.Unmarshal([]byte(text[start:end+1]), &top); err != nil {
+			return map[string]any{}
+		}
+	}
+	return top
+}
+
+func payloadMap(payload map[string]any, keys ...string) map[string]any {
+	current := payload
+	for _, key := range keys {
+		next, ok := current[key].(map[string]any)
+		if !ok {
+			return map[string]any{}
+		}
+		current = next
+	}
+	return current
+}
+
+// payloadString walks keys as objects and returns the first string leaf found.
+func payloadString(payload map[string]any, keys ...string) string {
+	current := payload
+	for i, key := range keys {
+		value, ok := current[key]
+		if !ok {
+			return ""
+		}
+		if i == len(keys)-1 {
+			return strings.TrimSpace(stringValue(value))
+		}
+		nested, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = nested
+	}
+	return ""
+}
+
+// parseResetsAt accepts Anthropic's RFC3339 timestamp and the ms-epoch number
+// (or numeric string) Codex and the Claude usage endpoint use.
+func parseResetsAt(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if at, err := time.Parse(time.RFC3339, raw); err == nil {
+		return at, true
+	}
+	if ms, ok := numericSeconds(raw); ok && ms > 0 {
+		return time.UnixMilli(int64(ms)), true
+	}
+	return time.Time{}, false
+}
+
+// parseRetryAfterHeader reads the seconds or HTTP-date form of Retry-After.
+func parseRetryAfterHeader(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if secs, ok := numericSeconds(raw); ok {
+		if secs <= 0 {
+			return 0, false
+		}
+		return secondsDuration(secs), true
+	}
+	if at, err := http.ParseTime(raw); err == nil {
+		if d := at.Sub(now); d > 0 {
+			return d, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+func numericSeconds(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func secondsDuration(secs float64) time.Duration {
+	if secs > float64(providerCooldownCap/time.Second) {
+		return providerCooldownCap
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
+// setProviderUnavailable cools providerID down until the recovery loop proves
+// it back. retryAfter/body carry the upstream's own timing hint; hard failures
+// rest at least providerFailoverRecoveryInterval (see cooldownTTL).
+func (s *Server) setProviderUnavailable(providerID string, hard bool, reason, retryAfter string, body []byte, logMark bool) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return
+	}
+	now := time.Now()
+	ttl := s.cooldownTTL(providerID, retryAfter, body, hard, now)
+	reason = truncateReason(reason)
+	s.providerAvailabilityMu.Lock()
+	if s.providerAvailability == nil {
+		s.providerAvailability = make(map[string]providerUnavailableState)
+	}
+	s.providerAvailability[providerID] = providerUnavailableState{
+		nextRetry: now.Add(ttl),
+		hard:      hard,
+		reason:    reason,
+	}
+	s.providerAvailabilityMu.Unlock()
+	if !logMark {
+		return
+	}
+	kind := "soft"
+	if hard {
+		kind = "hard"
+	}
+	msg := fmt.Sprintf("provider=%s kind=%s reason=%s retry_in=%s", providerID, kind, reason, ttl.Round(time.Second))
+	if s.logs != nil {
+		s.logs.AddApp("warn", "provider marked unavailable", msg)
+	}
+	slog.Warn("provider marked unavailable", "provider", providerID, "hard", hard, "reason", reason, "retry_in", ttl)
+}
+
 // applyProviderAvailability overlays the live-request availability tracker
 // onto a provider destined for the client: a provider that just failed a real
 // API call shows healthStatus "unavailable" (rendered "异常" in the console)
@@ -468,13 +727,15 @@ func (s *Server) applyProviderAvailability(provider *domain.Provider) {
 // failures only paint "异常" after consecutive hits; hard quota/auth failures
 // mark immediately. Independent of whether a fallback chain exists.
 func (s *Server) recordProviderRequestOutcome(providerID string, status int, body []byte, err error) {
-	_ = s.applyProviderFailoverOutcome(providerID, status, body, err)
+	_ = s.applyProviderFailoverOutcome(providerID, status, body, "", err)
 }
 
 // applyProviderFailoverOutcome classifies the attempt, updates soft/hard
 // availability tracking, and returns whether the caller should advance to the
-// next backup provider.
-func (s *Server) applyProviderFailoverOutcome(providerID string, status int, body []byte, err error) bool {
+// next backup provider. retryAfter is the attempt's upstream Retry-After header,
+// which (with the body's reset hints) decides how long a cooldown lasts.
+func (s *Server) applyProviderFailoverOutcome(providerID string, status int, body []byte, retryAfter string, err error) bool {
+
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
 		return false
@@ -489,6 +750,9 @@ func (s *Server) applyProviderFailoverOutcome(providerID string, status int, bod
 	}
 	class, reason := s.classifyProviderFailover(providerID, status, body, err)
 	if class == failoverNone {
+		// The vendor's own quota wording outlives the classifier: a 400 that
+		// spells out insufficient_quota advances the chain but is not worth a
+		// cooldown mark, while a 429 that does is already soft here.
 		if err == nil {
 			s.markProviderAvailable(providerID)
 		}
@@ -497,11 +761,11 @@ func (s *Server) applyProviderFailoverOutcome(providerID string, status int, bod
 	switch class {
 	case failoverHard:
 		s.clearSoftFailures(providerID)
-		s.markProviderUnavailable(providerID, true, reason)
+		s.markProviderUnavailable(providerID, true, reason, retryAfter, body)
 	case failoverSoft:
 		count := s.bumpSoftFailure(providerID)
 		if count >= providerSoftFailureThreshold {
-			s.markProviderUnavailable(providerID, false, fmt.Sprintf("%s consecutive=%d", reason, count))
+			s.markProviderUnavailable(providerID, false, fmt.Sprintf("%s consecutive=%d", reason, count), retryAfter, body)
 		} else if s.logs != nil {
 			s.logs.AddApp("info", "provider soft failure", fmt.Sprintf(
 				"provider=%s consecutive=%d/%d reason=%s",
@@ -717,7 +981,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 				w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(providerID, time.Now())))
 				return http.StatusTooManyRequests, TokenUsage{}, nil, attemptDecision, attemptModel, execErr
 			}
-			transportFailoverWorthy := s.applyProviderFailoverOutcome(providerID, 0, nil, execErr)
+			transportFailoverWorthy := s.applyProviderFailoverOutcome(providerID, 0, nil, "", execErr)
 			transportReason := attemptReasonTransportError
 			if errors.Is(execErr, errUpstreamFirstPacketTimeout) {
 				transportReason = attemptReasonFirstPacketTimeout
@@ -758,7 +1022,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 			return status, usage, respBody, attemptDecision, attemptModel, r.Context().Err()
 		}
 
-		attemptFailoverWorthy := s.applyProviderFailoverOutcome(providerID, status, respBody, nil)
+		attemptFailoverWorthy := s.applyProviderFailoverOutcome(providerID, status, respBody, writer.UpstreamHeader("Retry-After"), nil)
 		if canDefer && attemptFailoverWorthy {
 			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonUpstreamError, Error: truncateReason(summarizeUpstreamHTTPError(status, respBody)), Deferred: true})
 			writer.Discard()
@@ -926,7 +1190,9 @@ func (s *Server) reprobeUnavailableProviders(ctx context.Context) {
 		if reason == "" {
 			reason = "reprobe_failed"
 		}
-		s.refreshProviderUnavailableCountdown(id, prev.hard, reason)
+		// A vendor-named reset time is kept: it survives cycles of failed
+		// probes, whose own bodies carry no hint at all.
+		s.refreshProviderUnavailableCountdown(id, prev.hard, reason, "", nil)
 	}
 }
 

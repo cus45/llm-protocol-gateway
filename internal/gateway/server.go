@@ -5225,6 +5225,9 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		return 0, TokenUsage{}, nil, readErr
 	}
 
+	if up := response.Header.Get("Retry-After"); up != "" {
+		w.Header().Set("Retry-After", up)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var payload map[string]any
