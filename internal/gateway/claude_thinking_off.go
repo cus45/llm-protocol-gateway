@@ -190,30 +190,34 @@ func claudeBodyField(body []byte, key string) any {
 }
 
 // removeClaudeThinkingOff deletes a Claude payload's thinking when it turns
-// thinking off (keeping any output_config effort), and reports whether it did.
-// For upstreams that don't take thinking.type at all (GLM's Anthropic
-// endpoint parses no thinking field): sending disabled there is silently
-// ignored and the model thinks anyway.
-func removeClaudeThinkingOff(payload map[string]any, model string) bool {
+// thinking off, keeping any output_config effort, and reports whether it did.
+func removeClaudeThinkingOff(payload map[string]any) bool {
 	if payload == nil {
 		return false
 	}
 	thinking, _ := payload["thinking"].(map[string]any)
-	if thinking == nil {
-		return false
-	}
 	if strings.ToLower(strings.TrimSpace(stringValue(thinking["type"]))) != "disabled" {
-		return false
-	}
-	if rule, known := claudeThinkingOffOf(model); known && rule != claudeOffTaken {
-		// Anthropic 系模型按上一节改写，不在这里删。
-		return false
-	}
-	if isClaudeFamilyModelID(model) {
 		return false
 	}
 	delete(payload, "thinking")
 	return true
+}
+
+// claudeEndpointReasoningEffort is the Chat-style reasoning_effort that a
+// non-Claude model on an Anthropic endpoint reads as thinking off. GLM-5.2 /
+// GLM-5.3 take "min": their levels are min/low/medium/high/max and "none" is
+// rejected. Left absent when the model isn't known to take the field.
+func claudeEndpointReasoningEffort(model string) (string, bool) {
+	id := normalizeModelContextID(model)
+	switch {
+	case strings.Contains(id, "glm-5.2"), strings.Contains(id, "glm-5.3"):
+		return "min", true
+	case strings.Contains(id, "glm-"):
+		return "none", true
+	case strings.Contains(id, "deepseek"), strings.Contains(id, "kimi"), strings.Contains(id, "moonshot"):
+		return "none", true
+	}
+	return "", false
 }
 
 // normalizeClaudeEndpointThinkingOffBody is normalizeClaudeThinkingOff plus
@@ -228,11 +232,22 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 	if decoder.Decode(&payload) != nil || payload == nil {
 		return body
 	}
+	rule, knownClaude := claudeThinkingOffOf(model)
 	changed := normalizeClaudeThinkingOff(payload, model)
-	if removeClaudeThinkingOff(payload, model) {
-		// GLM 等端点拒绝 reasoning_effort=none（枚举只到 min），实测上一版补的
-		// none 会被 400，反而比"删掉 thinking"更糟：只删字段，不补参数。
-		changed = true
+	// 非 Claude 模型：端点不解析 thinking，disabled 等于没写、模型照样思考
+	// （实测 max_tokens=200 时思考吃光预算、正文为空）。删掉 thinking，并显式
+	// 给出该端点"不思考"的 reasoning_effort；同时给短预算留出思考余量。
+	if !knownClaude {
+		if removeClaudeThinkingOff(payload) {
+			if effort, ok := claudeEndpointReasoningEffort(model); ok {
+				payload["reasoning_effort"] = effort
+			}
+			padClaudeEndpointBudget(payload, model)
+			changed = true
+		}
+	} else if rule == claudeOffNever {
+		// Claude 只能自适应思考的模型同样无法真正关闭思考。
+		padClaudeEndpointBudget(payload, model)
 	}
 	if !changed {
 		return body
@@ -243,3 +258,21 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 	}
 	return rewritten
 }
+
+// padClaudeEndpointBudget gives a thinking-on-by-default model room on top of
+// a short reply (see classifierRoom), so a title/classifier-sized request
+// doesn't come back empty. Only used where thinking can't be turned off.
+func padClaudeEndpointBudget(payload map[string]any, model string) {
+	if payload == nil {
+		return
+	}
+	n, ok := intFromAny(payload["max_tokens"])
+	if !ok || n <= 0 || n >= claudeEndpointThinkingRoom {
+		return
+	}
+	payload["max_tokens"] = n + claudeEndpointThinkingRoom
+}
+
+// claudeEndpointThinkingRoom is how much room a non-Claude model that thinks
+// by default gets on top of a short reply.
+const claudeEndpointThinkingRoom = 2048

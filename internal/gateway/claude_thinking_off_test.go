@@ -173,9 +173,10 @@ func TestClaudeBodyField(t *testing.T) {
 }
 
 func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
-	// GLM 的 Anthropic 端点不解析 thinking：disabled 会被忽略、默认开启思考，
-	// 实测 max_tokens=200 时思考把预算吃光返回空内容。必须把 thinking 删掉；
-	// 不补 reasoning_effort（GLM 枚举里没有 none，补了反而 400）。
+	// GLM 的 Anthropic 端点不解析 thinking：disabled 等于没写、模型照样思考，
+	// 实测 max_tokens=200 时思考吃光预算、正文为空。必须删掉 thinking、显式
+	// 给出该端点"不思考"的 reasoning_effort（GLM-5.2/5.3 是 min，没有 none），
+	// 并给短预算留出余量。
 	body := []byte(`{"model":"glm-5.3","max_tokens":100,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`)
 	out := normalizeClaudeEndpointThinkingOffBody(body, "glm-5.3")
 	var payload map[string]any
@@ -185,17 +186,48 @@ func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
 	if _, exists := payload["thinking"]; exists {
 		t.Fatalf("thinking must be gone for GLM: %s", out)
 	}
-	if _, exists := payload["reasoning_effort"]; exists {
-		t.Fatalf("reasoning_effort must not be invented: %s", out)
+	if payload["reasoning_effort"] != "min" {
+		t.Fatalf("reasoning_effort = %#v, want min", payload["reasoning_effort"])
 	}
-	if payload["max_tokens"] != float64(100) {
-		t.Fatalf("max_tokens must survive: %s", out)
+	if payload["max_tokens"] != float64(100+claudeEndpointThinkingRoom) {
+		t.Fatalf("max_tokens = %#v, want room for thinking", payload["max_tokens"])
+	}
+
+	// 未知的非 Claude 模型：删 thinking，但不猜 reasoning_effort 的枚举值。
+	unknown := []byte(`{"model":"mistral-large","max_tokens":5000,"thinking":{"type":"disabled"}}`)
+	out = normalizeClaudeEndpointThinkingOffBody(unknown, "mistral-large")
+	payload = nil
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("not json: %v (%s)", err, out)
+	}
+	if _, exists := payload["thinking"]; exists {
+		t.Fatalf("thinking must be gone: %s", out)
+	}
+	if _, exists := payload["reasoning_effort"]; exists {
+		t.Fatalf("reasoning_effort must not be invented for unknown models: %s", out)
+	}
+	if payload["max_tokens"] != float64(5000) {
+		t.Fatalf("a generous budget must not be padded: %s", out)
 	}
 
 	// Anthropic 系模型走模型族改写：4.5 原样接受 disabled。
 	claude := []byte(`{"model":"claude-sonnet-4.5","thinking":{"type":"disabled"}}`)
 	if got := normalizeClaudeEndpointThinkingOffBody(claude, "claude-sonnet-4.5"); string(got) != string(claude) {
 		t.Fatalf("Claude 4.5 accepts disabled, must stay byte-identical: %s", got)
+	}
+
+	// 只能自适应思考的 Claude：去掉 thinking，短预算补余量。
+	always := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"thinking":{"type":"disabled"}}`)
+	out = normalizeClaudeEndpointThinkingOffBody(always, "claude-opus-5-5")
+	payload = nil
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("not json: %v (%s)", err, out)
+	}
+	if _, exists := payload["thinking"]; exists {
+		t.Fatalf("always-thinking Claude must lose disabled: %s", out)
+	}
+	if payload["max_tokens"] != float64(64+claudeEndpointThinkingRoom) {
+		t.Fatalf("max_tokens = %#v", payload["max_tokens"])
 	}
 
 	// 没有 thinking 的请求逐字不变。
