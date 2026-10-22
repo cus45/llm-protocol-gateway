@@ -633,6 +633,10 @@ func (s *claudeToResponsesDirectStreamState) finalize() error {
 			"input_tokens":  s.usage.InputTokens,
 			"output_tokens": s.usage.OutputTokens,
 			"total_tokens":  s.usage.InputTokens + s.usage.OutputTokens,
+			// Same shape as the non-streaming path (and what OpenAI sends):
+			// cached_tokens is a split of input_tokens, always present.
+			"input_tokens_details":  map[string]any{"cached_tokens": s.usage.CacheTokens},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 0},
 		},
 	}
 	if incompleteReason != "" {
