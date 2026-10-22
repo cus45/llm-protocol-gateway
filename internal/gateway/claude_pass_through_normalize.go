@@ -50,6 +50,9 @@ func normalizeClaudePassThroughPayload(payload map[string]any) {
 		}
 	}
 	sanitizeClaudePassThroughDisabledThinkingEffort(normalized)
+	// 实测模型可能不是 Claude：关闭 thinking 的写法按模型族改写（glm 不认识
+	// thinking.type，会把它当默认开启思考）。
+	normalizeClaudeThinkingOff(normalized, stringValue(normalized["model"]))
 	for key := range payload {
 		delete(payload, key)
 	}
@@ -157,6 +160,7 @@ func rewriteClaudeUpstreamMaxTokens(body []byte, provider domain.Provider, maxTo
 	}
 	payload["max_tokens"] = effectiveClaudeMaxTokens(model, maxTokensOverride)
 	sanitizeClaudePassThroughDisabledThinkingEffort(payload)
+	normalizeClaudeThinkingOff(payload, model)
 	out, err := json.Marshal(payload)
 	if err != nil {
 		return body

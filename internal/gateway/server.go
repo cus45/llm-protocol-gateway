@@ -5423,15 +5423,17 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 // regular Claude API-key providers), returning the raw response.
 func (s *Server) sendClaudeMessagesUpstream(r *http.Request, provider domain.Provider, body []byte) (*http.Response, error) {
 	isOAuth := provider.AuthType == domain.AuthTypeClaudeOAuth
-	// 直通 Claude 兼容上游（智谱 GLM 等）对 stop_sequences 的校验比 Anthropic 严：
-	// 非字符串项直接 400、空串会让流在第一个 token 前就停止、超过 4 条被拒。
-	// Claude 自家 API 保持原样透传。
+	// 直通 Claude 兼容上游（智谱 GLM 等）的校验与 Anthropic 不同：stop_sequences
+	// 非字符串项直接 400、空串会让流在第一个 token 前就停止、超过 4 条被拒；
+	// 关闭 thinking 的写法也随模型族而变（见 normalizeClaudeThinkingOff）。
+	// Claude 自家的 OAuth 路径已在 buildClaudeOAuthRequest 里整流过。
 	if !isOAuth {
 		body = sanitizeClaudeStopSequencesBody(body)
+		body = normalizeClaudeThinkingOffBody(body, applyProviderModelMapping(provider, stringValue(claudeBodyField(body, "model"))))
 	}
 
-	var request *http.Request
 	var err error
+	var request *http.Request
 	if isOAuth {
 		// Claude OAuth requests authenticate with a bearer access token (plus the
 		// billing marker + anthropic-beta header), never the x-api-key header
