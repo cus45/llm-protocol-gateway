@@ -235,6 +235,17 @@ func appendImageNote(text string, count int) string {
 // 等于让模型点完一次就再也看不见画面，只能靠猜选择器和 uid——这就是「点元素报
 // No snapshot found / querySelector 为 null」的来源。调用方把这些图跟在 tool
 // 消息之后的一条 user 消息里发出去。
+// toolResultFailedPrefix 标出失败的 Chat / Responses 工具结果。
+const toolResultFailedPrefix = "[tool_error] "
+
+// markFailedToolResult 给失败的工具有结果加前缀，保留原文（模型仍需要看到错误）。
+func markFailedToolResult(text string) string {
+	if strings.HasPrefix(text, toolResultFailedPrefix) {
+		return text
+	}
+	return toolResultFailedPrefix + text
+}
+
 func toolResultContentForOpenAI(content any) (string, []any) {
 	blocks, ok := content.([]any)
 	if !ok {
@@ -1629,6 +1640,11 @@ func claudeMessagesToOpenAI(rawMessages []any, clientToolNames map[string]struct
 				}
 				pendingCalls = dropCallID(pendingCalls, toolUseID)
 				text, images := toolResultContentForOpenAI(result["content"])
+				// Chat 没有标记失败结果的位置：把失败写进文本，不要静默变成
+				// 一次成功（客户端与模型都会误以为工具跑通了）。
+				if failed, ok := result["is_error"].(bool); ok && failed {
+					text = markFailedToolResult(text)
+				}
 				if len(images) > 0 {
 					text = appendImageNote(text, len(images))
 					source := toolUseID

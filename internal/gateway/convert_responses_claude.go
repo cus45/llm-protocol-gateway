@@ -219,11 +219,17 @@ func responsesInputToClaudeMessages(input any, ctx *codexToolContext) []map[stri
 				if callID == "" {
 					continue
 				}
-				pushClaudeToolResult(&messages, map[string]any{
+				result := map[string]any{
 					"type":        "tool_result",
 					"tool_use_id": callID,
 					"content":     toolResultContentToString(item["output"]),
-				})
+				}
+				// Responses 的 function_call_output 可能带 is_error；Claude 有
+				// 自己的失败标记，别让失败的结果看起来是成功。
+				if failed, ok := item["is_error"].(bool); ok && failed {
+					result["is_error"] = true
+				}
+				pushClaudeToolResult(&messages, result)
 			case "additional_tools":
 				// Tools already merged via collectAdditionalToolsFromInput; not a message.
 				continue
