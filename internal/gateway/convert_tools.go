@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -395,6 +396,7 @@ func openAIToolToClaude(tool map[string]any) map[string]any {
 				claudeTool["description"] = description
 			}
 			claudeTool["input_schema"] = claudeToolInputSchema(functionValue["parameters"], functionValue["input_schema"])
+			copyToolStrictFlag(claudeTool, tool, functionValue)
 			return claudeTool
 		}
 		// Responses API flat function tool: {type:"function", name, parameters}
@@ -403,6 +405,7 @@ func openAIToolToClaude(tool map[string]any) map[string]any {
 			claudeTool["description"] = description
 		}
 		claudeTool["input_schema"] = claudeToolInputSchema(tool["parameters"], tool["input_schema"])
+		copyToolStrictFlag(claudeTool, tool, nil)
 		return claudeTool
 	}
 
@@ -424,7 +427,48 @@ func openAIToolToClaude(tool map[string]any) map[string]any {
 		claudeTool["description"] = description
 	}
 	claudeTool["input_schema"] = claudeToolInputSchema(schemaCandidates...)
+	customValue, _ := tool["custom"].(map[string]any)
+	copyToolStrictFlag(claudeTool, tool, customValue)
 	return claudeTool
+}
+
+// copyToolStrictFlag carries a client's strict-mode choice into a Claude tool.
+// Anthropic has no strict toggle: the equivalent is closing the schema (no extra
+// properties, every property required), which is exactly what strict asked for.
+// Dropping the flag silently downgraded the guarantee the client relied on.
+func copyToolStrictFlag(out map[string]any, carriers ...map[string]any) {
+	for _, carrier := range carriers {
+		if carrier == nil {
+			continue
+		}
+		strict, ok := carrier["strict"].(bool)
+		if !ok || !strict {
+			continue
+		}
+		if schema, ok := out["input_schema"].(map[string]any); ok {
+			closeObjectSchema(schema)
+		}
+		return
+	}
+}
+
+// closeObjectSchema sets additionalProperties=false and requires every declared
+// property, the Anthropic-side meaning of OpenAI strict mode.
+func closeObjectSchema(schema map[string]any) {
+	if schema == nil || stringValue(schema["type"]) != "object" {
+		return
+	}
+	schema["additionalProperties"] = false
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return
+	}
+	required := make([]any, 0, len(properties))
+	for name := range properties {
+		required = append(required, name)
+	}
+	sort.Slice(required, func(i, j int) bool { return required[i].(string) < required[j].(string) })
+	schema["required"] = required
 }
 
 func claudeToolToOpenAI(tool map[string]any) map[string]any {
@@ -439,7 +483,57 @@ func claudeToolToOpenAI(tool map[string]any) map[string]any {
 	} else {
 		functionValue["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
 	}
-	return map[string]any{"type": "function", "function": functionValue}
+	out := map[string]any{"type": "function", "function": functionValue}
+	// A schema Anthropic closed (strict mode on the way in) is strict mode on
+	// the way out, so the flag survives a Chat round trip.
+	if schema, ok := functionValue["parameters"].(map[string]any); ok && schemaIsClosed(schema) {
+		functionValue["strict"] = true
+		out["strict"] = true
+	}
+	return out
+}
+
+// schemaIsClosed reports whether a schema forbids extra properties and requires
+// every one it declares.
+func schemaIsClosed(schema map[string]any) bool {
+	if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
+		return false
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return true
+	}
+	required := asStringSlice(schema["required"])
+	if len(required) != len(properties) {
+		return false
+	}
+	have := make(map[string]struct{}, len(required))
+	for _, name := range required {
+		have[name] = struct{}{}
+	}
+	for name := range properties {
+		if _, ok := have[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func asStringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		if typed, ok := value.([]string); ok {
+			return typed
+		}
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := stringValue(item); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 // responsesToolToOpenAIChat normalizes a Responses API tool into Chat Completions
@@ -461,7 +555,9 @@ func responsesToolToOpenAIChat(tool map[string]any) map[string]any {
 			fn["description"] = description
 		}
 		fn["parameters"] = claudeToolInputSchema(functionValue["parameters"], functionValue["input_schema"])
-		return map[string]any{"type": "function", "function": fn}
+		out := map[string]any{"type": "function", "function": fn}
+		copyStrictToChatTool(out, fn, tool, functionValue)
+		return out
 	}
 
 	toolType := strings.TrimSpace(strings.ToLower(stringValue(tool["type"])))
@@ -487,9 +583,28 @@ func responsesToolToOpenAIChat(tool map[string]any) map[string]any {
 			fn["description"] = description
 		}
 		fn["parameters"] = claudeToolInputSchema(schemaCandidates...)
-		return map[string]any{"type": "function", "function": fn}
+		out := map[string]any{"type": "function", "function": fn}
+		customValue, _ := tool["custom"].(map[string]any)
+		copyStrictToChatTool(out, fn, tool, customValue)
+		return out
 	default:
 		return nil
+	}
+}
+
+// copyStrictToChatTool keeps strict mode when crossing into Chat form, where the
+// flag lives at both the tool and the nested function level depending on the
+// upstream. Without it a strict client silently lost its schema guarantee.
+func copyStrictToChatTool(out, fn map[string]any, carriers ...map[string]any) {
+	for _, carrier := range carriers {
+		if carrier == nil {
+			continue
+		}
+		if strict, ok := carrier["strict"].(bool); ok {
+			fn["strict"] = strict
+			out["strict"] = strict
+			return
+		}
 	}
 }
 

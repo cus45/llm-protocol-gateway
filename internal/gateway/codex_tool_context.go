@@ -173,6 +173,11 @@ func (c *codexToolContext) addFunctionTool(tool map[string]any, namespace string
 	if desc := responsesToolDefinitionDescription(tool); desc != "" {
 		claudeTool["description"] = desc
 	}
+	// Codex sends strict tools; Claude has no flag, so close the schema instead
+	// of silently dropping the guarantee.
+	if strict, ok := tool["strict"].(bool); ok && strict {
+		closeObjectSchema(claudeTool["input_schema"].(map[string]any))
+	}
 	c.addClaudeTool(flat, codexToolSpec{Kind: kind, Name: original, Namespace: namespace}, claudeTool)
 }
 
