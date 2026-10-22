@@ -815,6 +815,8 @@ func responsesToOpenAIChatResponse(responsesBody []byte, model string) ([]byte, 
 	finishReason := "stop"
 	if _, ok := assistantMessage["tool_calls"]; ok {
 		finishReason = "tool_calls"
+	} else if truncated := mapResponsesIncompleteToOpenAIFinish(stringValue(payload["status"]), responsesIncompleteReason(payload)); truncated != "" {
+		finishReason = truncated
 	}
 
 	response := map[string]any{
@@ -870,6 +872,20 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 		}},
 	}}
 	status := "completed"
+	// A Chat finish_reason of "length" means the answer was cut by the token
+	// budget; reporting "completed" let Responses clients take the truncated
+	// text as final.
+	incompleteReason := ""
+	if choices, ok := payload["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			switch strings.TrimSpace(stringValue(choice["finish_reason"])) {
+			case "length":
+				incompleteReason = "max_output_tokens"
+			case "content_filter":
+				incompleteReason = "content_filter"
+			}
+		}
+	}
 	if rawToolCalls, ok := message["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
 		output = make([]map[string]any, 0, len(rawToolCalls))
 		for i, item := range rawToolCalls {
@@ -900,6 +916,9 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 		}
 		text = ""
 	}
+	if incompleteReason != "" {
+		status = "incomplete"
+	}
 	response := map[string]any{
 		"id":          fmt.Sprintf("resp_%d", time.Now().UnixNano()),
 		"object":      "response",
@@ -913,6 +932,9 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 			"output_tokens": usage.OutputTokens,
 			"total_tokens":  usage.InputTokens + usage.OutputTokens,
 		},
+	}
+	if incompleteReason != "" {
+		response["incomplete_details"] = map[string]any{"reason": incompleteReason}
 	}
 	body, err := json.Marshal(response)
 	return body, usage, err

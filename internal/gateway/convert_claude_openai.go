@@ -414,16 +414,20 @@ func normalizeClaudeTemperatureForThinking(claudeReq map[string]any) {
 	claudeReq["temperature"] = 1
 }
 
+// mapClaudeStopReasonToOpenAI maps an Anthropic stop_reason onto an OpenAI Chat
+// finish_reason. Every Anthropic reason is named: an unknown value copied
+// through would land in a field clients switch on, where "refusal" or
+// "pause_turn" means nothing and the turn looks unfinished.
 func mapClaudeStopReasonToOpenAI(reason string) string {
 	switch strings.TrimSpace(reason) {
-	case "", "end_turn":
+	case "", "end_turn", "stop_sequence", "refusal", "pause_turn":
 		return "stop"
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		return "length"
 	case "tool_use":
 		return "tool_calls"
 	default:
-		return reason
+		return "stop"
 	}
 }
 

@@ -88,6 +88,10 @@ type chatToResponsesStreamState struct {
 	outputIndex   int
 	fullText      strings.Builder
 	reasoningText strings.Builder
+	// incompleteReason is set when the upstream Chat stream stopped short
+	// (finish_reason "length" or "content_filter"), so the closing
+	// response.completed reports incomplete like the non-streaming path.
+	incompleteReason string
 
 	toolCalls map[int]*streamingToolCallState
 }
@@ -501,22 +505,30 @@ func (s *chatToResponsesStreamState) finalize() error {
 	}
 	output := s.buildCompletedOutput()
 	text := s.fullText.String()
+	response := map[string]any{
+		"id":          s.responseID,
+		"object":      "response",
+		"model":       s.model,
+		"status":      "completed",
+		"output_text": text,
+		"output":      output,
+		"usage": map[string]any{
+			"input_tokens":  s.usage.InputTokens,
+			"output_tokens": s.usage.OutputTokens,
+			"total_tokens":  s.usage.InputTokens + s.usage.OutputTokens,
+		},
+	}
+	// A Chat finish_reason of "length" means the answer was cut by the token
+	// budget. Reporting "completed" hid that from Responses clients, which then
+	// treated the truncated text as final.
+	if s.incompleteReason != "" {
+		response["status"] = "incomplete"
+		response["incomplete_details"] = map[string]any{"reason": s.incompleteReason}
+	}
 	completed := map[string]any{
 		"type":            "response.completed",
 		"sequence_number": s.nextSeq(),
-		"response": map[string]any{
-			"id":          s.responseID,
-			"object":      "response",
-			"model":       s.model,
-			"status":      "completed",
-			"output_text": text,
-			"output":      output,
-			"usage": map[string]any{
-				"input_tokens":  s.usage.InputTokens,
-				"output_tokens": s.usage.OutputTokens,
-				"total_tokens":  s.usage.InputTokens + s.usage.OutputTokens,
-			},
-		},
+		"response":        response,
 	}
 	return writeResponsesSSEEvent(s.w, "response.completed", completed)
 }
@@ -632,6 +644,14 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 		}
 		if reasoning := stringValue(delta["reasoning_content"]); reasoning != "" {
 			state.reasoningText.WriteString(reasoning)
+		}
+		// "length" / "content_filter" arrive on whichever chunk closes the
+		// stream, sometimes with an empty delta, so look at every choice.
+		switch strings.TrimSpace(stringValue(choice["finish_reason"])) {
+		case "length":
+			state.incompleteReason = "max_output_tokens"
+		case "content_filter":
+			state.incompleteReason = "content_filter"
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -905,6 +925,11 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 			}
 		case "response.completed", "response.incomplete", "response.failed":
 			if response, ok := chunk["response"].(map[string]any); ok {
+				// The terminal event carries the real status; a turn cut by
+				// max_output_tokens must reach the client as "length".
+				if finish := mapResponsesIncompleteToOpenAIFinish(stringValue(response["status"]), responsesIncompleteReason(response)); finish != "" && finishReason != "tool_calls" {
+					finishReason = finish
+				}
 				if !textSeen {
 					text := strings.TrimSpace(stringValue(response["output_text"]))
 					if text == "" {

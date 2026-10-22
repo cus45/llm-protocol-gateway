@@ -1366,6 +1366,10 @@ func openAIAssistantMessageToClaudeResponseContent(message map[string]any) []any
 	return blocks
 }
 
+// mapOpenAIFinishReasonToClaude maps an OpenAI Chat finish_reason onto an
+// Anthropic stop_reason. Every reason Anthropic names is spelled out: a value it
+// does not know (content_filter, a provider's own label) used to be copied
+// through verbatim, and Anthropic rejects an unknown stop_reason in history.
 func mapOpenAIFinishReasonToClaude(reason string) string {
 	switch strings.TrimSpace(reason) {
 	case "", "stop":
@@ -1374,7 +1378,49 @@ func mapOpenAIFinishReasonToClaude(reason string) string {
 		return "max_tokens"
 	case "tool_calls", "function_call":
 		return "tool_use"
+	case "content_filter":
+		return "refusal"
+	case "pause_turn":
+		return "pause_turn"
 	default:
-		return reason
+		return "end_turn"
 	}
+}
+
+// mapClaudeStopReasonToOpenAIFinish is mapClaudeStopReasonToOpenAI for a Chat
+// finish_reason. The two differ for the Anthropic-only terminal reasons: clients
+// that switch on finish_reason only understand stop/length/tool_calls, so
+// refusal and pause_turn become "stop" instead of leaking through.
+func mapClaudeStopReasonToOpenAIFinish(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "refusal", "pause_turn":
+		return "stop"
+	default:
+		return mapClaudeStopReasonToOpenAI(reason)
+	}
+}
+
+// mapResponsesIncompleteToOpenAIFinish maps a Responses terminal state onto a
+// Chat finish_reason. A turn cut short by max_output_tokens must report
+// "length": reporting "stop" told the client the answer was whole and it never
+// asked for the rest.
+func mapResponsesIncompleteToOpenAIFinish(status, incompleteReason string) string {
+	if strings.TrimSpace(status) != "incomplete" {
+		return ""
+	}
+	switch strings.TrimSpace(incompleteReason) {
+	case "content_filter":
+		return "content_filter"
+	default:
+		return "length"
+	}
+}
+
+// responsesIncompleteReason reads incomplete_details.reason from a Responses
+// object, tolerating a missing or malformed object.
+func responsesIncompleteReason(response map[string]any) string {
+	if details, ok := response["incomplete_details"].(map[string]any); ok {
+		return stringValue(details["reason"])
+	}
+	return ""
 }
