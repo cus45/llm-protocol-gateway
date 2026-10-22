@@ -444,6 +444,10 @@ func openAIChatToResponsesRequest(chatReq map[string]any, model string) (map[str
 	if depth := normalizeReasoningEffort(stringValue(chatReq["reasoning_effort"])); depth != "" {
 		responsesReq["reasoning"] = map[string]any{"effort": depth}
 	}
+	// 结构化输出：Chat response_format ↔ Responses text.format。
+	if text := chatResponseFormatToResponsesTextFormat(chatReq["response_format"]); text != nil {
+		responsesReq["text"] = text
+	}
 	copyChatToolsToResponses(chatReq, responsesReq)
 	return responsesReq, nil
 }
@@ -756,6 +760,8 @@ func responsesToOpenAIChatRequest(responsesReq map[string]any, model string) (ma
 	if user := strings.TrimSpace(stringValue(responsesReq["user"])); user != "" {
 		chatReq["user"] = user
 	}
+	// 结构化输出：Responses text.format ↔ Chat response_format。
+	applyResponsesTextFormatToChat(responsesReq, chatReq)
 	normalizeOpenAIChatMaxTokensField(chatReq, model)
 	if reasoning, ok := responsesReq["reasoning"].(map[string]any); ok {
 		if effort := normalizeReasoningEffort(stringValue(reasoning["effort"])); effort != "" {
