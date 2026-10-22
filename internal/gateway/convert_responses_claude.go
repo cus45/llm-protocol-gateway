@@ -685,12 +685,13 @@ func claudeToResponsesResponseDirect(claudeBody []byte, model string, toolCtx *c
 		response["incomplete_details"] = map[string]any{"reason": incompleteReason}
 	}
 	// Claude 按停止序列停下（stop_sequence）在 Responses 里没有对应状态；正文
-	// 以客户端要的序列结尾时报 completed，并带上命中的序列。
+	// 以客户端要的序列结尾时报 completed，并带上命中的序列。被截断（incomplete）
+	// 的 turn 不在此列：状态归状态，序列照报，但截断不能被说成正常结束。
 	if blocks, ok := payload["content"].([]any); ok {
 		if matched := matchedStopSequence(claudeBlocksVisibleText(blocks), clientStopSequences); matched != "" {
-			response["status"] = "completed"
-			response["stop_sequence"] = matched
-			delete(response, "incomplete_details")
+			if status == "completed" {
+				response["stop_sequence"] = matched
+			}
 		}
 	}
 

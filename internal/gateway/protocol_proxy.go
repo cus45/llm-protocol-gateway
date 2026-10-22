@@ -307,7 +307,12 @@ func (s *Server) proxyResponsesToClaudeMessages(w http.ResponseWriter, r *http.R
 	if cacheKey := s.promptCacheKeyForClaudeRequest(r, claudeReq); cacheKey != "" {
 		responsesReq["prompt_cache_key"] = cacheKey
 	}
-	return s.proxyConvertedThroughResponses(w, r, provider, model, responsesReq, skipIncomingAuth, responsesToClaudeResponseDirect, streamResponsesToClaudeEventsDirect)
+	// stop_sequences 不发给 Responses 上游（它没有这个参数），由网关记住并在
+	// 回包时本地匹配回填：直接转换器看不到客户端原始字段，只能从这里注入。
+	r, clientStopSequences := rememberConvertedStopSequences(r, claudeReq["stop_sequences"])
+	return s.proxyConvertedThroughResponses(w, r, provider, model, responsesReq, skipIncomingAuth, func(body []byte, model string) ([]byte, TokenUsage, error) {
+		return claudeToResponsesResponseDirect(body, model, nil, clientStopSequences...)
+	}, streamResponsesToClaudeEventsDirect)
 }
 
 func (s *Server) proxyClaudeToResponses(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, responsesReq map[string]any, skipIncomingAuth bool) (int, TokenUsage, []byte, error) {

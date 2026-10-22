@@ -281,14 +281,9 @@ func claudeToResponsesRequestDirect(claudeReq map[string]any, model string) (map
 		responsesReq["stream"] = false
 	}
 	copyClaudeSamplingTo(claudeReq, responsesReq, "temperature", "top_p")
-	if stop := claudeSequencesToChatStop(claudeReq); len(stop) > 0 {
-		// Responses takes a single string; several sequences become a list.
-		if len(stop) == 1 {
-			responsesReq["stop"] = stop[0]
-		} else {
-			responsesReq["stop"] = stop
-		}
-	}
+	// stop_sequences 不转发：Responses API 没有 stop 参数，带上去只会换来
+	// 400 Unknown parameter。序列由网关记住，回包时本地匹配回填
+	// （见 rememberConvertedStopSequences / fillNonStreamStopSequence）。
 	if metadata, ok := claudeReq["metadata"].(map[string]any); ok {
 		if userID := strings.TrimSpace(stringValue(metadata["user_id"])); userID != "" {
 			responsesReq["user"] = userID

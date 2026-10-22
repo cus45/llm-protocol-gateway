@@ -101,7 +101,8 @@ func TestResponsesStopUserToChat(t *testing.T) {
 	}
 }
 
-// TestChatStopUserToResponses: Chat→Responses 把 stop / user 带过去。
+// TestChatStopUserToResponses: Chat→Responses 带上 user，但 stop 不发 ——
+// Responses API 没有 stop 参数（400 Unknown parameter），序列由网关本地记下。
 func TestChatStopUserToResponses(t *testing.T) {
 	chatReq := map[string]any{
 		"model":    "gpt-4.1",
@@ -112,9 +113,8 @@ func TestChatStopUserToResponses(t *testing.T) {
 	responses := mustRequest(t, func() (map[string]any, error) {
 		return openAIChatToResponsesRequest(chatReq, "gpt-4.1")
 	})
-	stop, _ := responses["stop"].([]any)
-	if len(stop) != 2 || stop[1] != "STOP" {
-		t.Fatalf("stop = %#v", responses["stop"])
+	if stop, exists := responses["stop"]; exists {
+		t.Fatalf("stop = %#v, want absent for a Responses upstream", stop)
 	}
 	if responses["user"] != "user-3" {
 		t.Fatalf("user = %#v", responses["user"])
@@ -122,7 +122,8 @@ func TestChatStopUserToResponses(t *testing.T) {
 }
 
 // TestClaudeStopMetadataToResponses: Claude→Responses 是 Responses→Claude 的
-// 反向，stop_sequences 必须能回来。
+// 反向。user 必须带过去；stop_sequences 不带上游（Responses 没有 stop），
+// 由网关记住、回包时本地匹配。原始请求不被改写，同一 map 可反复转换。
 func TestClaudeStopMetadataToResponses(t *testing.T) {
 	claudeReq := map[string]any{
 		"model":          "claude-sonnet-4-5",
@@ -131,18 +132,27 @@ func TestClaudeStopMetadataToResponses(t *testing.T) {
 		"metadata":       map[string]any{"user_id": "user-5"},
 		"messages":       []any{map[string]any{"role": "user", "content": "hi"}},
 	}
-	responses := mustRequest(t, func() (map[string]any, error) {
-		return claudeToResponsesRequestDirect(claudeReq, "gpt-4.1")
-	})
-	// Responses takes the single-string form.
-	if responses["stop"] != "END" {
-		t.Fatalf("stop = %#v, want \"END\"", responses["stop"])
-	}
-	if responses["user"] != "user-5" {
-		t.Fatalf("user = %#v", responses["user"])
-	}
-	// Round trip through the serialised body: the field must survive JSON.
-	if _, err := json.Marshal(responses); err != nil {
-		t.Fatalf("marshal: %v", err)
+	for round := 0; round < 2; round++ {
+		responses := mustRequest(t, func() (map[string]any, error) {
+			return claudeToResponsesRequestDirect(claudeReq, "gpt-4.1")
+		})
+		if stop, exists := responses["stop"]; exists {
+			t.Fatalf("round %d: stop = %#v, want absent for a Responses upstream", round, stop)
+		}
+		if responses["user"] != "user-5" {
+			t.Fatalf("round %d: user = %#v", round, responses["user"])
+		}
+		// Round trip through the serialised body: the field must stay absent.
+		raw, err := json.Marshal(responses)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, exists := wire["stop"]; exists {
+			t.Fatalf("round %d: serialised body carries stop: %s", round, raw)
+		}
 	}
 }

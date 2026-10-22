@@ -435,9 +435,8 @@ func openAIChatToResponsesRequest(chatReq map[string]any, model string) (map[str
 		responsesReq["stream"] = stream
 	}
 	copyClaudeSamplingTo(chatReq, responsesReq, "temperature", "top_p")
-	if stop, exists := chatReq["stop"]; exists && stop != nil {
-		responsesReq["stop"] = stop
-	}
+	// Chat 的 stop 不转发：Responses API 不认识该参数（400 Unknown parameter），
+	// 序列由 rememberConvertedStopSequences 记在请求上下文里，回包本地回填。
 	if user := strings.TrimSpace(stringValue(chatReq["user"])); user != "" {
 		responsesReq["user"] = user
 	}

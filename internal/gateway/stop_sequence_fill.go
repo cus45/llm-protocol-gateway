@@ -75,9 +75,14 @@ func fillNonStreamStopSequence(body []byte, sequences []string) []byte {
 	}
 	if _, isResponses := payload["output"]; isResponses {
 		if matched := matchedStopSequence(responsesOutputText(payload["output"]), sequences); matched != "" {
-			payload["status"] = "completed"
-			payload["stop_sequence"] = matched
-			changed = true
+			// 只给正常结束的 turn 补序列：被 max_output_tokens / 内容过滤
+			// 截断的响应，状态是 status 自己的事，翻成 completed 会让客户端
+			// 把截断当成正常停下并永久丢失后半段。
+			if status := stringValue(payload["status"]); status == "" || status == "completed" {
+				payload["status"] = "completed"
+				payload["stop_sequence"] = matched
+				changed = true
+			}
 		}
 	}
 	if !changed {
