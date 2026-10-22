@@ -5159,7 +5159,7 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		// Chat→Claude 直写流（未走 finishConvertedProxy），同样需要心跳防反代空闲断流。
 		stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
 		defer stopHeartbeat()
-		usage, streamErr := streamOpenAIChatToClaudeEvents(hw, response.Body, model, declaredTools)
+		usage, streamErr := streamOpenAIChatToClaudeEvents(hw, response.Body, model, declaredTools, clientStopSequences...)
 		return response.StatusCode, usage, nil, streamErr
 	}
 

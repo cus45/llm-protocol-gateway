@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMatchedStopSequence(t *testing.T) {
@@ -112,5 +114,48 @@ func TestFillNonStreamStopSequenceChat(t *testing.T) {
 	}
 	if out := fillNonStreamStopSequence(body, []string{"NOPE"}); string(out) != string(body) {
 		t.Fatalf("body changed on a non-match: %s", out)
+	}
+}
+
+func TestTailForStopSequences(t *testing.T) {
+	if got := tailForStopSequences("abc", []string{"END"}); got != "abc" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	if got := tailForStopSequences("123456789", []string{"END"}); got != "56789" {
+		t.Fatalf("tail = %q, want 56789 (the sequence plus two runes of context)", got)
+	}
+	// Multi-byte text stays on a rune boundary.
+	if got := tailForStopSequences("一二三四五", []string{"\x0a"}); !utf8.ValidString(got) || got != "三四五" {
+		t.Fatalf("tail = %q", got)
+	}
+}
+
+// TestChatToClaudeStreamReportsStopSequence: 流式 Chat→Claude 的正文以客户端
+// 停止序列结尾时，message_delta 应报 stop_sequence 与命中的序列。
+func TestChatToClaudeStreamReportsStopSequence(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"glm","choices":[{"index":0,"delta":{"role":"assistant","content":"1\n2\n6"},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"glm","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+	rec := httptest.NewRecorder()
+	if _, err := streamOpenAIChatToClaudeEvents(rec, strings.NewReader(stream), "glm", nil, "\x0a6"); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `"stop_reason":"stop_sequence"`) {
+		t.Fatalf("stream did not report stop_sequence:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_sequence":"\n6"`) {
+		t.Fatalf("stream did not report the matched sequence:\n%s", out)
+	}
+
+	// Without the client's sequences the ordinary end_turn stands.
+	rec = httptest.NewRecorder()
+	if _, err := streamOpenAIChatToClaudeEvents(rec, strings.NewReader(stream), "glm", nil); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if strings.Contains(rec.Body.String(), "stop_sequence\":\"") {
+		t.Fatalf("unexpected sequence without client sequences:\n%s", rec.Body.String())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 // 停止序列回填。
@@ -161,4 +162,29 @@ func firstChatChoiceVisibleText(payload map[string]any) string {
 	}
 	choice, _ := choices[0].(map[string]any)
 	return chatChoiceVisibleText(choice)
+}
+
+func tailForStopSequences(text string, sequences []string) string {
+	if len(sequences) == 0 {
+		return text
+	}
+	longest := 0
+	for _, sequence := range sequences {
+		if n := len([]rune(sequence)); n > longest {
+			longest = n
+		}
+	}
+	keep := longest + 2
+	// Keep the raw bytes of the last keep runes: cut never lands inside a rune,
+	// and the window is all a suffix match needs.
+	keepBytes := 0
+	for cut, kept := len(text), 0; cut > 0 && kept < keep; kept++ {
+		_, size := utf8.DecodeLastRuneInString(text[:cut])
+		if size <= 0 {
+			break
+		}
+		cut -= size
+		keepBytes += size
+	}
+	return text[len(text)-keepBytes:]
 }

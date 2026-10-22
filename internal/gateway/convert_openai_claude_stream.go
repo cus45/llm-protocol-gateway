@@ -32,7 +32,7 @@ func writeClaudeSSE(w http.ResponseWriter, event string, payload any) error {
 // streamOpenAIChatToClaudeEvents reads an OpenAI Chat Completions SSE stream and
 // writes an Anthropic Messages API SSE stream to w. declared is the request's
 // own tool list, used to put back a spelling the model changed the case of.
-func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, model string, declared map[string]struct{}) (TokenUsage, error) {
+func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, model string, declared map[string]struct{}, clientStopSequences ...string) (TokenUsage, error) {
 	messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	resolvedModel := strings.TrimSpace(model)
 	messageStarted := false
@@ -47,6 +47,8 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 	toolBlockIndexByCall := make(map[int]int)
 	usage := TokenUsage{}
 	stopReason := "end_turn"
+	// Text seen so far (tail only), for reporting a converted stop sequence.
+	visibleText := ""
 
 	closeTextBlock := func() error {
 		if !textBlockOpen {
@@ -268,6 +270,9 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			if err := startTextBlock(); err != nil {
 				return usage, err
 			}
+			// Keep the tail: a converted stop sequence is recognised when the
+			// visible text ends on it, and it can arrive split across chunks.
+			visibleText = tailForStopSequences(visibleText+text, clientStopSequences)
 			if err := writeClaudeSSE(w, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": blockIndex,
@@ -303,6 +308,10 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			return usage, err
 		}
 	}
+	// Chat only says "stop"; when the visible answer ends on a stop sequence
+	// the client sent, report it the way Anthropic does.
+	var stopSequenceValue any
+	stopReason, stopSequenceValue = claudeStopReasonWithSequence(stopReason, visibleText, clientStopSequences)
 	claudeUsage := map[string]any{"output_tokens": usage.OutputTokens}
 	if usage.InputTokens > 0 || usage.CacheTokens > 0 {
 		// Anthropic clients expect input_tokens to exclude cache hits.
@@ -313,7 +322,7 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 	}
 	if err := writeClaudeSSE(w, "message_delta", map[string]any{
 		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": stopSequenceValue},
 		"usage": claudeUsage,
 	}); err != nil {
 		return usage, err
