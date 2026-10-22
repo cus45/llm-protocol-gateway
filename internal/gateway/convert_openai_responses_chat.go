@@ -846,7 +846,11 @@ func responsesToOpenAIChatResponse(responsesBody []byte, model string) ([]byte, 
 			})
 		}
 		if len(calls) > 0 {
-			assistantMessage["content"] = nil
+			// 说明文字（"我先查一下"）和工具调用可以同时存在；只有真的没有
+			// 文字时才置 null，Chat 客户端回放历史时不会丢掉这段说明。
+			if text == "" {
+				assistantMessage["content"] = nil
+			}
 			assistantMessage["tool_calls"] = calls
 		}
 	}
