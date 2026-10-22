@@ -278,6 +278,7 @@ func (s *Server) proxyOpenAIChatToResponses(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
+	r, clientStopSequences := rememberConvertedStopSequences(r, chatReq["stop"])
 	// Cursor OAuth injects bridge quirks; other openai_chat providers stay standard
 	// so Claude→Responses (and generic Chat→Responses) are not coupled to Cursor fixes.
 	opts := StandardChatToResponsesStreamOptions()
@@ -289,7 +290,8 @@ func (s *Server) proxyOpenAIChatToResponses(w http.ResponseWriter, r *http.Reque
 		return streamOpenAIChatToResponsesEventsWithOptions(w, reader, model, opts)
 	}
 	return s.proxyConvertedThroughChat(w, r, provider, model, chatReq, skipIncomingAuth, func(chatBody []byte, model string) ([]byte, TokenUsage, error) {
-		return openAIChatToResponsesResponseWithTools(chatBody, model, toolCtx)
+		body, usage, err := openAIChatToResponsesResponseWithTools(chatBody, model, toolCtx)
+		return fillNonStreamStopSequence(body, clientStopSequences), usage, err
 	}, streamConvert)
 }
 
@@ -317,8 +319,9 @@ func (s *Server) proxyClaudeToResponses(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
+	r, clientStopSequences := rememberConvertedStopSequences(r, claudeReq["stop_sequences"])
 	return s.proxyConvertedThroughClaude(w, r, provider, model, claudeReq, skipIncomingAuth, func(claudeBody []byte, model string) ([]byte, TokenUsage, error) {
-		return claudeToResponsesResponseDirect(claudeBody, model, toolCtx)
+		return claudeToResponsesResponseDirect(claudeBody, model, toolCtx, clientStopSequences...)
 	}, func(w http.ResponseWriter, reader io.Reader, model string) (TokenUsage, error) {
 		return streamClaudeToResponsesEventsDirect(w, reader, model, toolCtx)
 	})

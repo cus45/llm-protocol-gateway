@@ -248,9 +248,9 @@ func claudeRequestToOpenAIChat(claudeReq map[string]any, model string) (map[stri
 		openAIReq["stream"] = false
 	}
 	copyClaudeSamplingTo(claudeReq, openAIReq, "max_tokens", "temperature", "top_p")
-	// Claude 的 stop_sequences 在 Chat 里叫 stop（单个字符串或列表都接受），
-	// 丢掉它会让上游一直生成到 max_tokens。
-	if stop := claudeSequencesToChatStop(claudeReq); stop != nil {
+	// Claude 的 stop_sequences 在 Chat 里叫 stop；丢掉它会让上游一直生成到
+	// max_tokens。解码后的请求一律发数组，见 claudeSequencesToChatStop。
+	if stop := claudeSequencesToChatStop(claudeReq); len(stop) > 0 {
 		openAIReq["stop"] = stop
 	}
 	if metadata, ok := claudeReq["metadata"].(map[string]any); ok {
@@ -348,7 +348,7 @@ func usageMapToClaudeUsage(usage TokenUsage, usageMap map[string]any) map[string
 // openAIChatResponseToClaude converts an OpenAI Chat Completions JSON response
 // into an Anthropic Messages API response. declared is the request's own tool
 // list, used to put back a spelling the model changed the case of.
-func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[string]struct{}) ([]byte, TokenUsage, error) {
+func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[string]struct{}, clientStopSequences ...string) ([]byte, TokenUsage, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(openAIResp, &payload); err != nil {
 		return nil, TokenUsage{}, err
@@ -376,6 +376,10 @@ func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[st
 	if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
 		stopReason = mapOpenAIFinishReasonToClaude(reason)
 	}
+	// Chat 只会说 stop；若正文正好以客户端要的停止序列结尾，按 Anthropic 的
+	// 规则如实报告 stop_reason=stop_sequence 与命中的序列。
+	var stopSequence any
+	stopReason, stopSequence = claudeStopReasonWithSequence(stopReason, claudeBlocksVisibleText(contentBlocks), clientStopSequences)
 
 	usage := ParseOpenAIUsage(openAIResp)
 	claudeUsage := usageMapToClaudeUsage(usage, extractCacheUsage(openAIResp))
@@ -387,7 +391,7 @@ func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[st
 		"model":         firstNonEmpty(model, stringValue(payload["model"])),
 		"content":       contentBlocks,
 		"stop_reason":   stopReason,
-		"stop_sequence": nil,
+		"stop_sequence": stopSequence,
 		"usage":         claudeUsage,
 	}
 	body, err := json.Marshal(response)

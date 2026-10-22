@@ -524,7 +524,7 @@ func sanitizeResponsesToolName(claudeName string, clientToolNames map[string]str
 // claudeToResponsesResponseDirect converts a non-streamed Anthropic Messages
 // response directly into a Responses response, preserving signed thinking blocks
 // as reasoning items and restoring client tool names / Codex namespace identity.
-func claudeToResponsesResponseDirect(claudeBody []byte, model string, toolCtx *codexToolContext) ([]byte, TokenUsage, error) {
+func claudeToResponsesResponseDirect(claudeBody []byte, model string, toolCtx *codexToolContext, clientStopSequences ...string) ([]byte, TokenUsage, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(claudeBody, &payload); err != nil {
 		return nil, TokenUsage{}, err
@@ -651,6 +651,15 @@ func claudeToResponsesResponseDirect(claudeBody []byte, model string, toolCtx *c
 	}
 	if incompleteReason != "" {
 		response["incomplete_details"] = map[string]any{"reason": incompleteReason}
+	}
+	// Claude 按停止序列停下（stop_sequence）在 Responses 里没有对应状态；正文
+	// 以客户端要的序列结尾时报 completed，并带上命中的序列。
+	if blocks, ok := payload["content"].([]any); ok {
+		if matched := matchedStopSequence(claudeBlocksVisibleText(blocks), clientStopSequences); matched != "" {
+			response["status"] = "completed"
+			response["stop_sequence"] = matched
+			delete(response, "incomplete_details")
+		}
 	}
 
 	body, err := json.Marshal(response)

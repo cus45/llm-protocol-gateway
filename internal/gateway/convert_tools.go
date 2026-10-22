@@ -1035,25 +1035,20 @@ func chatStopToClaudeSequences(source map[string]any) []string {
 	return stopSequencesFromAny(source["stop_sequences"])
 }
 
-// claudeSequencesToChatStop maps Claude `stop_sequences` onto Chat `stop`: a
-// single sequence keeps the string form most SDKs send, several stay a list.
-func claudeSequencesToChatStop(source map[string]any) any {
+// claudeSequencesToChatStop maps Claude `stop_sequences` onto the Chat `stop`
+// field. Chat accepts a string or an array, but strict upstreams (GLM's
+// ChatCompletionRequest among them) deserialize the field as an array only and
+// answer a string with a 400 — so a decoded request always gets an array, even
+// for a single sequence.
+func claudeSequencesToChatStop(source map[string]any) []any {
 	if source == nil {
 		return nil
 	}
 	sequences := stopSequencesFromAny(source["stop_sequences"])
-	switch len(sequences) {
-	case 0:
+	if len(sequences) == 0 {
 		return nil
-	case 1:
-		return sequences[0]
-	default:
-		out := make([]any, 0, len(sequences))
-		for _, item := range sequences {
-			out = append(out, item)
-		}
-		return out
 	}
+	return toAnySliceOfStrings(sequences)
 }
 
 func openAIToolCallsToClaudeBlocks(toolCalls []any) []any {

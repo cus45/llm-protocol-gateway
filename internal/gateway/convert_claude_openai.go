@@ -456,7 +456,7 @@ func claudeUsageToOpenAIUsage(usage TokenUsage, usageMap map[string]any) map[str
 
 // claudeResponseToOpenAIChat converts an Anthropic Messages API JSON response
 // into an OpenAI Chat Completions response.
-func claudeResponseToOpenAIChat(claudeResp []byte, model string, clientToolNames map[string]struct{}) ([]byte, TokenUsage, error) {
+func claudeResponseToOpenAIChat(claudeResp []byte, model string, clientToolNames map[string]struct{}, clientStopSequences ...string) ([]byte, TokenUsage, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(claudeResp, &payload); err != nil {
 		return nil, TokenUsage{}, err
@@ -473,6 +473,10 @@ func claudeResponseToOpenAIChat(claudeResp []byte, model string, clientToolNames
 	assistantMessage := claudeResponseContentToOpenAIAssistantMessage(payload["content"], clientToolNames)
 	stopReason := mapClaudeStopReasonToOpenAI(stringValue(payload["stop_reason"]))
 	openAIUsage := claudeUsageToOpenAIUsage(usage, extractCacheUsage(claudeResp))
+	if len(clientStopSequences) > 0 && matchedStopSequence(openAIAssistantVisibleText(assistantMessage), clientStopSequences) != "" {
+		// 按客户端的停止序列停下时，Claude 报 stop_sequence，Chat 只认 stop。
+		stopReason = "stop"
+	}
 
 	response := map[string]any{
 		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),

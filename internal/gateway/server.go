@@ -5062,6 +5062,9 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	// back: a model that answers "bash" for a tool the client registered as
 	// "Bash" would otherwise reach the client as a tool it does not know.
 	declaredTools := claudeDeclaredToolNames(claudeReq["tools"])
+	// Remember the stop sequences the Chat hop now carries, so a turn that ends
+	// on one is reported back as stop_sequence rather than a plain stop.
+	r, clientStopSequences := rememberConvertedStopSequences(r, openAIReq["stop"])
 	stream, _ := openAIReq["stream"].(bool)
 	// These subscriptions only answer as a stream: WorkBuddy refuses a non-stream
 	// chat, Trae and Qoder are their agent's own event streams, and OpenCode
@@ -5180,7 +5183,7 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		return response.StatusCode, TokenUsage{}, claudeBody, writeErr
 	}
 
-	claudeBody, usage, err := openAIChatResponseToClaude(responseBody, model, declaredTools)
+	claudeBody, usage, err := openAIChatResponseToClaude(responseBody, model, declaredTools, clientStopSequences...)
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
@@ -5575,6 +5578,7 @@ func (s *Server) proxyClaudeToOpenAIChat(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
+	r, clientStopSequences := rememberConvertedStopSequences(r, claudeReq["stop_sequences"])
 	stream, _ := claudeReq["stream"].(bool)
 	upstreamBody, err := json.Marshal(claudeReq)
 	if err != nil {
@@ -5598,7 +5602,7 @@ func (s *Server) proxyClaudeToOpenAIChat(w http.ResponseWriter, r *http.Request,
 		return response, nil
 	}
 	convert := func(body []byte, modelName string) ([]byte, TokenUsage, error) {
-		return claudeResponseToOpenAIChat(body, modelName, clientToolNames)
+		return claudeResponseToOpenAIChat(body, modelName, clientToolNames, clientStopSequences...)
 	}
 	streamConvert := func(w http.ResponseWriter, reader io.Reader, modelName string) (TokenUsage, error) {
 		return streamClaudeToOpenAIChatEvents(w, reader, modelName, clientToolNames)

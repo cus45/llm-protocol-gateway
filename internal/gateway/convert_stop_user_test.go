@@ -36,13 +36,15 @@ func TestClaudeStopAndMetadataToChat(t *testing.T) {
 		t.Fatalf("user = %#v, want user-42", chat["user"])
 	}
 
-	// A single sequence keeps the string form SDKs send.
+	// A single sequence still goes out as an array: strict upstreams such as
+	// GLM's ChatCompletionRequest refuse the string form with a 400.
 	claudeReq["stop_sequences"] = []any{"END"}
 	chat = mustRequest(t, func() (map[string]any, error) {
 		return claudeRequestToOpenAIChat(claudeReq, "gpt-4.1")
 	})
-	if chat["stop"] != "END" {
-		t.Fatalf("single stop = %#v, want \"END\"", chat["stop"])
+	single, _ := chat["stop"].([]any)
+	if len(single) != 1 || single[0] != "END" {
+		t.Fatalf("single stop = %#v, want [\"END\"]", chat["stop"])
 	}
 }
 
@@ -132,6 +134,7 @@ func TestClaudeStopMetadataToResponses(t *testing.T) {
 	responses := mustRequest(t, func() (map[string]any, error) {
 		return claudeToResponsesRequestDirect(claudeReq, "gpt-4.1")
 	})
+	// Responses takes the single-string form.
 	if responses["stop"] != "END" {
 		t.Fatalf("stop = %#v, want \"END\"", responses["stop"])
 	}
