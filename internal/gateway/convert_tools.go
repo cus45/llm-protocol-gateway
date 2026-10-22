@@ -983,6 +983,79 @@ func copyChatToolsToResponses(source map[string]any, target map[string]any) {
 	}
 }
 
+// copyClaudeSamplingTo forwards the sampling fields a Claude request carries
+// onto another protocol's request body. top_k is Anthropic-only, so callers
+// that have no slot for it simply omit the key rather than misplace a number.
+func copyClaudeSamplingTo(claudeReq, target map[string]any, keys ...string) {
+	if claudeReq == nil || target == nil {
+		return
+	}
+	for _, key := range keys {
+		if value, exists := claudeReq[key]; exists {
+			target[key] = value
+		}
+	}
+}
+
+// stopSequencesFromAny normalises a stop field however it was spelled: a single
+// string (Chat / OpenAI SDKs) or a list. Returns nil for an empty or malformed
+// value so callers can leave the field out.
+func stopSequencesFromAny(raw any) []string {
+	var out []string
+	switch typed := raw.(type) {
+	case string:
+		if typed != "" {
+			out = append(out, typed)
+		}
+	case []string:
+		for _, item := range typed {
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok && text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
+
+// chatStopToClaudeSequences maps a Chat `stop` onto Claude `stop_sequences`.
+func chatStopToClaudeSequences(source map[string]any) []string {
+	if source == nil {
+		return nil
+	}
+	if raw, exists := source["stop"]; exists && raw != nil {
+		return stopSequencesFromAny(raw)
+	}
+	// Already-spelled Claude requests (Claude → Claude via a converted hop).
+	return stopSequencesFromAny(source["stop_sequences"])
+}
+
+// claudeSequencesToChatStop maps Claude `stop_sequences` onto Chat `stop`: a
+// single sequence keeps the string form most SDKs send, several stay a list.
+func claudeSequencesToChatStop(source map[string]any) any {
+	if source == nil {
+		return nil
+	}
+	sequences := stopSequencesFromAny(source["stop_sequences"])
+	switch len(sequences) {
+	case 0:
+		return nil
+	case 1:
+		return sequences[0]
+	default:
+		out := make([]any, 0, len(sequences))
+		for _, item := range sequences {
+			out = append(out, item)
+		}
+		return out
+	}
+}
+
 func openAIToolCallsToClaudeBlocks(toolCalls []any) []any {
 	blocks := make([]any, 0, len(toolCalls))
 	for _, item := range toolCalls {
@@ -1553,4 +1626,23 @@ func responsesIncompleteReason(response map[string]any) string {
 		return stringValue(details["reason"])
 	}
 	return ""
+}
+
+// responsesStopToClaudeSequences reads a Responses request's `stop` field,
+// whether the SDK spelled it as a string or a list.
+func responsesStopToClaudeSequences(source map[string]any) []string {
+	if source == nil {
+		return nil
+	}
+	return stopSequencesFromAny(source["stop"])
+}
+
+// toAnySliceOfStrings converts a []string to []any for JSON bodies built from
+// map[string]any, so the encoder emits an array rather than a typed slice.
+func toAnySliceOfStrings(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
 }

@@ -434,10 +434,12 @@ func openAIChatToResponsesRequest(chatReq map[string]any, model string) (map[str
 	if stream, ok := chatReq["stream"].(bool); ok {
 		responsesReq["stream"] = stream
 	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if value, exists := chatReq[key]; exists {
-			responsesReq[key] = value
-		}
+	copyClaudeSamplingTo(chatReq, responsesReq, "temperature", "top_p")
+	if stop, exists := chatReq["stop"]; exists && stop != nil {
+		responsesReq["stop"] = stop
+	}
+	if user := strings.TrimSpace(stringValue(chatReq["user"])); user != "" {
+		responsesReq["user"] = user
 	}
 	if depth := normalizeReasoningEffort(stringValue(chatReq["reasoning_effort"])); depth != "" {
 		responsesReq["reasoning"] = map[string]any{"effort": depth}
@@ -746,10 +748,13 @@ func responsesToOpenAIChatRequest(responsesReq map[string]any, model string) (ma
 	} else {
 		chatReq["stream"] = false
 	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if value, exists := responsesReq[key]; exists {
-			chatReq[key] = value
-		}
+	copyClaudeSamplingTo(responsesReq, chatReq, "temperature", "top_p")
+	if stop := responsesStopToClaudeSequences(responsesReq); len(stop) > 0 {
+		chatReq["stop"] = toAnySliceOfStrings(stop)
+	}
+	// Responses 的 user ↔ Chat 的 user：都是上游做限流/审计的终端用户标识。
+	if user := strings.TrimSpace(stringValue(responsesReq["user"])); user != "" {
+		chatReq["user"] = user
 	}
 	normalizeOpenAIChatMaxTokensField(chatReq, model)
 	if reasoning, ok := responsesReq["reasoning"].(map[string]any); ok {

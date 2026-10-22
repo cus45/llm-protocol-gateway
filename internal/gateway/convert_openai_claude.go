@@ -247,9 +247,16 @@ func claudeRequestToOpenAIChat(claudeReq map[string]any, model string) (map[stri
 	} else {
 		openAIReq["stream"] = false
 	}
-	for _, key := range []string{"max_tokens", "temperature", "top_p"} {
-		if value, exists := claudeReq[key]; exists {
-			openAIReq[key] = value
+	copyClaudeSamplingTo(claudeReq, openAIReq, "max_tokens", "temperature", "top_p")
+	// Claude 的 stop_sequences 在 Chat 里叫 stop（单个字符串或列表都接受），
+	// 丢掉它会让上游一直生成到 max_tokens。
+	if stop := claudeSequencesToChatStop(claudeReq); stop != nil {
+		openAIReq["stop"] = stop
+	}
+	if metadata, ok := claudeReq["metadata"].(map[string]any); ok {
+		// Claude metadata.user_id ↔ OpenAI 的 user（限流/审计用的终端用户标识）。
+		if userID := strings.TrimSpace(stringValue(metadata["user_id"])); userID != "" {
+			openAIReq["user"] = userID
 		}
 	}
 	normalizeOpenAIChatMaxTokensField(openAIReq, model)

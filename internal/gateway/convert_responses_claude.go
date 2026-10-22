@@ -475,10 +475,12 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	} else {
 		claudeReq["stream"] = false
 	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if value, exists := responsesReq[key]; exists {
-			claudeReq[key] = value
-		}
+	copyClaudeSamplingTo(responsesReq, claudeReq, "temperature", "top_p", "top_k")
+	if stop := responsesStopToClaudeSequences(responsesReq); len(stop) > 0 {
+		claudeReq["stop_sequences"] = toAnySliceOfStrings(stop)
+	}
+	if user := strings.TrimSpace(stringValue(responsesReq["user"])); user != "" {
+		claudeReq["metadata"] = map[string]any{"user_id": user}
 	}
 
 	// Tools: flatten Codex namespace / tool_search / custom into Claude tools.
