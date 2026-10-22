@@ -39,13 +39,13 @@ func TestOpenAIChatToClaudeRequestSanitizesInvalidToolUseIDs(t *testing.T) {
 	messages := claudeReq["messages"].([]map[string]any)
 	assistantBlocks := messages[1]["content"].([]any)
 	toolUse := assistantBlocks[0].(map[string]any)
-	if toolUse["id"] != "functions_Read_1" {
-		t.Fatalf("tool_use.id = %q, want sanitized", toolUse["id"])
+	if id := stringValue(toolUse["id"]); !strings.HasPrefix(id, "functions_Read_1_") || anthropicToolUseIDInvalid.MatchString(id) {
+		t.Fatalf("tool_use.id = %q, want sanitized id with hash suffix", id)
 	}
 	resultBlocks := messages[2]["content"].([]any)
 	toolResult := resultBlocks[0].(map[string]any)
-	if toolResult["tool_use_id"] != "functions_Read_1" {
-		t.Fatalf("tool_use_id = %q, want matching sanitized id", toolResult["tool_use_id"])
+	if toolResult["tool_use_id"] != toolUse["id"] {
+		t.Fatalf("tool_use_id = %q, want to match tool_use.id %q", toolResult["tool_use_id"], toolUse["id"])
 	}
 }
 
@@ -73,17 +73,44 @@ func TestOpenAIContentToClaudeBlocksConvertsImageURL(t *testing.T) {
 }
 
 func TestSanitizeAnthropicToolUseID(t *testing.T) {
+	// Valid ids pass through byte for byte; the rest are rewritten to
+	// Anthropic's charset plus a hash of the original, so two ids that collapse
+	// to the same readable prefix stay distinct.
 	cases := map[string]string{
-		"call_1":           "call_1",
-		"functions.Read:1": "functions_Read_1",
-		"call|abc":         "call_abc",
-		"  ":               "toolu_missing",
-		"...":              "toolu_sanitized",
+		"call_1":  "call_1",
+		"toolu_01": "toolu_01",
+		"  ":      "toolu_missing",
 	}
 	for in, want := range cases {
 		if got := sanitizeAnthropicToolUseID(in); got != want {
 			t.Fatalf("sanitizeAnthropicToolUseID(%q)=%q want %q", in, got, want)
 		}
+	}
+	rewritten := map[string]string{
+		"functions.Read:1": "functions_Read_1_",
+		"call|abc":         "call_abc_",
+		"functions:Read":   "functions_Read_",
+	}
+	seen := map[string]string{}
+	for in, prefix := range rewritten {
+		got := sanitizeAnthropicToolUseID(in)
+		if !strings.HasPrefix(got, prefix) || anthropicToolUseIDInvalid.MatchString(got) {
+			t.Fatalf("sanitizeAnthropicToolUseID(%q)=%q want prefix %q in Anthropic charset", in, got, prefix)
+		}
+		if got != sanitizeAnthropicToolUseID(in) {
+			t.Fatalf("sanitizeAnthropicToolUseID(%q) is not deterministic", in)
+		}
+		if other, ok := seen[got]; ok {
+			t.Fatalf("%q and %q both sanitize to %q", in, other, got)
+		}
+		seen[got] = in
+	}
+	if got := sanitizeAnthropicToolUseID("..."); !strings.HasPrefix(got, "toolu_sanitized_") {
+		t.Fatalf("all-punctuation id = %q, want toolu_sanitized_ prefix", got)
+	}
+	long := strings.Repeat("x", 200) + ".y"
+	if got := sanitizeAnthropicToolUseID(long); len(got) > 64 {
+		t.Fatalf("long id sanitized to %d chars, want <= 64: %q", len(got), got)
 	}
 }
 
@@ -831,5 +858,67 @@ func TestSummarizeUpstreamHTTPErrorNotesToolDialect(t *testing.T) {
 	other := summarizeUpstreamHTTPError(400, []byte(`{"error":{"message":"max tokens exceeded context"}}`))
 	if strings.Contains(other, chatToolDialectNote) {
 		t.Fatalf("an unrelated 400 got the tool-dialect note: %q", other)
+	}
+}
+
+// Cursor emits ids like "functions.Read:0"; another client spells the same call
+// "functions:Read:0". Both used to reduce to "functions_Read_0", and Anthropic
+// rejects a request whose tool_use ids repeat, failing the whole turn. The
+// hash suffix keeps them apart while tool_result still pairs with tool_use.
+func TestChatToClaudeDistinctToolIDsStayDistinct(t *testing.T) {
+	openAIReq := map[string]any{
+		"model": "claude-sonnet-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "read both"},
+			map[string]any{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []any{
+					map[string]any{"id": "functions.Read:0", "type": "function", "function": map[string]any{"name": "Read", "arguments": `{"path":"a.go"}`}},
+					map[string]any{"id": "functions:Read:0", "type": "function", "function": map[string]any{"name": "Read", "arguments": `{"path":"b.go"}`}},
+				},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "functions.Read:0", "content": "a"},
+			map[string]any{"role": "tool", "tool_call_id": "functions:Read:0", "content": "b"},
+		},
+	}
+	claudeReq, err := openAIChatToClaudeRequest(openAIReq, "claude-sonnet-5", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	messages := claudeReq["messages"].([]map[string]any)
+
+	ids := map[string]int{}
+	var useIDs []string
+	for _, raw := range messages[1]["content"].([]any) {
+		block, _ := raw.(map[string]any)
+		if stringValue(block["type"]) == "tool_use" {
+			id := stringValue(block["id"])
+			if anthropicToolUseIDInvalid.MatchString(id) {
+				t.Fatalf("tool_use.id %q is not in Anthropic's charset", id)
+			}
+			ids[id]++
+			useIDs = append(useIDs, id)
+		}
+	}
+	if len(useIDs) != 2 {
+		t.Fatalf("tool_use blocks = %v, want 2", useIDs)
+	}
+	if useIDs[0] == useIDs[1] {
+		t.Fatalf("both calls got id %q; ids must be unique", useIDs[0])
+	}
+
+	var resultIDs []string
+	for _, raw := range messages[len(messages)-1]["content"].([]any) {
+		block, _ := raw.(map[string]any)
+		if stringValue(block["type"]) == "tool_result" {
+			resultIDs = append(resultIDs, stringValue(block["tool_use_id"]))
+		}
+	}
+	if len(resultIDs) != 2 {
+		t.Fatalf("tool_result blocks = %v, want 2", resultIDs)
+	}
+	if resultIDs[0] != useIDs[0] || resultIDs[1] != useIDs[1] {
+		t.Fatalf("tool_result ids %v do not pair with tool_use ids %v", resultIDs, useIDs)
 	}
 }

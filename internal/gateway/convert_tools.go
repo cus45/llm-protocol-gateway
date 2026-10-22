@@ -104,17 +104,32 @@ var anthropicToolUseIDInvalid = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 // sanitizeAnthropicToolUseID rewrites a tool call id to Anthropic's allowed
 // charset. The same transform is applied to tool_use.id and tool_result.tool_use_id
 // so pairings stay intact.
+//
+// Ids that were already valid are returned untouched. Rewritten ids get a short
+// hash of the original appended: "functions.Read" and "functions:Read" both
+// reduce to "functions_Read", and two calls sharing one id in a single turn make
+// Anthropic reject the whole request (tool_use ids must be unique). The hash is
+// derived from the original id alone, so both sides of a pair still agree.
 func sanitizeAnthropicToolUseID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return "toolu_missing"
 	}
-	sanitized := anthropicToolUseIDInvalid.ReplaceAllString(id, "_")
-	sanitized = strings.Trim(sanitized, "_")
-	if sanitized == "" {
-		return "toolu_sanitized"
+	if !anthropicToolUseIDInvalid.MatchString(id) {
+		return id
 	}
-	return sanitized
+	sanitized := strings.Trim(anthropicToolUseIDInvalid.ReplaceAllString(id, "_"), "_")
+	if sanitized == "" {
+		sanitized = "toolu_sanitized"
+	}
+	sum := sha256.Sum256([]byte(id))
+	const maxBase = 48
+	if len(sanitized) > maxBase {
+		sanitized = strings.TrimRight(sanitized[:maxBase], "_")
+		sanitized += "_" + hex.EncodeToString(sum[:4])
+		return sanitized
+	}
+	return sanitized + "_" + hex.EncodeToString(sum[:4])
 }
 
 func cloneAnyMap(value map[string]any) map[string]any {
