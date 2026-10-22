@@ -188,3 +188,56 @@ func tailForStopSequences(text string, sequences []string) string {
 	}
 	return text[len(text)-keepBytes:]
 }
+
+// sanitizeClaudeStopSequences makes the client's stop_sequences safe to send to
+// a non-Anthropic Claude-compatible upstream. Those upstreams (GLM, and the
+// code-start regex other relays copy) decode the field into a list of strings:
+// a non-string entry fails the whole request ("Cannot construct instance of
+// java.util.ArrayList"), an empty string makes the stream stop before the first
+// token, and more than four entries are rejected outright beyond the first four.
+// Anthropic itself allows up to four, so the cap matches it; everything else is
+// rewritten in place and left absent when nothing survives.
+func sanitizeClaudeStopSequences(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	raw, exists := payload["stop_sequences"]
+	if !exists {
+		return
+	}
+	kept := make([]any, 0, 4)
+	for _, sequence := range stopSequencesFromAny(raw) {
+		if len(kept) == 4 {
+			break
+		}
+		kept = append(kept, sequence)
+	}
+	if len(kept) == 0 {
+		delete(payload, "stop_sequences")
+		return
+	}
+	payload["stop_sequences"] = kept
+}
+
+// sanitizeClaudeStopSequencesBody applies sanitizeClaudeStopSequences to a raw
+// Messages body, returning it untouched when there is nothing to rewrite.
+func sanitizeClaudeStopSequencesBody(body []byte) []byte {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	if _, exists := payload["stop_sequences"]; !exists {
+		return body
+	}
+	before, _ := json.Marshal(payload["stop_sequences"])
+	sanitizeClaudeStopSequences(payload)
+	after, _ := json.Marshal(payload["stop_sequences"])
+	if string(before) == string(after) {
+		return body
+	}
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return rewritten
+}

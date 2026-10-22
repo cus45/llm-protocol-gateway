@@ -5423,6 +5423,12 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 // regular Claude API-key providers), returning the raw response.
 func (s *Server) sendClaudeMessagesUpstream(r *http.Request, provider domain.Provider, body []byte) (*http.Response, error) {
 	isOAuth := provider.AuthType == domain.AuthTypeClaudeOAuth
+	// 直通 Claude 兼容上游（智谱 GLM 等）对 stop_sequences 的校验比 Anthropic 严：
+	// 非字符串项直接 400、空串会让流在第一个 token 前就停止、超过 4 条被拒。
+	// Claude 自家 API 保持原样透传。
+	if !isOAuth {
+		body = sanitizeClaudeStopSequencesBody(body)
+	}
 
 	var request *http.Request
 	var err error
