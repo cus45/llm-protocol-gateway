@@ -676,6 +676,7 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 	sawAny := false
 	textSeen := false
 	finishReason := "stop"
+	reasoningStreamed := false
 	toolIndexByCallID := map[string]int{}
 	toolIndexByItemID := map[string]int{}
 	argsSeenByIndex := map[int]bool{}
@@ -875,8 +876,25 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 			}
 		case "response.output_text.done":
 			// Already streamed via deltas.
-		case "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done":
-			// Keep reasoning out of Chat content so tool clients don't treat it as the answer.
+		case "response.reasoning_summary_text.done":
+			// Already streamed as a delta; the done event repeats the text.
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			// Reasoning travels as reasoning_content, never as content: tool
+			// clients would otherwise take the model's thinking for the answer.
+			// Dropping it entirely lost the chain of thought the client
+			// replays to the next turn.
+			if text := stringValue(chunk["delta"]); text != "" {
+				reasoningStreamed = true
+				delta := map[string]any{"reasoning_content": text}
+				if !roleSent {
+					delta["role"] = "assistant"
+					delta["content"] = nil
+					roleSent = true
+				}
+				if err := emitChunk(delta, ""); err != nil {
+					return usage, err
+				}
+			}
 		case "response.output_item.added":
 			if item, ok := chunk["item"].(map[string]any); ok {
 				if stringValue(item["type"]) == "function_call" {
@@ -929,6 +947,24 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 				// max_output_tokens must reach the client as "length".
 				if finish := mapResponsesIncompleteToOpenAIFinish(stringValue(response["status"]), responsesIncompleteReason(response)); finish != "" && finishReason != "tool_calls" {
 					finishReason = finish
+				}
+				// An upstream that sends reasoning only on the terminal event
+				// instead of as deltas still needs it delivered once.
+				if !reasoningStreamed {
+					if outputItems, ok := response["output"].([]any); ok {
+						if reasoning := reasoningTextFromResponsesOutput(outputItems); reasoning != "" {
+							reasoningStreamed = true
+							delta := map[string]any{"reasoning_content": reasoning}
+							if !roleSent {
+								delta["role"] = "assistant"
+								delta["content"] = nil
+								roleSent = true
+							}
+							if err := emitChunk(delta, ""); err != nil {
+								return usage, err
+							}
+						}
+					}
 				}
 				if !textSeen {
 					text := strings.TrimSpace(stringValue(response["output_text"]))

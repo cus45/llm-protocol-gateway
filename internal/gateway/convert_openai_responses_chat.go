@@ -268,6 +268,36 @@ func responsesOutputText(output any) string {
 	return strings.Join(parts, "\n")
 }
 
+// reasoningTextFromResponsesOutput collects the readable text of reasoning
+// items. Responses sends several shapes for it — reasoning_text parts, summary
+// parts, or a plain "text" — and an encrypted-only item has none, which is
+// expected and yields nothing.
+func reasoningTextFromResponsesOutput(output []any) string {
+	parts := make([]string, 0, len(output))
+	for _, item := range output {
+		block, ok := item.(map[string]any)
+		if !ok || stringValue(block["type"]) != "reasoning" {
+			continue
+		}
+		if text := stringValue(block["text"]); text != "" {
+			parts = append(parts, text)
+		}
+		for _, key := range []string{"content", "summary"} {
+			items, _ := block[key].([]any)
+			for _, raw := range items {
+				part, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if text := stringValue(part["text"]); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func inputItemsFromChatMessages(messages []any) ([]any, string, error) {
 	instructions := strings.Builder{}
 	inputItems := make([]any, 0, len(messages))
@@ -770,6 +800,12 @@ func responsesToOpenAIChatResponse(responsesBody []byte, model string) ([]byte, 
 	}
 	assistantMessage := map[string]any{"role": "assistant", "content": text}
 	if outputItems, ok := payload["output"].([]any); ok {
+		// Reasoning items come back in the same output array; Chat clients that
+		// replay it need it in reasoning_content or the model loses the chain
+		// of thought it was mid-way through.
+		if reasoning := reasoningTextFromResponsesOutput(outputItems); reasoning != "" {
+			assistantMessage["reasoning_content"] = reasoning
+		}
 		// A Responses answer may hold several function_call items (parallel tool
 		// use). Chat expresses them as one tool_calls array; keeping only the
 		// first call dropped every other one, so the client never ran them and
