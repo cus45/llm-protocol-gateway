@@ -137,5 +137,5 @@ func (s *Server) handleUsageAnalysis(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]any{"items": items, "total": total, "from": from, "to": to, "retentionDays": s.RequestLogRetentionDays()})
+	writeJSONGzip(w, r, 200, map[string]any{"items": items, "total": total, "from": from, "to": to, "retentionDays": s.RequestLogRetentionDays()})
 }

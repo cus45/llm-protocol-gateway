@@ -8,7 +8,6 @@ import {
     formatLocalISODate,
     formatTokenCount,
     normalizePromptTokenStats,
-    providerUsageLabel,
     providerUsageParts,
 } from '../lib';
 import {
@@ -26,6 +25,7 @@ import './usage.css';
 import {ContextAnalysisPanel, type LogFilters, RequestAnalysisPanel, useUsageAnalysis} from './usage_analysis';
 import {PerformanceAnalysisPanel} from './usage_performance';
 import {PriceTablePanel} from './pricing';
+import {ProviderRefLabel} from './provider_label';
 
 /** 概览份额图按哪个口径切：Token、请求次数，或已计价成本。 */
 type Metric = 'tokens' | 'requests' | 'cost';
@@ -137,8 +137,8 @@ function PulseStrip({ stats, todayMismatch }: { stats: RequestStatsSnapshot; tod
   </div>;
 }
 
-function Overview({ stats, providers, models, isNormalUser, metric }: {
-  stats: RequestStatsSnapshot; providers: Provider[]; models: Model[]; isNormalUser: boolean; metric: Metric;
+function Overview({ stats, providers, models, isNormalUser, metric, onMetricChange }: {
+  stats: RequestStatsSnapshot; providers: Provider[]; models: Model[]; isNormalUser: boolean; metric: Metric; onMetricChange: (metric: Metric) => void;
 }) {
   const [rankTab, setRankTab] = useState<'keys' | 'users'>('keys');
   const range = stats.range;
@@ -210,6 +210,19 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
       <UsageHourlyDistribution title="24 小时活跃分布" items={stats.hourly} rangeRequests={requests} />
       <UsageStatusChart title="状态码与健康度分布" items={stats.status || []} />
     </div>
+    {/* 口径切换放在它真正生效的那一组图表上方：之前挂在顶部工具栏里，
+        受影响的份额环图与排行都在两屏之外，点了看不到任何变化，像是没反应。 */}
+    <div className="usage-share-bar">
+      <div className="usage-share-bar-text">
+        <span className="usage-share-bar-title">份额与排行口径</span>
+        <small>下方份额环图、模型排行与密钥 / 账号 / 用户排行都按「{metricLabel(metric)}」统计{metric === 'cost' ? '，未计价的对象记为 0' : ''}；上方 KPI 卡片始终是绝对值。</small>
+      </div>
+      <div className="usage-segments usage-metric-switch" role="group" aria-label="份额统计口径">
+        <button type="button" aria-pressed={metric === 'tokens'} className={metric === 'tokens' ? 'active' : ''} onClick={() => onMetricChange('tokens')}>Token 份额</button>
+        <button type="button" aria-pressed={metric === 'requests'} className={metric === 'requests' ? 'active' : ''} onClick={() => onMetricChange('requests')}>请求份额</button>
+        <button type="button" aria-pressed={metric === 'cost'} className={metric === 'cost' ? 'active' : ''} onClick={() => onMetricChange('cost')} title="按网关价格表算出的成本排序；未计价的对象记为 0">成本份额</button>
+      </div>
+    </div>
     <div className="overview-distribution-row">
       <UsageDonutChart title={`Provider 份额（${metricLabel(metric)}）`} subtitle="各上游服务商承载占比" items={providerItems} formatValue={metricFormat(metric)} />
       <UsageDonutChart title={`输出协议分布（${metricLabel(metric)}）`} subtitle="网关输出协议转换份额" items={protocolItems} formatValue={metricFormat(metric)} />
@@ -253,23 +266,66 @@ function Overview({ stats, providers, models, isNormalUser, metric }: {
   </>;
 }
 
+/** RTK 面板的时间窗：与概览区间解耦，默认 30 天，含「今天」。 */
+const RTK_WINDOWS = [{days: 1, label: '今天'}, {days: 7, label: '7 天'}, {days: 30, label: '30 天'}, {days: 90, label: '90 天'}, {days: 0, label: '全部'}];
+
 function CompressionUsage({ stats, days, onDaysChange, providers }: { stats: RTKStatsResponse | null; days: number; onDaysChange: (days: number) => void; providers: Provider[] }) {
+  const accounts = stats?.byProvider || [];
+  const savingAccounts = accounts.filter(row => row.commands > 0);
+  const original = stats?.originalTokens || 0;
+  const saved = stats?.savedTokens || 0;
+  const windowLabel = RTK_WINDOWS.find(item => item.days === days)?.label || `${days} 天`;
   return <section className="usage-block usage-rtk-block">
-    <div className="usage-block-head"><div><h3>RTK 工具输出压缩</h3><p>统计网关转发前压缩过的命令输出，时间窗与概览区间相互独立。</p></div><div className="usage-segments">{[{ days: 7, label: '7 天' }, { days: 30, label: '30 天' }, { days: 90, label: '90 天' }, { days: 0, label: '全部' }].map(r => <button key={r.days} type="button" aria-pressed={days === r.days} className={days === r.days ? 'active' : ''} onClick={() => onDaysChange(r.days)}>{r.label}</button>)}</div></div>
+    <div className="usage-block-head">
+      <div>
+        <h3>RTK 工具输出压缩</h3>
+        <p>统计网关转发前压缩过的命令输出，时间窗与概览区间相互独立。当前窗口：{windowLabel}{stats?.from ? ` · 自 ${stats.from}` : ''}。</p>
+      </div>
+      <div className="usage-segments" role="group" aria-label="RTK 时间窗">{RTK_WINDOWS.map(item => <button key={item.days} type="button" aria-pressed={days === item.days} className={days === item.days ? 'active' : ''} onClick={() => onDaysChange(item.days)}>{item.label}</button>)}</div>
+    </div>
     <div className="usage-rtk-summary">
-      <div className="usage-rtk-hero"><span>已节省 Token</span><b>{formatTokenCount(stats?.savedTokens || 0)}</b><small>平均压缩率 {(stats?.savedPercent || 0).toFixed(1)}%</small></div>
+      <div className="usage-rtk-hero">
+        <span>已节省 Token · {windowLabel}</span>
+        <b>{formatTokenCount(saved)}</b>
+        <small>平均压缩率 {(stats?.savedPercent || 0).toFixed(1)}% · 覆盖 {savingAccounts.length} 个账号</small>
+      </div>
       <dl className="usage-facts">
-        <div><dt>原始输出</dt><dd>{formatTokenCount(stats?.originalTokens || 0)}</dd></div>
+        <div><dt>原始输出</dt><dd>{formatTokenCount(original)}</dd></div>
         <div><dt>压缩后</dt><dd>{formatTokenCount(stats?.compressedTokens || 0)}</dd></div>
         <div><dt>压缩命令</dt><dd>{(stats?.commands || 0).toLocaleString()}</dd></div>
-        <div><dt>平均每条节省</dt><dd>{stats?.commands ? formatTokenCount(Math.round((stats.savedTokens || 0) / stats.commands)) : '—'}</dd></div>
+        <div><dt>平均每条节省</dt><dd>{stats?.commands ? formatTokenCount(Math.round(saved / stats.commands)) : '—'}</dd></div>
         <div><dt>字节节省</dt><dd>{formatBytes(Math.max(0, (stats?.originalBytes || 0) - (stats?.compressedBytes || 0)))}</dd></div>
       </dl>
     </div>
     {stats && !stats.available && <p className="usage-note">当前主机未检测到 RTK，已有历史记录仍会保留。</p>}
     {!stats && <p className="usage-empty">暂无压缩统计</p>}
-    {!!stats?.daily.length && <><div className="usage-chart-legend"><span><i style={{background: 'var(--usage-category-1)'}} />压缩节省</span><span><i style={{background: 'var(--usage-category-2)'}} />压缩后发送</span></div><RTKSavingsChart points={stats.daily} /></>}
-    {!!stats?.byProvider?.length && <div className="usage-compression-providers">{stats.byProvider.map(p => <div key={p.providerId}><span>{providerUsageLabel(p.providerId, providers)}</span><b>{formatTokenCount(p.savedTokens)} Token</b><small>{p.commands.toLocaleString()} 条命令 · 节省 {p.savedPercent.toFixed(1)}%</small></div>)}</div>}
+    {/* 账号维度：同一服务商可以登录多个账号，只按服务商名字聚合永远分不清是谁省下来的。 */}
+    <section className="usage-rtk-accounts">
+      <div className="usage-block-head">
+        <div><h3>账号维度节省</h3><p>每个上游账号独立统计，同一服务商的多个账号分开计。</p></div>
+        <span className="usage-note-inline">{savingAccounts.length} 个账号有压缩记录</span>
+      </div>
+      {accounts.length === 0 ? <div className="usage-empty compact">当前窗口还没有压缩记录</div> : <div className="usage-table-wrap">
+        <table className="usage-data-table usage-rtk-table">
+          <thead><tr>{['账号', '压缩命令', '原始 Token', '压缩后', '节省', '压缩率'].map(head => <th key={head}>{head}</th>)}</tr></thead>
+          <tbody>{accounts.map(row => <tr key={row.providerId}>
+            <td><ProviderRefLabel providerId={row.providerId} providers={providers} size={18} /></td>
+            <td>{row.commands.toLocaleString()}</td>
+            <td>{formatTokenCount(row.originalTokens)}</td>
+            <td>{formatTokenCount(row.compressedTokens)}</td>
+            <td><b className="usage-rtk-saved">{formatTokenCount(row.savedTokens)}</b></td>
+            <td><div className="usage-rtk-rate"><span className="usage-rtk-rate-track"><i style={{width: `${Math.min(100, Math.max(row.commands ? 1.5 : 0, row.savedPercent))}%`}} /></span><small>{row.savedPercent.toFixed(1)}%</small></div></td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+    </section>
+    {/* 「今天」只有一个数据点：单根柱子会被 flex 拉满整行，既难看又没有可比的趋势，
+        这里直接说明情况，趋势交给 7 天以上的窗口。 */}
+    {!!stats?.daily.length && (stats.daily.length > 1 ? <section className="usage-rtk-chart">
+      <div className="usage-block-head"><div><h3>按日节省</h3><p>每天压缩掉的 Token 与压缩后实际发送量。</p></div></div>
+      <div className="usage-chart-legend"><span><i style={{background: 'var(--usage-category-1)'}} />压缩节省</span><span><i style={{background: 'var(--usage-category-2)'}} />压缩后发送</span></div>
+      <RTKSavingsChart points={stats.daily} />
+    </section> : <p className="usage-note">「今天」只有单日数据，没有可对比的走势；切到 7 天以上可以看按日节省曲线。</p>)}
   </section>;
 }
 
@@ -335,15 +391,10 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
       })}</div>
       <div className="usage-date-inputs"><input type="date" aria-label="用量开始日期" value={from} max={to} onChange={e => { if (e.target.value) onRangeChange(e.target.value, to); }} /><span>至</span><input type="date" aria-label="用量结束日期" value={to} min={from} max={today} onChange={e => { if (e.target.value) onRangeChange(from, e.target.value); }} /></div>
       <div className="usage-toolbar-spacer" />
-      <div className="usage-segments usage-metric-switch" hidden={tab !== 'overview'}>
-        <button type="button" aria-pressed={metric === 'tokens'} className={metric === 'tokens' ? 'active' : ''} onClick={() => setMetric('tokens')}>Token 份额</button>
-        <button type="button" aria-pressed={metric === 'requests'} className={metric === 'requests' ? 'active' : ''} onClick={() => setMetric('requests')}>请求份额</button>
-        <button type="button" aria-pressed={metric === 'cost'} className={metric === 'cost' ? 'active' : ''} onClick={() => setMetric('cost')} title="按网关价格表算出的成本排序；未计价的对象记为 0">成本份额</button>
-      </div>
     </div>}
     {error && <p className="usage-error" role="alert">{error}</p>}
     {!ready ? <div className="usage-empty">{loading ? '正在读取所选区间…' : '所选区间暂无可用统计，请刷新重试。'}</div> : <div aria-busy={syncing} className="usage-content">
-      {tab === 'overview' && <Overview stats={stats!} providers={providers} models={models} isNormalUser={isNormalUser} metric={metric} />}
+      {tab === 'overview' && <Overview stats={stats!} providers={providers} models={models} isNormalUser={isNormalUser} metric={metric} onMetricChange={setMetric} />}
       {tab === 'rtk' && <div className="usage-rtk-tab"><CompressionUsage stats={rtkStats} days={rtkDays} onDaysChange={onRTKDaysChange} providers={providers} /></div>}
       {analysisTab && <>
         <div className="usage-scope-note">

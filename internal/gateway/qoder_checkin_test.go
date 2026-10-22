@@ -354,3 +354,57 @@ func TestQoderCampaignWindow(t *testing.T) {
 		t.Fatal("its start is inclusive")
 	}
 }
+
+// Qoder 把一次性礼包也挂在 CLAIM_BENEFIT 下（benefit.kind = REDEMPTION_CODE），
+// 而且它会连续几周停在 CLAIMED。判断「今天签没签」只能看积分活动：拿礼包当签到
+// 会出现「今日已签到 +1」而当天 100 积分还挂着没领的假象。
+func TestQoderCheckinReadsTheDayFromCreditsOnly(t *testing.T) {
+	now := time.Now()
+	creditsEnd := time.Unix(now.Add(3*time.Hour).Unix(), 0)
+	list := qoderCampaignJSON(t,
+		// 礼包排在前面：结论不能被列表顺序左右。
+		map[string]any{"campaignId": "gift", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMED",
+			"startAt": now.Add(-24 * time.Hour).Unix(), "endAt": now.Add(7 * 24 * time.Hour).Unix(),
+			"benefit": map[string]any{"kind": "REDEMPTION_CODE", "amount": 1}},
+		map[string]any{"campaignId": "daily", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMED",
+			"startAt": now.Add(-time.Hour).Unix(), "endAt": creditsEnd.Unix(),
+			"benefit": map[string]any{"kind": "CREDITS", "amount": 100}},
+	)
+	server, seen := qoderCampaignServer(t, qoderCampaignHandler(list, `{"status":"CLAIMED"}`, 0))
+	result, _ := qoderCheckin(context.Background(), nil, domain.Provider{ID: "q1"}, qoderCheckinSite(server),
+		domain.QoderCredential{UID: "u", DeviceToken: "dt"}, now)
+	if result.Outcome != domain.CheckinDone {
+		t.Fatalf("outcome = %q (%s)", result.Outcome, result.Message)
+	}
+	if result.Credit != 100 {
+		t.Fatalf("the day's credits are 100, not the gift's %v", result.Credit)
+	}
+	// 窗口结束要取积分活动的，取成礼包的 7 天后会让这一周都不再复查。
+	if !result.Until.Equal(creditsEnd) {
+		t.Fatalf("until = %s, want the credits window end %s", result.Until, creditsEnd)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("nothing claimable, so no claim should be posted; saw %d calls", len(*seen))
+	}
+}
+
+// 两个积分窗口之间的空档（今天的还没放出来）不是签到：说成「今日已签到」就是
+// 用户报的「并没有签到领取」。
+func TestQoderCheckinDoesNotCallOneOffGiftsADay(t *testing.T) {
+	now := time.Now()
+	list := qoderCampaignJSON(t, map[string]any{"campaignId": "gift", "actionType": "CLAIM_BENEFIT",
+		"claimStatus": "CLAIMED", "startAt": now.Add(-24 * time.Hour).Unix(), "endAt": now.Add(7 * 24 * time.Hour).Unix(),
+		"benefit": map[string]any{"kind": "REDEMPTION_CODE", "amount": 1}})
+	server, seen := qoderCampaignServer(t, qoderCampaignHandler(list, `{"status":"CLAIMED"}`, 0))
+	result, _ := qoderCheckin(context.Background(), nil, domain.Provider{ID: "q1"}, qoderCheckinSite(server),
+		domain.QoderCredential{UID: "u", DeviceToken: "dt"}, now)
+	if result.Outcome != domain.CheckinInactive {
+		t.Fatalf("a gift is not a check-in: outcome = %q, credit = %v", result.Outcome, result.Credit)
+	}
+	if result.Credit != 0 || !result.Until.IsZero() {
+		t.Fatalf("nothing was claimed today: credit = %v, until = %s", result.Credit, result.Until)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("no claim expected, saw %d calls", len(*seen))
+	}
+}

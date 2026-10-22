@@ -46,6 +46,10 @@ const (
 	qoderClaimAction   = "CLAIM_BENEFIT"
 	qoderClaimable     = "CLAIMABLE"
 	qoderCampaignClaim = "CLAIMED"
+	// qoderCreditBenefit is the benefit of the day's credits. CLAIM_BENEFIT
+	// also covers one-off gifts (REDEMPTION_CODE), which must not be read as
+	// "today's check-in is in".
+	qoderCreditBenefit = "CREDITS"
 	// qoderMachineTTL is how long a read device identity is reused; Qoder's own
 	// desktop client renews its native identity hourly.
 	qoderMachineTTL = time.Hour
@@ -64,8 +68,20 @@ type qoderCampaign struct {
 	StartAt     float64 `json:"startAt"`
 	EndAt       float64 `json:"endAt"`
 	Benefit     struct {
+		// Kind is CREDITS for the day's credits and REDEMPTION_CODE for the
+		// one-off gifts Qoder also files under CLAIM_BENEFIT.
+		Kind   string  `json:"kind"`
 		Amount float64 `json:"amount"`
 	} `json:"benefit"`
+}
+
+// qoderCredits says whether a campaign is the day's credits. A campaign is not
+// the check-in just because it is CLAIM_BENEFIT: Qoder files a one-off gift
+// under the same action, and it stays claimed for weeks — counting it made the
+// console say "today is in (+1)" while the day's 100 credits were still
+// CLAIMABLE, which is what a check-in that never happened looks like.
+func (c qoderCampaign) credits() bool {
+	return c.Benefit.Kind == "" || strings.EqualFold(c.Benefit.Kind, qoderCreditBenefit)
 }
 
 func (c qoderCampaign) active(now time.Time) bool {
@@ -123,9 +139,17 @@ func qoderCheckin(ctx context.Context, server *Server, provider domain.Provider,
 		return sender.failure(err), sender.credential
 	}
 	daily := []qoderCampaign{}
+	// credits is the subset that is the day's check-in. Claiming still walks
+	// every CLAIM_BENEFIT campaign — a one-off gift is worth taking — but only
+	// these may answer "today is in" and set the window end.
+	credits := []qoderCampaign{}
 	for _, campaign := range list.Campaigns {
-		if campaign.ActionType == qoderClaimAction {
-			daily = append(daily, campaign)
+		if campaign.ActionType != qoderClaimAction {
+			continue
+		}
+		daily = append(daily, campaign)
+		if campaign.credits() {
+			credits = append(credits, campaign)
 		}
 	}
 	if len(daily) == 0 {
@@ -140,7 +164,7 @@ func qoderCheckin(ctx context.Context, server *Server, provider domain.Provider,
 		earliest        time.Time
 	)
 	for _, campaign := range daily {
-		if campaign.active(now) {
+		if campaign.credits() && campaign.active(now) {
 			if end := qoderMoment(campaign.EndAt); !end.IsZero() && (earliest.IsZero() || end.Before(earliest)) {
 				earliest = end
 			}
@@ -179,10 +203,14 @@ func qoderCheckin(ctx context.Context, server *Server, provider domain.Provider,
 		result.Outcome = domain.CheckinClaimed
 		result.Credit = credit
 		result.Until = earliest
+	case len(credits) == 0:
+		// Only one-off gifts right now: no day's credits are on offer, so
+		// there is nothing to be "in" for and nothing to retry for.
+		result.Outcome = domain.CheckinInactive
 	default:
 		// Nothing claimable left: today's are in when a campaign that is
 		// already claimed is still inside its window.
-		for _, campaign := range daily {
+		for _, campaign := range credits {
 			if campaign.ClaimStatus == qoderCampaignClaim && campaign.active(now) {
 				result.Outcome = domain.CheckinDone
 				result.Credit = campaign.Benefit.Amount

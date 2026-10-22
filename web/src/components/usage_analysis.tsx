@@ -16,15 +16,25 @@ type AnalysisState = {
 /**
  * 请求明细分析：仅按区间重新拉取。轮询/父级刷新不会重置它，
  * 同一区间的静默刷新保留旧数据，避免页面每 5 秒清空再重绘。
+ *
+ * 分析明细一次就是整段区间的每一行（上万行、压缩后仍有数百 KB），所以同一区间
+ * 在复用窗口内重复进入「请求 / 上下文 / 性能」时直接用内存里的结果，只有手动
+ * 刷新或窗口过期才重新下载。
  */
+const ANALYSIS_REUSE_MS = 60_000;
+
 export function useUsageAnalysis(from: string, to: string, enabled: boolean) {
   const key = `${from}|${to}`;
   const [state, setState] = useState<AnalysisState>({key: '', data: null, error: '', loading: false, refreshing: false, fetchedAt: null});
   const abortRef = useRef<AbortController | null>(null);
   const versionRef = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const load = useCallback((silent: boolean) => {
     if (!enabled) return;
+    const current = stateRef.current;
+    if (!silent && current.key === key && current.data && current.fetchedAt && Date.now() - current.fetchedAt.getTime() < ANALYSIS_REUSE_MS) return;
     const version = ++versionRef.current;
     abortRef.current?.abort();
     const controller = new AbortController();

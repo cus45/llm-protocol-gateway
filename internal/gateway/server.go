@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -711,7 +712,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		items := []monitor.RequestLog{logItem}
 		s.fillRequestLogKeyNames(items)
 		s.fillRequestLogUserNames(items)
-		writeJSON(w, http.StatusOK, items[0])
+		writeJSONGzip(w, r, http.StatusOK, items[0])
 		return
 	}
 
@@ -774,7 +775,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			}
 			s.fillRequestLogKeyNames(page.Items)
 			s.fillRequestLogUserNames(page.Items)
-			writeJSON(w, http.StatusOK, page)
+			writeJSONGzip(w, r, http.StatusOK, page)
 			return
 		}
 		s.logs.AddApp("warn", "query request logs failed", err.Error())
@@ -785,7 +786,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	s.fillRequestLogKeyNames(page.Items)
 	s.fillRequestLogUserNames(page.Items)
-	writeJSON(w, http.StatusOK, page)
+	writeJSONGzip(w, r, http.StatusOK, page)
 }
 
 func atoiDefault(raw string, fallback int) int {
@@ -5756,6 +5757,58 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// writeJSONGzip is writeJSON with transparent gzip for callers whose payload
+// grows with the number of retained requests.
+//
+// 用量分析要一次取回整个区间的每一条请求（前端在本地做筛选、分位数与导出），
+// 保留期内上万行时体积以 MB 计，实测 9504 行 6.3 MB；其中绝大部分等待时间是
+// 传输而不是查询。同一份 JSON 用 gzip 只占 1/10，客户端无需任何改动——浏览器
+// 的 fetch 会自动解压。不支持 gzip 的客户端拿到的仍是原来的明文 JSON。
+func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Add("Vary", "Accept-Encoding")
+	if r == nil || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(value)
+		return
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.WriteHeader(status)
+	// 5 级：这类重复键名极多的 JSON 压缩比本身就有 9~10 倍，再往上只多几个
+	// 百分点却要多花几十毫秒 CPU——等待主要花在传输上，没必要在这换。
+	zw, err := gzip.NewWriterLevel(w, 5)
+	if err != nil {
+		return
+	}
+	if err := json.NewEncoder(zw).Encode(value); err != nil {
+		_ = zw.Close()
+		return
+	}
+	_ = zw.Close()
+}
+
+// acceptsGzip reports whether the client asked for gzip, honouring an explicit
+// "gzip;q=0" opt-out instead of just looking for the substring.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		fields := strings.Split(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(fields[0]), "gzip") {
+			continue
+		}
+		for _, param := range fields[1:] {
+			param = strings.TrimSpace(param)
+			if !strings.HasPrefix(strings.ToLower(param), "q=") {
+				continue
+			}
+			if q, err := strconv.ParseFloat(strings.TrimSpace(param[2:]), 64); err == nil && q == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, message string) {

@@ -40,7 +40,13 @@ html[data-theme="dark"] .usage-page {
 .usage-date-inputs { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
 .usage-date-inputs input { width: 132px; height: var(--control-h-sm); padding: 0 8px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; color: var(--text); font: inherit; font-size: 11px; }
 .usage-metric-switch { flex-wrap: wrap; }
-.usage-metric-switch[hidden] { display: none; }
+
+/* 口径切换条：贴着受它影响的份额与排行分区，点下去立刻能看到变化 */
+.usage-share-bar { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 20px; padding: 10px 12px 10px 14px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-sunken); }
+.usage-share-bar-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 320px; }
+.usage-share-bar-title { font-size: 12px; font-weight: 600; color: var(--text-strong); }
+.usage-share-bar-text small { font-size: 11px; line-height: 1.55; color: var(--muted); }
+.usage-share-bar .usage-metric-switch { background: var(--surface); }
 
 /* 概览指标 */
 /* 7 张 KPI：6 列会甩出一张孤卡，4 列排成 4+3，最后一格留空比整行只有一张卡稳。 */
@@ -226,10 +232,19 @@ html[data-theme="dark"] .usage-page {
 .usage-chart-legend { display: flex; gap: 20px; font-size: 11px; color: var(--muted); margin: 12px 0; }
 .usage-chart-legend span { display: flex; align-items: center; gap: 7px; }
 .usage-chart-legend i { width: 10px; height: 10px; border-radius: 2px; }
-.usage-compression-providers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.usage-compression-providers > div { display: inline-flex; align-items: baseline; gap: 8px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-sunken); font-size: 10.5px; color: var(--muted); }
-.usage-compression-providers b { color: var(--text); font-weight: 600; }
-.usage-compression-providers small { font-size: 10px; }
+
+/* RTK 账号维度：一张表把「谁省下来的」说清楚，取代原先一排圆角胶囊 */
+.usage-rtk-accounts { margin-top: 22px; }
+.usage-rtk-accounts .usage-block-head { margin-bottom: 12px; }
+.usage-rtk-table td:first-child { white-space: nowrap; }
+.usage-rtk-table .usage-cell-caption { display: block; margin-top: 3px; }
+.usage-rtk-table .usage-rtk-saved { font-variant-numeric: tabular-nums; color: var(--text-strong); }
+.usage-rtk-rate { display: flex; align-items: center; gap: 9px; min-width: 112px; }
+.usage-rtk-rate-track { flex: 1 1 64px; height: 5px; border-radius: 999px; background: var(--surface-sunken); overflow: hidden; }
+.usage-rtk-rate-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--usage-category-1), var(--accent)); }
+.usage-rtk-rate small { flex: none; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.usage-rtk-chart { margin-top: 24px; }
+.usage-rtk-chart .usage-block-head { margin-bottom: 4px; }
 .usage-page .rtk-daily-saved { background: var(--usage-category-1); }
 .usage-page .rtk-daily-forwarded { background: var(--usage-category-2); }
 .usage-page .rtk-daily-stack { gap: 2px; }
