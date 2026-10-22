@@ -426,6 +426,10 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusConflict, "admin password is already configured")
 		return
 	}
+	// 首次设置也一样按来源限流，防止公网暴露的未初始化实例被反复探测。
+	if s.rejectIfAuthThrottled(w, r, "admin") {
+		return
+	}
 	var payload struct {
 		Password string `json:"password"`
 	}
@@ -471,13 +475,19 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(payload.Username)
+	// 口令可被离线穷举前先挡一层：同一来源反复试同一账号，超过阈值直接 429。
+	if s.rejectIfAuthThrottled(w, r, username) {
+		return
+	}
 	// Empty username or "admin" logs in as the administrator (legacy password).
 	if username == "" || strings.EqualFold(username, "admin") {
 		hash := s.adminAuth.Setting(settingAdminPassword)
 		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(payload.Password)); err != nil {
+			s.recordAuthFailure(r, username)
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
+		s.recordAuthSuccess(r, username)
 		s.issueSession(w, r, legacyAdminUserID)
 		s.logs.AddApp("info", "admin login success", requestHostname(r.Host))
 		localBypass := isLocalAdminBypass(r)
@@ -499,13 +509,16 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.userStore.UserByUsername(username)
 	if err != nil || !user.Enabled {
+		s.recordAuthFailure(r, username)
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(payload.Password)); err != nil {
+		s.recordAuthFailure(r, username)
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
+	s.recordAuthSuccess(r, username)
 	s.issueSession(w, r, user.ID)
 	_ = s.userStore.TouchUserLogin(user.ID, nowRFC3339())
 	s.logs.AddApp("info", "user login success", user.Username)
@@ -565,10 +578,15 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusUnauthorized, "user not found")
 			return
 		}
+		if s.rejectIfAuthThrottled(w, r, user.Username) {
+			return
+		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(payload.CurrentPassword)); err != nil {
+			s.recordAuthFailure(r, user.Username)
 			writeOpenAIError(w, http.StatusUnauthorized, "current password is incorrect")
 			return
 		}
+		s.recordAuthSuccess(r, user.Username)
 		hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, err.Error())

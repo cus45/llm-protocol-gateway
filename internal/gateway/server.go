@@ -102,10 +102,12 @@ type Server struct {
 	requestLogRetentionDays int
 	// log2xxBodies mirrors GatewayState.Log2xxBodies; guarded by log2xxBodiesMu
 	// because it is read on every request-log write and toggled from a handler.
-	log2xxBodies      bool
-	log2xxBodiesMu    sync.RWMutex
-	adminAuth         AdminAuthStore
-	userStore         UserStore
+	log2xxBodies   bool
+	log2xxBodiesMu sync.RWMutex
+	adminAuth      AdminAuthStore
+	userStore      UserStore
+	// authThrottle counts failed console logins per source IP and account.
+	authThrottle      *authThrottle
 	oauthUsageCache   *oauthUsageCache
 	requestStatsCache *requestStatsCache
 	// oauthUsageFetchMu serializes upstream usage fetches per provider so
@@ -200,6 +202,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		prices:                  &priceTable{rows: map[string]domain.ModelPrice{}},
 		rtk:                     newRTKCompressor(),
 		requestLogRetentionDays: 7,
+		authThrottle:            newAuthThrottle(),
 	}
 	if days := router.State().RequestLogRetentionDays; days > 0 {
 		server.requestLogRetentionDays = days
