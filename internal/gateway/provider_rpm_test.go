@@ -2,7 +2,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +110,54 @@ func TestAcquireProviderSlotBuildsRateOnlyLane(t *testing.T) {
 	release()
 	if _, err := server.acquireProviderSlot(context.Background(), provider); !errors.Is(err, errProviderSaturated) {
 		t.Fatalf("second request should be refused, got %v", err)
+	}
+}
+
+// The API field must reach the router's state: a stored rate that never lands
+// on the provider would be silently ignored at request time.
+func TestHandleSetProviderConcurrencyStoresRate(t *testing.T) {
+	t.Parallel()
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{ID: "p1", Name: "p1", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1"},
+	}})
+	server := &Server{router: router, providerLanes: newProviderLanes()}
+
+	body := strings.NewReader(`{"maxConcurrentRequests":0,"queueWaitSeconds":3,"requestsPerMinute":120}`)
+	request := httptest.NewRequest(http.MethodPost, "/__providers/p1/concurrency", body)
+	request.SetPathValue("id", "p1")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, adminIdentity()))
+	recorder := httptest.NewRecorder()
+	server.handleSetProviderConcurrency(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if got := int64FromAny(payload["requestsPerMinute"]); got != 120 {
+		t.Fatalf("response requestsPerMinute = %d, want 120", got)
+	}
+	stored := router.State().Providers[0]
+	if stored.RequestsPerMinute != 120 {
+		t.Fatalf("router state requestsPerMinute = %d, want 120", stored.RequestsPerMinute)
+	}
+	if stored.QueueWaitSeconds != 3 {
+		t.Fatalf("queue wait = %d, want 3", stored.QueueWaitSeconds)
+	}
+
+	// Clearing the rate through the same endpoint takes effect immediately.
+	body = strings.NewReader(`{"maxConcurrentRequests":0,"queueWaitSeconds":0,"requestsPerMinute":0}`)
+	request = httptest.NewRequest(http.MethodPost, "/__providers/p1/concurrency", body)
+	request.SetPathValue("id", "p1")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, adminIdentity()))
+	recorder = httptest.NewRecorder()
+	server.handleSetProviderConcurrency(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := router.State().Providers[0].RequestsPerMinute; got != 0 {
+		t.Fatalf("rate not cleared, still %d", got)
 	}
 }
