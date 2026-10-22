@@ -119,6 +119,10 @@ type claudeToResponsesDirectStreamState struct {
 	completed       bool
 	stopReason      string
 	usage           TokenUsage
+	// Raw Anthropic counters. message_start carries input and the cache split,
+	// message_delta only the running output count, so they are merged per field
+	// and normalized once at the end (see claudePassthroughUsage).
+	rawPrompt, rawOutput, rawCacheRead, rawCacheWrite int64
 
 	blocks      map[int]*claudeDirectBlockState
 	outputItems []map[string]any
@@ -187,7 +191,7 @@ func (s *claudeToResponsesDirectStreamState) handleMessageStart(event map[string
 			s.model = model
 		}
 		if usageValue, ok := message["usage"].(map[string]any); ok {
-			s.usage = parseClaudeUsageMap(usageValue)
+			s.rawPrompt, s.rawOutput, s.rawCacheRead, s.rawCacheWrite = claudePassthroughUsage(usageValue)
 		}
 	}
 	return s.ensureResponseCreated()
@@ -586,8 +590,11 @@ func (s *claudeToResponsesDirectStreamState) handleMessageDelta(event map[string
 		}
 	}
 	if usageValue, ok := event["usage"].(map[string]any); ok {
-		s.usage = parseClaudeUsageMap(usageValue)
+		// message_delta carries output_tokens (and sometimes the prompt totals
+		// again); replacing the whole usage here zeroed input_tokens.
+		s.rawPrompt, s.rawOutput, s.rawCacheRead, s.rawCacheWrite = mergeClaudePassthroughUsage(s.rawPrompt, s.rawOutput, s.rawCacheRead, s.rawCacheWrite, usageValue)
 	}
+	s.usage = normalizeClaudeUsageFields(s.rawPrompt, s.rawOutput, s.rawCacheRead, s.rawCacheWrite)
 }
 
 // closeRemainingBlocks closes any content blocks that never received an
