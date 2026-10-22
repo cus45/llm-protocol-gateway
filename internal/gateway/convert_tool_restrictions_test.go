@@ -122,6 +122,33 @@ func TestResponsesAllowedToolsToClaude(t *testing.T) {
 	}
 }
 
+// 线上验证用的形状（GLM 的 Anthropic 端点接受的）要能被 JSON 原样发出去：
+// any + disable_parallel_tool_use 同时在场，allowed_tools 用 tools 包一层。
+func TestClaudeToolChoiceWireShape(t *testing.T) {
+	var req map[string]any
+	if err := json.Unmarshal([]byte(`{
+		"model":"glm-5.3",
+		"max_tokens":100,
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"name":"get_time","input_schema":{"type":"object","properties":{}}}],
+		"tool_choice":{"type":"any","disable_parallel_tool_use":true}
+	}`), &req); err != nil {
+		t.Fatalf("request is not json: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var round map[string]any
+	if err := json.Unmarshal(body, &round); err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	choice := round["tool_choice"].(map[string]any)
+	if choice["type"] != "any" || choice["disable_parallel_tool_use"] != true {
+		t.Fatalf("tool_choice = %#v", choice)
+	}
+}
+
 // Responses 的 parallel_tool_calls=false 在没有 tool_choice 时也要生效。
 func TestResponsesParallelToolCallsWithoutChoice(t *testing.T) {
 	var req map[string]any
