@@ -716,6 +716,14 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	if !ok {
 		return provider, errors.New("不是 Trae 连接方式")
 	}
+	// 同一枚 refresh token 只能花一次：并发续期按令牌串行，等锁期间别人续好
+	// 的直接用，不再花第二枚。
+	mutex := oauthRenewLock(provider.ID, credential.RefreshToken)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if fresh, ok := s.freshTraeCredential(provider.ID); ok && !traeTokenNeedsRefresh(&fresh) {
+		return providerWithTrae(provider, fresh), nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), traeCallTimeout)
 	defer cancel()
 	renewed, err := traeRenew(ctx, site, credential, "")
@@ -2182,4 +2190,10 @@ func jsonBodyOf(value any) string {
 		return "{}"
 	}
 	return string(raw)
+}
+
+// providerWithTrae 返回带最新 Trae 凭证的 provider 副本。
+func providerWithTrae(provider domain.Provider, credential domain.TraeCredential) domain.Provider {
+	provider.Trae = &credential
+	return provider
 }

@@ -304,6 +304,15 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	if !cursorTokenNeedsRefresh(provider.CursorOAuth) {
 		return provider, nil
 	}
+	// Cursor 的 refresh token 只能用一次：并发续期会让其中一个失败并作废整条
+	// 令牌链。按令牌串行，等锁期间别人续好的直接用。
+	mutex := oauthRenewLock(provider.ID, provider.CursorOAuth.RefreshToken)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if fresh, ok := s.freshCursorCredential(provider.ID); ok && !cursorTokenNeedsRefresh(&fresh) {
+		provider.CursorOAuth = &fresh
+		return provider, nil
+	}
 	refreshed, err := refreshCursorOAuthToken(provider.CursorOAuth.RefreshToken)
 	if err != nil {
 		return provider, err

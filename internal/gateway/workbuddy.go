@@ -660,6 +660,15 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 	if strings.TrimSpace(credential.RefreshToken) == "" {
 		return provider, nil // nothing to refresh with; let the request try
 	}
+	// WorkBuddy 的 refresh token 轮换：并发续期里后到的那个会被判无效。按令牌
+	// 串行；等锁期间别人续好的直接用。
+	mutex := oauthRenewLock(provider.ID, credential.RefreshToken)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if fresh, ok := s.freshWorkBuddyCredential(provider.ID); ok && !workBuddyTokenNeedsRefresh(&fresh) {
+		provider.WorkBuddy = &fresh
+		return provider, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	refreshed, err := refreshWorkBuddyCredential(ctx, site, *credential)
