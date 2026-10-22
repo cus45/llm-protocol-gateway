@@ -149,6 +149,43 @@ func ParseClaudeUsage(body []byte) TokenUsage {
 	return parseClaudeUsageFromSSE(body)
 }
 
+// claudePassthroughUsage reads Anthropic's usage object without summing it, so
+// a stream can keep the prompt figures from message_start and take only the
+// running output count from message_delta. Summing per event would count the
+// cache fields twice.
+func claudePassthroughUsage(usage map[string]any) (promptTokens, outputTokens, cacheRead, cacheWrite int64) {
+	if usage == nil {
+		return 0, 0, 0, 0
+	}
+	return int64FromAny(usage["input_tokens"]),
+		int64FromAny(usage["output_tokens"]),
+		int64FromAny(usage["cache_read_input_tokens"]),
+		int64FromAny(usage["cache_creation_input_tokens"])
+}
+
+// mergeClaudePassthroughUsage folds one more usage object into the running
+// figures. Anthropic omits zero fields on message_delta (it reports
+// output_tokens there and nothing else), and a field it does report is the
+// latest total for that field, not an increment, so it replaces.
+func mergeClaudePassthroughUsage(promptTokens, outputTokens, cacheRead, cacheWrite int64, usage map[string]any) (int64, int64, int64, int64) {
+	if usage == nil {
+		return promptTokens, outputTokens, cacheRead, cacheWrite
+	}
+	if _, ok := usage["input_tokens"]; ok {
+		promptTokens = int64FromAny(usage["input_tokens"])
+	}
+	if _, ok := usage["output_tokens"]; ok {
+		outputTokens = int64FromAny(usage["output_tokens"])
+	}
+	if _, ok := usage["cache_read_input_tokens"]; ok {
+		cacheRead = int64FromAny(usage["cache_read_input_tokens"])
+	}
+	if _, ok := usage["cache_creation_input_tokens"]; ok {
+		cacheWrite = int64FromAny(usage["cache_creation_input_tokens"])
+	}
+	return promptTokens, outputTokens, cacheRead, cacheWrite
+}
+
 func parseClaudeUsageMap(usage map[string]any) TokenUsage {
 	if usage == nil {
 		return TokenUsage{}

@@ -79,6 +79,7 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 		return writeOpenAISSEChunk(w, chunk)
 	}
 
+	var promptTokens, outputTokens, cacheRead, cacheWrite int64
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -119,6 +120,11 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 			if messageValue, ok := event["message"].(map[string]any); ok {
 				if value := stringValue(messageValue["model"]); value != "" {
 					resolvedModel = value
+				}
+				// Anthropic reports prompt and cache counts only here, so keep the
+				// raw figures: message_delta carries output_tokens alone.
+				if usageValue, ok := messageValue["usage"].(map[string]any); ok {
+					promptTokens, outputTokens, cacheRead, cacheWrite = claudePassthroughUsage(usageValue)
 				}
 			}
 		case "content_block_start":
@@ -189,13 +195,15 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 				}
 			}
 			if usageValue, ok := event["usage"].(map[string]any); ok {
-				usage = parseClaudeUsageMap(usageValue)
+				promptTokens, outputTokens, cacheRead, cacheWrite = mergeClaudePassthroughUsage(promptTokens, outputTokens, cacheRead, cacheWrite, usageValue)
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return usage, err
 	}
+
+	usage = normalizeClaudeUsageFields(promptTokens, outputTokens, cacheRead, cacheWrite)
 
 	if !sawAnyEvent {
 		return usage, fmt.Errorf("openai stream ended without any events")
@@ -233,7 +241,8 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	}
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheTokens > 0 {
 		finalChunk["usage"] = claudeUsageToOpenAIUsage(usage, map[string]any{
-			"cache_read_input_tokens": usage.CacheTokens,
+			"cache_read_input_tokens":     usage.CacheTokens,
+			"cache_creation_input_tokens": usage.CacheWriteTokens,
 		})
 	}
 	if err := writeOpenAISSEChunk(w, finalChunk); err != nil {
