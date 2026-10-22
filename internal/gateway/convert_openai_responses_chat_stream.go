@@ -89,8 +89,8 @@ type chatToResponsesStreamState struct {
 	fullText      strings.Builder
 	reasoningText strings.Builder
 	// incompleteReason is set when the upstream Chat stream stopped short
-	// (finish_reason "length" or "content_filter"), so the closing
-	// response.completed reports incomplete like the non-streaming path.
+	// (finish_reason "length" or "content_filter"), so the closing event is
+	// response.incomplete (status + event name), like the non-streaming path.
 	incompleteReason string
 
 	toolCalls map[int]*streamingToolCallState
@@ -520,17 +520,20 @@ func (s *chatToResponsesStreamState) finalize() error {
 	}
 	// A Chat finish_reason of "length" means the answer was cut by the token
 	// budget. Reporting "completed" hid that from Responses clients, which then
-	// treated the truncated text as final.
+	// treated the truncated text as final — and the event name has to agree with
+	// status: strict clients read response.completed and ignore the payload.
+	eventName := "response.completed"
 	if s.incompleteReason != "" {
 		response["status"] = "incomplete"
 		response["incomplete_details"] = map[string]any{"reason": s.incompleteReason}
+		eventName = "response.incomplete"
 	}
 	completed := map[string]any{
-		"type":            "response.completed",
+		"type":            eventName,
 		"sequence_number": s.nextSeq(),
 		"response":        response,
 	}
-	return writeResponsesSSEEvent(s.w, "response.completed", completed)
+	return writeResponsesSSEEvent(s.w, eventName, completed)
 }
 
 func (s *chatToResponsesStreamState) hasOutput() bool {

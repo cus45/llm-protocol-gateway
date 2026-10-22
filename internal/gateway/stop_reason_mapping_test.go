@@ -151,6 +151,9 @@ func TestChatLengthClosesResponsesStreamAsIncomplete(t *testing.T) {
 	if _, err := streamOpenAIChatToResponsesEvents(recorder, strings.NewReader(input), "m"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !strings.Contains(recorder.Body.String(), "event: response.incomplete") {
+		t.Fatalf("truncated turn did not end with response.incomplete; body=%s", recorder.Body.String())
+	}
 	response := lastResponsesCompletedResponse(t, recorder.Body.String())
 	if got := stringValue(response["status"]); got != "incomplete" {
 		t.Fatalf("status = %q, want incomplete", got)
@@ -222,7 +225,9 @@ func lastResponsesCompletedResponse(t *testing.T, body string) map[string]any {
 		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event); err != nil {
 			continue
 		}
-		if stringValue(event["type"]) != "response.completed" {
+		switch stringValue(event["type"]) {
+		case "response.completed", "response.incomplete":
+		default:
 			continue
 		}
 		if response, ok := event["response"].(map[string]any); ok {
@@ -230,7 +235,7 @@ func lastResponsesCompletedResponse(t *testing.T, body string) map[string]any {
 		}
 	}
 	if found == nil {
-		t.Fatalf("no response.completed event in %s", body)
+		t.Fatalf("no response.completed/incomplete event in %s", body)
 	}
 	return found
 }

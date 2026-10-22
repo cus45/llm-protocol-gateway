@@ -638,9 +638,15 @@ func (s *claudeToResponsesDirectStreamState) finalize() error {
 	if incompleteReason != "" {
 		response["incomplete_details"] = map[string]any{"reason": incompleteReason}
 	}
+	// The event name must agree with status: Codex and other strict clients
+	// branch on response.completed vs response.incomplete, not on the payload.
+	eventName := "response.completed"
+	if status == "incomplete" {
+		eventName = "response.incomplete"
+	}
 	s.completed = true
-	return writeResponsesSSEEvent(s.w, "response.completed", map[string]any{
-		"type":            "response.completed",
+	return writeResponsesSSEEvent(s.w, eventName, map[string]any{
+		"type":            eventName,
 		"sequence_number": s.nextSeq(),
 		"response":        response,
 	})
