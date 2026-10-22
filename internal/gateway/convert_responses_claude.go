@@ -349,6 +349,11 @@ func pairClaudeToolUsesWithResults(messages []map[string]any) []map[string]any {
 // a user message). Trailing thinking is never re-read by the model, so
 // dropping it is lossless; assistant messages left empty are removed and any
 // resulting same-role adjacency is merged back into one message.
+//
+// A redacted_thinking block is the exception: it carries the upstream ciphertext
+// that a later turn has to replay, so when it would be dropped the assistant
+// message is kept with an empty thinking block in its place — valid to send,
+// and the original stays in the history instead of being silently lost.
 func dropTrailingAssistantThinking(messages []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(messages))
 	for _, msg := range messages {
@@ -367,9 +372,23 @@ func dropTrailingAssistantThinking(messages []map[string]any) []map[string]any {
 					trimmed--
 				}
 				if trimmed == 0 {
-					continue // thinking-only assistant turn (interrupted): drop entirely
+					// Thinking-only assistant turn (interrupted). If any of it was
+					// redacted, keep one empty thinking placeholder so the turn keeps
+					// its place; otherwise there is nothing worth sending.
+					hadRedacted := false
+					for _, raw := range blocks {
+						if block, ok := raw.(map[string]any); ok && stringValue(block["type"]) == "redacted_thinking" {
+							hadRedacted = true
+							break
+						}
+					}
+					if !hadRedacted {
+						continue
+					}
+					msg["content"] = []any{map[string]any{"type": "thinking", "thinking": ""}}
+				} else {
+					msg["content"] = blocks[:trimmed]
 				}
-				msg["content"] = blocks[:trimmed]
 			}
 		}
 		if n := len(out); n > 0 && stringValue(out[n-1]["role"]) == stringValue(msg["role"]) {
