@@ -38,6 +38,11 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 	messageStarted := false
 	blockIndex := 0
 	textBlockOpen := false
+	thinkingOpen := false
+	// A thinking block must precede every text block: Anthropic clients
+	// (Claude Code among them) refuse a thinking block that follows text.
+	textBlocksStarted := 0
+	toolCallsInOrder := make([]int, 0, 4)
 	toolBlocks := make(map[int]bool)
 	toolBlockIndexByCall := make(map[int]int)
 	usage := TokenUsage{}
@@ -58,9 +63,48 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 		return nil
 	}
 
+	closeThinkingBlock := func() error {
+		if !thinkingOpen {
+			return nil
+		}
+		if err := writeClaudeSSE(w, "content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": blockIndex,
+		}); err != nil {
+			return err
+		}
+		thinkingOpen = false
+		blockIndex++
+		return nil
+	}
+
+	emitThinking := func(text string) error {
+		if text == "" {
+			return nil
+		}
+		if !thinkingOpen {
+			if err := writeClaudeSSE(w, "content_block_start", map[string]any{
+				"type":          "content_block_start",
+				"index":         blockIndex,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""},
+			}); err != nil {
+				return err
+			}
+			thinkingOpen = true
+		}
+		return writeClaudeSSE(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": blockIndex,
+			"delta": map[string]any{"type": "thinking_delta", "thinking": text},
+		})
+	}
+
 	startTextBlock := func() error {
 		if textBlockOpen {
 			return nil
+		}
+		if err := closeThinkingBlock(); err != nil {
+			return err
 		}
 		if err := writeClaudeSSE(w, "content_block_start", map[string]any{
 			"type":          "content_block_start",
@@ -70,6 +114,7 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			return err
 		}
 		textBlockOpen = true
+		textBlocksStarted++
 		return nil
 	}
 
@@ -160,6 +205,16 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			messageStarted = true
 		}
 
+		if thinking := stringValue(delta["reasoning_content"]); thinking != "" {
+			// Only the opening reasoning can be a thinking block; once the answer
+			// has begun, Anthropic refuses a thinking block after text.
+			if textBlocksStarted == 0 && !textBlockOpen {
+				if err := emitThinking(thinking); err != nil {
+					return usage, err
+				}
+			}
+		}
+
 		// WorkBuddy sends "tool_calls":[] on every delta; an empty array is not a
 		// tool call, and treating it as one swallowed the chunk's text.
 		if rawToolCalls, ok := delta["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
@@ -171,9 +226,13 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 				callIndex := int(int64FromAny(call["index"]))
 				functionValue, _ := call["function"].(map[string]any)
 				if !toolBlocks[callIndex] {
+					if err := closeThinkingBlock(); err != nil {
+						return usage, err
+					}
 					if err := closeTextBlock(); err != nil {
 						return usage, err
 					}
+					toolCallsInOrder = append(toolCallsInOrder, callIndex)
 					toolBlockIndexByCall[callIndex] = blockIndex
 					toolBlock := map[string]any{
 						"type":  "tool_use",
@@ -225,11 +284,16 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 	if !messageStarted {
 		return usage, fmt.Errorf("openai stream ended without any chunks")
 	}
+	if err := closeThinkingBlock(); err != nil {
+		return usage, err
+	}
 	if err := closeTextBlock(); err != nil {
 		return usage, err
 	}
-	for callIndex, started := range toolBlocks {
-		if !started {
+	// Tool blocks close in the order they opened. Iterating the map closed them
+	// in a random order, which desynchronizes strict clients' block tracking.
+	for _, callIndex := range toolCallsInOrder {
+		if !toolBlocks[callIndex] {
 			continue
 		}
 		if err := writeClaudeSSE(w, "content_block_stop", map[string]any{
