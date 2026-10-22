@@ -58,6 +58,7 @@ var hardQuotaHints = []string{
 	"tokens exhausted",
 	"out of credits",
 	"quota exceeded",
+	"exceeded your current quota",
 	"plan limit",
 }
 

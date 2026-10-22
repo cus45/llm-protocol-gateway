@@ -76,3 +76,47 @@ func TestFailoverHonoursUpstreamRetryAfter(t *testing.T) {
 		t.Fatalf("cooldown = %v left, want ~5m from the upstream Retry-After", left)
 	}
 }
+
+// The 400 quota-exhausted shape is what OpenAI-compatible relays answer once a
+// plan runs dry. It must take the provider out of rotation as a hard mark even
+// with a backup chain in front of it (the live check that found this).
+func TestFailoverHardMarkOnQuotaExhausted400(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","code":"insufficient_quota","message":"You exceeded your current quota"}}`))
+	}))
+	defer upstream.Close()
+
+	state := domain.GatewayState{
+		Providers: []domain.Provider{
+			{ID: "quota-probe", Name: "quota-probe", Protocol: domain.ProtocolOpenAIChat, BaseURL: upstream.URL, AuthType: "api_key", APIKeySource: "static"},
+			{ID: "quota-backup", Name: "quota-backup", Protocol: domain.ProtocolOpenAIChat, BaseURL: upstream.URL, AuthType: "api_key", APIKeySource: "static"},
+		},
+		Routes: []domain.Route{
+			{ID: "quota-probe-route", Name: "quota-probe-route", ProviderID: "quota-probe", OutputProtocol: domain.ProtocolClaude, Enabled: true},
+			{ID: "quota-backup-route", Name: "quota-backup-route", ProviderID: "quota-backup", OutputProtocol: domain.ProtocolClaude, Enabled: true},
+		},
+	}
+	server := NewServer(NewRouter(state), monitor.NewStore())
+	route, err := server.router.RouteByID("quota-probe-route")
+	if err != nil {
+		t.Fatalf("route lookup: %v", err)
+	}
+	key := domain.APIKey{ID: "quota-key", RouteID: route.ID, FallbackProviderIDs: []string{"quota-backup"}}
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+	status, _, _, _, _, _ := server.executeProtocolFlowWithFailover(
+		httptest.NewRecorder(), req, route, domain.RouteDecision{RouteID: route.ID, ProviderID: route.ProviderID},
+		"m", map[string]any{"model": "m", "max_tokens": 16, "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+		domain.ProtocolClaude, true, key, true,
+	)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (both accounts spent)", status)
+	}
+	for _, id := range []string{"quota-probe", "quota-backup"} {
+		st, ok := server.providerUnavailableSnapshot(id)
+		if !ok || !st.hard {
+			t.Fatalf("%s: expected hard unavailable, got %#v ok=%v", id, st, ok)
+		}
+	}
+}

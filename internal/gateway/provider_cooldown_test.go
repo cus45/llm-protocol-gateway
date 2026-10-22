@@ -99,6 +99,21 @@ func TestBillingWordIsNotHardQuota(t *testing.T) {
 	}
 }
 
+// OpenAI's own wording and code both mean a spent account; relays echo either.
+func TestExhaustedQuotaHints(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details"}}`,
+		`{"error":{"message":"You exceeded your current quota","type":"invalid_request_error"}}`,
+		`{"error":{"message":"insufficient_quota"}}`,
+	}
+	for _, body := range cases {
+		if class, reason := classifyProviderFailover(http.StatusBadRequest, []byte(body), nil, nil); class != failoverHard {
+			t.Fatalf("%s classified %v (%s), want hard", body, class, reason)
+		}
+	}
+}
+
 func TestCooldownTTLFollowsUpstreamHint(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
