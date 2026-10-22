@@ -66,13 +66,14 @@ func TestClaudeStopSequencesMatchOnResponsesUpstream(t *testing.T) {
 // 但回给客户端的正文仍按客户的 stop_sequences 报 stop_sequence。
 func TestResponsesToClaudeProxyHonoursClientStopSequences(t *testing.T) {
 	var sent []byte
+	// The probe upstream answers in Claude shape (what a Claude-protocol provider
+	// returns); the gateway's direct converter turns it into the Responses answer.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sent, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"gpt-5","status":"completed",` +
-			`"output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed",` +
-			`"content":[{"type":"output_text","text":"answer END","annotations":[]}]}],` +
-			`"usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12}}`))
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5",` +
+			`"content":[{"type":"text","text":"answer END"}],"stop_reason":"end_turn",` +
+			`"usage":{"input_tokens":5,"output_tokens":7}}`))
 	}))
 	defer upstream.Close()
 
@@ -108,8 +109,7 @@ func TestResponsesToClaudeProxyHonoursClientStopSequences(t *testing.T) {
 	if err := json.Unmarshal(body, &answer); err != nil {
 		t.Fatalf("answer body: %v (%s)", err, body)
 	}
-	if answer["stop_reason"] != "stop_sequence" || answer["stop_sequence"] != "END" {
-		t.Fatalf("answer stop_reason/stop_sequence = %#v / %#v, want stop_sequence / END",
-			answer["stop_reason"], answer["stop_sequence"])
+	if answer["status"] != "completed" || answer["stop_sequence"] != "END" {
+		t.Fatalf("answer status/stop_sequence = %#v / %#v, want completed / END", answer["status"], answer["stop_sequence"])
 	}
 }
