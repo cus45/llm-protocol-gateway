@@ -69,12 +69,12 @@ func newProviderLanes() *providerLanes {
 
 // laneFor returns the provider's lane, sized to the current configuration. A
 // provider with no limit has no lane at all.
-func (l *providerLanes) laneFor(providerID string, max int) *providerLane {
+func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	lane, ok := l.lanes[providerID]
 	if !ok {
-		lane = &providerLane{max: max, broadcast: make(chan struct{})}
+		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max), broadcast: make(chan struct{})}
 		l.lanes[providerID] = lane
 		return lane
 	}
@@ -82,6 +82,9 @@ func (l *providerLanes) laneFor(providerID string, max int) *providerLane {
 	defer lane.mu.Unlock()
 	lane.max = max
 	lane.queueCap = providerQueueCapacity(max)
+	// Tracking the configured rate here (not only in setRate) means clearing it
+	// in the console takes effect on the next request, not on restart.
+	lane.rpm = rpm
 	return lane
 }
 
@@ -267,16 +270,7 @@ func (s *Server) acquireProviderSlot(ctx context.Context, provider domain.Provid
 	if (max <= 0 && rpm <= 0) || s.providerLanes == nil {
 		return func() {}, nil
 	}
-	lane := s.providerLanes.laneFor(provider.ID, max)
-	lane.setRate(rpm)
-	return lane.acquire(ctx, wait)
-}
-
-// setRate updates the per-minute budget; the console can change it at runtime.
-func (lane *providerLane) setRate(rpm int) {
-	lane.mu.Lock()
-	lane.rpm = rpm
-	lane.mu.Unlock()
+	return s.providerLanes.laneFor(provider.ID, max, rpm).acquire(ctx, wait)
 }
 
 func (s *Server) providerInFlight(providerID string) int {
@@ -302,16 +296,21 @@ func (s *Server) handleSetProviderConcurrency(w http.ResponseWriter, r *http.Req
 	var payload struct {
 		MaxConcurrentRequests *int `json:"maxConcurrentRequests"`
 		QueueWaitSeconds      *int `json:"queueWaitSeconds"`
+		RequestsPerMinute     *int `json:"requestsPerMinute"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.MaxConcurrentRequests == nil {
-		writeOpenAIError(w, http.StatusBadRequest, `body must be {"maxConcurrentRequests": N, "queueWaitSeconds": N?}`)
+		writeOpenAIError(w, http.StatusBadRequest, `body must be {"maxConcurrentRequests": N, "queueWaitSeconds": N?, "requestsPerMinute": N?}`)
 		return
 	}
 	wait := 0
 	if payload.QueueWaitSeconds != nil {
 		wait = *payload.QueueWaitSeconds
 	}
-	updated, err := s.router.SetProviderConcurrency(r.PathValue("id"), *payload.MaxConcurrentRequests, wait)
+	rpm := 0
+	if payload.RequestsPerMinute != nil {
+		rpm = *payload.RequestsPerMinute
+	}
+	updated, err := s.router.SetProviderConcurrency(r.PathValue("id"), *payload.MaxConcurrentRequests, wait, rpm)
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
@@ -321,10 +320,10 @@ func (s *Server) handleSetProviderConcurrency(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if s.logs != nil {
-		if updated.MaxConcurrentRequests == 0 {
+		if updated.MaxConcurrentRequests == 0 && updated.RequestsPerMinute == 0 {
 			s.logs.AddApp("info", "provider concurrency limit cleared", updated.ID)
 		} else {
-			s.logs.AddApp("info", "provider concurrency limit set", fmt.Sprintf("%s: %d concurrent, wait %ds", updated.ID, updated.MaxConcurrentRequests, updated.QueueWaitSeconds))
+			s.logs.AddApp("info", "provider concurrency limit set", fmt.Sprintf("%s: %d concurrent, wait %ds, %d/min", updated.ID, updated.MaxConcurrentRequests, updated.QueueWaitSeconds, updated.RequestsPerMinute))
 		}
 	}
 	writeJSON(w, http.StatusOK, redactProviderForClient(updated))

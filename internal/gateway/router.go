@@ -1856,7 +1856,7 @@ func (r *Router) SetProviderFirstPacketTimeout(providerID string, seconds int) (
 // maxConcurrentRequests upstream requests at a time, with over-cap requests
 // waiting up to queueWaitSeconds for a slot (0 refuses immediately). 0/0 removes
 // the lane, which is every provider's default.
-func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests, queueWaitSeconds int) (domain.Provider, error) {
+func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests, queueWaitSeconds, requestsPerMinute int) (domain.Provider, error) {
 	if maxConcurrentRequests < 0 {
 		maxConcurrentRequests = 0
 	}
@@ -1869,9 +1869,15 @@ func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests
 	if queueWaitSeconds > int(providerQueueWaitCap/time.Second) {
 		queueWaitSeconds = int(providerQueueWaitCap / time.Second)
 	}
-	// No lane means nothing to queue for: clearing the cap clears the wait too,
-	// so a provider never carries a setting that does nothing.
-	if maxConcurrentRequests == 0 {
+	if requestsPerMinute < 0 {
+		requestsPerMinute = 0
+	}
+	if requestsPerMinute > providerRequestsPerMinuteCap {
+		requestsPerMinute = providerRequestsPerMinuteCap
+	}
+	// No lane means nothing to queue for: clearing both caps clears the wait
+	// too, so a provider never carries a setting that does nothing.
+	if maxConcurrentRequests == 0 && requestsPerMinute == 0 {
 		queueWaitSeconds = 0
 	}
 	r.mu.Lock()
@@ -1882,6 +1888,7 @@ func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests
 		}
 		r.state.Providers[index].MaxConcurrentRequests = maxConcurrentRequests
 		r.state.Providers[index].QueueWaitSeconds = queueWaitSeconds
+		r.state.Providers[index].RequestsPerMinute = requestsPerMinute
 		return r.state.Providers[index], nil
 	}
 	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
