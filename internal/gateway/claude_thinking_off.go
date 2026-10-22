@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -187,6 +189,27 @@ func claudeBodyField(body []byte, key string) any {
 		return nil
 	}
 	return payload[key]
+}
+
+// claudeBodyRewritten 判断整流后的 body 与客户端原文是否「形状不同」：整流器
+// 会无条件重新 Marshal，哪怕一个字都没改，空白与键序也会变。字段相同、值相同
+// 就算没改，日志里继续保留客户端原文（失败排查时看到的是它真正发的东西）。
+func claudeBodyRewritten(original, rewritten []byte) bool {
+	if bytes.Equal(original, rewritten) {
+		return true
+	}
+	var before, after any
+	beforeDecoder := json.NewDecoder(bytes.NewReader(original))
+	beforeDecoder.UseNumber()
+	if beforeDecoder.Decode(&before) != nil {
+		return false
+	}
+	afterDecoder := json.NewDecoder(bytes.NewReader(rewritten))
+	afterDecoder.UseNumber()
+	if afterDecoder.Decode(&after) != nil {
+		return false
+	}
+	return reflect.DeepEqual(before, after)
 }
 
 // removeClaudeThinkingOff deletes a Claude payload's thinking when it turns

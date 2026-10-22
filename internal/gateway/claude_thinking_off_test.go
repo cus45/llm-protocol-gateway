@@ -163,6 +163,34 @@ func TestNormalizeClaudeThinkingOffBody(t *testing.T) {
 	}
 }
 
+// 整流器无条件重新 Marshal，字段没变时也要认出「原文没被改」：日志留客户端
+// 原文，失败排查时看到的就是它真正发出去的东西。
+func TestClaudeBodyRewritten(t *testing.T) {
+	client := []byte("{\n  \"model\": \"glm-5.3\",\n  \"max_tokens\": 1024,\n  \"messages\": []\n}")
+	var payload map[string]any
+	if err := json.Unmarshal(client, &payload); err != nil {
+		t.Fatalf("client body is not json: %v", err)
+	}
+	remarshaled, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(remarshaled) == string(client) {
+		t.Fatalf("test needs whitespace the marshal drops")
+	}
+	if !claudeBodyRewritten(client, remarshaled) {
+		t.Fatalf("a whitespace-only difference must count as unchanged")
+	}
+	payload["max_tokens"] = float64(8192)
+	padded, _ := json.Marshal(payload)
+	if claudeBodyRewritten(client, padded) {
+		t.Fatalf("a changed max_tokens must count as rewritten")
+	}
+	if claudeBodyRewritten(client, []byte("not json")) {
+		t.Fatalf("a body that is no longer json must count as rewritten")
+	}
+}
+
 func TestClaudeBodyField(t *testing.T) {
 	if got := stringValue(claudeBodyField([]byte(`{"model":"claude-opus-5"}`), "model")); got != "claude-opus-5" {
 		t.Fatalf("model = %q", got)

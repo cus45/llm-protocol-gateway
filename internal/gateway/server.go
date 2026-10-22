@@ -5402,8 +5402,13 @@ func (s *Server) proxyOpenAIImagesUpstream(w http.ResponseWriter, ctx context.Co
 // needed, injects the billing marker, and forces the anthropic-beta header.
 func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, provider domain.Provider, body []byte) (int, TokenUsage, []byte, error) {
 	// Claude Code 会自带 max_tokens，但网关可能已做模型覆盖；预算必须按实际上游模型。
+	clientBody := body
 	body = rewriteClaudeUpstreamMaxTokens(body, provider, maxOutputTokensOverrideFrom(r.Context()))
 	response, err := s.sendClaudeMessagesUpstream(r, provider, body)
+	if !claudeBodyRewritten(clientBody, body) {
+		// 整流没有实质改动：日志留客户端原文，别记一份键序被打乱的副本。
+		body = clientBody
+	}
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
