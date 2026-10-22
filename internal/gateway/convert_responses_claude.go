@@ -511,6 +511,8 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	// text.format → output_config.format (merge after thinking so effort is kept).
 	applyResponsesTextFormatToClaude(responsesReq, claudeReq)
 	applyResponsesParallelToolCallsToClaude(responsesReq, claudeReq)
+	// Responses 客户端不写 Claude 的缓存断点，转换后补上对话末端的断点。
+	applyClaudeCacheMarks(claudeReq, responsesReq["cache_control"])
 
 	return claudeReq, toolCtx, nil
 }

@@ -213,6 +213,8 @@ func openAIChatToClaudeRequest(openAIReq map[string]any, model string, maxTokens
 	applyOpenAIThinkingToClaudeRequest(openAIReq, claudeReq, model)
 	// Cursor / Chat clients may set parallel_tool_calls=false; map onto Claude.
 	applyResponsesParallelToolCallsToClaude(openAIReq, claudeReq)
+	// 别的协议不写 Claude 的缓存断点，转换后补上，否则每轮全价重算前缀。
+	applyClaudeCacheMarks(claudeReq, openAIReq["cache_control"])
 	return claudeReq, nil
 }
 
