@@ -283,6 +283,26 @@ func TestImagesHandlerRefusesDisabledProvider(t *testing.T) {
 	}
 }
 
+// 路由的输出协议是 Claude：即使 Provider 说的是 OpenAI Chat，出图也不成立——
+// 客户端拿到的是 Claude 格式，读不了。必须拒绝，且请求不能发出去。
+func TestImagesHandlerRefusesClaudeOutputRoute(t *testing.T) {
+	upstream, gotPath, _ := imagesUpstream(t)
+	provider := imagesImageProvider("img-a", false)
+	provider.BaseURL = upstream.URL + "/v1"
+	server := imagesKeyServer(t, provider, domain.APIKey{ID: "k1", Key: "sk-gw-admin", Name: "k1"})
+	if _, err := server.router.UpdateRoute("img-route", domain.Route{OutputProtocol: domain.ProtocolClaude}); err != nil {
+		t.Fatalf("update route: %v", err)
+	}
+
+	recorder := imagesRequest(t, server, "sk-gw-admin", `{"model":"gpt-image-2","prompt":"x"}`)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if *gotPath != "" {
+		t.Fatalf("claude-output route still forwarded to %q", *gotPath)
+	}
+}
+
 // 路由本身停用：出图没有 failover 兜底，直接拒绝，不读凭证、不发请求。
 func TestImagesRouteRefusalDisabledRoute(t *testing.T) {
 	server := imagesTestServer(t, imagesImageProvider("img-a", false))

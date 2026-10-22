@@ -4248,7 +4248,7 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 		defer admission.release()
 	}
 
-	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body)
+	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body, route.OutputProtocol)
 	if err != nil {
 		s.logs.AddApp("error", "image generation request failed", err.Error())
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
@@ -5336,7 +5336,15 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
 }
 
-func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte) (int, TokenUsage, []byte, error) {
+// proxyOpenAIImages forwards one Images request to a provider. It could not be
+// called "OpenAIImages" in a way that said this out loud: the route decides
+// which protocol the client speaks, and a route set to Claude is not an Images
+// endpoint even when its provider happens to speak OpenAI Chat — the answer
+// would come back in a shape the client cannot read.
+func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, routeProtocol domain.Protocol) (int, TokenUsage, []byte, error) {
+	if routeProtocol != domain.ProtocolOpenAIChat {
+		return 0, TokenUsage{}, nil, fmt.Errorf("route speaks %s, which has no images/generations endpoint", routeProtocol.DisplayName())
+	}
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
 		status, responseBody, err := s.fetchCursorBridgeImages(r, provider, body)
 		if err == nil && status >= 200 && status < 300 {
