@@ -1375,7 +1375,8 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		ClientHost:            clientHost,
 		ClientIP:              clientIP,
 		AccessSource:          accessSource,
-		RequestBody:           truncateForLog(requestBody, requestBodyCap),
+		// 落库前脱敏：请求正文里的 api_key / token 等字段绝不能经管理界面外泄。
+		RequestBody:           truncateForLog(scrubSensitiveRequestBody(requestBody), requestBodyCap),
 	}
 	// Attach what the scheduler did to the same JSON blob the context stats
 	// already ride in, so a request log can answer "why this account".
