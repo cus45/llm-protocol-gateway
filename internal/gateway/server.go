@@ -4187,7 +4187,19 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	decision, err := s.router.Decide(route.ID)
+	// 普通用户的 Key 只能落在管理员此刻仍授权给它的 Provider 上。出图没有
+	// failover 流程，授权在这里重新校验一次，不能只信创建 Key 时的结果。
+	var decision domain.RouteDecision
+	if gatewayKeyMatched {
+		providerID := s.imagesEffectiveProvider(matchedKey, route)
+		if providerID == "" {
+			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("provider %q is not assigned to your account", strings.TrimSpace(route.ProviderID)))
+			return
+		}
+		decision, err = s.router.DecideForProvider(route.ID, providerID)
+	} else {
+		decision, err = s.router.Decide(route.ID)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return

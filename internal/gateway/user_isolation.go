@@ -374,3 +374,41 @@ func publicAccessForUser(src domain.PublicAccessSettings) domain.PublicAccessSet
 	}
 	return out
 }
+
+// imagesEffectiveProvider picks the provider an OpenAIImages request is billed
+// to. Images has no failover pass of its own — one route, one upstream — so the
+// key's chain is resolved here instead: the route's provider followed by the
+// key's fallbacks, preferring the scheduled active provider. It returns "" when
+// the key's owner was granted none of them, which the handler must treat as a
+// refusal: sending the image to the route default anyway is exactly the
+// revocation the chat path already refuses.
+func (s *Server) imagesEffectiveProvider(key domain.APIKey, route domain.Route) string {
+	routeProvider := strings.TrimSpace(route.ProviderID)
+	// Same head as the chat path: the provider this key is being served by,
+	// then its fallbacks, with the route's own provider kept as a last resort.
+	chain := apiKeyProviderChain(key.ActiveProviderID, append([]string{routeProvider}, key.FallbackProviderIDs...))
+	allowed := chain
+	if strings.TrimSpace(key.OwnerUserID) != "" {
+		// Admin-owned (or legacy) keys are unrestricted; user keys only reach
+		// what their owner is still granted.
+		allowed = s.allowedProviderChainForKey(key, chain)
+		if len(allowed) == 0 {
+			return ""
+		}
+	}
+	if active := strings.TrimSpace(key.ActiveProviderID); active != "" {
+		for _, providerID := range allowed {
+			if providerID == active {
+				return active
+			}
+		}
+	}
+	// Prefer the route's own provider; otherwise the first one still granted
+	// (the key's chain may offer a provider the route doesn't).
+	for _, providerID := range allowed {
+		if providerID == routeProvider {
+			return routeProvider
+		}
+	}
+	return allowed[0]
+}
