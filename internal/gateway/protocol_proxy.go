@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
@@ -697,7 +698,9 @@ func (s *Server) executeProtocolFlow(
 	// before executeProtocolFlow returns.
 	releaseSlot, admissionErr := s.acquireProviderSlot(r.Context(), provider)
 	if admissionErr != nil {
-		w.Header().Set("Retry-After", strconv.Itoa(providerRetryAfterSeconds))
+		// Tell the client how long this lane thinks it is busy, not a constant:
+		// a rate refusal knows when its minute window restarts.
+		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(provider.ID, time.Now())))
 		if errors.Is(admissionErr, errProviderSaturated) {
 			return http.StatusTooManyRequests, TokenUsage{}, nil, admissionErr
 		}

@@ -714,7 +714,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 					continue
 				}
 				writer.Discard()
-				w.Header().Set("Retry-After", strconv.Itoa(providerRetryAfterSeconds))
+				w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(providerID, time.Now())))
 				return http.StatusTooManyRequests, TokenUsage{}, nil, attemptDecision, attemptModel, execErr
 			}
 			transportFailoverWorthy := s.applyProviderFailoverOutcome(providerID, 0, nil, execErr)

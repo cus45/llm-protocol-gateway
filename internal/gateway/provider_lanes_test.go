@@ -197,7 +197,7 @@ func TestProviderConcurrencyConfigClamps(t *testing.T) {
 	if max != providerConcurrencyCap || wait != providerQueueWaitCap {
 		t.Fatalf("expected the caps, got %d/%v", max, wait)
 	}
-	if got := providerQueueCapacity(1); got < 8 {
+	if got := providerQueueCapacity(1, 0); got < 8 {
 		t.Fatalf("a single-slot lane still needs a waiting room, got %d", got)
 	}
 	// A server built without NewServer has no lanes and must not block traffic.

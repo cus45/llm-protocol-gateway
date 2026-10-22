@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -28,9 +29,18 @@ const (
 	providerQueueWaitCap = 60 * time.Second
 	// providerConcurrencyCap guards a mistyped limit.
 	providerConcurrencyCap = 1000
-	// providerRetryAfterSeconds is what a refused request is told to wait. The
-	// lane does not know when a slot frees, so this is a nudge, not a promise.
+	// providerRetryAfterSeconds is what a refused request is told to wait when
+	// nothing better is known. The lane does not know when a slot frees, so this
+	// is a nudge, not a promise.
 	providerRetryAfterSeconds = 1
+	// providerBusyRetryAfterSeconds is the same nudge sized to a short stream: a
+	// concurrency slot typically frees within one request, so retrying after a
+	// second is right; the rate budget below overrides it with the real wait.
+	providerBusyRetryAfterSeconds = 1
+	// providerRetryAfterCap bounds what a client is told to sleep: past a minute
+	// it has usually given up, and a longer header only invites it to pin a
+	// connection open.
+	providerRetryAfterCap = 60
 )
 
 // errProviderSaturated refuses a request at the gateway instead of letting the
@@ -67,6 +77,22 @@ func newProviderLanes() *providerLanes {
 	return &providerLanes{lanes: map[string]*providerLane{}}
 }
 
+// retryAfterSeconds is what the proxy tells a client refused at admission for
+// this provider. A provider that never built a lane (nothing to be saturated
+// by) falls back to the constant nudge.
+func (l *providerLanes) retryAfterSeconds(providerID string, now time.Time) int {
+	if l == nil {
+		return providerRetryAfterSeconds
+	}
+	l.mu.Lock()
+	lane, ok := l.lanes[providerID]
+	l.mu.Unlock()
+	if !ok {
+		return providerRetryAfterSeconds
+	}
+	return lane.retryAfterSeconds(now)
+}
+
 // laneFor returns the provider's lane, sized to the current configuration. A
 // provider with no limit has no lane at all.
 func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
@@ -74,22 +100,26 @@ func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
 	defer l.mu.Unlock()
 	lane, ok := l.lanes[providerID]
 	if !ok {
-		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max), broadcast: make(chan struct{})}
+		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max, rpm), broadcast: make(chan struct{})}
 		l.lanes[providerID] = lane
 		return lane
 	}
 	lane.mu.Lock()
 	defer lane.mu.Unlock()
 	lane.max = max
-	lane.queueCap = providerQueueCapacity(max)
+	lane.queueCap = providerQueueCapacity(max, rpm)
 	// Tracking the configured rate here (not only in setRate) means clearing it
 	// in the console takes effect on the next request, not on restart.
 	lane.rpm = rpm
 	return lane
 }
 
-func providerQueueCapacity(max int) int {
-	if max < 1 {
+// providerQueueCapacity is how many requests a lane may hold waiting for a
+// slot, sized to whichever budget it has. A rate-only lane (max 0) still has a
+// queue: without one a request that could simply wait out the minute window is
+// refused on arrival with "queue full".
+func providerQueueCapacity(max, rpm int) int {
+	if max < 1 && rpm < 1 {
 		return 0
 	}
 	capacity := max * 4
@@ -217,6 +247,33 @@ func (lane *providerLane) inFlight() int {
 	lane.mu.Lock()
 	defer lane.mu.Unlock()
 	return lane.inflight
+}
+
+// retryAfterSeconds is what a request this lane just refused is told to wait.
+// The rate budget knows exactly when its minute window restarts, so it answers
+// with that; a plain concurrency refusal has no such knowledge and keeps the
+// short nudge, capped either way.
+func (lane *providerLane) retryAfterSeconds(now time.Time) int {
+	if lane == nil {
+		return providerRetryAfterSeconds
+	}
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if lane.rpm <= 0 {
+		return providerBusyRetryAfterSeconds
+	}
+	remaining := time.Minute
+	if !lane.windowStart.IsZero() {
+		remaining = lane.windowStart.Add(time.Minute).Sub(now)
+	}
+	seconds := int(math.Ceil(remaining.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > providerRetryAfterCap {
+		seconds = providerRetryAfterCap
+	}
+	return seconds
 }
 
 // waiterCount is how many requests are waiting for a slot. It exists for the
