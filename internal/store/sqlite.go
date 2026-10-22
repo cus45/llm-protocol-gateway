@@ -231,6 +231,9 @@ func (s *Store) migrate() error {
 		// 0/0 = no lane, i.e. today's behavior.
 		{"max_concurrent_requests", "INTEGER NOT NULL DEFAULT 0"},
 		{"queue_wait_seconds", "INTEGER NOT NULL DEFAULT 0"},
+		// requests_per_minute: this provider's per-minute request budget, counted
+		// at admission (see domain.Provider.RequestsPerMinute). 0 = no limit.
+		{"requests_per_minute", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -621,15 +624,15 @@ func (s *Store) Save(state domain.GatewayState) error {
 		if _, err := tx.Exec(`INSERT INTO providers
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
 			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
-			 checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds,
+			 checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
 			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled, rtkCompress,
-			checkinEnabled, provider.FirstPacketTimeoutSec, provider.MaxConcurrentRequests, provider.QueueWaitSeconds,
+			checkinEnabled, provider.FirstPacketTimeoutSec, provider.MaxConcurrentRequests, provider.QueueWaitSeconds, provider.RequestsPerMinute,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
 			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain, authJSON); err != nil {
 			return err
@@ -745,7 +748,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
 		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
-		checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds,
+		checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json
 		FROM providers ORDER BY position, id`)
@@ -766,7 +769,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var authJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
 			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled, &rtkCompress,
-			&checkinEnabled, &p.FirstPacketTimeoutSec, &p.MaxConcurrentRequests, &p.QueueWaitSeconds,
+			&checkinEnabled, &p.FirstPacketTimeoutSec, &p.MaxConcurrentRequests, &p.QueueWaitSeconds, &p.RequestsPerMinute,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
 			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain, &authJSON); err != nil {
 			_ = rows.Close()

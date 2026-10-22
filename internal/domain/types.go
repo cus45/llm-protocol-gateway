@@ -339,6 +339,12 @@ type Provider struct {
 	// slot before it is refused. 0 refuses immediately, which is the default:
 	// waiting is only worth it for clients that already retry slowly on their own.
 	QueueWaitSeconds int `json:"queueWaitSeconds,omitempty"`
+	// RequestsPerMinute caps how many requests this provider sends in any rolling
+	// minute, counted when admitted. Subscription accounts are sold with a
+	// request budget, not a concurrency one; without this the gateway only learns
+	// the budget is gone from a 429 the vendor already counted against the
+	// account. 0 = no rate limit.
+	RequestsPerMinute int `json:"requestsPerMinute,omitempty"`
 }
 
 // ProviderSelfRegistration is the server-side state backing the self-register

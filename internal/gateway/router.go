@@ -398,7 +398,13 @@ func normalizeProvider(provider *domain.Provider) {
 	if provider.QueueWaitSeconds > int(providerQueueWaitCap/time.Second) {
 		provider.QueueWaitSeconds = int(providerQueueWaitCap / time.Second)
 	}
-	if provider.MaxConcurrentRequests == 0 {
+	if provider.RequestsPerMinute < 0 {
+		provider.RequestsPerMinute = 0
+	}
+	if provider.RequestsPerMinute > providerRequestsPerMinuteCap {
+		provider.RequestsPerMinute = providerRequestsPerMinuteCap
+	}
+	if provider.MaxConcurrentRequests == 0 && provider.RequestsPerMinute == 0 {
 		provider.QueueWaitSeconds = 0
 	}
 	if provider.AuthType == "" {
