@@ -216,24 +216,6 @@ func removeClaudeThinkingOff(payload map[string]any, model string) bool {
 	return true
 }
 
-// claudeEndpointReasoningEffort returns the Chat-style reasoning_effort an
-// Anthropic-endpoint model takes when the client turned thinking off: GLM's
-// Anthropic endpoint reads reasoning_effort (none/low/…), and without it a
-// thinking-on-by-default model spends a short answer's whole budget thinking.
-func claudeEndpointReasoningEffort(model string) (string, bool) {
-	id := normalizeModelContextID(model)
-	if strings.Contains(id, "glm-") {
-		return "none", true
-	}
-	if strings.Contains(id, "deepseek") {
-		return "none", true
-	}
-	if strings.Contains(id, "kimi") || strings.Contains(id, "moonshot") {
-		return "none", true
-	}
-	return "", false
-}
-
 // normalizeClaudeEndpointThinkingOffBody is normalizeClaudeThinkingOff plus
 // the non-Anthropic handling, for a raw Messages body relayed as it came.
 func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
@@ -248,9 +230,8 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 	}
 	changed := normalizeClaudeThinkingOff(payload, model)
 	if removeClaudeThinkingOff(payload, model) {
-		if effort, ok := claudeEndpointReasoningEffort(model); ok {
-			payload["reasoning_effort"] = effort
-		}
+		// GLM 等端点拒绝 reasoning_effort=none（枚举只到 min），实测上一版补的
+		// none 会被 400，反而比"删掉 thinking"更糟：只删字段，不补参数。
 		changed = true
 	}
 	if !changed {
