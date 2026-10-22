@@ -858,19 +858,28 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 	}
 	message, _ := choice["message"].(map[string]any)
 	text := claudeContentToString(message["content"])
-	if text == "" && message != nil {
+	// Upstreams that send a bare string still need formatting; a null content
+	// (the usual shape for a tool-only turn) must stay empty, not "<nil>".
+	if text == "" && message != nil && message["content"] != nil {
 		text = strings.TrimSpace(fmt.Sprint(message["content"]))
 	}
 
 	usage := ParseOpenAIUsage(chatBody)
-	output := []map[string]any{{
-		"type": "message",
-		"role": "assistant",
-		"content": []map[string]any{{
-			"type": "output_text",
-			"text": text,
-		}},
-	}}
+	// Models routinely narrate before calling a tool ("Let me read the file").
+	// Chat holds that text next to tool_calls; an empty preamble item used to
+	// be emitted instead, so the client's next request carried an empty
+	// assistant message where the reasoning it produced should be.
+	output := make([]map[string]any, 0, 2)
+	if text != "" {
+		output = append(output, map[string]any{
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": text,
+			}},
+		})
+	}
 	status := "completed"
 	// A Chat finish_reason of "length" means the answer was cut by the token
 	// budget; reporting "completed" let Responses clients take the truncated
@@ -887,7 +896,6 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 		}
 	}
 	if rawToolCalls, ok := message["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
-		output = make([]map[string]any, 0, len(rawToolCalls))
 		for i, item := range rawToolCalls {
 			call, ok := item.(map[string]any)
 			if !ok {
@@ -914,7 +922,13 @@ func openAIChatToResponsesResponseWithTools(chatBody []byte, model string, toolC
 				})
 			}
 		}
-		text = ""
+	}
+	if len(output) == 0 {
+		output = append(output, map[string]any{
+			"type":    "message",
+			"role":    "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": ""}},
+		})
 	}
 	if incompleteReason != "" {
 		status = "incomplete"
