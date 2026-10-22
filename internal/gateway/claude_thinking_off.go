@@ -233,6 +233,10 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 		return body
 	}
 	rule, knownClaude := claudeThinkingOffOf(model)
+	// 先按原预算判断是否要补余量：normalizeClaudeThinkingOff 对只能自适应
+	// 思考的 Claude 已经补过一次，这里不能再叠加。
+	budget, hasBudget := intFromAny(payload["max_tokens"])
+	shortBudget := hasBudget && budget > 0 && budget < claudeEndpointThinkingRoom
 	changed := normalizeClaudeThinkingOff(payload, model)
 	// 非 Claude 模型：端点不解析 thinking，disabled 等于没写、模型照样思考
 	// （实测 max_tokens=200 时思考吃光预算、正文为空）。删掉 thinking，并显式
@@ -242,12 +246,17 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 			if effort, ok := claudeEndpointReasoningEffort(model); ok {
 				payload["reasoning_effort"] = effort
 			}
-			padClaudeEndpointBudget(payload, model)
+			if shortBudget {
+				padClaudeEndpointBudget(payload, model, budget)
+			}
 			changed = true
 		}
-	} else if rule == claudeOffNever {
-		// Claude 只能自适应思考的模型同样无法真正关闭思考。
-		padClaudeEndpointBudget(payload, model)
+	} else if rule == claudeOffNever && shortBudget {
+		// 只能自适应思考的 Claude 同样关不掉思考。它可能已经被
+		// normalizeClaudeThinkingOff 补过余量，这里只补到目标值。
+		if after, ok := intFromAny(payload["max_tokens"]); ok && after == budget {
+			padClaudeEndpointBudget(payload, model, budget)
+		}
 	}
 	if !changed {
 		return body
@@ -262,17 +271,30 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 // padClaudeEndpointBudget gives a thinking-on-by-default model room on top of
 // a short reply (see classifierRoom), so a title/classifier-sized request
 // doesn't come back empty. Only used where thinking can't be turned off.
-func padClaudeEndpointBudget(payload map[string]any, model string) {
+func padClaudeEndpointBudget(payload map[string]any, model string, requested int) {
 	if payload == nil {
 		return
 	}
 	n, ok := intFromAny(payload["max_tokens"])
-	if !ok || n <= 0 || n >= claudeEndpointThinkingRoom {
+	if !ok || n <= 0 {
 		return
 	}
-	payload["max_tokens"] = n + claudeEndpointThinkingRoom
+	// 之前补过的余量要算进去，避免短预算反复下探到余量边缘。
+	room := claudeEndpointThinkingRoom - n
+	if requested > n {
+		room = claudeEndpointThinkingRoom - requested
+	}
+	if classifierRoom < room {
+		room = classifierRoom
+	}
+	if room <= 0 {
+		return
+	}
+	payload["max_tokens"] = n + room
 }
 
 // claudeEndpointThinkingRoom is how much room a non-Claude model that thinks
-// by default gets on top of a short reply.
-const claudeEndpointThinkingRoom = 2048
+// by default gets on top of a short reply. 8192 covers GLM-5.3's deepest
+// thinking: live probes with max_tokens=2000 still returned an empty answer
+// (thinking alone used the whole budget), while 8192 always produced text.
+const claudeEndpointThinkingRoom = 8192

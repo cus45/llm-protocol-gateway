@@ -189,12 +189,12 @@ func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
 	if payload["reasoning_effort"] != "min" {
 		t.Fatalf("reasoning_effort = %#v, want min", payload["reasoning_effort"])
 	}
-	if payload["max_tokens"] != float64(100+claudeEndpointThinkingRoom) {
+	if payload["max_tokens"] != float64(100+classifierRoom) {
 		t.Fatalf("max_tokens = %#v, want room for thinking", payload["max_tokens"])
 	}
 
 	// 未知的非 Claude 模型：删 thinking，但不猜 reasoning_effort 的枚举值。
-	unknown := []byte(`{"model":"mistral-large","max_tokens":5000,"thinking":{"type":"disabled"}}`)
+	unknown := []byte(`{"model":"mistral-large","max_tokens":20000,"thinking":{"type":"disabled"}}`)
 	out = normalizeClaudeEndpointThinkingOffBody(unknown, "mistral-large")
 	payload = nil
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -206,7 +206,7 @@ func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
 	if _, exists := payload["reasoning_effort"]; exists {
 		t.Fatalf("reasoning_effort must not be invented for unknown models: %s", out)
 	}
-	if payload["max_tokens"] != float64(5000) {
+	if payload["max_tokens"] != float64(20000) {
 		t.Fatalf("a generous budget must not be padded: %s", out)
 	}
 
@@ -226,8 +226,31 @@ func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
 	if _, exists := payload["thinking"]; exists {
 		t.Fatalf("always-thinking Claude must lose disabled: %s", out)
 	}
-	if payload["max_tokens"] != float64(64+claudeEndpointThinkingRoom) {
+	// 族矩阵已加 classifierRoom，端点这里不能再叠加，只保证总余量够。
+	if payload["max_tokens"] != float64(64+classifierRoom) {
 		t.Fatalf("max_tokens = %#v", payload["max_tokens"])
+	}
+
+	// 余量已经够厚（8192）时不再追加：GLM-5.3 深思考一轮可能吃掉近万 token，
+	// 预算落在余量之上说明调用方自己愿意等这么久思考，不要凭空放大。
+	roomy := []byte(`{"model":"glm-5.3","max_tokens":20000,"thinking":{"type":"disabled"}}`)
+	payload = nil
+	if err := json.Unmarshal(normalizeClaudeEndpointThinkingOffBody(roomy, "glm-5.3"), &payload); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if payload["max_tokens"] != float64(20000) || payload["reasoning_effort"] != "min" {
+		t.Fatalf("roomy budget changed: %#v / %#v", payload["max_tokens"], payload["reasoning_effort"])
+	}
+
+	// 只能自适应思考的 Claude 不会因为端点余量被叠两次：族矩阵补的
+	// classifierRoom 已经够，端点只按余量目标补齐，不重复相加。
+	opus := []byte(`{"model":"claude-opus-5-5","max_tokens":4000,"thinking":{"type":"disabled"}}`)
+	payload = nil
+	if err := json.Unmarshal(normalizeClaudeEndpointThinkingOffBody(opus, "claude-opus-5-5"), &payload); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if payload["max_tokens"] != float64(4000+classifierRoom) {
+		t.Fatalf("opus max_tokens = %#v, want %d", payload["max_tokens"], 4000+classifierRoom)
 	}
 
 	// 没有 thinking 的请求逐字不变。
