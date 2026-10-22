@@ -5611,7 +5611,7 @@ func (s *Server) proxyClaudeToOpenAIChat(w http.ResponseWriter, r *http.Request,
 		return claudeResponseToOpenAIChat(body, modelName, clientToolNames, clientStopSequences...)
 	}
 	streamConvert := func(w http.ResponseWriter, reader io.Reader, modelName string) (TokenUsage, error) {
-		return streamClaudeToOpenAIChatEvents(w, reader, modelName, clientToolNames)
+		return streamClaudeToOpenAIChatEvents(w, reader, modelName, clientToolNames, clientStopSequences...)
 	}
 	return s.finishConvertedProxyWithEmptyStreamRetry(w, r, model, stream, send, convert, streamConvert)
 }

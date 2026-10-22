@@ -30,7 +30,7 @@ func writeOpenAISSEChunk(w http.ResponseWriter, payload any) error {
 // If the upstream turn completes (end_turn) with no visible text/tool_use —
 // only thinking / redacted_thinking — this returns errThinkingOnlyEmptyResponse
 // without writing any client bytes so finishConvertedProxy can retry.
-func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, model string, clientToolNames map[string]struct{}) (TokenUsage, error) {
+func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, model string, clientToolNames map[string]struct{}, clientStopSequences ...string) (TokenUsage, error) {
 	chunkID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	resolvedModel := strings.TrimSpace(model)
 	usage := TokenUsage{}
@@ -40,6 +40,7 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	currentToolOpenAIIndex := -1
 	sawVisibleOutput := false
 	sawAnyEvent := false
+	visibleText := ""
 
 	emitToolCallDelta := func(toolIndex int, id string, name string, arguments string) error {
 		if id == "" && name == "" && arguments == "" {
@@ -168,6 +169,9 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 				continue
 			}
 			sawVisibleOutput = true
+			// Tail only: a client stop sequence has to be recognised when it
+			// arrives split across deltas.
+			visibleText = tailForStopSequences(visibleText+text, clientStopSequences)
 			deltaPayload := map[string]any{"content": text}
 			if !sentRole {
 				deltaPayload["role"] = "assistant"
@@ -226,6 +230,10 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 
 	stopReason := mapClaudeStopReasonToOpenAI(claudeStopReason)
 	if stopReason == "" {
+		stopReason = "stop"
+	}
+	if len(clientStopSequences) > 0 && matchedStopSequence(visibleText, clientStopSequences) != "" {
+		// 按客户端的停止序列停下时 Claude 报 stop_sequence，Chat 只认 stop。
 		stopReason = "stop"
 	}
 	finalChunk := map[string]any{
