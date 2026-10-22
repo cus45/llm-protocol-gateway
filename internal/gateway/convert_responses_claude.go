@@ -487,11 +487,35 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	if tools := toolCtx.ClaudeTools(); len(tools) > 0 {
 		claudeReq["tools"] = tools
 	}
-	if rawChoice, exists := responsesReq["tool_choice"]; exists {
+	if allowed, mode, ok := responsesAllowedToolsChoice(responsesReq["tool_choice"]); ok {
+		// tool_choice={"type":"allowed_tools","mode":…,"tools":[…]}：只有列出的
+		// 工具能调。Claude 的 allowed_tools 正好是这个形状，直接落下去，
+		// mode=required 对应 Claude 的 any。
+		claudeMode := "auto"
+		if mode == "required" {
+			claudeMode = "any"
+		}
+		claudeReq["tool_choice"] = map[string]any{
+			"type":          claudeMode,
+			"allowed_tools": map[string]any{"tools": allowed},
+		}
+		if tools, isList := claudeReq["tools"].([]any); isList {
+			claudeReq["tools"] = narrowClaudeTools(tools, allowed)
+		} else if tools, isList := claudeReq["tools"].([]map[string]any); isList {
+			list := make([]any, 0, len(tools))
+			for _, tool := range tools {
+				list = append(list, tool)
+			}
+			claudeReq["tools"] = narrowClaudeTools(list, allowed)
+		}
+	} else if rawChoice, exists := responsesReq["tool_choice"]; exists || responsesReq["parallel_tool_calls"] != nil {
 		normalized := toolCtx.normalizeToolChoice(rawChoice)
 		chatCarrier := map[string]any{}
 		if normalized != nil {
 			chatCarrier["tool_choice"] = normalized
+		}
+		if value, exists := responsesReq["parallel_tool_calls"]; exists {
+			chatCarrier["parallel_tool_calls"] = value
 		}
 		copyToolChoiceField(chatCarrier, claudeReq, true)
 	}

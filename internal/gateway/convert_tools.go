@@ -831,14 +831,126 @@ func copyToolChoiceField(source map[string]any, target map[string]any, toClaude 
 		return
 	}
 	if toClaude {
-		if converted := openAIToolChoiceToClaude(rawChoice); converted != nil {
-			target["tool_choice"] = converted
+		// Chat 的 parallel_tool_calls=false 落到 Claude 的
+		// tool_choice.disable_parallel_tool_use；Responses 的 allowed_tools
+		// 白名单收窄成 Claude 的 allowed_tools。
+		parallel, hasParallel := chatParallelToolCalls(source)
+		if converted := openAIToolChoiceToClaude(rawChoice); converted != nil || hasParallel {
+			choice, ok := converted.(map[string]any)
+			if !ok {
+				choice = map[string]any{"type": "auto"}
+				if text, isText := converted.(string); isText && text != "" {
+					choice = map[string]any{"type": text}
+				}
+			}
+			// type=none 是"不许调工具"，再挂 disable_parallel_tool_use 有些上游
+			// 会直接 400，这种选择不需要它。改出来的 map 是新的一份，别动原值。
+			choiceType := strings.TrimSpace(strings.ToLower(stringValue(choice["type"])))
+			if hasParallel && !parallel && choiceType != "none" {
+				restricted := map[string]any{"type": choice["type"]}
+				if name := stringValue(choice["name"]); name != "" {
+					restricted["name"] = name
+				}
+				restricted["disable_parallel_tool_use"] = true
+				choice = restricted
+			}
+			target["tool_choice"] = choice
 		}
 		return
 	}
 	if converted := claudeToolChoiceToOpenAI(rawChoice); converted != nil {
 		target["tool_choice"] = converted
 	}
+	applyClaudeToolChoiceRestrictions(rawChoice, target)
+}
+
+// applyClaudeToolChoiceRestrictions 把 Claude tool_choice 上的附加约束搬回 Chat：
+// disable_parallel_tool_use → parallel_tool_calls=false，allowed_tools →
+// allow_tools（OpenRouter 的写法）。
+func applyClaudeToolChoiceRestrictions(choice any, target map[string]any) {
+	typed, ok := choice.(map[string]any)
+	if !ok {
+		return
+	}
+	restricted := false
+	if disabled, ok := typed["disable_parallel_tool_use"].(bool); ok && disabled {
+		target["parallel_tool_calls"] = false
+		restricted = true
+	}
+	if names := claudeAllowedToolNames(typed["allowed_tools"]); len(names) > 0 {
+		allow := make(map[string]any, len(names))
+		for _, name := range names {
+			allow[name] = map[string]any{}
+		}
+		target["allow_tools"] = allow
+		restricted = true
+	}
+	// 约束挂在 tool_choice 上，只带了约束的 choice 也得让 Chat 侧看到用什么模式。
+	if restricted {
+		if _, hasChoice := target["tool_choice"]; !hasChoice {
+			target["tool_choice"] = "auto"
+		}
+	}
+}
+
+// chatParallelToolCalls 读 Chat 的 parallel_tool_calls。
+func chatParallelToolCalls(source map[string]any) (enabled bool, present bool) {
+	if source == nil {
+		return true, false
+	}
+	disabled, exists := source["disable_parallel_tool_use"]
+	if exists {
+		if value, ok := disabled.(bool); ok {
+			return !value, true
+		}
+	}
+	raw, exists := source["parallel_tool_calls"]
+	if !exists || raw == nil {
+		return true, false
+	}
+	if value, ok := raw.(bool); ok {
+		return value, true
+	}
+	return true, false
+}
+
+// claudeAllowedToolNames 把白名单的几种写法拆成工具名列表。
+func claudeAllowedToolNames(raw any) []string {
+	var names []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	switch typed := raw.(type) {
+	case map[string]any:
+		if tools, ok := typed["tools"].(map[string]any); ok {
+			for name := range tools {
+				add(name)
+			}
+			sort.Strings(names)
+			return names
+		}
+		if name, ok := typed["name"].(string); ok {
+			add(name)
+			return names
+		}
+		for name := range typed {
+			add(name)
+		}
+		sort.Strings(names)
+	case []any:
+		for _, item := range typed {
+			switch value := item.(type) {
+			case string:
+				add(value)
+			case map[string]any:
+				add(stringValue(value["name"]))
+			}
+		}
+	}
+	return names
 }
 
 func copyToolsFieldDirect(source map[string]any, target map[string]any) {
@@ -917,6 +1029,17 @@ func openAIChatToolToResponses(tool map[string]any) map[string]any {
 
 // openAIChatToolChoiceToResponses maps Chat Completions tool_choice into Responses.
 func openAIChatToolChoiceToResponses(choice any) any {
+	// Responses 的 tool_choice 没有 disable_parallel_tool_use / allowed_tools 的
+	// 位置；parallel_tool_calls 由 applyResponsesParallelToolCallsToChat 单独搬。
+	if typed, ok := choice.(map[string]any); ok {
+		choice = map[string]any{"type": typed["type"]}
+		if functionValue, ok := typed["function"].(map[string]any); ok {
+			choice.(map[string]any)["function"] = functionValue
+		}
+		if name, ok := typed["name"]; ok {
+			choice.(map[string]any)["name"] = name
+		}
+	}
 	switch typed := choice.(type) {
 	case string:
 		return typed

@@ -178,6 +178,12 @@ func applyResponsesParallelToolCallsToClaude(responsesReq, claudeReq map[string]
 	if !ok || enabled {
 		return
 	}
+	if existing, isMap := claudeReq["tool_choice"].(map[string]any); isMap {
+		switch stringValue(existing["type"]) {
+		case "none", "any":
+			return
+		}
+	}
 	choice, _ := claudeReq["tool_choice"].(map[string]any)
 	if choice == nil {
 		choice = map[string]any{"type": "auto"}
