@@ -449,6 +449,7 @@ func openAIChatToResponsesRequest(chatReq map[string]any, model string) (map[str
 		responsesReq["text"] = text
 	}
 	copyChatToolsToResponses(chatReq, responsesReq)
+	forwardChatConversationFields(chatReq, responsesReq)
 	return responsesReq, nil
 }
 
@@ -790,6 +791,7 @@ func responsesToOpenAIChatRequest(responsesReq map[string]any, model string) (ma
 	}
 	applyResponsesTextFormatToChat(responsesReq, chatReq)
 	applyResponsesParallelToolCallsToChat(responsesReq, chatReq)
+	forwardResponsesConversationFields(responsesReq, chatReq)
 	return chatReq, toolCtx, nil
 }
 
