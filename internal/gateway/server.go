@@ -4187,6 +4187,14 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// 出图只有一条腿，没有 failover 兜底，也只会原样转发 OpenAI Images 请求：
+	// 在动任何凭证、发任何请求之前，先把不可能的落点拒掉。
+	if refusal, ok := imagesRouteRefusal(s.router, route); ok {
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "pass_through", "images/generations", r.URL.Path, refusal.status, TokenUsage{}, body, []byte(refusal.message))
+		writeOpenAIError(w, refusal.status, refusal.message)
+		return
+	}
+
 	// 普通用户的 Key 只能落在管理员此刻仍授权给它的 Provider 上。出图没有
 	// failover 流程，授权在这里重新校验一次，不能只信创建 Key 时的结果。
 	var decision domain.RouteDecision
@@ -4205,8 +4213,15 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	provider, err := s.router.ProviderByID(decision.ProviderID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	// 模型别名、映射、默认值都属于真正收到请求的那个 Provider，不是路由默认值。
 	requestModel, _ := req["model"].(string)
-	model, logModel := resolveConsumerModel(s.router, route, matchedKey, gatewayKeyMatched, requestModel)
+	model, logModel := resolveConsumerModelOnProvider(provider, matchedKey, gatewayKeyMatched, requestModel)
 	if strings.TrimSpace(model) == "" {
 		model = "gpt-image-2"
 		if strings.TrimSpace(logModel) == "" || logModel == "request-model-not-set" {
@@ -4218,12 +4233,6 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	body, err = json.Marshal(req)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "failed to encode request body")
-		return
-	}
-
-	provider, err := s.router.ProviderByID(decision.ProviderID)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
@@ -4239,7 +4248,7 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 		defer admission.release()
 	}
 
-	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body, gatewayKeyMatched)
+	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body)
 	if err != nil {
 		s.logs.AddApp("error", "image generation request failed", err.Error())
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
@@ -5327,7 +5336,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
 }
 
-func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, skipIncomingAuth bool) (int, TokenUsage, []byte, error) {
+func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte) (int, TokenUsage, []byte, error) {
 	if provider.AuthType == domain.AuthTypeCursorOAuth {
 		status, responseBody, err := s.fetchCursorBridgeImages(r, provider, body)
 		if err == nil && status >= 200 && status < 300 {
@@ -5340,11 +5349,11 @@ func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provi
 			}
 			return status, TokenUsage{}, responseBody, nil
 		}
-		if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
-			return s.proxyOpenAIImagesUpstream(w, r.Context(), "https://api.openai.com/v1/images/generations", apiKey, body)
-		}
+		// No process-wide OPENAI_API_KEY rescue: that billed images to an account
+		// the caller never chose. The gateway's own provider list is the only
+		// place an OpenAI key should come from.
 		if err != nil {
-			return 0, TokenUsage{}, nil, fmt.Errorf("%w (Cursor OAuth 本地 bridge 暂无法生成图片；可设置 OPENAI_API_KEY 作为 Images API 回退)", err)
+			return 0, TokenUsage{}, nil, fmt.Errorf("%w (Cursor OAuth 本地 bridge 暂无法生成图片)", err)
 		}
 		return status, TokenUsage{}, responseBody, fmt.Errorf("cursor bridge image generation failed with HTTP %d", status)
 	}
@@ -5354,11 +5363,13 @@ func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provi
 	if bodyErr != nil {
 		return 0, TokenUsage{}, nil, bodyErr
 	}
-	upstreamURL := resolveProviderImageURL(provider)
+	// 只用 Provider 自己的凭证。以前这里会在 Provider 没有 Key 时把调用方的
+	// Authorization 原样转给厂商——那是网关自己的 Key，发给上游等于泄露。
 	authValue := resolveProviderAuth(provider)
-	if authValue == "" && skipIncomingAuth {
-		authValue = strings.TrimPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+	if strings.TrimSpace(authValue) == "" {
+		return 0, TokenUsage{}, nil, fmt.Errorf("provider %q has no API key configured", provider.ID)
 	}
+	upstreamURL := resolveProviderImageURL(provider)
 	return s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, body)
 }
 
@@ -5890,4 +5901,38 @@ func extractConsumerAPIKey(r *http.Request) string {
 		return strings.TrimSpace(auth[7:])
 	}
 	return ""
+}
+
+// imagesRouteRefusal rejects a route whose output can never serve images, before
+// the handler reads credentials or builds an upstream URL.
+func imagesRouteRefusal(router *Router, route domain.Route) (struct {
+	status  int
+	message string
+}, bool) {
+	refusal := struct {
+		status  int
+		message string
+	}{}
+	if !route.Enabled {
+		refusal.status = http.StatusServiceUnavailable
+		refusal.message = fmt.Sprintf("route %q is disabled", route.ID)
+		return refusal, true
+	}
+	provider, err := router.ProviderByID(route.ProviderID)
+	if err != nil {
+		refusal.status = http.StatusBadGateway
+		refusal.message = err.Error()
+		return refusal, true
+	}
+	if provider.Disabled || provider.Deleted {
+		refusal.status = http.StatusServiceUnavailable
+		refusal.message = fmt.Sprintf("provider %q is disabled", provider.ID)
+		return refusal, true
+	}
+	if provider.Protocol != domain.ProtocolOpenAIChat {
+		refusal.status = http.StatusBadGateway
+		refusal.message = fmt.Sprintf("provider %q speaks %s, which has no images/generations endpoint", provider.ID, provider.Protocol.DisplayName())
+		return refusal, true
+	}
+	return refusal, false
 }

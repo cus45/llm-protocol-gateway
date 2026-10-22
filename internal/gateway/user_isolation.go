@@ -384,31 +384,23 @@ func publicAccessForUser(src domain.PublicAccessSettings) domain.PublicAccessSet
 // revocation the chat path already refuses.
 func (s *Server) imagesEffectiveProvider(key domain.APIKey, route domain.Route) string {
 	routeProvider := strings.TrimSpace(route.ProviderID)
-	// Same head as the chat path: the provider this key is being served by,
-	// then its fallbacks, with the route's own provider kept as a last resort.
-	chain := apiKeyProviderChain(key.ActiveProviderID, append([]string{routeProvider}, key.FallbackProviderIDs...))
-	allowed := chain
+	chain := apiKeyProviderChain(routeProvider, key.FallbackProviderIDs)
 	if strings.TrimSpace(key.OwnerUserID) != "" {
 		// Admin-owned (or legacy) keys are unrestricted; user keys only reach
 		// what their owner is still granted.
-		allowed = s.allowedProviderChainForKey(key, chain)
-		if len(allowed) == 0 {
+		chain = s.allowedProviderChainForKey(key, chain)
+		if len(chain) == 0 {
 			return ""
 		}
 	}
+	// Like rotateChainAt, an active provider outside the chain is not a switch
+	// this route can make: it belongs to another route's chain.
 	if active := strings.TrimSpace(key.ActiveProviderID); active != "" {
-		for _, providerID := range allowed {
+		for _, providerID := range chain {
 			if providerID == active {
 				return active
 			}
 		}
 	}
-	// Prefer the route's own provider; otherwise the first one still granted
-	// (the key's chain may offer a provider the route doesn't).
-	for _, providerID := range allowed {
-		if providerID == routeProvider {
-			return routeProvider
-		}
-	}
-	return allowed[0]
+	return chain[0]
 }
