@@ -271,6 +271,76 @@ func responsesInputToClaudeMessages(input any, ctx *codexToolContext) []map[stri
 	return messages
 }
 
+// pairClaudeToolUsesWithResults gives every tool_use a matching tool_result,
+// in the user message that follows it. Anthropic rejects a request where an
+// assistant tool_use has no result ("tool_use ids were found without
+// tool_result blocks immediately after"), which happens whenever the turn was
+// interrupted or cancelled after the call but before the result came back, or
+// when a client sends only the call. The stand-in text says plainly that no
+// output exists, so the model does not read a fake success as a real one.
+func pairClaudeToolUsesWithResults(messages []map[string]any) []map[string]any {
+	synthetic := "[The result of this tool call is unavailable: the turn was interrupted before it returned output.]"
+	answered := make(map[string]struct{}, len(messages))
+	for _, msg := range messages {
+		if stringValue(msg["role"]) != "user" {
+			continue
+		}
+		blocks, _ := msg["content"].([]any)
+		for _, raw := range blocks {
+			block, ok := raw.(map[string]any)
+			if !ok || stringValue(block["type"]) != "tool_result" {
+				continue
+			}
+			if id := stringValue(block["tool_use_id"]); id != "" {
+				answered[id] = struct{}{}
+			}
+		}
+	}
+
+	for i := 0; i < len(messages); i++ {
+		if stringValue(messages[i]["role"]) != "assistant" {
+			continue
+		}
+		blocks, _ := messages[i]["content"].([]any)
+		var missing []any
+		for _, raw := range blocks {
+			block, ok := raw.(map[string]any)
+			if !ok || stringValue(block["type"]) != "tool_use" {
+				continue
+			}
+			id := stringValue(block["id"])
+			if id == "" {
+				continue
+			}
+			if _, ok := answered[id]; ok {
+				continue
+			}
+			missing = append(missing, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": id,
+				"content":     synthetic,
+			})
+			answered[id] = struct{}{}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		// Results belong in the next user message for exactly this assistant
+		// call. Anything else there (next turn's text) goes after them.
+		if i+1 < len(messages) && stringValue(messages[i+1]["role"]) == "user" {
+			next, _ := messages[i+1]["content"].([]any)
+			messages[i+1]["content"] = append(missing, next...)
+			continue
+		}
+		insert := map[string]any{"role": "user", "content": missing}
+		messages = append(messages, nil)
+		copy(messages[i+2:], messages[i+1:])
+		messages[i+1] = insert
+		i++
+	}
+	return messages
+}
+
 // dropTrailingAssistantThinking removes thinking / redacted_thinking blocks
 // that would otherwise terminate an assistant message. Anthropic rejects such
 // requests ("The final block in an assistant message cannot be `thinking`"),
@@ -302,6 +372,24 @@ func dropTrailingAssistantThinking(messages []map[string]any) []map[string]any {
 				msg["content"] = blocks[:trimmed]
 			}
 		}
+		if n := len(out); n > 0 && stringValue(out[n-1]["role"]) == stringValue(msg["role"]) {
+			prevBlocks, prevOK := out[n-1]["content"].([]any)
+			curBlocks, curOK := msg["content"].([]any)
+			if prevOK && curOK {
+				out[n-1]["content"] = append(prevBlocks, curBlocks...)
+				continue
+			}
+		}
+		out = append(out, msg)
+	}
+	return mergeAdjacentClaudeMessages(out)
+}
+
+// mergeAdjacentClaudeMessages joins consecutive same-role messages, which
+// Anthropic rejects when sent separately.
+func mergeAdjacentClaudeMessages(messages []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
 		if n := len(out); n > 0 && stringValue(out[n-1]["role"]) == stringValue(msg["role"]) {
 			prevBlocks, prevOK := out[n-1]["content"].([]any)
 			curBlocks, curOK := msg["content"].([]any)
@@ -346,6 +434,10 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	}
 
 	messages := responsesInputToClaudeMessages(responsesReq["input"], toolCtx)
+	// Re-nest same-role messages first: a result inserted at the end of history
+	// must not be merged into the assistant message it answers.
+	messages = mergeAdjacentClaudeMessages(messages)
+	messages = pairClaudeToolUsesWithResults(messages)
 	messages = dropTrailingAssistantThinking(messages)
 	messages = ensureLeadingClaudeUser(messages)
 	if len(messages) == 0 {
