@@ -504,6 +504,12 @@ func (s *Server) proxyConvertedThroughClaude(w http.ResponseWriter, r *http.Requ
 		}); ok {
 			return rectified, nil
 		}
+		// 上游 Claude 拒绝 sampling（temperature/top_p/top_k）时去掉重发一次。
+		if sampled, ok := s.maybeRectifySamplingRefusal(r, provider, upstreamBody, response, func(b []byte) (*http.Response, error) {
+			return s.doClaudeProviderRequest(r.Context(), r, provider, b, accept)
+		}); ok {
+			return sampled, nil
+		}
 		return response, nil
 	}
 	return s.finishConvertedProxyWithEmptyStreamRetry(w, r, model, stream, send, convert, streamConvert)

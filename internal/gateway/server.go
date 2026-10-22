@@ -5393,6 +5393,11 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 	if response.StatusCode == http.StatusBadRequest {
 		if peeked, ok := s.maybeRectifyClaudeThinking(r, provider, body, response); ok {
 			response = peeked
+		} else if peeked, ok := s.maybeRectifySamplingRefusal(r, provider, body, response, func(retryBody []byte) (*http.Response, error) {
+			return s.sendClaudeMessagesUpstream(r, provider, retryBody)
+		}); ok {
+			// 新一代 Claude 拒绝 temperature / top_p / top_k：去掉后原样重发一次。
+			response = peeked
 		}
 	}
 
