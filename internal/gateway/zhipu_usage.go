@@ -27,8 +27,7 @@ const zhipuQuotaPath = "/api/monitor/usage/quota/limit"
 // isZhipuBaseURL reports whether a provider's BaseURL points at Zhipu/bigmodel
 // (either open.bigmodel.cn or the api.z.ai international host).
 func isZhipuBaseURL(baseURL string) bool {
-	u := strings.ToLower(baseURL)
-	return strings.Contains(u, "bigmodel.cn") || strings.Contains(u, "z.ai")
+	return baseURLHostIn(baseURL, "bigmodel.cn", "z.ai")
 }
 
 // ZhipuUsageBucket is one rolling-window quota tier (utilization percentage +
@@ -69,7 +68,7 @@ func isZhipuNoCodingPlanMessage(msg string) bool {
 // zhipuQuotaBase resolves the host to hit for a personal-plan query. Zhipu ships
 // as two presets (open.bigmodel.cn and api.z.ai) sharing the same quota path.
 func zhipuQuotaBase(baseURL string) string {
-	if strings.Contains(strings.ToLower(baseURL), "bigmodel.cn") {
+	if baseURLHostIn(baseURL, "bigmodel.cn") {
 		return "https://open.bigmodel.cn"
 	}
 	return "https://api.z.ai"
@@ -112,7 +111,7 @@ func zhipuQuotaRequest(ctx context.Context, url, apiKey, organizationID, project
 		req.Header.Set("bigmodel-project", projectID)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: usageProbeTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		// Transient transport failure: let caller retry / keep last good value.

@@ -31,7 +31,7 @@ const deepSeekBalancePath = "/user/balance"
 // relays that merely serve deepseek-* models are intentionally not matched:
 // they do not implement /user/balance.
 func isDeepSeekBaseURL(baseURL string) bool {
-	return strings.Contains(strings.ToLower(baseURL), "deepseek.com")
+	return baseURLHostIn(baseURL, "deepseek.com")
 }
 
 // deepSeekBalanceBase resolves the origin to query. The balance endpoint lives
@@ -43,7 +43,7 @@ func deepSeekBalanceBase(baseURL string) string {
 		return "https://api.deepseek.com"
 	}
 	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" {
+	if err != nil || parsed.Host == "" || !baseURLHostIn(trimmed, "deepseek.com") {
 		return "https://api.deepseek.com"
 	}
 	scheme := parsed.Scheme
@@ -91,7 +91,7 @@ func fetchDeepSeekBalance(ctx context.Context, baseURL, apiKey string) (DeepSeek
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: usageProbeTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		// Transient transport failure: let the caller keep the last good value.

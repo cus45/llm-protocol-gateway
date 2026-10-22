@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -46,23 +47,25 @@ func TestDeepSeekBalanceBaseStripsPath(t *testing.T) {
 	}
 }
 
+// The query goes to the literal vendor host whatever the provider's BaseURL
+// says; the transport stands in for the network so the test can see it.
 func TestFetchDeepSeekBalanceParsesResponse(t *testing.T) {
-	var gotPath, gotAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var gotHost, gotPath, gotAuth string
+	probe := useProbeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"is_available":true,"balance_infos":[
 			{"currency":"CNY","total_balance":"110.00","granted_balance":"10.00","topped_up_balance":"100.00"}]}`))
 	}))
-	defer server.Close()
 
-	report, err := fetchDeepSeekBalance(context.Background(), server.URL, "sk-test")
+	report, err := fetchDeepSeekBalance(context.Background(), "https://api.deepseek.com/v1", "sk-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/user/balance" {
-		t.Fatalf("unexpected path %q", gotPath)
+	gotHost = probe.lastHost
+	if gotHost != "api.deepseek.com" || gotPath != "/user/balance" {
+		t.Fatalf("queried %q %q, want api.deepseek.com /user/balance", gotHost, gotPath)
 	}
 	// Unlike Zhipu, DeepSeek requires the Bearer prefix.
 	if gotAuth != "Bearer sk-test" {
@@ -88,12 +91,11 @@ func TestFetchDeepSeekBalanceParsesResponse(t *testing.T) {
 // is_available:false means the account is out of credit — still a successful
 // read, so Available stays true while IsAvailable goes false.
 func TestFetchDeepSeekBalanceExhaustedAccount(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	useProbeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"is_available":false,"balance_infos":[{"currency":"CNY","total_balance":"0.00"}]}`))
 	}))
-	defer server.Close()
 
-	report, err := fetchDeepSeekBalance(context.Background(), server.URL, "sk-test")
+	report, err := fetchDeepSeekBalance(context.Background(), "https://api.deepseek.com", "sk-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +108,11 @@ func TestFetchDeepSeekBalanceExhaustedAccount(t *testing.T) {
 }
 
 func TestFetchDeepSeekBalanceAuthFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	useProbeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer server.Close()
 
-	report, err := fetchDeepSeekBalance(context.Background(), server.URL, "sk-bad")
+	report, err := fetchDeepSeekBalance(context.Background(), "https://api.deepseek.com", "sk-bad")
 	if err != nil {
 		t.Fatalf("auth failures are reported in-band, not as errors: %v", err)
 	}
@@ -126,12 +127,11 @@ func TestFetchDeepSeekBalanceAuthFailure(t *testing.T) {
 // A relay without the endpoint returns 404: mark Unsupported so the console
 // stops polling and shows an explanatory note instead of an error.
 func TestFetchDeepSeekBalanceUnsupportedOn404(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	useProbeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer server.Close()
 
-	report, err := fetchDeepSeekBalance(context.Background(), server.URL, "sk-test")
+	report, err := fetchDeepSeekBalance(context.Background(), "https://api.deepseek.com", "sk-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,12 +151,11 @@ func TestFetchDeepSeekBalanceRequiresAPIKey(t *testing.T) {
 }
 
 func TestFetchDeepSeekBalanceMalformedBody(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	useProbeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`not json at all`))
 	}))
-	defer server.Close()
 
-	report, err := fetchDeepSeekBalance(context.Background(), server.URL, "sk-test")
+	report, err := fetchDeepSeekBalance(context.Background(), "https://api.deepseek.com", "sk-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,4 +172,38 @@ func TestDeepSeekUsagePathAllowedForUsers(t *testing.T) {
 	if isUserProviderUsagePath("/__providers/p1/deepseek/other") {
 		t.Fatal("only the usage sub-path should be allowed")
 	}
+}
+
+// useProbeServer points the Zhipu / DeepSeek usage probes at a local handler
+// for the duration of one test, leaving their vendor-pinned URLs untouched.
+func useProbeServer(t *testing.T, handler http.Handler) *hostDropTransport {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse probe server url: %v", err)
+	}
+	probe := &hostDropTransport{target: target}
+	previous := usageProbeTransport
+	usageProbeTransport = probe
+	t.Cleanup(func() { usageProbeTransport = previous })
+	return probe
+}
+
+// hostDropTransport sends every request to the test server while keeping the
+// original Host visible to the handler, so a test can still assert which host
+// the production code meant to reach.
+type hostDropTransport struct {
+	target *url.URL
+	// lastHost is the host the production code addressed, before the rewrite.
+	lastHost string
+}
+
+func (t *hostDropTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.lastHost = req.URL.Host
+	rewritten := req.Clone(req.Context())
+	rewritten.URL.Scheme = t.target.Scheme
+	rewritten.URL.Host = t.target.Host
+	return http.DefaultTransport.RoundTrip(rewritten)
 }
