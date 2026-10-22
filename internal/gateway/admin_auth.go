@@ -359,6 +359,22 @@ func (s *Server) adminAuthConfigured() bool {
 	return strings.TrimSpace(s.adminAuth.Setting(settingAdminPassword)) != ""
 }
 
+// consoleInstanceInUse reports whether this gateway has already been set up —
+// console users exist, or any provider/route/model/key is configured. Used to
+// keep the one-time /__auth/setup on a fresh install only.
+func (s *Server) consoleInstanceInUse() bool {
+	if s.userStore != nil {
+		if users, err := s.userStore.ListUsers(); err == nil && len(users) > 0 {
+			return true
+		}
+	}
+	if s.router == nil {
+		return false
+	}
+	state := s.router.State()
+	return len(state.Providers) > 0 || len(state.Routes) > 0 || len(state.Models) > 0 || len(state.APIKeys) > 0
+}
+
 func (s *Server) adminSessionValid(r *http.Request) bool {
 	identity, ok := s.sessionIdentity(r)
 	return ok && identity.isAdmin()
@@ -424,6 +440,13 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.adminAuthConfigured() {
 		writeOpenAIError(w, http.StatusConflict, "admin password is already configured")
+		return
+	}
+	// 只有全新实例才接受公网首设：没有账号、没有配置。已经在用的实例（口令
+	// 记录丢了、或还是旧版本建的）不能把管理员身份交给第一个连上来的人 ——
+	// 那等于把整个控制台（含所有 Provider 凭据）送出去。改用本机桌面端补设。
+	if !isLocalAdminBypass(r) && s.consoleInstanceInUse() {
+		writeOpenAIError(w, http.StatusForbidden, "this instance is already in use; set the admin password from the local desktop app")
 		return
 	}
 	// 首次设置也一样按来源限流，防止公网暴露的未初始化实例被反复探测。
