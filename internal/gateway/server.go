@@ -5429,7 +5429,7 @@ func (s *Server) sendClaudeMessagesUpstream(r *http.Request, provider domain.Pro
 	// Claude 自家的 OAuth 路径已在 buildClaudeOAuthRequest 里整流过。
 	if !isOAuth {
 		body = sanitizeClaudeStopSequencesBody(body)
-		body = normalizeClaudeThinkingOffBody(body, applyProviderModelMapping(provider, stringValue(claudeBodyField(body, "model"))))
+		body = normalizeClaudeEndpointThinkingOffBody(body, applyProviderModelMapping(provider, stringValue(claudeBodyField(body, "model"))))
 	}
 
 	var err error

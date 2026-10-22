@@ -188,3 +188,77 @@ func claudeBodyField(body []byte, key string) any {
 	}
 	return payload[key]
 }
+
+// removeClaudeThinkingOff deletes a Claude payload's thinking when it turns
+// thinking off (keeping any output_config effort), and reports whether it did.
+// For upstreams that don't take thinking.type at all (GLM's Anthropic
+// endpoint parses no thinking field): sending disabled there is silently
+// ignored and the model thinks anyway.
+func removeClaudeThinkingOff(payload map[string]any, model string) bool {
+	if payload == nil {
+		return false
+	}
+	thinking, _ := payload["thinking"].(map[string]any)
+	if thinking == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(stringValue(thinking["type"]))) != "disabled" {
+		return false
+	}
+	if rule, known := claudeThinkingOffOf(model); known && rule != claudeOffTaken {
+		// Anthropic 系模型按上一节改写，不在这里删。
+		return false
+	}
+	if isClaudeFamilyModelID(model) {
+		return false
+	}
+	delete(payload, "thinking")
+	return true
+}
+
+// claudeEndpointReasoningEffort returns the Chat-style reasoning_effort an
+// Anthropic-endpoint model takes when the client turned thinking off: GLM's
+// Anthropic endpoint reads reasoning_effort (none/low/…), and without it a
+// thinking-on-by-default model spends a short answer's whole budget thinking.
+func claudeEndpointReasoningEffort(model string) (string, bool) {
+	id := normalizeModelContextID(model)
+	if strings.Contains(id, "glm-") {
+		return "none", true
+	}
+	if strings.Contains(id, "deepseek") {
+		return "none", true
+	}
+	if strings.Contains(id, "kimi") || strings.Contains(id, "moonshot") {
+		return "none", true
+	}
+	return "", false
+}
+
+// normalizeClaudeEndpointThinkingOffBody is normalizeClaudeThinkingOff plus
+// the non-Anthropic handling, for a raw Messages body relayed as it came.
+func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.UseNumber()
+	var payload map[string]any
+	if decoder.Decode(&payload) != nil || payload == nil {
+		return body
+	}
+	changed := normalizeClaudeThinkingOff(payload, model)
+	if removeClaudeThinkingOff(payload, model) {
+		if effort, ok := claudeEndpointReasoningEffort(model); ok {
+			payload["reasoning_effort"] = effort
+		}
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return rewritten
+}
