@@ -476,6 +476,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /anthropic/v1/messages", s.handleClaudeMessages)
 	mux.HandleFunc("POST /anthropic/v1/messages/count_tokens", s.handleClaudeCountTokens)
 	api := withCORS(mux)
+	// 任何 POST 正文都有上限：限制在读取处（ReadAll 之前），超限时各协议自己回 413。
+	api = withBodyLimit(api)
 	return s.withAdminAuth(withHostSeparatedServing(api, findWebDistDir(), s.publicHostRole))
 }
 
@@ -1376,7 +1378,7 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		ClientIP:              clientIP,
 		AccessSource:          accessSource,
 		// 落库前脱敏：请求正文里的 api_key / token 等字段绝不能经管理界面外泄。
-		RequestBody:           truncateForLog(scrubSensitiveRequestBody(requestBody), requestBodyCap),
+		RequestBody: truncateForLog(scrubSensitiveRequestBody(requestBody), requestBodyCap),
 	}
 	// Attach what the scheduler did to the same JSON blob the context stats
 	// already ride in, so a request log can answer "why this account".
@@ -3909,7 +3911,11 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	// Count client-bound bytes for daily traffic stats on every path (pass-through
 	// and all conversions). recordRequestLogEx reads the tally at log time.
 	w = timingRef.attachTxCounter(w)
-	body, err := io.ReadAll(r.Body)
+	body, tooLarge, err := readGatewayRequestBody(r)
+	if tooLarge {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, requestBodyTooLargeMessage)
+		return
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "failed to read request body")
 		return
@@ -4022,7 +4028,11 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	// Count client-bound bytes for daily traffic stats on every path (pass-through
 	// and all conversions). recordRequestLogEx reads the tally at log time.
 	w = timingRef.attachTxCounter(w)
-	body, err := io.ReadAll(r.Body)
+	body, tooLarge, err := readGatewayRequestBody(r)
+	if tooLarge {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": map[string]any{"message": requestBodyTooLargeMessage, "type": "invalid_request_error"}})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "failed to read request body", "type": "invalid_request_error"}})
 		return
@@ -4236,7 +4246,11 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	// Count client-bound bytes for daily traffic stats on every path (pass-through
 	// and all conversions). recordRequestLogEx reads the tally at log time.
 	w = timingRef.attachTxCounter(w)
-	body, err := io.ReadAll(r.Body)
+	body, tooLarge, err := readGatewayRequestBody(r)
+	if tooLarge {
+		writeClaudeError(w, http.StatusRequestEntityTooLarge, requestBodyTooLargeMessage)
+		return
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "failed to read request body")
 		return
@@ -4336,7 +4350,11 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 // Claude Code uses during startup to validate the selected model.
 func (s *Server) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	body, err := io.ReadAll(r.Body)
+	body, tooLarge, err := readGatewayRequestBody(r)
+	if tooLarge {
+		writeClaudeError(w, http.StatusRequestEntityTooLarge, requestBodyTooLargeMessage)
+		return
+	}
 	if err != nil {
 		writeClaudeError(w, http.StatusBadRequest, "failed to read request body")
 		return
