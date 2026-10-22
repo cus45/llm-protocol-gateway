@@ -3,10 +3,13 @@ package gateway
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	storepkg "github.com/luca/llm-protocol-gateway/internal/store"
 )
 
 const (
@@ -20,6 +23,10 @@ const (
 	// creates a session id per conversation, and an unbounded map would grow
 	// with the number of past conversations.
 	sessionAffinityMaxPins = 10000
+	// sessionPinFlushDelay is how long a changed pin waits before it is written:
+	// pins change on every successful turn, and the delay turns a busy gateway's
+	// thousands of turns into a handful of small writes.
+	sessionPinFlushDelay = 500 * time.Millisecond
 )
 
 type sessionPin struct {
@@ -41,13 +48,121 @@ type sessionPinStore struct {
 	ttl     time.Duration
 	max     int
 	nowFunc func() time.Time
+	// dirty holds the keys whose pin changed since the last write, and saver is
+	// where they are written; without a saver the store is a plain memory table.
+	dirty        map[string]bool
+	saver        sessionPinSaver
+	flushPending bool
+	// flushMu serializes writes so two flushes never interleave their rows.
+	flushMu sync.Mutex
 }
 
 func newSessionPinStore() *sessionPinStore {
 	return &sessionPinStore{
-		pins: make(map[string]sessionPin),
-		ttl:  sessionAffinityTTL,
-		max:  sessionAffinityMaxPins,
+		pins:  make(map[string]sessionPin),
+		ttl:   sessionAffinityTTL,
+		max:   sessionAffinityMaxPins,
+		dirty: make(map[string]bool),
+	}
+}
+
+// sessionPinSaver is where pins live between restarts. It is optional: a server
+// without one keeps the table in memory only.
+type sessionPinSaver interface {
+	SaveSessionPins([]storepkg.SessionPin) error
+	DeleteSessionPins([]string) error
+	LoadSessionPins() ([]storepkg.SessionPin, error)
+}
+
+// setSaver attaches the persistent half and loads what it remembered. It runs
+// before the server serves anything, so a restart puts every live conversation
+// back on the account that already has its prompt cached.
+func (store *sessionPinStore) setSaver(saver sessionPinSaver) {
+	if store == nil || saver == nil {
+		return
+	}
+	pins, err := saver.LoadSessionPins()
+	if err != nil {
+		slog.Warn("session pins could not be loaded", "error", err)
+	}
+	now := store.now()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.saver = saver
+	for _, pin := range pins {
+		expiresAt, err := time.Parse(time.RFC3339, pin.ExpiresAt)
+		if err != nil || !now.Before(expiresAt) {
+			continue
+		}
+		store.pins[pin.SessionKey] = sessionPin{providerID: pin.ProviderID, expiresAt: expiresAt}
+	}
+}
+
+// scheduleFlushLocked marks a pin changed and arranges the write. Called with mu
+// held.
+func (store *sessionPinStore) scheduleFlushLocked(sessionKey string) {
+	if store.saver == nil {
+		return
+	}
+	store.dirty[sessionKey] = true
+	if store.flushPending {
+		return
+	}
+	store.flushPending = true
+	time.AfterFunc(sessionPinFlushDelay, store.flush)
+}
+
+// flush writes every changed pin. A failure puts the keys back on the dirty list:
+// the table already holds the right answer, so a failed write only costs the pins
+// on the next restart.
+func (store *sessionPinStore) flush() {
+	if store == nil {
+		return
+	}
+	store.flushMu.Lock()
+	defer store.flushMu.Unlock()
+	store.mu.Lock()
+	store.flushPending = false
+	if len(store.dirty) == 0 || store.saver == nil {
+		store.mu.Unlock()
+		return
+	}
+	now := store.now()
+	upserts := make([]storepkg.SessionPin, 0, len(store.dirty))
+	deletes := make([]string, 0)
+	keys := make([]string, 0, len(store.dirty))
+	for key := range store.dirty {
+		keys = append(keys, key)
+		pin, ok := store.pins[key]
+		if ok && now.Before(pin.expiresAt) {
+			upserts = append(upserts, storepkg.SessionPin{SessionKey: key, ProviderID: pin.providerID, ExpiresAt: pin.expiresAt.UTC().Format(time.RFC3339)})
+		} else {
+			deletes = append(deletes, key)
+		}
+	}
+	store.dirty = make(map[string]bool)
+	saver := store.saver
+	store.mu.Unlock()
+
+	if err := saver.SaveSessionPins(upserts); err != nil {
+		slog.Warn("session pins could not be saved", "error", err)
+		store.markDirty(keys)
+		return
+	}
+	if err := saver.DeleteSessionPins(deletes); err != nil {
+		slog.Warn("session pins could not be cleared", "error", err)
+		store.markDirty(keys)
+	}
+}
+
+func (store *sessionPinStore) markDirty(keys []string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.saver == nil {
+		return
+	}
+	for _, key := range keys {
+		store.dirty[key] = true
 	}
 }
 
@@ -99,6 +214,7 @@ func (store *sessionPinStore) sessionPin(sessionKey string) string {
 		return pin.providerID
 	}
 	delete(store.pins, sessionKey)
+	store.scheduleFlushLocked(sessionKey)
 	return ""
 }
 
@@ -109,6 +225,7 @@ func (store *sessionPinStore) set(sessionKey, providerID string) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.pins[sessionKey] = sessionPin{providerID: providerID, expiresAt: store.now().Add(store.ttlOrDefault())}
+	store.scheduleFlushLocked(sessionKey)
 	if len(store.pins) <= store.maxOrDefault() {
 		return
 	}
@@ -118,6 +235,7 @@ func (store *sessionPinStore) set(sessionKey, providerID string) {
 	for key, pin := range store.pins {
 		if now.After(pin.expiresAt) {
 			delete(store.pins, key)
+			store.scheduleFlushLocked(key)
 		}
 	}
 	for len(store.pins) > store.maxOrDefault() {
@@ -131,6 +249,7 @@ func (store *sessionPinStore) set(sessionKey, providerID string) {
 			break
 		}
 		delete(store.pins, oldestKey)
+		store.scheduleFlushLocked(oldestKey)
 	}
 }
 
@@ -140,7 +259,11 @@ func (store *sessionPinStore) clear(sessionKey string) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if _, ok := store.pins[sessionKey]; !ok {
+		return
+	}
 	delete(store.pins, sessionKey)
+	store.scheduleFlushLocked(sessionKey)
 }
 
 func (store *sessionPinStore) now() time.Time {

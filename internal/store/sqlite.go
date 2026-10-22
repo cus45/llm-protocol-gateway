@@ -261,6 +261,9 @@ func (s *Store) migrate() error {
 	if err := ensureCheckinTable(tx); err != nil {
 		return fmt.Errorf("migrate checkins: %w", err)
 	}
+	if err := ensureSessionPinsTable(tx); err != nil {
+		return fmt.Errorf("migrate session_pins: %w", err)
+	}
 	if err := addColumnIfMissing(tx, "api_keys", "model_aliases", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

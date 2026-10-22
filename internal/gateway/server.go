@@ -251,6 +251,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		if records, ok := stateSaver[0].(CheckinStore); ok {
 			server.checkinStore = records
 		}
+		if pins, ok := stateSaver[0].(sessionPinSaver); ok {
+			server.sessionPins.setSaver(pins)
+		}
 	}
 	return server
 }
