@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -38,6 +41,107 @@ func isThinkingOnlyEmptyStreamError(err error) bool {
 	return errors.Is(err, errThinkingOnlyEmptyResponse)
 }
 
+// isUpstreamStreamInterruption reports whether err means the upstream stopped
+// talking mid-answer — the connection dropped, the body ended before its
+// Content-Length, or the stream closed without the closing event. The answer is
+// truncated, not wrong, so another account can still deliver it whole. A
+// converter-side failure (bad JSON shape, write error) is excluded on purpose:
+// the next provider would fail exactly the same way.
+func isUpstreamStreamInterruption(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	if errors.Is(err, errUpstreamStreamInterrupted) || isEmptyUpstreamStreamError(err) || isThinkingOnlyEmptyStreamError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	// A converter that ran out of a body that never announced a Content-Length
+	// cannot tell a clean end from a cut one on its own: it reports the missing
+	// closing event and the transport words for it (a chunked stream cut by the
+	// peer reads as "unexpected EOF" on the metrics, "unexpected EOF" in Go).
+	for _, marker := range []string{
+		"without its closing event",
+		"connection reset",
+		"connection aborted",
+		"broken pipe",
+		"unexpected eof",
+		"server closed idle connection",
+		"http2: server sent goaway",
+		"stream error: stream id",
+		"transport is closing",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUpstreamStreamInterruptedResponse reports whether a body copy stopped
+// before the upstream finished sending: no body at all, or (for a body that
+// announced nothing) a stream with no closing frame. The length is deliberately
+// not trusted: live SSE responses arrive as chunked bodies with no announced
+// length, which is every stream worth retrying.
+func isUpstreamStreamInterruptedResponse(resp *http.Response, sawClosingFrame bool) bool {
+	if resp == nil || resp.Body == nil {
+		return true
+	}
+	if resp.ContentLength < 0 {
+		return !sawClosingFrame
+	}
+	return false
+}
+
+// upstreamStreamInterruptionError marks a stream the upstream stopped
+// mid-answer. It is a distinct type (not a bare sentinel) so callers can tell a
+// truncated upstream from a converter failure without consulting the HTTP
+// response: the response says nothing about why the stream ended.
+type upstreamStreamInterruptionError struct {
+	cause error // scanner error, or ErrUnexpectedEOF when the stream just ended
+	total int   // body bytes the converter consumed
+}
+
+func (e *upstreamStreamInterruptionError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("upstream stream interrupted after %d bytes: %v", e.total, e.cause)
+	}
+	return fmt.Sprintf("upstream stream ended after %d bytes without its closing event", e.total)
+}
+
+// Unwrap exposes errUpstreamStreamInterrupted so errors.Is answers the coarse
+// question "was this an interruption?".
+func (e *upstreamStreamInterruptionError) Unwrap() error { return errUpstreamStreamInterrupted }
+
+// countingReader remembers how much of the upstream body a converter consumed,
+// so an interruption can say whether anything at all arrived (a drop before the
+// first frame is an empty stream, retryable on the same provider).
+type countingReader struct {
+	r   io.Reader
+	n   int
+	err error // the error that ended the read, io.EOF for a body that just ran out
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	if err != nil {
+		c.err = err
+	}
+	return n, err
+}
+
+// committed reports whether anything of the attempt reached the client, which
+// is what makes an empty-stream retry unsafe. A buffered attempt has reached
+// nobody: the failover buffer holds it until the loop settles.
+func (w *deferredSSEWriter) committed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.wroteHeader || w.wroteBody
+}
+
 // deferredSSEWriter 推迟 WriteHeader，直到首次 Write / heartbeat（或显式 Commit）。
 // 用于流式转换：上游空流时尚未向客户端提交任何字节，可安全同 Provider 重试。
 // mu 串行化正常 SSE 写出与后台 heartbeat，避免并发写 ResponseWriter。
@@ -49,6 +153,7 @@ type deferredSSEWriter struct {
 	wroteHeader bool
 	wroteBody   bool
 	bodyLog     *limitedBuffer
+	buf         bytes.Buffer // the stream itself while a failover buffer holds the attempt
 }
 
 func newDeferredSSEWriter(base http.ResponseWriter) *deferredSSEWriter {
@@ -85,19 +190,59 @@ func (w *deferredSSEWriter) Write(p []byte) (int, error) {
 		w.commitLocked(w.status)
 	}
 	w.wroteBody = true
-	if w.bodyLog != nil {
-		_, _ = w.bodyLog.Write(p)
+	_, _ = w.bodyLog.Write(p)
+	if buffered, ok := w.base.(*failoverResponseWriter); ok && buffered.deferring() {
+		// The attempt's stream stays inside the failover buffer until the whole
+		// stream is known to be complete: an interrupted turn is retried (here
+		// or on the backup) and the client must never see the half answer.
+		return w.buf.Write(p)
 	}
 	return w.base.Write(p)
 }
 
+// copyHeadersLocked copies the attempt's headers onto dst. Caller holds w.mu.
+func (w *deferredSSEWriter) copyHeadersLocked(dst http.Header) {
+	for key, values := range w.header {
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+// flushBuffered hands a complete stream to the failover buffer, which the
+// failover loop commits once it has settled on this attempt. A stream already
+// flushed, or one on the last attempt (nothing left to retry), has nothing to
+// hand over: flushBuffered must then commit it like the commit it replaces.
+func (w *deferredSSEWriter) flushBuffered() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	buffered, ok := w.base.(*failoverResponseWriter)
+	if !ok {
+		return
+	}
+	if !buffered.deferring() {
+		if !w.wroteHeader && buffered.failoverUnavailable() {
+			w.commitLocked(w.status)
+		}
+		return
+	}
+	if w.buf.Len() == 0 {
+		return
+	}
+	w.copyHeadersLocked(buffered.Header())
+	buffered.WriteHeader(w.status)
+	_, _ = buffered.Write(w.buf.Bytes())
+}
+
+// BodyBytes returns the stream the converter wrote, for logging and for the
+// failover buffer. A buffered attempt's copy is uncapped: it is also the bytes
+// the client will receive. Once it has been flushed it is empty, so the copy
+// outliving that flush is the caller's to keep.
 func (w *deferredSSEWriter) BodyBytes() []byte {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.bodyLog == nil {
-		return nil
-	}
-	return w.bodyLog.Bytes()
+	return append([]byte(nil), w.bodyLog.Bytes()...)
 }
 
 func (w *deferredSSEWriter) Flush() {
@@ -162,3 +307,8 @@ func (w *deferredSSEWriter) WroteBody() bool {
 	defer w.mu.Unlock()
 	return w.wroteBody
 }
+
+// errUpstreamStreamInterrupted marks a stream the upstream stopped mid-answer.
+// Converters wrap it so the passthrough writer, the failover loop and the logs
+// can tell "the answer is cut short" from "the converter itself failed".
+var errUpstreamStreamInterrupted = errors.New("upstream stream interrupted")

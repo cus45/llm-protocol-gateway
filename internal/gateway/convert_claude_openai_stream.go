@@ -81,8 +81,10 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	}
 
 	var promptTokens, outputTokens, cacheRead, cacheWrite int64
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	interrupted := isUpstreamStreamInterruptedReader(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -204,7 +206,10 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return usage, err
+		return usage, newUpstreamStreamInterruption(err, r.n)
+	}
+	if interrupted {
+		return usage, closeInterruptedChatStream(w, chunkID, resolvedModel, usage, &sawVisibleOutput, &sawAnyEvent, &claudeStopReason, &sentRole, false, r.n)
 	}
 
 	usage = normalizeClaudeUsageFields(promptTokens, outputTokens, cacheRead, cacheWrite)

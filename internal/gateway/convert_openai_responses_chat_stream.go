@@ -570,8 +570,10 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 		model:      strings.TrimSpace(model),
 	}
 
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	interrupted := isUpstreamStreamInterruptedReader(r)
 	// Some upstreams (Qoder) signal failures as an `event: error` frame whose
 	// data payload is a bare error object with no "error" wrapper key. Track the
 	// current event name so that payload is recognized instead of being skipped
@@ -658,7 +660,10 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return state.usage, err
+		return state.usage, newUpstreamStreamInterruption(err, r.n)
+	}
+	if interrupted {
+		return state.usage, closeInterruptedChatToResponsesStream(state, r.n)
 	}
 	if !state.hasOutput() {
 		return state.usage, fmt.Errorf("openai stream ended without any chunks")
@@ -804,8 +809,10 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 		return emitToolArgs(callID, itemID, args)
 	}
 
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	interrupted := isUpstreamStreamInterruptedReader(r)
 	eventName := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1002,7 +1009,10 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return usage, err
+		return usage, newUpstreamStreamInterruption(err, r.n)
+	}
+	if interrupted {
+		return usage, closeInterruptedResponsesToChatStream(w, chunkID, resolvedModel, usage, &sawAny, &textSeen, &roleSent, int64(len(toolIndexByCallID)) > 0, r.n)
 	}
 	if !sawAny {
 		return usage, fmt.Errorf("responses stream ended without any text deltas")

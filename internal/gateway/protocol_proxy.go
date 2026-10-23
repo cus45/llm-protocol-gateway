@@ -169,7 +169,7 @@ func (s *Server) proxyOpenAIResponses(w http.ResponseWriter, r *http.Request, pr
 	// so this never triggers there and reasoning continuity is preserved.
 	response = s.retryResponsesWithoutReasoningIfNeeded(r.Context(), r, provider, upstreamURL, body, r.Header.Get("Accept"), skipIncomingAuth, response)
 	defer response.Body.Close()
-	return writePassThroughResponse(w, response, clientStream, ParseResponsesUsage)
+	return writePassThroughResponse(w, response, clientStream, ParseResponsesUsage, responsesStreamInterrupter{})
 }
 
 // retryResponsesWithoutReasoningIfNeeded implements Strategy 3 for the Responses
@@ -571,6 +571,26 @@ func (s *Server) finishConvertedProxyWithEmptyStreamRetry(w http.ResponseWriter,
 	return lastStatus, lastUsage, lastBody, lastErr
 }
 
+// streamRetryRecorder is the failover loop's buffering response writer. While
+// it is in place every attempt is already kept back from the client, so the
+// converted-stream path may retry an interrupted stream even on the last
+// attempt (the loop closes the half turn itself then) and behaves like the
+// plain deferred writer everywhere else.
+type streamRetryRecorder interface {
+	recordsForRetry()
+}
+
+// runStreamConverter converts an upstream stream, turning a body that ended
+// short of its announced Content-Length into an interruption. A converter has
+// no way to see that on its own: reading a truncated body is just EOF.
+func runStreamConverter(w http.ResponseWriter, response *http.Response, model string, streamConvert streamConverter) (TokenUsage, error) {
+	usage, err := streamConvert(w, response.Body, model)
+	if err == nil && response.ContentLength > 0 {
+		err = newUpstreamStreamInterruption(fmt.Errorf("body shorter than its Content-Length %d", response.ContentLength), int(response.ContentLength))
+	}
+	return usage, err
+}
+
 func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Response, model string, stream bool, convert responseConverter, streamConvert streamConverter) (int, TokenUsage, []byte, error, bool) {
 	if stream {
 		dw := newDeferredSSEWriter(w)
@@ -591,6 +611,35 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 			_, writeErr := dw.Write(converted)
 			return response.StatusCode, TokenUsage{}, converted, writeErr, false
 		}
+		// Behind the failover loop the attempt is intercepted rather than sent,
+		// so an interrupted stream can still be retried (empty: same provider;
+		// cut mid-answer: the backup): the client has seen nothing of it. For
+		// the same reason the intercepted stream itself is not what decides
+		// whether it was closed — a converting writer may shape the closing
+		// event as it likes. On the last attempt there is nowhere to go, so a
+		// half answer the converter did not close is sent as it stands.
+		if fw, ok := w.(*failoverResponseWriter); ok {
+			intercepted := newInterceptingStreamWriter()
+			usage, streamErr := runStreamConverter(intercepted, response, model, streamConvert)
+			streamBody := intercepted.body()
+			if !isUpstreamStreamInterruption(streamErr) {
+				// Complete: nothing to retry, only to send.
+				intercepted.replay(fw)
+				fw.FlushError()
+				return response.StatusCode, usage, streamBody, streamErr, false
+			}
+			if fw.canDefer {
+				// The loop retries here or hands the turn to the next account;
+				// nothing of this attempt has reached the client.
+				return response.StatusCode, usage, nil, streamErr, true
+			}
+			// Last attempt: whatever the converter wrote is the answer, so it is
+			// replayed into a deferred writer and committed like any stream.
+			rw := intercepted.replay(w)
+			rw.commit(response.StatusCode)
+			rw.flushBuffered()
+			return response.StatusCode, usage, streamBody, streamErr, true
+		}
 		// Keep the downstream SSE path warm during long upstream thinking /
 		// quiet gaps so Cloudflare (and similar proxies) do not idle-cut the
 		// stream. Heartbeats are SSE comments and do not set wroteBody; once
@@ -598,16 +647,20 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 		// retries are intentionally skipped (client already saw a 200).
 		stopHeartbeat := startSSEHeartbeat(dw, sseHeartbeatInterval)
 		defer stopHeartbeat()
-		usage, streamErr := streamConvert(dw, response.Body, model)
-		if streamErr != nil && (isEmptyUpstreamStreamError(streamErr) || isThinkingOnlyEmptyStreamError(streamErr)) && !dw.Committed() {
+		usage, streamErr := runStreamConverter(dw, response, model, streamConvert)
+		if streamErr != nil && isUpstreamStreamInterruption(streamErr) && !dw.committed() {
 			// 尚未向客户端提交任何字节（含 heartbeat），可安全同 Provider 重试。
 			return response.StatusCode, usage, nil, streamErr, true
 		}
+		// Capture before flushing: the flush hands the buffer to the client and
+		// empties it, while the caller still logs what the turn returned.
+		streamBody := dw.BodyBytes()
 		if !dw.Committed() {
 			// 成功但转换器未写出（极少见）：仍提交状态，避免悬挂。
 			dw.commit(response.StatusCode)
 		}
-		return response.StatusCode, usage, dw.BodyBytes(), streamErr, false
+		dw.flushBuffered()
+		return response.StatusCode, usage, streamBody, streamErr, false
 	}
 
 	responseBody, readErr := io.ReadAll(response.Body)

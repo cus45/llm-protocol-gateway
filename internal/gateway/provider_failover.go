@@ -219,6 +219,30 @@ func (w *failoverResponseWriter) UpstreamHeader(name string) string {
 	return strings.TrimSpace(w.header.Get(name))
 }
 
+// deferring reports whether this attempt's response can still be thrown away
+// for a backup: nothing has been committed to the real client yet.
+func (w *failoverResponseWriter) deferring() bool {
+	return !w.passthrough && !w.discarded
+}
+
+// failoverUnavailable reports that this attempt is the last one: the loop has
+// no backup left, so whatever the attempt wrote is the client's answer.
+func (w *failoverResponseWriter) failoverUnavailable() bool {
+	return !w.canDefer
+}
+
+// streamClosed reports that the buffered stream ends with its protocol's
+// closing frame, i.e. the turn was closed (by the upstream or by a converter
+// that closed a cut stream itself) and only needs to be delivered.
+func (w *failoverResponseWriter) streamClosed() bool {
+	return closesUpstreamStream(w.buf.Bytes())
+}
+
+// recordsForRetry marks the writer as a failover buffer for the converted
+// stream path (see streamRetryRecorder): every attempt written through it is
+// kept back, so an interrupted stream may be retried even on the last attempt.
+func (w *failoverResponseWriter) recordsForRetry() {}
+
 func (w *failoverResponseWriter) Header() http.Header {
 	if w.passthrough {
 		return w.base.Header()
@@ -237,11 +261,11 @@ func (w *failoverResponseWriter) WriteHeader(statusCode int) {
 		}
 		return
 	}
-	w.status = statusCode
 	if !w.canDefer || statusCode < 400 {
 		w.commitHeaders(statusCode)
 		return
 	}
+	w.status = statusCode
 	w.wroteHeader = true
 }
 
@@ -266,7 +290,14 @@ func (w *failoverResponseWriter) Flush() {
 	}
 }
 
+// commitHeaders records this attempt's status; the bytes and the real
+// WriteHeader wait for FlushError, once the failover loop has settled on this
+// attempt. Error statuses never wait here: the failover decision (and the
+// Retry-After it reads back) needs the status as soon as the upstream says it.
 func (w *failoverResponseWriter) commitHeaders(statusCode int) {
+	if w.discarded || w.passthrough {
+		return
+	}
 	dst := w.base.Header()
 	for key, values := range w.header {
 		dst.Del(key)
@@ -274,8 +305,12 @@ func (w *failoverResponseWriter) commitHeaders(statusCode int) {
 			dst.Add(key, value)
 		}
 	}
-	w.base.WriteHeader(statusCode)
-	w.status = statusCode
+	if statusCode != 0 {
+		w.base.WriteHeader(statusCode)
+		w.status = statusCode
+	} else if w.status != 0 {
+		w.base.WriteHeader(w.status)
+	}
 	w.wroteHeader = true
 	w.passthrough = true
 	if w.buf.Len() > 0 {
@@ -1025,7 +1060,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 
 		attemptFailoverWorthy := s.applyProviderFailoverOutcome(providerID, status, respBody, writer.UpstreamHeader("Retry-After"), nil)
 		if canDefer && attemptFailoverWorthy {
-			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonUpstreamError, Error: truncateReason(summarizeUpstreamHTTPError(status, respBody)), Deferred: true})
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptFailoverReason(respBody), Error: summarizeUpstreamHTTPError(status, respBody), Deferred: true})
 			writer.Discard()
 			markTimingFlag(r.Context(), timingFlagFailoverRetry)
 			if t := requestTimingFrom(r.Context()); t != nil {
@@ -1069,6 +1104,16 @@ func (s *Server) executeProtocolFlowWithFailover(
 		return lastStatus, lastUsage, lastBody, lastDecision, lastModel, lastErr
 	}
 	return lastStatus, lastUsage, lastBody, lastDecision, lastModel, nil
+}
+
+// attemptFailoverReason names why an otherwise successful-looking attempt went
+// to the next account: a stream the upstream cut mid-answer is not an HTTP
+// error, so it must not be reported as one.
+func attemptFailoverReason(body []byte) string {
+	if isUpstreamStreamInterruption(errors.New(string(body))) {
+		return attemptReasonStreamInterrupted
+	}
+	return attemptReasonUpstreamError
 }
 
 func cloneRequestMap(req map[string]any) map[string]any {

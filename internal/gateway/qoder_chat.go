@@ -70,7 +70,7 @@ func (s *Server) proxyQoderChat(w http.ResponseWriter, r *http.Request, provider
 		// object gets the converted stream rebuilt into one.
 		_ = forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
 	}
-	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
+	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 	return status, usage, responseBody, err
 }
 

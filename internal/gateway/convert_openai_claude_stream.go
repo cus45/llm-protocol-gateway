@@ -120,8 +120,10 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 		return nil
 	}
 
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	interrupted := isUpstreamStreamInterruptedReader(r)
 	// Some upstreams (Qoder) report failures as an `event: error` frame whose data
 	// payload is a bare error object with no "error" wrapper key. Track the event
 	// name so it is recognized rather than skipped as an ordinary chunk.
@@ -283,7 +285,16 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return usage, err
+		return usage, newUpstreamStreamInterruption(err, r.n)
+	}
+	if interrupted {
+		openToolBlocks := make(map[int]int, len(toolBlocks))
+		for callIndex, open := range toolBlocks {
+			if open {
+				openToolBlocks[callIndex] = toolBlockIndexByCall[callIndex]
+			}
+		}
+		return usage, closeInterruptedClaudeChatStream(w, messageID, resolvedModel, usage, messageStarted, textBlockOpen, thinkingOpen, openToolBlocks, blockIndex, len(openToolBlocks) > 0, r.n)
 	}
 
 	if !messageStarted {

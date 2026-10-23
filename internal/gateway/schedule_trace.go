@@ -24,6 +24,7 @@ import (
 const (
 	attemptReasonServed             = "served"
 	attemptReasonUpstreamError      = "upstream_error"
+	attemptReasonStreamInterrupted  = "stream_interrupted"
 	attemptReasonTransportError     = "transport_error"
 	attemptReasonFirstPacketTimeout = "first_packet_timeout"
 	attemptReasonSaturated          = "saturated"

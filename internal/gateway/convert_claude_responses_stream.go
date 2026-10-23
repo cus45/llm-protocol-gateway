@@ -247,8 +247,10 @@ func streamResponsesToClaudeEventsDirect(w http.ResponseWriter, reader io.Reader
 		return nil
 	}
 
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	interrupted := isUpstreamStreamInterruptedReader(r)
 	eventName := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -419,7 +421,17 @@ func streamResponsesToClaudeEventsDirect(w http.ResponseWriter, reader io.Reader
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return usage, err
+		return usage, newUpstreamStreamInterruption(err, r.n)
+	}
+	if interrupted {
+		turn := claudeInterruptedTurn{
+			messageStarted:    messageStarted,
+			textBlockOpen:     textBlockOpen,
+			thinkingBlockOpen: thinkingBlockOpen,
+			toolOpen:          toolBlocksOpen,
+			nextIndex:         blockIndex,
+		}
+		return usage, closeInterruptedClaudeStream(w, turn, usage, r.n)
 	}
 
 	if !messageStarted {

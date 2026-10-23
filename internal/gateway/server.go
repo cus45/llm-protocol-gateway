@@ -5286,7 +5286,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 			return 0, TokenUsage{}, nil, err
 		}
 		defer response.Body.Close()
-		return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
+		return writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 	}
 
 	model = applyProviderModelMapping(provider, model)
@@ -5350,7 +5350,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	if zenFree && forcedStream {
 		_ = rewriteOpenCodeZenUpstreamStreamedBody(response, model)
 	}
-	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
+	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 }
 
 // proxyOpenAIImages forwards one Images request to a provider. It could not be
@@ -5490,7 +5490,7 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	defer response.Body.Close()
-	return writePassThroughResponse(w, response, requestBodyWantsStream(body), ParseClaudeUsage)
+	return writePassThroughResponse(w, response, requestBodyWantsStream(body), ParseClaudeUsage, claudeStreamInterrupter{})
 }
 
 // sendClaudeMessagesUpstream builds and sends one Claude Messages request to the

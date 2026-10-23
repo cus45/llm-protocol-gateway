@@ -656,6 +656,57 @@ func (s *claudeToResponsesDirectStreamState) finalize() error {
 	})
 }
 
+// interrupt closes a turn whose upstream connection died mid-answer. What the
+// client already received stays; the turn ends as response.incomplete with
+// reason upstream_stream_interrupted, so a client can tell a truncated answer
+// from a finished one and re-ask. Anything still gated (a thinking-only turn
+// that never turned visible) is dropped — that is the retryable case, and
+// buffering it would only publish a half turn.
+func (s *claudeToResponsesDirectStreamState) interrupt(cause error, model string, debugTee *bytes.Buffer, bytesRead int) error {
+	wrapped := newUpstreamStreamInterruption(cause, bytesRead)
+	if !s.visGate.everVisible() {
+		if debugTee != nil {
+			dumpNearEmptyConvertedResponse("stream", model, debugTee.Bytes(), map[string]any{
+				"status":       "interrupted",
+				"stop_reason":  s.stopReason,
+				"ever_visible": false,
+				"cause":        cause.Error(),
+			})
+		}
+		return wrapped
+	}
+	if err := s.closeRemainingBlocks(); err != nil {
+		return err
+	}
+	reason := "upstream_stream_interrupted"
+	s.completed = true
+	response := map[string]any{
+		"id":     s.responseID,
+		"object": "response",
+		"model":  s.model,
+		"status": "incomplete",
+		"output": s.outputItems,
+		"incomplete_details": map[string]any{
+			"reason": reason,
+		},
+		"usage": map[string]any{
+			"input_tokens":          s.usage.InputTokens,
+			"output_tokens":         s.usage.OutputTokens,
+			"total_tokens":          s.usage.InputTokens + s.usage.OutputTokens,
+			"input_tokens_details":  map[string]any{"cached_tokens": s.usage.CacheTokens},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+		},
+	}
+	if writeErr := writeResponsesSSEEvent(s.w, "response.incomplete", map[string]any{
+		"type":            "response.incomplete",
+		"sequence_number": s.nextSeq(),
+		"response":        response,
+	}); writeErr != nil {
+		return writeErr
+	}
+	return wrapped
+}
+
 // streamClaudeToResponsesEventsDirect reads Anthropic Messages SSE and writes
 // OpenAI Responses SSE directly (no Chat intermediate).
 func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader, model string, toolCtx *codexToolContext) (TokenUsage, error) {
@@ -669,7 +720,8 @@ func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader
 		reader = io.TeeReader(reader, debugTee)
 	}
 
-	scanner := bufio.NewScanner(reader)
+	r := countingReader{r: reader}
+	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
@@ -731,7 +783,10 @@ func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return state.usage, err
+		// The connection died mid-answer. Close the turn as incomplete rather
+		// than letting EOF pass for a normal end: a client that only reads
+		// response.completed sees a half sentence as the final answer.
+		return state.usage, state.interrupt(err, model, debugTee, r.n)
 	}
 
 	// Detect the thinking-only-empty upstream bug before committing anything:

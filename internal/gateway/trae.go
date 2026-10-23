@@ -1835,7 +1835,7 @@ func (s *Server) proxyTraeChat(w http.ResponseWriter, r *http.Request, provider 
 	if !stream && response.StatusCode < 400 {
 		_ = forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
 	}
-	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, ParseOpenAIUsage)
+	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 	if err == nil && sendErr != nil && status >= 400 {
 		// Trae's own reason is what the request log should carry, not the
 		// writer's success at moving its body along.
