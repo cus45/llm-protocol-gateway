@@ -162,28 +162,28 @@ func TestSetProviderConcurrencyClearsWaitWithCap(t *testing.T) {
 	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
 		{ID: "p1", Name: "p1", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1"},
 	}})
-	updated, err := router.SetProviderConcurrency("p1", 4, 10, 0)
+	updated, err := router.SetProviderConcurrency("p1", 4, 10, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.MaxConcurrentRequests != 4 || updated.QueueWaitSeconds != 10 {
 		t.Fatalf("got %d/%d", updated.MaxConcurrentRequests, updated.QueueWaitSeconds)
 	}
-	cleared, err := router.SetProviderConcurrency("p1", 0, 10, 0)
+	cleared, err := router.SetProviderConcurrency("p1", 0, 10, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cleared.MaxConcurrentRequests != 0 || cleared.QueueWaitSeconds != 0 {
 		t.Fatalf("clearing the cap must clear the wait, got %d/%d", cleared.MaxConcurrentRequests, cleared.QueueWaitSeconds)
 	}
-	capped, err := router.SetProviderConcurrency("p1", 100000, 100000, 0)
+	capped, err := router.SetProviderConcurrency("p1", 100000, 100000, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if capped.MaxConcurrentRequests != providerConcurrencyCap || capped.QueueWaitSeconds != int(providerQueueWaitCap/time.Second) {
 		t.Fatalf("expected the caps, got %d/%d", capped.MaxConcurrentRequests, capped.QueueWaitSeconds)
 	}
-	if _, err := router.SetProviderConcurrency("ghost", 1, 1, 0); err == nil {
+	if _, err := router.SetProviderConcurrency("ghost", 1, 1, 0, ""); err == nil {
 		t.Fatal("an unknown provider must be rejected")
 	}
 }
@@ -425,7 +425,7 @@ func TestSetProviderConcurrencyKeepsRateWithoutConcurrencyCap(t *testing.T) {
 	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
 		{ID: "p1", Name: "p1", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1"},
 	}})
-	updated, err := router.SetProviderConcurrency("p1", 0, 5, 30)
+	updated, err := router.SetProviderConcurrency("p1", 0, 5, 30, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestSetProviderConcurrencyKeepsRateWithoutConcurrencyCap(t *testing.T) {
 	if updated.QueueWaitSeconds != 5 {
 		t.Fatalf("wait = %d, want 5 (a rate-only lane can queue too)", updated.QueueWaitSeconds)
 	}
-	cleared, err := router.SetProviderConcurrency("p1", 0, 5, 0)
+	cleared, err := router.SetProviderConcurrency("p1", 0, 5, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

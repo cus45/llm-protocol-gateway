@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +106,18 @@ func (l *providerLanes) retryAfterSeconds(providerID string, now time.Time) int 
 	return lane.retryAfterSeconds(now)
 }
 
+// retryAfterSecondsFor is retryAfterSeconds for call sites that hold the
+// provider itself: a grouped provider is told how long its account's lane will
+// take, not how long a lane of its own (which does not exist) would.
+func (l *providerLanes) retryAfterSecondsFor(provider domain.Provider, now time.Time) int {
+	if !providerGrouped(provider) {
+		// A row of its own stores its lane under its ID; reading it back
+		// through providerLaneKey keeps the two callers in step.
+		return l.retryAfterSeconds(provider.ID, now)
+	}
+	return l.retryAfterSeconds(providerLaneKey(provider), now)
+}
+
 // laneFor returns the provider's lane, sized to the current configuration. A
 // provider with no limit has no lane at all.
 func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
@@ -193,7 +206,7 @@ func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, n
 		// A request holds no turn once it is admitted: a later attempt (the
 		// retry after a wake) must not be gated on a ticket it already used.
 		if !queued || lane.turnLocked(ticket) {
-			if lane.admitLocked(now) {
+			if admitted, at := lane.admitLocked(now); admitted {
 				if lane.max <= 0 || lane.inflight < lane.max {
 					if queued {
 						lane.passTurnLocked(ticket)
@@ -208,7 +221,7 @@ func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, n
 				}
 				// The admission already counted this request; give it back so the
 				// retry does not spend the budget twice.
-				lane.uncountLocked(now)
+				lane.uncountLocked(now, at)
 			}
 		}
 		if wait <= 0 || !now.Before(budget) {
@@ -293,27 +306,37 @@ func (lane *providerLane) saturatedLocked(now time.Time, wait time.Duration) err
 }
 
 // admitLocked applies the per-minute budget. It returns false when the window
-// is full; otherwise it counts the request.
-func (lane *providerLane) admitLocked(now time.Time) bool {
+// is full; otherwise it counts the request and returns the entry it stored (0
+// for a lane with no rate), which is what withdraws the count again.
+func (lane *providerLane) admitLocked(now time.Time) (bool, int64) {
 	if lane.rpm <= 0 {
-		return true
+		return true, 0
 	}
 	lane.trimLocked(now) // sync lane.admits with the current window first
 	if lane.admittedLocked() >= lane.rpm {
-		return false
+		return false, 0
 	}
-	lane.admits = append(lane.admits, now.UnixNano())
+	at := now.UnixNano()
+	lane.admits = append(lane.admits, at)
 	lane.trimLocked(now)
-	return true
+	return true, at
 }
 
-// uncountLocked withdraws the newest admission, made for a request that then
-// found the concurrency budget full.
-func (lane *providerLane) uncountLocked(now time.Time) {
-	if lane.rpm <= 0 || len(lane.admits) == 0 {
+// uncountLocked withdraws the admission made for a request that then found the
+// concurrency budget full. The caller passes the entry to withdraw: the count
+// is not always the newest one, because trimming can slide an older admission
+// out in the same pass that counts this one, and withdrawing "the last" then
+// takes a different request's place in the window.
+func (lane *providerLane) uncountLocked(now time.Time, at int64) {
+	if lane.rpm <= 0 {
 		return
 	}
-	lane.admits = lane.admits[:len(lane.admits)-1]
+	for i := len(lane.admits) - 1; i >= 0; i-- {
+		if lane.admits[i] == at {
+			lane.admits = append(lane.admits[:i], lane.admits[i+1:]...)
+			break
+		}
+	}
 	lane.trimLocked(now)
 }
 
@@ -480,6 +503,28 @@ func providerRequestsPerMinute(provider domain.Provider) int {
 	return limit
 }
 
+// providerLaneGroupMaxLen bounds the account name a console user may type; it
+// only has to be longer than any plausible account label.
+const providerLaneGroupMaxLen = 120
+
+// providerLaneKey is the account whose admission budget the provider spends.
+//
+// One Provider row is normally one credential, so its own ID is the account.
+// When several rows are really the same subscription they name the same
+// LaneGroup and share one lane: without it each row would get the full
+// concurrency and per-minute budget, which is how a 5-request-a-minute account
+// ends up answering 429 on its own quota.
+func providerLaneKey(provider domain.Provider) string {
+	if group := strings.TrimSpace(provider.LaneGroup); group != "" {
+		return "group:" + group
+	}
+	return provider.ID
+}
+
+func providerGrouped(provider domain.Provider) bool {
+	return strings.TrimSpace(provider.LaneGroup) != ""
+}
+
 // acquireProviderSlot reserves one upstream slot for the whole exchange. The
 // release is safe to call more than once per request path because it is only
 // ever called by the deferred closure the caller got back.
@@ -489,7 +534,7 @@ func (s *Server) acquireProviderSlot(ctx context.Context, provider domain.Provid
 	if (max <= 0 && rpm <= 0) || s.providerLanes == nil {
 		return func() {}, nil
 	}
-	return s.providerLanes.laneFor(provider.ID, max, rpm).acquire(ctx, wait)
+	return s.providerLanes.laneFor(providerLaneKey(provider), max, rpm).acquire(ctx, wait)
 }
 
 func (s *Server) providerInFlight(providerID string) int {
@@ -516,9 +561,12 @@ func (s *Server) handleSetProviderConcurrency(w http.ResponseWriter, r *http.Req
 		MaxConcurrentRequests *int `json:"maxConcurrentRequests"`
 		QueueWaitSeconds      *int `json:"queueWaitSeconds"`
 		RequestsPerMinute     *int `json:"requestsPerMinute"`
+		// Omitted keeps the provider's current account grouping; "" is how the
+		// console puts a provider back on a budget of its own.
+		LaneGroup *string `json:"laneGroup"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.MaxConcurrentRequests == nil {
-		writeOpenAIError(w, http.StatusBadRequest, `body must be {"maxConcurrentRequests": N, "queueWaitSeconds": N?, "requestsPerMinute": N?}`)
+		writeOpenAIError(w, http.StatusBadRequest, `body must be {"maxConcurrentRequests": N, "queueWaitSeconds": N?, "requestsPerMinute": N?, "laneGroup": "name"?}`)
 		return
 	}
 	wait := 0
@@ -529,7 +577,18 @@ func (s *Server) handleSetProviderConcurrency(w http.ResponseWriter, r *http.Req
 	if payload.RequestsPerMinute != nil {
 		rpm = *payload.RequestsPerMinute
 	}
-	updated, err := s.router.SetProviderConcurrency(r.PathValue("id"), *payload.MaxConcurrentRequests, wait, rpm)
+	laneGroup := ""
+	if current, err := s.router.ProviderByID(r.PathValue("id")); err == nil {
+		laneGroup = current.LaneGroup
+	}
+	if payload.LaneGroup != nil {
+		laneGroup = strings.TrimSpace(*payload.LaneGroup)
+		if len(laneGroup) > providerLaneGroupMaxLen {
+			writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("laneGroup is at most %d characters", providerLaneGroupMaxLen))
+			return
+		}
+	}
+	updated, err := s.router.SetProviderConcurrency(r.PathValue("id"), *payload.MaxConcurrentRequests, wait, rpm, laneGroup)
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
@@ -542,7 +601,11 @@ func (s *Server) handleSetProviderConcurrency(w http.ResponseWriter, r *http.Req
 		if updated.MaxConcurrentRequests == 0 && updated.RequestsPerMinute == 0 {
 			s.logs.AddApp("info", "provider concurrency limit cleared", updated.ID)
 		} else {
-			s.logs.AddApp("info", "provider concurrency limit set", fmt.Sprintf("%s: %d concurrent, wait %ds, %d/min", updated.ID, updated.MaxConcurrentRequests, updated.QueueWaitSeconds, updated.RequestsPerMinute))
+			target := updated.ID
+			if group := strings.TrimSpace(updated.LaneGroup); group != "" {
+				target = fmt.Sprintf("%s (shares account lane %q)", updated.ID, group)
+			}
+			s.logs.AddApp("info", "provider concurrency limit set", fmt.Sprintf("%s: %d concurrent, wait %ds, %d/min", target, updated.MaxConcurrentRequests, updated.QueueWaitSeconds, updated.RequestsPerMinute))
 		}
 	}
 	writeJSON(w, http.StatusOK, redactProviderForClient(updated))

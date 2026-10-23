@@ -6466,6 +6466,18 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .rtk-provider-panel .toggle-row input[type="number"]::-webkit-outer-spin-button,
 .rtk-provider-panel .toggle-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .rtk-provider-panel .toggle-row input[type="number"]::placeholder { color: var(--subtle); font-weight: 500; }
+/* 文本旋钮（账号名）：与数字旋钮同一套外观，只是左对齐、等宽字体保留。 */
+.rtk-provider-panel .toggle-row input[type="text"] {
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.rtk-provider-panel .toggle-row input[type="text"]::placeholder { color: var(--subtle); font-weight: 500; }
 .provider-knob-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .provider-knob-field { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--muted); }
 .knob-input {
@@ -6480,6 +6492,9 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .knob-input:focus-within { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
 .knob-input:has(input:disabled) { opacity: 0.6; }
 .knob-input-unit { color: var(--muted); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+/* 账号名是文本，比数字框宽一些，但仍要短：它是几个 Provider 共用的一个标签。 */
+.knob-input-wide { min-width: 128px; }
+.knob-input-wide input { width: 100%; min-width: 0; }
 .provider-knob-unit { font-weight: 500; color: var(--muted); }
 
 .rtk-provider-panel .hint-line { margin-top: 6px; }

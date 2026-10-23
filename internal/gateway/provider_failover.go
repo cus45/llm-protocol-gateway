@@ -1079,10 +1079,24 @@ func (s *Server) executeProtocolFlowWithFailover(
 					continue
 				}
 				writer.Discard()
-				w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(providerID, time.Now())))
+				// The account's lane, not the row's: a grouped provider's
+				// budget lives under its LaneGroup key.
+				laneWait := providerRetryAfterSeconds
+				if provider, lookupErr := s.router.ProviderByID(providerID); lookupErr == nil {
+					laneWait = s.providerLanes.retryAfterSecondsFor(provider, time.Now())
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(laneWait))
 				return http.StatusTooManyRequests, TokenUsage{}, nil, attemptDecision, attemptModel, execErr
 			}
 			transportFailoverWorthy := s.applyProviderFailoverOutcome(providerID, 0, nil, "", execErr)
+			// Transport errors are worth another account only while nothing of
+			// this turn has reached the client. Once the first byte is out —
+			// a streamed request, or a deferred attempt whose turn was
+			// committed — the client's time-to-first-token has been paid, so a
+			// cut is the answer: it stays with the account that started it.
+			if !writer.deferring() {
+				transportFailoverWorthy = false
+			}
 			transportReason := attemptReasonTransportError
 			if errors.Is(execErr, errUpstreamFirstPacketTimeout) {
 				transportReason = attemptReasonFirstPacketTimeout

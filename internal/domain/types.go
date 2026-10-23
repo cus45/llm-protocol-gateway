@@ -345,6 +345,14 @@ type Provider struct {
 	// the budget is gone from a 429 the vendor already counted against the
 	// account. 0 = no rate limit.
 	RequestsPerMinute int `json:"requestsPerMinute,omitempty"`
+	// LaneGroup names the account the three limits above belong to, so several
+	// Provider rows that are really one subscription (different keys of the same
+	// account, or one account with several base URLs) share a single budget
+	// instead of each getting the full one. Empty means the provider is its own
+	// account, which is how every existing provider behaves. The group is
+	// matched exactly (case-insensitively) and does not need to name an existing
+	// provider: grouping providers that are not otherwise related is allowed.
+	LaneGroup string `json:"laneGroup,omitempty"`
 }
 
 // ProviderSelfRegistration is the server-side state backing the self-register

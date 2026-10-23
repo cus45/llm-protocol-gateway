@@ -442,6 +442,9 @@ export type Provider = {
   // 每分钟请求预算（管理员，同上接口保存）：滚动一分钟内最多准入的请求数，
   // 0/缺省 = 不限速；可以只限速不限并发，超出返回 429。
   requestsPerMinute?: number;
+  // 账号分组（管理员，同上接口保存）：上面三个上限属于哪个账号。留空 = 这行
+  // 自己一份额度；几行填同一个名字 = 共用一份额度（同一个订阅的多把密钥）。
+  laneGroup?: string;
   // 自助注册（内网穿透场景）：owner/admin 生成一个 Provider 专属令牌后，
   // 用户自己的脚本可用该令牌调用 PATCH /__providers/{id}/self-register
   // 更新 baseUrl/apiKeySource，无需登录控制台。原始令牌只在生成那一刻返回，

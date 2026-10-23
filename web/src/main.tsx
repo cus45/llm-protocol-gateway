@@ -467,6 +467,7 @@ function App() {
   const providerConcurrencyRef = useRef<HTMLInputElement>(null);
   const providerQueueWaitRef = useRef<HTMLInputElement>(null);
   const providerRPMRef = useRef<HTMLInputElement>(null);
+  const providerLaneGroupRef = useRef<HTMLInputElement>(null);
   const [claudeOAuthState, setClaudeOAuthState] = useState('');
   const [claudeOAuthCode, setClaudeOAuthCode] = useState('');
   const [claudeOAuthBusy, setClaudeOAuthBusy] = useState(false);
@@ -3415,6 +3416,13 @@ function App() {
     const rawMax = providerConcurrencyRef.current?.value.trim() ?? '';
     const rawWait = providerQueueWaitRef.current?.value.trim() ?? '';
     const rawRPM = providerRPMRef.current?.value.trim() ?? '';
+    // 留空 = 这行自己一份额度；填写后，同名账号的各行共用一份额度
+    // （同一个订阅的多把密钥、同一个账号的不同 BaseURL）。
+    const laneGroup = providerLaneGroupRef.current?.value.trim() ?? '';
+    if (laneGroup.length > 120) {
+      showToast('账号名请控制在 120 个字符以内');
+      return;
+    }
     const max = rawMax === '' ? 0 : Number(rawMax);
     const queueWaitSeconds = rawWait === '' ? 0 : Number(rawWait);
     const requestsPerMinute = rawRPM === '' ? 0 : Number(rawRPM);
@@ -3436,16 +3444,17 @@ function App() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxConcurrentRequests: max, queueWaitSeconds, requestsPerMinute }),
+        body: JSON.stringify({ maxConcurrentRequests: max, queueWaitSeconds, requestsPerMinute, laneGroup }),
       });
       if (!response.ok) throw new Error(await response.text());
       const parts: string[] = [];
       if (max > 0) parts.push(`并发 ${max}`);
       if (requestsPerMinute > 0) parts.push(`${requestsPerMinute} 次/分钟`);
+      const account = laneGroup ? `，与账号「${laneGroup}」共用` : '';
       if (parts.length === 0) {
-        showToast('已取消并发与限速');
+        showToast(account ? `已取消并发与限速${account}` : '已取消并发与限速');
       } else {
-        showToast(`已设置${parts.join('、')}${queueWaitSeconds > 0 ? `，排队 ${queueWaitSeconds}s` : '，超出直接拒绝'}`);
+        showToast(`已设置${parts.join('、')}${queueWaitSeconds > 0 ? `，排队 ${queueWaitSeconds}s` : '，超出直接拒绝'}${account}`);
       }
       await refreshState(false);
     } catch (error) {
@@ -7994,7 +8003,7 @@ function App() {
               <div className="rtk-provider-panel">
                 <div className="toggle-row">
                   <span>并发上限</span>
-                  <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。" />
+                  <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。账号：留空 = 这一行自己一份额度；填同一个名字的几行（同一个订阅的多把密钥、同一账号的不同 BaseURL）共用这一份额度，避免每行各拿一份把账号打出 429。" />
                   <div className="provider-knob-control">
                     <label className="provider-knob-field">
                       <span>上限</span>
@@ -8045,6 +8054,20 @@ function App() {
                           disabled={saving}
                         />
                         <span className="knob-input-unit">次</span>
+                      </span>
+                    </label>
+                    <label className="provider-knob-field">
+                      <span>账号</span>
+                      <span className="knob-input knob-input-wide">
+                        <input
+                          ref={providerLaneGroupRef}
+                          key={`lane-group-${editingProviderID}`}
+                          type="text"
+                          maxLength={120}
+                          defaultValue={editingProvider.laneGroup || ''}
+                          placeholder="各自独立"
+                          disabled={saving}
+                        />
                       </span>
                     </label>
                     <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
