@@ -152,3 +152,50 @@ func TestResolveProviderEmbeddingsURL(t *testing.T) {
 		}
 	}
 }
+
+// 上游拒绝（比如嵌入上游不认识的模型回空体 404）必须在应用日志里以 warn 级别
+// 留着：很多厂商的错误体是空的，请求日志只有状态码，排障全靠这一条。
+func TestEmbeddingsLogsUpstreamRejectionAsWarning(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.Close)
+	provider := imagesImageProvider("emb-a", false)
+	provider.BaseURL = upstream.URL + "/v1"
+	server := embeddingsServer(t, provider, domain.APIKey{ID: "k1", Key: "sk-gw-admin"})
+
+	recorder := embeddingsRequest(t, server, "sk-gw-admin", `{"model":"m","input":"x"}`)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want the upstream's 404 (%s)", recorder.Code, recorder.Body.String())
+	}
+	found := ""
+	for _, entry := range server.logs.ListApp(0) {
+		if entry.Message == "handled embeddings request" {
+			found = entry.Level + " " + entry.Context
+			break
+		}
+	}
+	if !strings.HasPrefix(found, "warn ") {
+		t.Fatalf("upstream rejection should be logged as warn, got %q", found)
+	}
+	if !strings.Contains(found, "status=404") {
+		t.Fatalf("the log entry should name the upstream status, got %q", found)
+	}
+}
+
+// 2xx 的向量响应仍然只记 debug，免得每次调用都刷一条 warn。
+func TestEmbeddingsLogsSuccessAsDebug(t *testing.T) {
+	upstream, _, _, _ := embeddingsUpstream(t)
+	provider := imagesImageProvider("emb-a", false)
+	provider.BaseURL = upstream.URL + "/v1"
+	server := embeddingsServer(t, provider, domain.APIKey{ID: "k1", Key: "sk-gw-admin"})
+
+	if recorder := embeddingsRequest(t, server, "sk-gw-admin", `{"model":"m","input":"x"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	for _, entry := range server.logs.ListApp(0) {
+		if entry.Message == "handled embeddings request" && entry.Level != "debug" {
+			t.Fatalf("a successful call should stay at debug, got %q", entry.Level)
+		}
+	}
+}

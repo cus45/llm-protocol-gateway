@@ -4422,7 +4422,13 @@ func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, status, usage, body, responseLog)
-	s.logs.AddApp("debug", "handled embeddings request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
+	level := "debug"
+	if status >= http.StatusBadRequest {
+		// 上游拒绝要能在日志里看见：很多嵌入上游对不认识的模型回空体 404，
+		// debug 级别会让"到底是谁 404"彻底无从查起。
+		level = "warn"
+	}
+	s.logs.AddApp(level, "handled embeddings request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
 }
 
 // handleClaudeMessages serves POST /anthropic/v1/messages, the native
