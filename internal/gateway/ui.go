@@ -251,7 +251,10 @@ func isModelProtocolPath(path string) bool {
 		return false
 	}
 	switch {
-	case path == "/v1/models", strings.HasPrefix(path, "/v1/chat/completions"), strings.HasPrefix(path, "/v1/images/"):
+	case path == "/v1/models",
+		strings.HasPrefix(path, "/v1/chat/completions"),
+		strings.HasPrefix(path, "/v1/images/"),
+		strings.HasPrefix(path, "/v1/embeddings"):
 		return true
 	case strings.HasPrefix(path, "/openai/v1"):
 		return true
