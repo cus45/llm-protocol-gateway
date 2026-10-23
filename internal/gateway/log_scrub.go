@@ -58,7 +58,9 @@ func sensitiveKeyMatches(key string) bool {
 		}
 	}
 	return strings.HasSuffix(normalized, "_api_key") || strings.HasSuffix(normalized, "_token") ||
-		strings.HasSuffix(normalized, "_secret") || strings.HasSuffix(normalized, "_password")
+		strings.HasSuffix(normalized, "_secret") || strings.HasSuffix(normalized, "_password") ||
+		// 裸 "token" 也一定是凭据：错误回包和工具结果里常这么叫。
+		normalized == "token"
 }
 
 // camelToSnake lowercases s and inserts _ before an upper-case letter that

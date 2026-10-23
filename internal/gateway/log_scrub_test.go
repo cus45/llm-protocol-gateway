@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
 func TestSensitiveKeyMatches(t *testing.T) {
@@ -100,5 +103,20 @@ func TestScrubSensitiveResponseBody(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 端到端：经真实落库路径写入的失败请求，响应正文里的 key 必须已被抹掉。
+func TestRequestLogScrubsResponseCredentials(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	entry := recordAndFetch(t, server, 502, `{"model":"m"}`,
+		`{"error":{"message":"Incorrect API key provided: sk-proj-abcdefghijklmnop","token":"tok-xyz","detail":"{\"secretKey\":\"abc123\",\"jwt\":\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl\"}"}}`)
+	for _, leaked := range []string{"abcdefghijklmnop", "tok-xyz", "abc123", "c2lnbmF0dXJl"} {
+		if strings.Contains(entry.ResponseBody, leaked) {
+			t.Fatalf("stored response leaks %s: %q", leaked, entry.ResponseBody)
+		}
+	}
+	if !strings.Contains(entry.ResponseBody, "Incorrect API key") {
+		t.Fatalf("scrubbing ate the error message: %q", entry.ResponseBody)
 	}
 }
