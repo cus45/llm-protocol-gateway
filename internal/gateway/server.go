@@ -472,6 +472,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /anthropic/v1/models", s.handleClaudeModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleOpenAIChat)
 	mux.HandleFunc("POST /chat/completions", s.handleOpenAIChat)
+	mux.HandleFunc("POST /v1/embeddings", s.handleOpenAIEmbeddings)
+	mux.HandleFunc("POST /openai/v1/embeddings", s.handleOpenAIEmbeddings)
 	mux.HandleFunc("POST /v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/responses", s.handleOpenAIResponses)
@@ -3062,6 +3064,17 @@ func resolveProviderImageURL(provider domain.Provider) string {
 	return upstreamURL
 }
 
+// resolveProviderEmbeddingsURL completes a base URL with the embeddings path.
+// A base URL that already names the endpoint is used as given: the operator
+// configured an exact path on purpose, and appending a second one 404s.
+func resolveProviderEmbeddingsURL(provider domain.Provider) string {
+	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	if strings.HasSuffix(strings.ToLower(upstreamURL), "/embeddings") {
+		return upstreamURL
+	}
+	return upstreamURL + "/embeddings"
+}
+
 func resolveProviderChatURL(provider domain.Provider, model string) string {
 	if isTraeProvider(provider) {
 		// Trae has one agent endpoint per realm and no OpenAI-style path to
@@ -4274,6 +4287,142 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, status, usage, body, responseLog)
 	s.logs.AddApp("debug", "handled image generation request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
 	slog.Info("handled image generation request", "route", route.ID, "model", logModel, "status", status)
+}
+
+// handleOpenAIEmbeddings serves POST /v1/embeddings. Embeddings have no
+// failover leg and no protocol conversion — the request is OpenAI-shaped and
+// only an OpenAI-compatible upstream can answer it — so this is a pass-through
+// with the same admission, key quota and logging as the chat path.
+func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	body, tooLarge, err := readGatewayRequestBody(r)
+	if tooLarge {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, requestBodyTooLargeMessage)
+		return
+	}
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	var req map[string]any
+	if len(strings.TrimSpace(string(body))) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+			return
+		}
+	} else {
+		req = map[string]any{}
+	}
+
+	var route domain.Route
+	var matchedKey domain.APIKey
+	var gatewayKeyMatched bool
+	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+		route, err = s.router.RouteByID(testRouteID)
+	} else if token := extractConsumerAPIKey(r); token != "" {
+		if key, ok := s.router.APIKeyByToken(token); ok {
+			matchedKey = key
+			gatewayKeyMatched = true
+			if key.RouteID != "" {
+				route, err = s.router.RouteByID(key.RouteID)
+			} else {
+				err = fmt.Errorf("api key %q has no route configured", key.ID)
+			}
+			if s.apiKeyStore != nil {
+				s.apiKeyToucher.Touch(key.ID)
+			}
+		} else {
+			err = fmt.Errorf("invalid api key")
+		}
+	} else {
+		err = fmt.Errorf("missing api key")
+	}
+	if err != nil {
+		writeOpenAIError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolOpenAIChat {
+		writeRouteProtocolMismatch(w, route, domain.ProtocolOpenAIChat)
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "rejected", route.OutputProtocol.DisplayName()+" endpoint mismatch", r.URL.Path, http.StatusBadRequest, TokenUsage{}, body, routeProtocolMismatchBody(route, domain.ProtocolOpenAIChat))
+		return
+	}
+
+	decision, err := s.router.Decide(route.ID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	provider, err := s.router.ProviderByID(decision.ProviderID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	requestModel, _ := req["model"].(string)
+	model, logModel := resolveConsumerModelOnProvider(provider, matchedKey, gatewayKeyMatched, requestModel)
+	if strings.TrimSpace(model) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	logModel = finalizeRequestLogModel(logModel, model, model)
+	req["model"] = model
+	body, err = json.Marshal(req)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "failed to encode request body")
+		return
+	}
+
+	if gatewayKeyMatched && keyHasQuota(matchedKey) {
+		admission := s.admitKeyQuota(matchedKey, quotaPromptEstimate(body), time.Now())
+		if refusal := admission.refusal; refusal != nil {
+			rejectKeyQuota(w, domain.ProtocolOpenAIChat, refusal)
+			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusTooManyRequests, TokenUsage{}, body, []byte(refusal.Message))
+			return
+		}
+		defer admission.release()
+	}
+
+	releaseSlot, admissionErr := s.acquireProviderSlot(r.Context(), provider)
+	if admissionErr != nil {
+		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(provider.ID, time.Now())))
+		status := http.StatusBadGateway
+		if errors.Is(admissionErr, errProviderSaturated) {
+			status = http.StatusTooManyRequests
+		}
+		writeOpenAIError(w, status, admissionErr.Error())
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, status, TokenUsage{}, body, []byte(admissionErr.Error()))
+		return
+	}
+	defer releaseSlot()
+
+	// Only the provider's own credential goes upstream. Forwarding the caller's
+	// gateway key would hand our own secret to the vendor.
+	authValue := resolveProviderAuth(provider)
+	if strings.TrimSpace(authValue) == "" {
+		msg := fmt.Sprintf("provider %q has no API key configured", provider.ID)
+		writeOpenAIError(w, http.StatusBadGateway, msg)
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusBadGateway, TokenUsage{}, body, []byte(msg))
+		return
+	}
+	upstreamBody, adapterErr := applyRequestAdapterBody(provider, model, body)
+	if adapterErr != nil {
+		writeOpenAIError(w, http.StatusBadRequest, adapterErr.Error())
+		return
+	}
+	upstreamURL := resolveProviderEmbeddingsURL(provider)
+	status, usage, responseLog, err := s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, upstreamBody)
+	if err != nil {
+		s.logs.AddApp("error", "embeddings request failed", err.Error())
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
+		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, status, usage, body, responseLog)
+	s.logs.AddApp("debug", "handled embeddings request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
 }
 
 // handleClaudeMessages serves POST /anthropic/v1/messages, the native
