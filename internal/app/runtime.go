@@ -24,6 +24,36 @@ import (
 
 const DefaultPort = 18093
 
+const (
+	// gatewayReadHeaderTimeout bounds how long a client may take to send its
+	// request line and headers. Past this it is a slow-loris probe, not a
+	// client.
+	gatewayReadHeaderTimeout = 10 * time.Second
+	// gatewayReadTimeout bounds the whole request read, body included. It is
+	// generous on purpose: a Claude Code turn can carry tens of MB of tool
+	// output or a batch of images, and a bound tight enough for small JSON
+	// would cut legitimate uploads on a slow link.
+	gatewayReadTimeout = 5 * time.Minute
+	// gatewayIdleTimeout closes keep-alive connections a client has stopped
+	// using, so a half-open TCP connection cannot pin a goroutine and a file
+	// descriptor for the life of the process.
+	gatewayIdleTimeout = 60 * time.Second
+)
+
+// newHTTPServer builds the public listener. WriteTimeout is deliberately left
+// unset: responses stream for as long as the model thinks, and a write deadline
+// would cut a long answer off mid-token. The upstream-side idle guard
+// (upstreamIdleTimeout) is what catches a stream that genuinely stops.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: gatewayReadHeaderTimeout,
+		ReadTimeout:       gatewayReadTimeout,
+		IdleTimeout:       gatewayIdleTimeout,
+	}
+}
+
 // Config controls how the gateway runtime binds and behaves.
 type Config struct {
 	// Addr overrides the listen address entirely (host:port). When empty,
@@ -255,11 +285,7 @@ func (rt *Runtime) Start(cfg Config) error {
 		return fmt.Errorf("cannot bind gateway listen address %s (another gateway instance already running?): %w", addr, err)
 	}
 
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           server.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := newHTTPServer(addr, server.Handler())
 
 	rt.logs = logs
 	rt.router = router
@@ -389,11 +415,7 @@ func (rt *Runtime) SetWebExposed(enabled bool) error {
 	addr := rt.listenAddrLocked()
 	rt.server.SetListenAddr(addr)
 
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           rt.server.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := newHTTPServer(addr, rt.server.Handler())
 	rt.httpServer = httpServer
 
 	if old != nil {
