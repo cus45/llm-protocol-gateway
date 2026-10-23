@@ -3,6 +3,8 @@ bin/
 .cache/
 *.test
 *.out
+# 编辑器/手工留下的源码备份，不是构建产物也不该进库
+*.bak
 
 # Frontend
 web/node_modules/
