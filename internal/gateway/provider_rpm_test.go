@@ -22,7 +22,7 @@ import (
 func TestProviderLaneRequestsPerMinuteBudget(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
-	lane := &providerLane{rpm: 3, broadcast: make(chan struct{})}
+	lane := &providerLane{rpm: 3, wake: make(chan struct{})}
 
 	for i := 0; i < 3; i++ {
 		release, err := lane.acquireSlot(context.Background(), 0, now)
@@ -52,7 +52,7 @@ func TestProviderLaneRequestsPerMinuteBudget(t *testing.T) {
 func TestProviderLaneRateOnlyDoesNotBoundConcurrency(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
-	lane := &providerLane{rpm: 5, broadcast: make(chan struct{})}
+	lane := &providerLane{rpm: 5, wake: make(chan struct{})}
 	releases := make([]func(), 0, 5)
 	for i := 0; i < 5; i++ {
 		release, err := lane.acquireSlot(context.Background(), 0, now)
@@ -71,7 +71,7 @@ func TestProviderLaneRateOnlyDoesNotBoundConcurrency(t *testing.T) {
 func TestProviderLaneRateBlocksEvenWithFreeSlots(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
-	lane := &providerLane{max: 5, rpm: 1, queueCap: 8, broadcast: make(chan struct{})}
+	lane := &providerLane{max: 5, rpm: 1, queueCap: 8, wake: make(chan struct{})}
 	release, err := lane.acquireSlot(context.Background(), 0, now)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestHandleSetProviderConcurrencyStoresRate(t *testing.T) {
 func TestProviderLaneRateIsASlidingMinute(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
-	lane := &providerLane{rpm: 2, broadcast: make(chan struct{})}
+	lane := &providerLane{rpm: 2, wake: make(chan struct{})}
 	for _, at := range []time.Time{now, now.Add(5 * time.Second)} {
 		release, err := lane.acquireSlot(context.Background(), 0, at)
 		if err != nil {
@@ -190,7 +190,7 @@ func TestProviderLaneRateIsASlidingMinute(t *testing.T) {
 		release()
 	}
 	// 一分钟内只放行 rpm 条；40s 时换一个没提交过的条目。
-	lane2 := &providerLane{rpm: 2, broadcast: make(chan struct{})}
+	lane2 := &providerLane{rpm: 2, wake: make(chan struct{})}
 	lane2.admits = []int64{now.Add(5 * time.Second).UnixNano(), now.Add(45 * time.Second).UnixNano()}
 	if _, err := lane2.acquireSlot(context.Background(), 0, now.Add(40*time.Second)); !errors.Is(err, errProviderSaturated) {
 		t.Fatalf("third request inside the minute should see 2/2 used and be refused, got %v", err)
@@ -205,7 +205,7 @@ func TestProviderLaneRateIsASlidingMinute(t *testing.T) {
 // 必须再做一次准入，否则等了整个窗口还是 429（等于把拒绝变成 60 秒延迟）。
 func TestRateOnlyLaneAdmitsWhenItsWaitExpires(t *testing.T) {
 	t.Parallel()
-	lane := &providerLane{rpm: 1, broadcast: make(chan struct{}), queueCap: providerQueueCapacity(0, 1)}
+	lane := &providerLane{rpm: 1, wake: make(chan struct{}), queueCap: providerQueueCapacity(0, 1)}
 	lane.admits = []int64{time.Now().Add(-time.Minute + 80*time.Millisecond).UnixNano()}
 	release, err := lane.acquire(context.Background(), 0)
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 
 func TestProviderLaneAcquireRelease(t *testing.T) {
 	t.Parallel()
-	lane := &providerLane{max: 2, queueCap: 8, broadcast: make(chan struct{})}
+	lane := &providerLane{max: 2, queueCap: 8, wake: make(chan struct{})}
 	releaseA, err := lane.acquire(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestProviderLaneAcquireRelease(t *testing.T) {
 
 func TestProviderLaneWakesWaiters(t *testing.T) {
 	t.Parallel()
-	lane := &providerLane{max: 1, queueCap: 8, broadcast: make(chan struct{})}
+	lane := &providerLane{max: 1, queueCap: 8, wake: make(chan struct{})}
 	release, err := lane.acquire(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestProviderLaneWakesWaiters(t *testing.T) {
 
 func TestProviderLaneWaitTimeoutAndCancel(t *testing.T) {
 	t.Parallel()
-	lane := &providerLane{max: 1, queueCap: 8, broadcast: make(chan struct{})}
+	lane := &providerLane{max: 1, queueCap: 8, wake: make(chan struct{})}
 	release, err := lane.acquire(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestProviderLaneWaitTimeoutAndCancel(t *testing.T) {
 
 func TestProviderLaneQueueCap(t *testing.T) {
 	t.Parallel()
-	lane := &providerLane{max: 1, queueCap: 1, broadcast: make(chan struct{})}
+	lane := &providerLane{max: 1, queueCap: 1, wake: make(chan struct{})}
 	release, err := lane.acquire(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)

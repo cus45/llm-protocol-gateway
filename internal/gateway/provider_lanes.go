@@ -50,16 +50,26 @@ const (
 var errProviderSaturated = errors.New("provider is at its concurrent request limit")
 
 // providerLane is one provider's concurrency budget plus the requests waiting
-// for a slot. Waiters are woken by a replaced broadcast channel rather than a
-// FIFO ticket: on a wake everyone re-checks the counter under the mutex, so a
-// released slot always goes to somebody and no ticket can be orphaned.
+// for a slot. Waiters are served in arrival order: each request that has to
+// queue takes the next ticket and may only take a slot while it holds the
+// lowest live ticket, so a burst cannot starve the request that has been
+// waiting longest. All waiters sleep on one broadcast channel — a release wakes
+// them together and each re-checks under the lock whether the turn is theirs —
+// but unlike a free-for-all that check is not "is there a slot", it is "is the
+// turn mine", which is what makes the wake-up order the arrival order.
+//
+// A waiter that gives up or disconnects is struck out of queue by ticket, so
+// the requests behind it keep the places they took: a request that never
+// reached the front must not make the lane wait for a turn nobody will ever
+// use.
 type providerLane struct {
-	mu        sync.Mutex
-	inflight  int
-	max       int
-	waiters   int
-	queueCap  int
-	broadcast chan struct{}
+	mu         sync.Mutex
+	inflight   int
+	max        int
+	queueCap   int
+	queue      []uint64 // live tickets, ascending; the head holds the turn
+	nextTicket uint64   // ticket the next arrival will take
+	wake       chan struct{}
 	// rpm is the per-minute request budget and admits holds the admission time
 	// (in unix nanos) of the requests inside the last minute. A request is
 	// counted on admission — that is when the vendor sees it — and the window
@@ -102,7 +112,7 @@ func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
 	defer l.mu.Unlock()
 	lane, ok := l.lanes[providerID]
 	if !ok {
-		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max, rpm), broadcast: make(chan struct{})}
+		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max, rpm), wake: make(chan struct{})}
 		l.lanes[providerID] = lane
 		return lane
 	}
@@ -167,36 +177,60 @@ func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func
 // be tested without sleeping.
 func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, now time.Time) (func(), error) {
 	budget := now.Add(wait)
+	// ticket is this request's place in the queue; it is taken on the first
+	// wait and kept across retries so a request that was woken, found the rate
+	// full and queued again does not lose the turn it had already waited for.
+	var ticket uint64
+	queued := false
 	for {
 		if err := ctx.Err(); err != nil {
+			if queued {
+				lane.retire(ticket)
+			}
 			return nil, lane.exhausted(err)
 		}
 		lane.mu.Lock()
-		if lane.admitLocked(now) {
-			if lane.max <= 0 || lane.inflight < lane.max {
-				if lane.max <= 0 {
+		// A request holds no turn once it is admitted: a later attempt (the
+		// retry after a wake) must not be gated on a ticket it already used.
+		if !queued || lane.turnLocked(ticket) {
+			if lane.admitLocked(now) {
+				if lane.max <= 0 || lane.inflight < lane.max {
+					if queued {
+						lane.passTurnLocked(ticket)
+					}
+					if lane.max <= 0 {
+						lane.mu.Unlock()
+						return func() {}, nil
+					}
+					lane.inflight++
 					lane.mu.Unlock()
-					return func() {}, nil
+					return lane.release, nil
 				}
-				lane.inflight++
-				lane.mu.Unlock()
-				return lane.release, nil
+				// The admission already counted this request; give it back so the
+				// retry does not spend the budget twice.
+				lane.uncountLocked(now)
 			}
-			// The admission already counted this request; give it back so the
-			// retry does not spend the budget twice.
-			lane.uncountLocked(now)
 		}
 		if wait <= 0 || !now.Before(budget) {
+			if queued {
+				lane.retireLocked(ticket)
+			}
 			lane.mu.Unlock()
 			return nil, lane.saturatedLocked(now, wait)
 		}
-		if lane.waiters >= lane.queueCap {
-			waiting, limit := lane.waiters, lane.queueCap
-			lane.mu.Unlock()
-			return nil, fmt.Errorf("%w (queue full, %d/%d waiting)", errProviderSaturated, waiting, limit)
+		if !queued {
+			if len(lane.queue) >= lane.queueCap {
+				waiting, limit := len(lane.queue), lane.queueCap
+				lane.mu.Unlock()
+				return nil, fmt.Errorf("%w (queue full, %d/%d waiting)", errProviderSaturated, waiting, limit)
+			}
+			ticket = lane.enqueueLocked()
+			queued = true
 		}
-		lane.waiters++
-		wake := lane.broadcast
+		// A request behind someone else's turn is not holding the CPU for
+		// anything: it hands the lock back and retries when a release or a
+		// retirement moves the turn on.
+		wake := lane.wake
 		lane.mu.Unlock()
 
 		// Wait out the whole budget rather than guessing at a refill time: a
@@ -205,6 +239,7 @@ func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, n
 		// minute window has slid past the oldest admission.
 		if err := lane.waitFor(ctx, wake, budget, now); err != nil {
 			if !errors.Is(err, errProviderWaitExpired) {
+				lane.retire(ticket)
 				return nil, lane.exhausted(err)
 			}
 			now = budget
@@ -230,19 +265,17 @@ func (lane *providerLane) exhausted(err error) error {
 // its last admission attempt there before refusing.
 var errProviderWaitExpired = errors.New("provider wait expired")
 
-// waitFor blocks until a slot frees, the deadline passes or the context ends.
+// waitFor blocks until the lane broadcasts, the deadline passes or the context
+// ends.
 func (lane *providerLane) waitFor(ctx context.Context, wake <-chan struct{}, deadline time.Time, now time.Time) error {
 	timer := time.NewTimer(deadline.Sub(now))
 	defer timer.Stop()
 	select {
 	case <-wake:
-		lane.doneWaiting()
 		return nil
 	case <-ctx.Done():
-		lane.doneWaiting()
 		return ctx.Err()
 	case <-timer.C:
-		lane.doneWaiting()
 		return errProviderWaitExpired
 	}
 }
@@ -300,12 +333,64 @@ func (lane *providerLane) admittedLocked() int {
 	return len(lane.admits)
 }
 
-func (lane *providerLane) doneWaiting() {
-	lane.mu.Lock()
-	if lane.waiters > 0 {
-		lane.waiters--
+// enqueueLocked gives the next arrival its place in the queue. The caller holds
+// the lock and has already checked the queue has room. Tickets are never
+// reused, so a struck-out ticket can never come back to mean someone else.
+func (lane *providerLane) enqueueLocked() uint64 {
+	ticket := lane.nextTicket
+	lane.nextTicket++
+	lane.queue = append(lane.queue, ticket)
+	return ticket
+}
+
+// strikeLocked removes one ticket from the queue, wherever it is. The caller
+// holds the lock.
+func (lane *providerLane) strikeLocked(ticket uint64) bool {
+	for i, queued := range lane.queue {
+		if queued == ticket {
+			lane.queue = append(lane.queue[:i], lane.queue[i+1:]...)
+			return i == 0
+		}
 	}
+	return false
+}
+
+// retireLocked strikes a waiter that left the queue out of it. Only the head
+// holds the turn anyone is waiting on, so only the head has to move the queue
+// on; a waiter further back is simply removed and the requests behind it keep
+// the places they took. The caller holds the lock.
+func (lane *providerLane) retireLocked(ticket uint64) {
+	if lane.strikeLocked(ticket) {
+		lane.wakeLocked()
+	}
+}
+
+// retire is retireLocked for the paths that are not holding the lock.
+func (lane *providerLane) retire(ticket uint64) {
+	lane.mu.Lock()
+	lane.retireLocked(ticket)
 	lane.mu.Unlock()
+}
+
+// turnLocked reports whether this ticket may take a slot: it is the live head
+// of the queue.
+func (lane *providerLane) turnLocked(ticket uint64) bool {
+	return len(lane.queue) > 0 && lane.queue[0] == ticket
+}
+
+// passTurnLocked takes an admitted ticket out of the queue, handing the turn to
+// the next live waiter, and wakes the sleepers to re-check. The caller holds the
+// lock.
+func (lane *providerLane) passTurnLocked(ticket uint64) {
+	lane.strikeLocked(ticket)
+	lane.wakeLocked()
+}
+
+// wakeLocked releases every waiter to re-check its turn. The caller holds the
+// lock.
+func (lane *providerLane) wakeLocked() {
+	close(lane.wake)
+	lane.wake = make(chan struct{})
 }
 
 func (lane *providerLane) release() {
@@ -313,8 +398,7 @@ func (lane *providerLane) release() {
 	if lane.inflight > 0 {
 		lane.inflight--
 	}
-	close(lane.broadcast)
-	lane.broadcast = make(chan struct{})
+	lane.wakeLocked()
 	lane.mu.Unlock()
 }
 
@@ -360,7 +444,7 @@ func (lane *providerLane) retryAfterSeconds(now time.Time) int {
 func (lane *providerLane) waiterCount() int {
 	lane.mu.Lock()
 	defer lane.mu.Unlock()
-	return lane.waiters
+	return len(lane.queue)
 }
 
 // providerConcurrencyConfig reads the two knobs off a provider with their
