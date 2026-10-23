@@ -60,12 +60,14 @@ type providerLane struct {
 	waiters   int
 	queueCap  int
 	broadcast chan struct{}
-	// rpm is the per-minute request budget and used counts requests admitted in
-	// the current window. A request is counted on admission (that is when the
-	// vendor sees it) and the window slides off by a minute of wall clock.
-	rpm         int
-	used        int
-	windowStart time.Time
+	// rpm is the per-minute request budget and admits holds the admission time
+	// (in unix nanos) of the requests inside the last minute. A request is
+	// counted on admission — that is when the vendor sees it — and the window
+	// slides with wall clock: an admission older than a minute stops counting,
+	// so the budget refilling never depends on a fixed window boundary that a
+	// clock jump could skip or double.
+	rpm    int
+	admits []int64
 }
 
 type providerLanes struct {
@@ -115,14 +117,19 @@ func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
 }
 
 // providerQueueCapacity is how many requests a lane may hold waiting for a
-// slot, sized to whichever budget it has. A rate-only lane (max 0) still has a
-// queue: without one a request that could simply wait out the minute window is
-// refused on arrival with "queue full".
+// slot. A rate-only lane (max 0) still needs a queue: waiting out the rate
+// window is the only way such a lane ever serves another request.
 func providerQueueCapacity(max, rpm int) int {
 	if max < 1 && rpm < 1 {
 		return 0
 	}
-	capacity := max * 4
+	// Sized to what can arrive while one window turns over (at most rpm
+	// requests may be waiting on the rate), then to concurrency, whichever is
+	// larger — a single request must never be told "queue full".
+	capacity := rpm
+	if concurrency := max * 4; concurrency > capacity {
+		capacity = concurrency
+	}
 	if capacity < 8 {
 		capacity = 8
 	}
@@ -133,7 +140,23 @@ func providerQueueCapacity(max, rpm int) int {
 // immediately, which is the default: a queued request is a request whose client
 // is already staring at a spinner.
 func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func(), error) {
-	release, err := lane.acquireSlot(ctx, wait, time.Now())
+	// A rate-full lane is not a hung one: waiting on the vendor's own minute
+	// is meaningful even when the operator set no queue wait, so a rate-only
+	// refusal is given until the oldest admission frees a slot (bounded anyway).
+	budget := wait
+	if budget <= 0 && lane.max <= 0 {
+		lane.mu.Lock()
+		now := time.Now()
+		lane.trimLocked(now)
+		if lane.rpm > 0 && lane.admittedLocked() >= lane.rpm {
+			budget = time.Duration(lane.admits[0]+int64(time.Minute)-now.UnixNano()) + time.Millisecond
+			if budget > providerQueueWaitCap {
+				budget = providerQueueWaitCap
+			}
+		}
+		lane.mu.Unlock()
+	}
+	release, err := lane.acquireSlot(ctx, budget, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -143,37 +166,29 @@ func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func
 // acquireSlot is acquire with the clock injected, so the per-minute budget can
 // be tested without sleeping.
 func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, now time.Time) (func(), error) {
-	var deadline time.Time
-	if wait > 0 {
-		deadline = now.Add(wait)
-	}
+	budget := now.Add(wait)
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, lane.exhausted(err)
 		}
 		lane.mu.Lock()
-		concurrencyFree := lane.max <= 0 || lane.inflight < lane.max
-		if concurrencyFree && lane.admitLocked(now) {
-			if lane.max <= 0 {
+		if lane.admitLocked(now) {
+			if lane.max <= 0 || lane.inflight < lane.max {
+				if lane.max <= 0 {
+					lane.mu.Unlock()
+					return func() {}, nil
+				}
+				lane.inflight++
 				lane.mu.Unlock()
-				return func() {}, nil
+				return lane.release, nil
 			}
-			lane.inflight++
-			lane.mu.Unlock()
-			return lane.release, nil
+			// The admission already counted this request; give it back so the
+			// retry does not spend the budget twice.
+			lane.uncountLocked(now)
 		}
-		if wait <= 0 || !now.Before(deadline) {
-			// Report whichever budget blocks the request.
-			var err error
-			if !concurrencyFree {
-				err = fmt.Errorf("%w (%d/%d already in flight)", errProviderSaturated, lane.inflight, lane.max)
-			} else if lane.rpm > 0 {
-				err = fmt.Errorf("%w (%d/%d requests this minute)", errProviderSaturated, lane.used, lane.rpm)
-			} else {
-				err = fmt.Errorf("%w (waited %s for a free slot)", errProviderSaturated, wait)
-			}
+		if wait <= 0 || !now.Before(budget) {
 			lane.mu.Unlock()
-			return nil, err
+			return nil, lane.saturatedLocked(now, wait)
 		}
 		if lane.waiters >= lane.queueCap {
 			waiting, limit := lane.waiters, lane.queueCap
@@ -184,12 +199,36 @@ func (lane *providerLane) acquireSlot(ctx context.Context, wait time.Duration, n
 		wake := lane.broadcast
 		lane.mu.Unlock()
 
-		if err := lane.waitFor(ctx, wake, deadline, now); err != nil {
-			return nil, err
+		// Wait out the whole budget rather than guessing at a refill time: a
+		// release wakes this at once, and a rate-only lane — whose release is
+		// a no-op — then makes its last admission here, exactly when its
+		// minute window has slid past the oldest admission.
+		if err := lane.waitFor(ctx, wake, budget, now); err != nil {
+			if !errors.Is(err, errProviderWaitExpired) {
+				return nil, lane.exhausted(err)
+			}
+			now = budget
+			continue
 		}
 		now = time.Now()
 	}
 }
+
+// exhausted reports a wait the request's own context ended. A deadline is the
+// caller's clock running out of patience on a saturated lane, which is what the
+// caller answers a client with; anything else (a disconnect) is that error.
+func (lane *providerLane) exhausted(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		lane.mu.Lock()
+		defer lane.mu.Unlock()
+		return lane.saturatedLocked(time.Now(), 0)
+	}
+	return err
+}
+
+// errProviderWaitExpired says a wait ran out at its deadline; the loop makes
+// its last admission attempt there before refusing.
+var errProviderWaitExpired = errors.New("provider wait expired")
 
 // waitFor blocks until a slot frees, the deadline passes or the context ends.
 func (lane *providerLane) waitFor(ctx context.Context, wake <-chan struct{}, deadline time.Time, now time.Time) error {
@@ -204,8 +243,20 @@ func (lane *providerLane) waitFor(ctx context.Context, wake <-chan struct{}, dea
 		return ctx.Err()
 	case <-timer.C:
 		lane.doneWaiting()
-		return fmt.Errorf("%w (waited for a free slot)", errProviderSaturated)
+		return errProviderWaitExpired
 	}
+}
+
+// saturatedLocked explains which budget refuses the request. The caller holds
+// the lock.
+func (lane *providerLane) saturatedLocked(now time.Time, wait time.Duration) error {
+	if lane.max > 0 && lane.inflight >= lane.max {
+		return fmt.Errorf("%w (%d/%d already in flight)", errProviderSaturated, lane.inflight, lane.max)
+	}
+	if lane.rpm > 0 {
+		return fmt.Errorf("%w (%d/%d requests this minute)", errProviderSaturated, lane.admittedLocked(), lane.rpm)
+	}
+	return fmt.Errorf("%w (waited %s for a free slot)", errProviderSaturated, wait)
 }
 
 // admitLocked applies the per-minute budget. It returns false when the window
@@ -214,15 +265,39 @@ func (lane *providerLane) admitLocked(now time.Time) bool {
 	if lane.rpm <= 0 {
 		return true
 	}
-	if lane.windowStart.IsZero() || now.Sub(lane.windowStart) >= time.Minute {
-		lane.windowStart = now
-		lane.used = 0
-	}
-	if lane.used >= lane.rpm {
+	lane.trimLocked(now) // sync lane.admits with the current window first
+	if lane.admittedLocked() >= lane.rpm {
 		return false
 	}
-	lane.used++
+	lane.admits = append(lane.admits, now.UnixNano())
+	lane.trimLocked(now)
 	return true
+}
+
+// uncountLocked withdraws the newest admission, made for a request that then
+// found the concurrency budget full.
+func (lane *providerLane) uncountLocked(now time.Time) {
+	if lane.rpm <= 0 || len(lane.admits) == 0 {
+		return
+	}
+	lane.admits = lane.admits[:len(lane.admits)-1]
+	lane.trimLocked(now)
+}
+
+// trimLocked drops admissions that fell out of the last minute and compacts the
+// ring so the slice cannot grow without bound.
+func (lane *providerLane) trimLocked(now time.Time) {
+	cutoff := now.Add(-time.Minute).UnixNano()
+	drop := 0
+	for drop < len(lane.admits) && lane.admits[drop] <= cutoff {
+		drop++
+	}
+	lane.admits = lane.admits[drop:]
+}
+
+// admittedLocked is how many requests the current minute window has counted.
+func (lane *providerLane) admittedLocked() int {
+	return len(lane.admits)
 }
 
 func (lane *providerLane) doneWaiting() {
@@ -262,9 +337,12 @@ func (lane *providerLane) retryAfterSeconds(now time.Time) int {
 	if lane.rpm <= 0 {
 		return providerBusyRetryAfterSeconds
 	}
+	// The oldest admission still inside the window is what frees the next slot:
+	// that is when one request falls out of the last minute.
+	lane.trimLocked(now)
 	remaining := time.Minute
-	if !lane.windowStart.IsZero() {
-		remaining = lane.windowStart.Add(time.Minute).Sub(now)
+	if lane.admittedLocked() > 0 {
+		remaining = time.Duration(lane.admits[0] + int64(time.Minute) - now.UnixNano())
 	}
 	seconds := int(math.Ceil(remaining.Seconds()))
 	if seconds < 1 {

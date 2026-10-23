@@ -108,8 +108,23 @@ func TestAcquireProviderSlotBuildsRateOnlyLane(t *testing.T) {
 		t.Fatalf("first request refused: %v", err)
 	}
 	release()
-	if _, err := server.acquireProviderSlot(context.Background(), provider); !errors.Is(err, errProviderSaturated) {
-		t.Fatalf("second request should be refused, got %v", err)
+	lane := server.providerLanes.laneFor(provider.ID, 0, 1)
+	// Age the single admission so its window frees almost at once: the second
+	// request then waits for the slide-out and must be admitted when it comes,
+	// not refused after waiting out the whole window.
+	lane.mu.Lock()
+	lane.admits = []int64{time.Now().Add(-time.Minute + 80*time.Millisecond).UnixNano()}
+	lane.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), providerQueueWaitCap)
+	defer cancel()
+	started := time.Now()
+	release, err = server.acquireProviderSlot(ctx, provider)
+	if err != nil {
+		t.Fatalf("second request should be admitted once the window slides out, got %v", err)
+	}
+	release()
+	if waited := time.Since(started); waited > time.Minute {
+		t.Fatalf("waited %v for a window that had 80ms left", waited)
 	}
 }
 
@@ -159,5 +174,50 @@ func TestHandleSetProviderConcurrencyStoresRate(t *testing.T) {
 	}
 	if got := router.State().Providers[0].RequestsPerMinute; got != 0 {
 		t.Fatalf("rate not cleared, still %d", got)
+	}
+}
+
+// 预算是"最近一分钟"，不是"整分钟"：固定窗口会在两分钟交界处放行 2×rpm。
+func TestProviderLaneRateIsASlidingMinute(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_700_000_000, 0)
+	lane := &providerLane{rpm: 2, broadcast: make(chan struct{})}
+	for _, at := range []time.Time{now, now.Add(5 * time.Second)} {
+		release, err := lane.acquireSlot(context.Background(), 0, at)
+		if err != nil {
+			t.Fatalf("admission at %s refused: %v", at.Format(time.TimeOnly), err)
+		}
+		release()
+	}
+	// 一分钟内只放行 rpm 条；40s 时换一个没提交过的条目。
+	lane2 := &providerLane{rpm: 2, broadcast: make(chan struct{})}
+	lane2.admits = []int64{now.Add(5 * time.Second).UnixNano(), now.Add(45 * time.Second).UnixNano()}
+	if _, err := lane2.acquireSlot(context.Background(), 0, now.Add(40*time.Second)); !errors.Is(err, errProviderSaturated) {
+		t.Fatalf("third request inside the minute should see 2/2 used and be refused, got %v", err)
+	}
+	// 5s 那条滑出窗口后又能再放行一条。
+	if _, err := lane.acquireSlot(context.Background(), 0, now.Add(65*time.Second)); err != nil {
+		t.Fatalf("after the oldest admission slides out the budget should free: %v", err)
+	}
+}
+
+// rate-only lane 的 release 是空函数、不会唤醒等待者：等到窗口滑出的那一刻
+// 必须再做一次准入，否则等了整个窗口还是 429（等于把拒绝变成 60 秒延迟）。
+func TestRateOnlyLaneAdmitsWhenItsWaitExpires(t *testing.T) {
+	t.Parallel()
+	lane := &providerLane{rpm: 1, broadcast: make(chan struct{}), queueCap: providerQueueCapacity(0, 1)}
+	lane.admits = []int64{time.Now().Add(-time.Minute + 80*time.Millisecond).UnixNano()}
+	release, err := lane.acquire(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("a rate-only lane must be admitted once its window slides out: %v", err)
+	}
+	release()
+}
+
+// 只配了 RPM 的 Provider 也要有排队能力：否则一打满就立刻报 queue full。
+func TestRateOnlyLaneHasQueueCapacity(t *testing.T) {
+	t.Parallel()
+	if capacity := providerQueueCapacity(0, 4); capacity < 1 {
+		t.Fatalf("rate-only lane queue capacity = %d", capacity)
 	}
 }

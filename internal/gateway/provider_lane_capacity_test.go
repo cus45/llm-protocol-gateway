@@ -87,8 +87,7 @@ func TestRetryAfterAdmissionRefusalUsesRateWindow(t *testing.T) {
 	// Half a minute into the window leaves roughly half a minute to wait.
 	now := time.Now()
 	lane.mu.Lock()
-	lane.windowStart = now.Add(-30 * time.Second)
-	lane.used = lane.rpm
+	lane.admits = []int64{now.Add(-30 * time.Second).UnixNano()}
 	lane.mu.Unlock()
 	if _, err := lane.acquireSlot(context.Background(), 0, now); !errors.Is(err, errProviderSaturated) {
 		t.Fatalf("expected saturation, got %v", err)
@@ -142,8 +141,9 @@ func TestAdmissionRefusalSetsRateRetryAfterHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route lookup: %v", err)
 	}
-	// Spend the minute's one request, then land the window at its start so the
-	// expected wait is a full minute.
+	// Spend the minute's one request, then place the window far enough in that
+	// the admission wait cannot outlast it: the request is refused rather than
+	// queued for the window to slide out.
 	lane := server.providerLanes.laneFor("lane-rate", 0, 1)
 	release, err := lane.acquire(context.Background(), 0)
 	if err != nil {
@@ -151,11 +151,14 @@ func TestAdmissionRefusalSetsRateRetryAfterHeader(t *testing.T) {
 	}
 	release()
 	lane.mu.Lock()
-	lane.windowStart = time.Now()
-	lane.used = lane.rpm
+	lane.admits = []int64{time.Now().UnixNano()}
 	lane.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	// The admission wait is measured on the request's own clock; stopping it at
+	// a deadline refuses at once, which is what a saturated lane answers.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`)).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	status, _, _, execErr := server.executeProtocolFlow(
 		rec, req, route, domain.RouteDecision{RouteID: route.ID, ProviderID: route.ProviderID},
@@ -168,7 +171,56 @@ func TestAdmissionRefusalSetsRateRetryAfterHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After missing or not a number: %q", rec.Header().Get("Retry-After"))
 	}
-	if got < 55 || got > 61 {
+	if got < 59 || got > 61 {
 		t.Fatalf("Retry-After = %d, want the ~60s left in the rate window", got)
+	}
+}
+
+// A lane refuses on its own budget — the caller's clock is not taken as proof:
+// waiting runs until the budget frees a slot or the lane's wait is spent.
+func TestRateOnlyLaneWaitsOutItsBudgetBeforeRefusing(t *testing.T) {
+	t.Parallel()
+	state := domain.GatewayState{
+		Providers: []domain.Provider{{
+			ID: "lane-wait", Name: "lane-wait", Protocol: domain.ProtocolOpenAIChat,
+			BaseURL: "http://127.0.0.1:1", RequestsPerMinute: 1,
+		}},
+		Routes: []domain.Route{{
+			ID: "lane-wait-route", ProviderID: "lane-wait",
+			OutputProtocol: domain.ProtocolOpenAIChat, Enabled: true,
+		}},
+	}
+	server := NewServer(NewRouter(state), monitor.NewStore())
+	route, err := server.router.RouteByID("lane-wait-route")
+	if err != nil {
+		t.Fatalf("route lookup: %v", err)
+	}
+	lane := server.providerLanes.laneFor("lane-wait", 0, 1)
+	release, err := lane.acquire(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("first admission: %v", err)
+	}
+	release()
+	// Age the admission so the wait is a short, bounded one rather than the
+	// budget's cap.
+	lane.mu.Lock()
+	lane.admits = []int64{time.Now().Add(-time.Minute + 120*time.Millisecond).UnixNano()}
+	lane.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	rec := httptest.NewRecorder()
+	started := time.Now()
+	status, _, _, execErr := server.executeProtocolFlow(
+		rec, req, route, domain.RouteDecision{RouteID: route.ID, ProviderID: route.ProviderID},
+		"m", map[string]any{"model": "m", "messages": []any{}}, domain.ProtocolOpenAIChat, true,
+	)
+	if waited := time.Since(started); waited < 100*time.Millisecond {
+		t.Fatalf("the lane refused without waiting out its 120ms window: %v", waited)
+	}
+	// Past the wait the window has freed the slot, so the flow goes on to the
+	// upstream (which is unreachable here): anything but a saturation refusal
+	// means the admission succeeded.
+	if errors.Is(execErr, errProviderSaturated) {
+		t.Fatalf("a window that slid out must admit the request, status=%d err=%v", status, execErr)
 	}
 }
