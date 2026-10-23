@@ -29,13 +29,19 @@ func ensureCheckinTable(tx *sql.Tx) error {
 	return err
 }
 
-// SaveCheckin replaces the record for one provider.
+// SaveCheckin replaces the record for one provider and appends it to
+// checkin_history in the same transaction, so the history used by monitoring
+// has no gaps after the migration.
 func (s *Store) SaveCheckin(record domain.CheckinRecord) error {
 	offline := 0
 	if record.Offline {
 		offline = 1
 	}
-	_, err := s.db.Exec(`INSERT INTO checkins
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO checkins
 		(provider_id, account_key, day, at, outcome, credit, streak, msg, valid_until, offline, tries)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider_id) DO UPDATE SET
@@ -44,8 +50,23 @@ func (s *Store) SaveCheckin(record domain.CheckinRecord) error {
 			msg = excluded.msg, valid_until = excluded.valid_until,
 			offline = excluded.offline, tries = excluded.tries`,
 		record.ProviderID, record.AccountKey, record.Day, record.At, record.Outcome,
-		record.Credit, record.Streak, record.Message, record.Until, offline, record.Tries)
-	return err
+		record.Credit, record.Streak, record.Message, record.Until, offline, record.Tries); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO checkin_history
+		(provider_id, day, at, outcome, credit, streak, msg, valid_until, offline, tries)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider_id, day) DO UPDATE SET
+			at = excluded.at, outcome = excluded.outcome, credit = excluded.credit,
+			streak = excluded.streak, msg = excluded.msg, valid_until = excluded.valid_until,
+			offline = excluded.offline, tries = excluded.tries`,
+		record.ProviderID, record.Day, record.At, record.Outcome, record.Credit,
+		record.Streak, record.Message, record.Until, offline, record.Tries); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 const checkinSelectColumns = `provider_id, account_key, day, at, outcome, credit, streak, msg, valid_until, offline, tries`

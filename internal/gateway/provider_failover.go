@@ -35,10 +35,28 @@ const (
 const (
 	// Soft failures must repeat within this window before the provider is
 	// marked unavailable (avoids single 429/529/5xx blips painting "异常").
-	providerSoftFailureWindow    = 60 * time.Second
+	//
+	// The window has to outlast the shortest rest the count buys, or the ladder
+	// could never climb: the third 429 rests a minute, and a window shorter
+	// than that forgets the other two before the rest ends. Ten minutes covers
+	// the climb (30s, 1m, 2m, 4m, 8m) up to the point where the doubling itself
+	// is longer than the memory, after which the rest cap takes over anyway.
+	providerSoftFailureWindow    = 10 * time.Minute
 	providerSoftFailureThreshold = 3
 	providerSoftUnavailableTTL   = 1 * time.Minute
 	claudeUsageHardThresholdPct  = 95.0
+
+	// providerRateRestBase is where a rate-limit rest starts, and each further
+	// consecutive failure doubles it up to providerRateRestCap. Separate from
+	// the quota ladder on purpose: a 429 that says "try again in 5s" and a
+	// plan that is spent until next Tuesday are different problems, and only
+	// the second one justifies a multi-hour rest.
+	providerRateRestBase = 30 * time.Second
+	providerRateRestCap  = 30 * time.Minute
+	// providerQuotaRestFloor is the shortest rest for a confirmed quota
+	// exhaustion: probing sooner only burns a request on a vendor that already
+	// said no.
+	providerQuotaRestFloor = 15 * time.Minute
 )
 
 // hardQuotaHints are narrow subscription/billing exhaustion signals. Broad
@@ -230,6 +248,13 @@ func (w *failoverResponseWriter) UpstreamHeader(name string) string {
 // for a backup: nothing has been committed to the real client yet.
 func (w *failoverResponseWriter) deferring() bool {
 	return !w.passthrough && !w.discarded
+}
+
+// streamOpened reports that the attempt committed its headers as the start of
+// a stream: a converted request opens its turn with the upstream response, so
+// an error response reaches here as a committed turn that carries nothing yet.
+func (w *failoverResponseWriter) streamOpened() bool {
+	return !w.passthrough && !w.discarded && w.wroteHeader && w.delivered == 0
 }
 
 // failoverUnavailable reports that this attempt is the last one: the loop has
@@ -544,6 +569,37 @@ func (h providerCooldownHint) ok() bool {
 	return h.retryAfter > 0 || !h.resetsAt.IsZero()
 }
 
+// usageBucket is what an exhausted-window scan needs from one usage bucket.
+type usageBucket interface{ resetAt() (time.Time, bool) }
+
+func (b *ClaudeOAuthUsageBucket) resetAt() (time.Time, bool)  { return parseResetsAt(b.ResetsAt) }
+func (b *ChatGPTOAuthUsageBucket) resetAt() (time.Time, bool) { return parseResetsAt(b.ResetsAt) }
+
+// exhaustedReset picks the reset moment of the window that is actually spent.
+// The soonest reopening is not the answer: a weekly plan window at 100% with a
+// 5h window at 5% told the account reopens in nine minutes when in fact the
+// next request would be refused for days. When nothing is spent the soonest
+// window is the best guess left.
+func exhaustedReset[T usageBucket](current time.Time, spent, idle []T, now time.Time) time.Time {
+	for _, bucket := range spent {
+		at, ok := bucket.resetAt()
+		if !ok || !at.After(now) {
+			continue
+		}
+		if current.IsZero() || at.After(current) {
+			current = at
+		}
+	}
+	if current.IsZero() {
+		for _, bucket := range idle {
+			if at, ok := bucket.resetAt(); ok && at.After(now) && (current.IsZero() || at.Before(current)) {
+				current = at
+			}
+		}
+	}
+	return current
+}
+
 // cooldownHint reads the upstream's own retry timing: the Retry-After header,
 // plus what the vendor already told the usage panel — Claude's unified 5h/7d
 // window and ChatGPT's primary/secondary rate-limit window both carry the exact
@@ -555,23 +611,32 @@ func (s *Server) cooldownHint(providerID, retryAfter string, body []byte, now ti
 	}
 	if cached, ok := s.oauthUsageCache.getAllowStale("claude:" + providerID); ok {
 		if report, ok := cached.(ClaudeOAuthUsageReport); ok && report.Available {
-			for _, bucket := range []*ClaudeOAuthUsageBucket{report.FiveHour, report.SevenDay} {
+			var spent, idle []*ClaudeOAuthUsageBucket
+			for _, bucket := range []*ClaudeOAuthUsageBucket{report.FiveHour, report.SevenDay, report.SevenDayOverageIncluded} {
 				if bucket == nil {
 					continue
 				}
-				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
-					hint.resetsAt = at
+				if bucket.Utilization >= claudeUsageHardThresholdPct {
+					spent = append(spent, bucket)
+				} else {
+					idle = append(idle, bucket)
 				}
 			}
+			hint.resetsAt = exhaustedReset(hint.resetsAt, spent, idle, now)
 		}
 	}
 	if cached, ok := s.oauthUsageCache.getAllowStale("chatgpt:" + providerID); ok {
 		if report, ok := cached.(ChatGPTOAuthUsageReport); ok && report.Available {
-			for _, bucket := range report.Buckets {
-				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
-					hint.resetsAt = at
+			var spent, idle []*ChatGPTOAuthUsageBucket
+			for index := range report.Buckets {
+				bucket := &report.Buckets[index]
+				if bucket.Utilization >= claudeUsageHardThresholdPct {
+					spent = append(spent, bucket)
+				} else {
+					idle = append(idle, bucket)
 				}
 			}
+			hint.resetsAt = exhaustedReset(hint.resetsAt, spent, idle, now)
 		}
 	}
 	return hint
@@ -581,35 +646,89 @@ func (s *Server) cooldownHint(providerID, retryAfter string, body []byte, now ti
 // names a time, the class default otherwise. Only "how long" comes from the
 // upstream — whether the mark shows as hard still comes from the classifier,
 // so a vendor phrase alone never paints an account 异常.
+//
+// The two ladders are deliberately apart (see providerRateRestBase):
+//
+//   - hard quota: at least providerQuotaRestFloor, then the vendor's reset time
+//     when it names one, bounded by providerCooldownCap.
+//   - soft / rate limit: providerRateRestBase doubling per consecutive failure
+//     up to providerRateRestCap. A vendor's reset time only *extends* it when
+//     the reset falls inside providerRateRestCap; a "resets in 6 days" carried
+//     by a plain 429 is a plan window, not a request throttle, and letting it
+//     through here is what used to park a healthy account for an hour.
 func (s *Server) cooldownTTL(providerID, retryAfter string, body []byte, hard bool, now time.Time) time.Duration {
-	ttl := providerFailoverRecoveryInterval
-	if !hard {
-		ttl = providerSoftUnavailableTTL
-	}
 	hint := s.cooldownHint(providerID, retryAfter, body, now)
-	want := hint.retryAfter
-	if !hint.resetsAt.IsZero() {
-		if until := hint.resetsAt.Sub(now); until > want {
-			want = until
+	if hard {
+		// The window the vendor names is the real answer — the floor only fills
+		// in when it names nothing, so a "reopens in 9m" is not rounded up to a
+		// guess while a terse refusal still rests long enough to be worth it.
+		ttl := providerQuotaRestFloor
+		switch {
+		case !hint.resetsAt.IsZero():
+			// The account reopens exactly then; the floor would only make the
+			// gateway wait longer than the vendor said.
+			if until := hint.resetsAt.Sub(now); until > 0 {
+				ttl = until
+			}
+		case hint.retryAfter > ttl:
+			ttl = hint.retryAfter
 		}
-	}
-	if !hint.ok() || want <= 0 {
+		if ttl > providerCooldownCap {
+			ttl = providerCooldownCap
+		}
 		return ttl
 	}
-	if hard {
-		// Spent until the vendor says otherwise: between the soft default and a
-		// quarter hour there is no reason to probe a dead quota.
-		if ttl < providerCooldownFloor*3 {
-			ttl = providerCooldownFloor * 3
+	ttl := providerRateRestBase << min(s.softFailureCount(providerID), 6)
+	if ttl > providerRateRestCap {
+		ttl = providerRateRestCap
+	}
+	if ttl < providerSoftUnavailableTTL {
+		ttl = providerSoftUnavailableTTL
+	}
+	// The vendor's own Retry-After replaces the ladder when it strays from it:
+	// shorter means "the throttle really clears that soon" and shorter is the
+	// honest answer; longer means the account would be refused anyway. Either
+	// way the rate cap still bounds it.
+	if d := hint.retryAfter; d > 0 && d != ttl {
+		ttl = d
+		if ttl > providerRateRestCap {
+			ttl = providerRateRestCap
 		}
 	}
-	if want < ttl {
-		want = ttl
+	if !hint.resetsAt.IsZero() {
+		if until := hint.resetsAt.Sub(now); until > ttl && until <= providerRateRestCap {
+			ttl = until
+		}
 	}
-	if want > providerCooldownCap {
-		want = providerCooldownCap
+	return ttl
+}
+
+// softFailureCount is how many soft failures providerID has in the current
+// window, without counting a new one.
+func (s *Server) softFailureCount(providerID string) int {
+	s.providerAvailabilityMu.Lock()
+	defer s.providerAvailabilityMu.Unlock()
+	st, ok := s.providerSoftFailures[providerID]
+	if !ok || time.Since(st.windowStart) > providerSoftFailureWindow {
+		return 0
 	}
-	return want
+	return st.count
+}
+
+// resetConsumed reports whether a cooldown wanted to last up to the vendor's
+// own reset minute, in which case the failure that set it was the window
+// closing, not the request being throttled: the old reset must not be handed
+// to the next failure as well.
+func (s *Server) resetConsumed(providerID, retryAfter string, body []byte, hard bool, ttl time.Duration, now time.Time) bool {
+	if ttl <= 0 || ttl == providerSoftUnavailableTTL {
+		// An un-hinted rate rest: nothing was spent.
+		return false
+	}
+	hint := s.cooldownHint(providerID, retryAfter, body, now)
+	if hint.resetsAt.IsZero() {
+		return false
+	}
+	return hint.resetsAt.Sub(now) <= ttl
 }
 
 // parseProviderCooldownHint extracts the upstream's retry timing from a
@@ -787,6 +906,12 @@ func (s *Server) setProviderUnavailable(providerID string, hard bool, reason, re
 		reason:    reason,
 	}
 	s.providerAvailabilityMu.Unlock()
+	if s.resetConsumed(providerID, retryAfter, body, hard, ttl, now) {
+		// The rest ran until the window the vendor named: that reset is spent,
+		// and the next failure starts a fresh countdown instead of inheriting
+		// the one that just ended.
+		s.clearSoftFailures(providerID)
+	}
 	if !logMark {
 		return
 	}
@@ -1052,6 +1177,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 		elapsed := timer.millis()
 		if execErr != nil {
 			lastStatus, lastUsage, lastBody, lastErr, lastModel = status, usage, nil, execErr, attemptModel
+			opened := writer.streamOpened()
 			// Client already gone: never advance the chain (backup would reuse the
 			// same canceled context and surface a fake GLM/fallback cancel).
 			if isRequestContextCanceled(execErr) || (r.Context() != nil && r.Context().Err() != nil) {
@@ -1062,6 +1188,28 @@ func (s *Server) executeProtocolFlowWithFailover(
 				}
 				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonClientGone, Error: truncateReason(execErr.Error())})
 				return status, usage, body, attemptDecision, attemptModel, execErr
+			}
+			// A stream was opened with its upstream response: an error response
+			// that arrives there is the upstream's answer, not a cut turn, and the
+			// account never got the request — so the next one may still have it.
+			// A converted turn holds its opening until the answer itself begins
+			// (converterStreamWriter), so an attempt that reached the upstream and
+			// failed before any content is still deferrable: nothing of it has
+			// reached the client, and the next account can answer the turn
+			// (magpie mayAskAgain, fallback.go:2345).
+			if opened && writer.canDefer {
+				writer.Discard()
+				markTimingFlag(r.Context(), timingFlagFailoverRetry)
+				if t := requestTimingFrom(r.Context()); t != nil {
+					t.resetUpstreamMarks()
+				}
+				s.logs.AddApp("warn", "provider failover after error response", fmt.Sprintf("key=%s from=%s status=%d", matchedKey.ID, providerID, status))
+				// The hop spent whatever the stream reported before it failed:
+				// an answer nobody sees still costs the account (magpie records
+				// every try's usage, gateway.go:3004).
+				s.noteProviderUsage(providerID, usage)
+				s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
+				continue
 			}
 			// Busy, not broken: an admission refusal moves to the next account
 			// and must never be counted as a provider failure, or a busy but
@@ -1094,6 +1242,8 @@ func (s *Server) executeProtocolFlowWithFailover(
 			// a streamed request, or a deferred attempt whose turn was
 			// committed — the client's time-to-first-token has been paid, so a
 			// cut is the answer: it stays with the account that started it.
+			// Worth another account while nothing of this turn has reached the
+			// client; the writer knows whether that is still so.
 			if !writer.deferring() {
 				transportFailoverWorthy = false
 			}
@@ -1109,6 +1259,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 					t.resetUpstreamMarks()
 				}
 				s.logs.AddApp("warn", "provider failover after transport error", fmt.Sprintf("key=%s from=%s err=%s", matchedKey.ID, providerID, execErr.Error()))
+				s.noteProviderUsage(providerID, usage)
 				s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
 				continue
 			}

@@ -100,6 +100,14 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 		return
 	}
 	tasks := tasksVisibleTo(identity, all)
+	for i := range tasks {
+		// A task the keeper paused after every provider was deleted stores an
+		// empty list; the console maps providerIds directly, so keep the field
+		// an array instead of letting the nil slice serialize as null.
+		if tasks[i].ProviderIDs == nil {
+			tasks[i].ProviderIDs = []string{}
+		}
+	}
 	runs, err := s.quotaVisibleRuns(identity, tasks)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
@@ -217,6 +225,20 @@ func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusForbidden, err.Error())
 		return
 	}
+	// 已删除的 Provider 只影响「现在能不能探测」，不把它从列表里删掉：软删除可以
+	// 恢复，恢复后成员还在，任务自己会复活。彻底清除的 id 留着就是永久死 id，
+	// 新建时直接剪掉。
+	if live, purged := s.liveScheduledProviderIDs(task.ProviderIDs); len(purged) > 0 {
+		if len(live) == 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "所选 Provider 都已删除，请重新选择")
+			return
+		}
+		task.ProviderIDs = live
+	}
+	if _, schedulable := s.schedulableProviderIDs(task); len(schedulable) == len(task.ProviderIDs) {
+		writeOpenAIError(w, http.StatusBadRequest, "所选 Provider 都已删除，请重新选择")
+		return
+	}
 	task.NextRunAt = quotaNextStamp(task, now)
 	if err := s.scheduledTaskStore.SaveScheduledTask(task); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
@@ -261,6 +283,20 @@ func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Reques
 	}
 	if err := s.validateScheduledTaskProviders(identity, task); err != nil {
 		writeOpenAIError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// 编辑页可能还列着已删除的 Provider。软删除的保留在列表里（恢复后自动复活），
+	// 彻底清除的静默剪掉而不是让这次保存失败；但如果一个能调度的都不剩，就必须
+	// 让用户重新选。
+	if live, purged := s.liveScheduledProviderIDs(task.ProviderIDs); len(purged) > 0 {
+		if len(live) == 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "所选 Provider 都已删除，请重新选择")
+			return
+		}
+		task.ProviderIDs = live
+	}
+	if _, schedulable := s.schedulableProviderIDs(task); len(schedulable) == len(task.ProviderIDs) {
+		writeOpenAIError(w, http.StatusBadRequest, "所选 Provider 都已删除，请重新选择")
 		return
 	}
 	// Re-anchoring the schedule is the point of an edit: "改成 10 点" should not
@@ -311,10 +347,21 @@ func (s *Server) handleRunScheduledTask(w http.ResponseWriter, r *http.Request) 
 	if !allowed {
 		return
 	}
-	if len(task.ProviderIDs) == 0 {
-		writeOpenAIError(w, http.StatusBadRequest, "任务没有可选 Provider")
+	// 手动执行只读判断，不改库：软删除的成员留着（恢复后自动复活），这里只决定
+	// 这一轮能不能发；没有任何可调度的成员才报错。
+	if live, purged := s.liveScheduledProviderIDs(task.ProviderIDs); len(purged) > 0 {
+		if len(live) == 0 {
+			writeOpenAIError(w, http.StatusBadRequest, "任务里的 Provider 都已删除，请先从回收站恢复或编辑任务重新选择")
+			return
+		}
+		task.ProviderIDs = live
+	}
+	schedulable, _ := s.schedulableProviderIDs(task)
+	if len(schedulable) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "任务里的 Provider 都已删除，请先从回收站恢复或编辑任务重新选择")
 		return
 	}
+	task.ProviderIDs = schedulable
 	if !s.claimScheduledTaskRun(task.ID) {
 		writeOpenAIError(w, http.StatusConflict, "该任务正在执行中，请等待本轮结束")
 		return

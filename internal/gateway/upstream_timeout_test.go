@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -236,4 +238,53 @@ func TestSetProviderFirstPacketTimeout(t *testing.T) {
 	if provider.FirstPacketTimeoutSec != maxFirstPacketTimeoutSec {
 		t.Fatalf("a bare patch reset the limit to %d", provider.FirstPacketTimeoutSec)
 	}
+}
+
+// A Close that lands while a Read is waiting on the wire stops and drops the
+// timer; the Read must not stop a timer it no longer holds.
+func TestIdleGuardedBodyReadAfterConcurrentClose(t *testing.T) {
+	release := make(chan struct{})
+	body := &blockingReadCloser{release: release}
+	guarded := newIdleGuardedBody(body, time.Minute)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buffer := make([]byte, 8)
+		_, _ = guarded.Read(buffer)
+	}()
+	for {
+		guarded.mu.Lock()
+		reading := guarded.reading
+		guarded.mu.Unlock()
+		if reading {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := guarded.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the read did not return after Close")
+	}
+}
+
+// blockingReadCloser returns nothing until released, like a provider whose
+// answer is still on the wire.
+type blockingReadCloser struct {
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingReadCloser) Read(p []byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+func (b *blockingReadCloser) Close() error {
+	b.once.Do(func() {})
+	return nil
 }

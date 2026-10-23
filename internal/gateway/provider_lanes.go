@@ -159,14 +159,21 @@ func providerQueueCapacity(max, rpm int) int {
 	return capacity
 }
 
-// acquire takes a slot, waiting up to wait for one to free. A zero wait refuses
-// immediately, which is the default: a queued request is a request whose client
-// is already staring at a spinner.
+// acquire takes a slot, waiting up to wait for one to free. A zero wait is the
+// default: a queued request is a request whose client is already staring at a
+// spinner.
 func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func(), error) {
 	// A rate-full lane is not a hung one: waiting on the vendor's own minute
 	// is meaningful even when the operator set no queue wait, so a rate-only
 	// refusal is given until the oldest admission frees a slot (bounded anyway).
+	// The wait refunds itself: a converted stream opens with its upstream
+	// response, so a request parked here for the rest of a minute has committed
+	// nothing if that response is an error, and the failover loop can still
+	// hand the turn to a backup.
 	budget := wait
+	lane.mu.Lock()
+	overWindow := lane.rpm > 0 && lane.admittedLocked() >= lane.rpm
+	lane.mu.Unlock()
 	if budget <= 0 && lane.max <= 0 {
 		lane.mu.Lock()
 		now := time.Now()
@@ -183,7 +190,25 @@ func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func
 	if err != nil {
 		return nil, err
 	}
+	if wait <= 0 && overWindow {
+		return func() { lane.refundAdmission(time.Now()) }, nil
+	}
 	return release, nil
+}
+
+// refundAdmission withdraws the count this request added, for one that waited
+// out a full rate window and whose turn then never reached its upstream. The
+// wait already paid the vendor's rate: keeping the count too would spend the
+// account's budget on an attempt nobody made.
+func (lane *providerLane) refundAdmission(now time.Time) {
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if len(lane.admits) == 0 {
+		return
+	}
+	lane.admits = lane.admits[:len(lane.admits)-1]
+	lane.trimLocked(now)
+	lane.wakeLocked()
 }
 
 // acquireSlot is acquire with the clock injected, so the per-minute budget can

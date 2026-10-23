@@ -13,6 +13,10 @@ import (
 // 15s leaves comfortable margin under that idle limit.
 var sseHeartbeatInterval = 15 * time.Second
 
+// sseHeartbeatJoinTimeout bounds how long stop waits for the keep-alive to
+// leave: a write to a client that stopped reading can block indefinitely.
+const sseHeartbeatJoinTimeout = 2 * time.Second
+
 // sseHeartbeatComment is an SSE comment frame. Clients and OpenAI/Codex SSE
 // parsers ignore lines starting with ':'; it only exists to keep the TCP /
 // proxy path from looking idle.
@@ -37,11 +41,25 @@ func startSSEHeartbeat(w http.ResponseWriter, interval time.Duration) (stop func
 		interval = sseHeartbeatInterval
 	}
 	done := make(chan struct{})
+	// exited is closed as the goroutine returns: stop must not report the turn
+	// finished — and the caller must not release the provider lane it holds —
+	// while a keep-alive could still be writing to this response.
+	exited := make(chan struct{})
 	var once sync.Once
 	stop = func() {
 		once.Do(func() { close(done) })
+		// Joining is bounded. A client that has stopped reading makes the
+		// keep-alive's write block on a full socket buffer, and an unbounded
+		// join would then hold the handler — and the provider lane it holds —
+		// for as long as that client stays connected. The goroutine still
+		// stops as soon as its write returns; nothing waits for it here.
+		select {
+		case <-exited:
+		case <-time.After(sseHeartbeatJoinTimeout):
+		}
 	}
 	go func() {
+		defer close(exited)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -65,6 +83,16 @@ type sseHeartbeatResponseWriter struct {
 	mu     sync.Mutex
 	base   http.ResponseWriter
 	status int
+	// wrote says real bytes, not a keep-alive, reached the client: from then on
+	// this attempt is the answer and nothing can be retried.
+	wrote bool
+}
+
+// Committed reports whether the turn has started on the wire.
+func (w *sseHeartbeatResponseWriter) Committed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.wrote
 }
 
 func newSSEHeartbeatResponseWriter(base http.ResponseWriter) *sseHeartbeatResponseWriter {
@@ -83,7 +111,11 @@ func (w *sseHeartbeatResponseWriter) WriteHeader(statusCode int) {
 func (w *sseHeartbeatResponseWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.base.Write(p)
+	n, err := w.base.Write(p)
+	if n > 0 {
+		w.wrote = true
+	}
+	return n, err
 }
 
 func (w *sseHeartbeatResponseWriter) Flush() {

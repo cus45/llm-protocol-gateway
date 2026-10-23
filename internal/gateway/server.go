@@ -24,6 +24,7 @@ import (
 	"github.com/luca/llm-protocol-gateway/internal/cursor"
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 	"github.com/luca/llm-protocol-gateway/internal/tunnel"
 )
 
@@ -100,6 +101,12 @@ type Server struct {
 	cursorBridge            *cursor.Bridge
 	listenAddr              string
 	requestLogRetentionDays int
+	// monitoring is nil until StartMonitoring runs; every caller checks it, so a
+	// server built without a monitoring store keeps working unchanged.
+	monitoringStore  monitoringStore
+	monitoring       *monitoring.Service
+	monitoringEngine *monitoring.Engine
+	monitoringSrc    *monitoringSource
 	// log2xxBodies mirrors GatewayState.Log2xxBodies; guarded by log2xxBodiesMu
 	// because it is read on every request-log write and toggled from a handler.
 	log2xxBodies   bool
@@ -251,6 +258,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		if records, ok := stateSaver[0].(CheckinStore); ok {
 			server.checkinStore = records
 		}
+		if ms, ok := stateSaver[0].(monitoringStore); ok {
+			server.monitoringStore = ms
+		}
 		if pins, ok := stateSaver[0].(sessionPinSaver); ok {
 			server.sessionPins.setSaver(pins)
 		}
@@ -343,6 +353,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__alerts/settings", s.handleAlertSettings)
 	mux.HandleFunc("PATCH /__alerts/settings", s.handleUpdateAlertSettings)
 	mux.HandleFunc("POST /__alerts/telegram/test", s.handleTelegramTest)
+	// Monitoring center. The legacy /__alerts routes above stay for the old
+	// console pages; these serve the unified event stream.
+	mux.HandleFunc("GET /__monitor/overview", s.handleMonitorOverview)
+	mux.HandleFunc("GET /__monitor/accounts", s.handleMonitorAccounts)
+	mux.HandleFunc("GET /__monitor/accounts/{providerId}", s.handleMonitorAccount)
+	mux.HandleFunc("POST /__monitor/accounts/{providerId}/refresh", s.handleMonitorAccountRefresh)
+	mux.HandleFunc("POST /__monitor/accounts/{providerId}/quota/refresh", s.handleMonitorQuotaRefresh)
+	mux.HandleFunc("GET /__monitor/events", s.handleMonitorEvents)
+	mux.HandleFunc("GET /__monitor/alerts", s.handleMonitorAlerts)
+	mux.HandleFunc("GET /__monitor/alerts/{id}", s.handleMonitorAlertByID)
+	mux.HandleFunc("POST /__monitor/alerts/{id}/ack", s.handleMonitorAlertAck)
+	mux.HandleFunc("POST /__monitor/alerts/{id}/ignore", s.handleMonitorAlertIgnore)
+	mux.HandleFunc("POST /__monitor/events/{eventId}/retry-push", s.handleMonitorRetryPush)
+	mux.HandleFunc("GET /__monitor/channels", s.handleMonitorChannels)
+	mux.HandleFunc("POST /__monitor/channels", s.handleMonitorCreateChannel)
+	mux.HandleFunc("PUT /__monitor/channels/{id}", s.handleMonitorUpdateChannel)
+	mux.HandleFunc("DELETE /__monitor/channels/{id}", s.handleMonitorDeleteChannel)
+	mux.HandleFunc("POST /__monitor/channels/{id}/test", s.handleMonitorTestChannel)
+	mux.HandleFunc("GET /__monitor/dispatch", s.handleMonitorDispatch)
+	mux.HandleFunc("PUT /__monitor/dispatch", s.handleMonitorUpdateDispatch)
 	mux.HandleFunc("PATCH /__settings/web-exposed", s.handleSetWebExposed)
 	mux.HandleFunc("PATCH /__public-access", s.handleUpdatePublicAccess)
 	mux.HandleFunc("PATCH /__endpoints/{id}", s.handleUpdateEndpoint)
@@ -1329,7 +1359,12 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 	if reasoning == "" {
 		reasoning = requestReasoningLabel(requestBody)
 	}
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+	responseErrorMessage := extractResponseErrorMessage(responseBody)
+	treatAsFailure := status < 200 || status >= 300 || responseErrorMessage != ""
+	// 失败回包不带 usage，按正文长度估一个数会把 200KB 的 429 记成几十万 token
+	// 并计费，而上游其实一分钱没收。只有真正调用到模型的失败（客户端中途断开
+	// 的流）才保留上游报的 usage。
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && !treatAsFailure {
 		usage = EstimateTokenUsage(requestBody, responseBody)
 	}
 	latency := time.Since(started).Milliseconds()
@@ -1338,13 +1373,6 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		ttftMs = latency
 	}
 	prepMs, preUpstreamMs, upstreamTtfbMs, gatewayOverheadMs, convertOutMs, postMs, timingFlags := timing.snapshot(ttftMs, latency)
-	// 正文（请求体 / 响应体）默认只在失败时记录：这是每请求写盘量的绝对主要来源，
-	// 而成功请求的正文几乎用不到。「失败」除了 status 非 2xx，也包含「status 是
-	// 2xx 但响应体里带 error 负载」——那本质是伪装成成功的失败，恰恰最需要正文
-	// 才能排查。需要连正常成功请求的正文一起留时，在设置里打开「记录成功请求
-	// 正文」，按 logBodyCapOK 截断记录。
-	responseErrorMessage := extractResponseErrorMessage(responseBody)
-	treatAsFailure := status < 200 || status >= 300 || responseErrorMessage != ""
 	logSuccessBodies := s.Log2xxBodies()
 	requestBodyCap := 0
 	switch {
@@ -1404,10 +1432,11 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 	if status >= 400 || responseErrorMessage != "" {
 		// 上游常把凭据回显在错误里（"Incorrect API key provided: sk-…"），工具
 		// 结果也会带回下游配置里的 key；落库前按与请求正文相同的规则脱敏。
+		// 摘要（ErrorDescription）经管理界面直接展示，同样要抹。
 		entry.ResponseBody = truncateForLog(scrubSensitiveRequestBody(responseBody), logBodyCapError)
-		entry.ErrorDescription = responseErrorMessage
+		entry.ErrorDescription = scrubSensitiveMessage(responseErrorMessage)
 		if entry.ErrorDescription == "" && status >= 400 {
-			entry.ErrorDescription = summarizeUpstreamHTTPError(status, responseBody)
+			entry.ErrorDescription = scrubSensitiveMessage(summarizeUpstreamHTTPError(status, responseBody))
 		}
 	} else if logSuccessBodies {
 		entry.ResponseBody = truncateForLog(scrubSensitiveRequestBody(responseBody), logBodyCapOK)
@@ -2494,7 +2523,7 @@ func (s *Server) handleClaudeOAuthCallback(w http.ResponseWriter, r *http.Reques
 
 	providerID, pending, ok := s.pendingClaudeOAuth.getByState(callbackState)
 	if !ok {
-		http.Error(w, "oauth flow expired or unknown state; start again from Protocol Gateway", http.StatusBadRequest)
+		writeClaudeOAuthUnclaimedPage(w, r)
 		return
 	}
 	if !claimClaudeCallback(pending) {
@@ -3056,14 +3085,6 @@ func (s *Server) handleProviderThinkingTest(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, status, result)
 }
 
-func resolveProviderImageURL(provider domain.Provider) string {
-	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-	if !strings.Contains(strings.ToLower(upstreamURL), "/images/generations") {
-		upstreamURL += "/images/generations"
-	}
-	return upstreamURL
-}
-
 // resolveProviderEmbeddingsURL completes a base URL with the embeddings path.
 // A base URL that already names the endpoint is used as given: the operator
 // configured an exact path on purpose, and appending a second one 404s.
@@ -3073,6 +3094,25 @@ func resolveProviderEmbeddingsURL(provider domain.Provider) string {
 		return upstreamURL
 	}
 	return upstreamURL + "/embeddings"
+}
+
+func resolveProviderImageURL(provider domain.Provider) string {
+	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	if !strings.Contains(strings.ToLower(upstreamURL), "/images/generations") {
+		upstreamURL += "/images/generations"
+	}
+	return upstreamURL
+}
+
+// resolveProviderEndpointURL appends an OpenAI-style endpoint path to the
+// provider's BaseURL, unless the BaseURL already names that endpoint (an
+// operator may point the row straight at it).
+func resolveProviderEndpointURL(provider domain.Provider, path string) string {
+	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	if strings.HasSuffix(strings.ToLower(upstreamURL), strings.ToLower(path)) {
+		return upstreamURL
+	}
+	return upstreamURL + path
 }
 
 func resolveProviderChatURL(provider domain.Provider, model string) string {
@@ -3227,7 +3267,20 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 	}
 	var response *http.Response
 	if workBuddy {
-		response, err = s.sendWorkBuddyChat(provider, resolvedModel, body, workBuddyAliases, send)
+		// The account it retries with is the one passed in, whatever the
+		// outer request went out as: a multi-account chain sends each attempt
+		// with its own provider (round26 D26-12).
+		response, err = s.sendWorkBuddyChat(provider, resolvedModel, body, workBuddyAliases, func(sendProvider domain.Provider, requestBody []byte) (*http.Response, error) {
+			request, requestErr := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept", "text/event-stream")
+			applyProviderAuth(request, sendProvider, r.Header.Get("Authorization"))
+			applyOpenCodeZenHeaders(request, sendProvider, requestBody)
+			return (&http.Client{Timeout: 120 * time.Second}).Do(request)
+		})
 	} else {
 		response, err = send(body)
 	}
@@ -3797,6 +3850,9 @@ func (s *Server) persistProviderOAuth(provider domain.Provider) error {
 			accountLabel = provider.WorkBuddy.AccountLabel
 			userID = provider.WorkBuddy.UserID
 			authDomain = provider.WorkBuddy.Domain
+			// SignInAt lives in oauth_json only; a refresh that skipped it would
+			// leave the credential with no expiry unageable after a restart.
+			authJSON = credentialJSON(provider.WorkBuddy)
 		case provider.ZCode != nil:
 			accessToken = provider.ZCode.APIKey
 			refreshToken = provider.ZCode.BizToken
@@ -4289,11 +4345,45 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	slog.Info("handled image generation request", "route", route.ID, "model", logModel, "status", status)
 }
 
+// openAIPassThrough is one OpenAI-compatible endpoint the gateway relays
+// without converting anything: the request is already in the upstream's shape
+// and only an OpenAI-compatible provider can answer it.
+type openAIPassThrough struct {
+	// label names the endpoint in request logs and app logs ("embeddings",
+	// "audio/transcriptions").
+	label string
+	// upstreamPath is appended to the provider's BaseURL ("/embeddings").
+	upstreamPath string
+	// multipart marks a form request (audio uploads): the body is relayed byte
+	// for byte with its own boundary, so the vendor sees exactly what the client
+	// sent and the answer keeps its type (json, text, srt, vtt).
+	multipart bool
+}
+
 // handleOpenAIEmbeddings serves POST /v1/embeddings. Embeddings have no
 // failover leg and no protocol conversion — the request is OpenAI-shaped and
 // only an OpenAI-compatible upstream can answer it — so this is a pass-through
 // with the same admission, key quota and logging as the chat path.
 func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) {
+	s.serveOpenAIPassThrough(w, r, openAIPassThrough{label: "embeddings", upstreamPath: "/embeddings"})
+}
+
+// handleOpenAIAudioTranscriptions serves POST /v1/audio/transcriptions
+// (speech-to-text). Same trust model as embeddings: the provider's own
+// credential goes upstream, the caller's gateway key never does.
+func (s *Server) handleOpenAIAudioTranscriptions(w http.ResponseWriter, r *http.Request) {
+	s.serveOpenAIPassThrough(w, r, openAIPassThrough{label: "audio/transcriptions", upstreamPath: "/audio/transcriptions", multipart: true})
+}
+
+// handleOpenAIAudioTranslations serves POST /v1/audio/translations.
+func (s *Server) handleOpenAIAudioTranslations(w http.ResponseWriter, r *http.Request) {
+	s.serveOpenAIPassThrough(w, r, openAIPassThrough{label: "audio/translations", upstreamPath: "/audio/translations", multipart: true})
+}
+
+// serveOpenAIPassThrough is the one path all of the above share: read the
+// body, resolve the key's route, honour the route's output protocol, admit
+// against the key's quota and the account's lane, then relay to the provider.
+func (s *Server) serveOpenAIPassThrough(w http.ResponseWriter, r *http.Request, endpoint openAIPassThrough) {
 	started := time.Now()
 	body, tooLarge, err := readGatewayRequestBody(r)
 	if tooLarge {
@@ -4305,14 +4395,10 @@ func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req map[string]any
-	if len(strings.TrimSpace(string(body))) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-			return
-		}
-	} else {
-		req = map[string]any{}
+	requestModel, req, err := passthroughRequestModel(r.Header.Get("Content-Type"), body, endpoint.multipart)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	var route domain.Route
@@ -4362,25 +4448,40 @@ func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	requestModel, _ := req["model"].(string)
 	model, logModel := resolveConsumerModelOnProvider(provider, matchedKey, gatewayKeyMatched, requestModel)
-	if strings.TrimSpace(model) == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "model is required")
-		return
-	}
-	logModel = finalizeRequestLogModel(logModel, model, model)
-	req["model"] = model
-	body, err = json.Marshal(req)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "failed to encode request body")
-		return
+	upstreamBody := body
+	contentType := "application/json"
+	if endpoint.multipart {
+		logModel = finalizeRequestLogModel(logModel, model, requestModel)
+		// The form's own type (with its boundary) travels as sent; only the
+		// model field is rewritten, and only when the provider maps it.
+		contentType = r.Header.Get("Content-Type")
+		if mapped := applyProviderModelMapping(provider, requestModel); mapped != "" && mapped != strings.TrimSpace(requestModel) {
+			upstreamBody, err = multipartFormWithField(contentType, body, "model", mapped)
+			if err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	} else {
+		if strings.TrimSpace(model) == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "model is required")
+			return
+		}
+		logModel = finalizeRequestLogModel(logModel, model, model)
+		req["model"] = model
+		upstreamBody, err = json.Marshal(req)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "failed to encode request body")
+			return
+		}
 	}
 
 	if gatewayKeyMatched && keyHasQuota(matchedKey) {
 		admission := s.admitKeyQuota(matchedKey, quotaPromptEstimate(body), time.Now())
 		if refusal := admission.refusal; refusal != nil {
 			rejectKeyQuota(w, domain.ProtocolOpenAIChat, refusal)
-			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusTooManyRequests, TokenUsage{}, body, []byte(refusal.Message))
+			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", endpoint.label, r.URL.Path, http.StatusTooManyRequests, TokenUsage{}, body, []byte(refusal.Message))
 			return
 		}
 		defer admission.release()
@@ -4394,7 +4495,7 @@ func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 			status = http.StatusTooManyRequests
 		}
 		writeOpenAIError(w, status, admissionErr.Error())
-		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, status, TokenUsage{}, body, []byte(admissionErr.Error()))
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", endpoint.label, r.URL.Path, status, TokenUsage{}, body, []byte(admissionErr.Error()))
 		return
 	}
 	defer releaseSlot()
@@ -4405,30 +4506,54 @@ func (s *Server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(authValue) == "" {
 		msg := fmt.Sprintf("provider %q has no API key configured", provider.ID)
 		writeOpenAIError(w, http.StatusBadGateway, msg)
-		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusBadGateway, TokenUsage{}, body, []byte(msg))
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", endpoint.label, r.URL.Path, http.StatusBadGateway, TokenUsage{}, body, []byte(msg))
 		return
 	}
-	upstreamBody, adapterErr := applyRequestAdapterBody(provider, model, body)
-	if adapterErr != nil {
-		writeOpenAIError(w, http.StatusBadRequest, adapterErr.Error())
-		return
+	if !endpoint.multipart {
+		upstreamBody, err = applyRequestAdapterBody(provider, model, upstreamBody)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
-	upstreamURL := resolveProviderEmbeddingsURL(provider)
-	status, usage, responseLog, err := s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, upstreamBody)
+	upstreamURL := resolveProviderEndpointURL(provider, endpoint.upstreamPath)
+	status, usage, responseLog, err := s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, contentType, upstreamBody)
 	if err != nil {
-		s.logs.AddApp("error", "embeddings request failed", err.Error())
-		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
+		s.logs.AddApp("error", endpoint.label+" request failed", err.Error())
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", endpoint.label, r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "embeddings", r.URL.Path, status, usage, body, responseLog)
+	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", endpoint.label, r.URL.Path, status, usage, body, responseLog)
 	level := "debug"
 	if status >= http.StatusBadRequest {
-		// 上游拒绝要能在日志里看见：很多嵌入上游对不认识的模型回空体 404，
+		// 上游拒绝要能在日志里看见：很多上游对不认识的模型回空体 404，
 		// debug 级别会让"到底是谁 404"彻底无从查起。
 		level = "warn"
 	}
-	s.logs.AddApp(level, "handled embeddings request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
+	s.logs.AddApp(level, "handled "+endpoint.label+" request", fmt.Sprintf("route=%s model=%s status=%d", route.ID, logModel, status))
+}
+
+// passthroughRequestModel reads the client's model out of a passthrough body.
+// A JSON endpoint's body is parsed into the map every later step rewrites; a
+// multipart form is left untouched and only its "model" field is read, so the
+// audio part goes upstream exactly as the client sent it.
+func passthroughRequestModel(contentType string, body []byte, multipart bool) (string, map[string]any, error) {
+	if multipart {
+		model, err := multipartFormField(contentType, body, "model")
+		if err != nil {
+			return "", nil, err
+		}
+		return model, nil, nil
+	}
+	req := map[string]any{}
+	if len(strings.TrimSpace(string(body))) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return "", nil, fmt.Errorf("invalid json: %w", err)
+		}
+	}
+	model, _ := req["model"].(string)
+	return model, req, nil
 }
 
 // handleClaudeMessages serves POST /anthropic/v1/messages, the native
@@ -5443,7 +5568,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 			return 0, TokenUsage{}, nil, err
 		}
 		defer response.Body.Close()
-		return writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
+		return writePassThroughResponse(w, response, stream, usageStreamOpenAI, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 	}
 
 	model = applyProviderModelMapping(provider, model)
@@ -5493,7 +5618,23 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	var response *http.Response
 	var err error
 	if workBuddy {
-		response, err = s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, send)
+		// Same as above: each retry carries the provider it was decided for.
+		response, err = s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, func(sendProvider domain.Provider, requestBody []byte) (*http.Response, error) {
+			request, requestErr := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			request.Header.Set("Content-Type", "application/json")
+			if forcedStream {
+				request.Header.Set("Accept", "text/event-stream")
+			} else {
+				request.Header.Set("Accept", r.Header.Get("Accept"))
+			}
+			applyProviderAuth(request, sendProvider, incomingAuth)
+			applyOpenCodeZenHeaders(request, sendProvider, requestBody)
+			applyRequestAdapterHeaders(request, sendProvider, model)
+			return doHTTPWithTiming(r.Context(), &http.Client{Timeout: 0}, request)
+		})
 	} else {
 		response, err = send(body)
 	}
@@ -5507,7 +5648,7 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	if zenFree && forcedStream {
 		_ = rewriteOpenCodeZenUpstreamStreamedBody(response, model)
 	}
-	return writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
+	return writePassThroughResponse(w, response, stream, usageStreamOpenAI, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 }
 
 // proxyOpenAIImages forwards one Images request to a provider. It could not be
@@ -5552,7 +5693,7 @@ func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provi
 		return 0, TokenUsage{}, nil, fmt.Errorf("provider %q has no API key configured", provider.ID)
 	}
 	upstreamURL := resolveProviderImageURL(provider)
-	return s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, body)
+	return s.proxyOpenAIImagesUpstream(w, r.Context(), upstreamURL, authValue, "application/json", body)
 }
 
 func (s *Server) fetchCursorBridgeImages(r *http.Request, provider domain.Provider, body []byte) (int, []byte, error) {
@@ -5581,13 +5722,24 @@ func (s *Server) fetchCursorBridgeImages(r *http.Request, provider domain.Provid
 	return response.StatusCode, responseBody, nil
 }
 
-func (s *Server) proxyOpenAIImagesUpstream(w http.ResponseWriter, ctx context.Context, upstreamURL string, authValue string, body []byte) (int, TokenUsage, []byte, error) {
+// proxyOpenAIImagesUpstream relays one JSON or form body to an OpenAI-compatible
+// upstream and hands the answer back as it came. The name is historical: images,
+// embeddings and audio all go through it.
+func (s *Server) proxyOpenAIImagesUpstream(w http.ResponseWriter, ctx context.Context, upstreamURL string, authValue string, contentType string, body []byte) (int, TokenUsage, []byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/json"
+	}
+	request.Header.Set("Content-Type", contentType)
+	if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		// A transcript can come back as text, SRT or VTT; let the endpoint say.
+		request.Header.Set("Accept", "*/*")
+	} else {
+		request.Header.Set("Accept", "application/json")
+	}
 	if authValue != "" {
 		if !strings.HasPrefix(strings.ToLower(authValue), "bearer ") {
 			authValue = "Bearer " + authValue
@@ -5600,7 +5752,7 @@ func (s *Server) proxyOpenAIImagesUpstream(w http.ResponseWriter, ctx context.Co
 		return 0, TokenUsage{}, nil, err
 	}
 	defer response.Body.Close()
-	return writePassThroughResponse(w, response, false, func([]byte) TokenUsage { return TokenUsage{} })
+	return writePassThroughResponse(w, response, false, usageStreamUnfoldable, func([]byte) TokenUsage { return TokenUsage{} })
 }
 
 // proxyClaudeMessages forwards a Claude Messages API request to the upstream
@@ -5647,7 +5799,7 @@ func (s *Server) proxyClaudeMessages(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	defer response.Body.Close()
-	return writePassThroughResponse(w, response, requestBodyWantsStream(body), ParseClaudeUsage, claudeStreamInterrupter{})
+	return writePassThroughResponse(w, response, requestBodyWantsStream(body), usageStreamClaude, ParseClaudeUsage, claudeStreamInterrupter{})
 }
 
 // sendClaudeMessagesUpstream builds and sends one Claude Messages request to the

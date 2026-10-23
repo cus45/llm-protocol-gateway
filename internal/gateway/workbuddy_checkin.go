@@ -20,6 +20,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -65,9 +66,23 @@ func workBuddyCheckinAccountKey(site workBuddySite, credential domain.WorkBuddyC
 	return site.authType + "|" + uid
 }
 
-// workBuddyCheckin presses a's check-in for the day. The token is not rotated
-// here: the caller has already paid for a refresh before asking.
-func workBuddyCheckin(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) checkinResult {
+// workBuddyCheckin presses a's check-in for the day. A refused sign-in is
+// repaired once with refresh: WorkBuddy revokes an access token when the same
+// account signs in elsewhere, and the stored expiry never predicts that. The
+// credential that ended up being used is returned so the caller can keep the
+// rotated token.
+func workBuddyCheckin(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential, refresh workBuddyTokenRefresher) (checkinResult, domain.WorkBuddyCredential) {
+	result := workBuddyCheckinOnce(ctx, site, credential)
+	if result.loginRefused && refresh != nil {
+		if updated, err := refresh(); err == nil {
+			credential = updated
+			result = workBuddyCheckinOnce(ctx, site, credential)
+		}
+	}
+	return result, credential
+}
+
+func workBuddyCheckinOnce(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) checkinResult {
 	result := checkinResult{AccountKey: workBuddyCheckinAccountKey(site, credential)}
 	headers := workBuddyAccountHeaders(site, credential)
 	var status workBuddyCheckinStatus
@@ -125,7 +140,7 @@ func workBuddyCheckinRefused(ctx context.Context, site workBuddySite, credential
 		return checkinResult{Outcome: domain.CheckinOwnApp, AccountKey: key,
 			Message: "WorkBuddy 用 401 挡下了签到，但这个账号的额度读得出来：它的签到只认 WorkBuddy 客户端，请在 WorkBuddy 应用里点签到"}
 	}
-	return checkinResult{Outcome: domain.CheckinFailed, AccountKey: key,
+	return checkinResult{Outcome: domain.CheckinFailed, AccountKey: key, loginRefused: true,
 		Message: "WorkBuddy 拒绝了这个账号的登录（401），请重新登录"}
 }
 
@@ -133,8 +148,9 @@ func workBuddyCheckinRefused(ctx context.Context, site workBuddySite, credential
 // without a message: its gateway answers a token it refuses with an HTML page,
 // so the code is not always in an envelope.
 func workBuddyUnauthorized(err error) bool {
-	if code, ok := workBuddyErrorCode(err); ok {
-		return code == http.StatusUnauthorized
+	var target *workBuddyError
+	if errors.As(err, &target) {
+		return target.status == http.StatusUnauthorized || target.code == http.StatusUnauthorized
 	}
 	return err != nil && strings.Contains(err.Error(), "HTTP 401")
 }

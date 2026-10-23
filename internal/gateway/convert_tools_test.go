@@ -77,9 +77,9 @@ func TestSanitizeAnthropicToolUseID(t *testing.T) {
 	// Anthropic's charset plus a hash of the original, so two ids that collapse
 	// to the same readable prefix stay distinct.
 	cases := map[string]string{
-		"call_1":  "call_1",
+		"call_1":   "call_1",
 		"toolu_01": "toolu_01",
-		"  ":      "toolu_missing",
+		"  ":       "toolu_missing",
 	}
 	for in, want := range cases {
 		if got := sanitizeAnthropicToolUseID(in); got != want {

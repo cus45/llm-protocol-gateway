@@ -84,25 +84,45 @@ func (s *Server) priceRows() (map[string]domain.ModelPrice, error) {
 	return indexed, nil
 }
 
-// lookupPrice finds the row that prices one model: the exact model row, else the
-// provider's "*" default, else nothing.
+// lookupPrice finds the row that prices one model, in this order:
+//
+//  1. this provider's exact model row
+//  2. this provider's "*" default row
+//  3. the global exact model row
+//  4. the global "*" default row
+//
+// A provider row is a deliberate override of the shared rate card, so it wins
+// even when it is only a catch-all. Official Claude accounts, relays and other
+// providers of the same model otherwise share one global row instead of each
+// needing its own copy.
 func (s *Server) lookupPrice(providerID, model string) (domain.ModelPrice, bool) {
 	rows, err := s.priceRows()
 	if err != nil || len(rows) == 0 {
 		return domain.ModelPrice{}, false
 	}
 	model = upstreamModelForPricing(model)
-	if model != "" {
-		if price, ok := rows[priceKey(providerID, model)]; ok {
+	for _, scope := range []string{providerID, globalPriceProvider} {
+		if scope == "" {
+			continue
+		}
+		if model != "" {
+			if price, ok := rows[priceKey(scope, model)]; ok {
+				return price, true
+			}
+		}
+		if price, ok := rows[priceKey(scope, storePriceWildcard)]; ok {
 			return price, true
 		}
 	}
-	price, ok := rows[priceKey(providerID, storePriceWildcard)]
-	return price, ok
+	return domain.ModelPrice{}, false
 }
 
 // storePriceWildcard mirrors store.PriceWildcard without importing store here.
 const storePriceWildcard = "*"
+
+// globalPriceProvider is the provider id that means "every provider without a
+// row of its own". The price table's scope picker writes rows under it.
+const globalPriceProvider = "*"
 
 // costOf prices one request's usage. It returns priced=false when no row covers
 // the model, so callers can tell "free" from "we do not know".
@@ -158,6 +178,17 @@ func upstreamModelForPricing(loggedModel string) string {
 	return raw
 }
 
+// allRatesZero reports a row that prices every token tier at zero. -0 counts as
+// zero; a negative rate is not zero and is rejected by the range check first.
+func priceRowIsZero(p domain.ModelPrice) bool {
+	for _, rate := range []float64{p.InputUSDPerMTok, p.OutputUSDPerMTok, p.CacheReadUSDPerMTok, p.CacheWriteUSDPerMTok} {
+		if rate != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // ── console API ──────────────────────────────────────────────────────────────
 
 func (s *Server) handleListPrices(w http.ResponseWriter, r *http.Request) {
@@ -204,15 +235,31 @@ func (s *Server) handleSavePrice(w http.ResponseWriter, r *http.Request) {
 	if price.ModelID == "" {
 		price.ModelID = storePriceWildcard
 	}
-	if _, err := s.router.ProviderByID(price.ProviderID); err != nil {
-		writeOpenAIError(w, http.StatusNotFound, "provider "+price.ProviderID+" not found")
-		return
+	if price.ProviderID != globalPriceProvider {
+		if _, err := s.router.ProviderByID(price.ProviderID); err != nil {
+			writeOpenAIError(w, http.StatusNotFound, "provider "+price.ProviderID+" not found")
+			return
+		}
 	}
 	for _, rate := range []float64{price.InputUSDPerMTok, price.OutputUSDPerMTok, price.CacheReadUSDPerMTok, price.CacheWriteUSDPerMTok} {
 		if rate < 0 {
 			writeOpenAIError(w, http.StatusBadRequest, "rates can not be negative; omit the row to leave a model unpriced")
 			return
 		}
+	}
+	// An all-zero global row is refused. It is the last row lookupPrice tries
+	// before giving up, so it would turn every model without a price of its own
+	// into "priced at $0" and erase the 未计价 signal the ledger relies on — a
+	// mistyped save would silently zero the whole cost total. A global row is
+	// still allowed when it carries real rates. A provider's own exact row or its
+	// "*" row may be all zero on purpose: it is scoped to one provider, and one of
+	// the four rates may legitimately be 0 (a model with no cache write fee).
+	// A global exact row is scoped to one model but still overrides nothing less
+	// specific, so it follows the same rule as the global catch-all.
+	if price.ProviderID == globalPriceProvider && priceRowIsZero(price) {
+		writeOpenAIError(w, http.StatusBadRequest,
+			"a global price row needs at least one non-zero rate; an all-zero global row would mark every unpriced model as priced at $0. Omit the row to leave models unpriced")
+		return
 	}
 	if err := s.priceStore.SaveModelPrice(price); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to save price: "+err.Error())

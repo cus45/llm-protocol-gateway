@@ -8,6 +8,7 @@
 # 用法：
 #   ./deploy/deploy-linux.sh                # 完整部署（构建 + 上传 + 重启 + 验证）
 #   ./deploy/deploy-linux.sh --skip-web     # 跳过前端构建（只更后端）
+#   ./deploy/deploy-linux.sh --allow-dirty  # 明知工作区有未提交改动仍构建（产物不可回滚到 commit）
 #   ./deploy/deploy-linux.sh --skip-go      # 跳过后端构建（只更前端）
 #   ./deploy/deploy-linux.sh --rollback     # 回滚到服务器上最近一次备份
 #   ./deploy/deploy-linux.sh --status       # 只查看服务器当前状态，不改动任何东西
@@ -45,6 +46,7 @@ INSTALL_RTK="${INSTALL_RTK:-auto}"
 RTK_VERSION="${RTK_VERSION:-}"
 
 SKIP_WEB=0
+ALLOW_DIRTY=0
 SKIP_GO=0
 MODE="deploy"
 
@@ -73,6 +75,7 @@ for arg in "$@"; do
   case "$arg" in
     --skip-web) SKIP_WEB=1 ;;
     --skip-go)  SKIP_GO=1 ;;
+    --allow-dirty) ALLOW_DIRTY=1 ;;
     --rollback) MODE="rollback" ;;
     --status)   MODE="status" ;;
     -h|--help)  usage ;;
@@ -185,6 +188,17 @@ else
 fi
 
 # ── 2. 构建后端 ──
+# 线上二进制必须能对应到一个 commit：带着未提交改动编译出来的包，vcs.modified=true，
+# 回滚时没有任何 commit 可回滚，只能凭记忆重编（round26 G26-1 就是这样丢了两次）。
+if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" && "$ALLOW_DIRTY" != "1" ]]; then
+  warn "工作区有未提交改动："
+  git status --porcelain --untracked-files=no | sed 's/^/    /'
+  die "拒绝构建脏包。先提交改动，或在明知不可回滚时加 --allow-dirty"
+fi
+if [[ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  info "构建来源 commit: $(git rev-parse --short HEAD 2>/dev/null || echo 未知)"
+fi
+
 if [[ "$SKIP_GO" == "0" ]]; then
   step "2. 交叉编译后端 (linux/${GOARCH_TARGET})"
   mkdir -p bin

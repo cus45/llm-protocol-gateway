@@ -363,8 +363,8 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
   const exportButton = ready && tab === 'overview' ? <button className="mini-btn" type="button" onClick={() => exportUsage(stats!, from, to)}>导出 CSV 报表</button> : null;
   // 价格表只有管理员读得动（/__prices 走 requireAdmin），普通用户不显示入口。
   const priceButton = !isNormalUser ? <button className="mini-btn" type="button" onClick={() => setPriceOpen(true)}>价格表</button> : null;
-  const priceCoverage = (stats?.range?.byProvider || []).map(row => ({
-    providerId: row.providerId,
+  const priceCoverage = (stats?.range?.byModel || []).map(row => ({
+    model: row.model,
     requestCount: row.requestCount || 0,
     pricedCount: row.pricedCount || 0,
   }));
@@ -407,6 +407,6 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
       </>}
       <p className="usage-note">统计网关记录的请求。账户订阅额度在 Provider 页面查看；请求、上下文与性能明细受日志保留天数限制，升级前已过期日志的分类与状态可能不完整。RTK 压缩统计按自己的时间窗独立计算。成本按「价格表」里的美元单价逐请求算出，只增不改：改价之后的请求用新价，历史仍按当时价格记账。</p>
     </div>}
-    {priceOpen ? <PriceTablePanel providers={providers} models={models} coverage={priceCoverage} onClose={() => setPriceOpen(false)} /> : null}
+    {priceOpen ? <PriceTablePanel providers={providers} models={models} modelCoverage={priceCoverage} onClose={() => setPriceOpen(false)} /> : null}
   </div></section>;
 }

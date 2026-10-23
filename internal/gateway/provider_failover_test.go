@@ -251,3 +251,27 @@ func (c *captureResponseWriter) Write(p []byte) (int, error) {
 	c.body = append(c.body, p...)
 	return len(p), nil
 }
+
+// The soft rest doubles with every further failure: a ladder that cannot climb
+// leaves a hammered account resting 30s forever, which is the same as not
+// backing off at all.
+func TestSoftRestLadderGrows(t *testing.T) {
+	t.Parallel()
+	s := &Server{}
+	providerID := "p-ladder"
+	now := time.Now()
+	rests := make([]time.Duration, 0, 5)
+	for index := 0; index < 5; index++ {
+		_ = s.applyProviderFailoverOutcome(providerID, 429, nil, "", nil)
+		rests = append(rests, s.cooldownTTL(providerID, "", nil, false, now))
+	}
+	for index := 1; index < len(rests); index++ {
+		if rests[index] <= rests[index-1] {
+			t.Fatalf("rest %d did not grow: %v", index, rests)
+		}
+	}
+	// The ladder climbs by doubling until it reaches the rest cap.
+	if fifth := rests[4]; fifth <= rests[3] || fifth > providerRateRestCap {
+		t.Fatalf("the rest must keep doubling up to the cap, got %v after %v", fifth, rests[3])
+	}
+}

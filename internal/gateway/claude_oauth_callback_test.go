@@ -1,8 +1,14 @@
 package gateway
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
 // Claude's callback goes to the gateway's own port on localhost, which a browser
@@ -17,6 +23,7 @@ func TestParseClaudeOAuthInputTakesTheCallbackURL(t *testing.T) {
 	}{
 		{"whole callback URL", "http://localhost:18093/callback?code=abc%2F123&state=st-9", "abc/123", "st-9"},
 		{"URL without a state", "http://localhost:18093/callback?code=abc", "abc", ""},
+		{"relative callback path", "/callback?code=abc%2F123&state=st-9", "abc/123", "st-9"},
 		{"code#state form", "abc#st-9", "abc", "st-9"},
 		{"bare code", "abc", "abc", ""},
 		{"empty", "   ", "", ""},
@@ -44,6 +51,64 @@ func TestClaimClaudeCallbackIsSingleUse(t *testing.T) {
 	}
 	if !claimClaudeCallback(claudeOAuthPending{}) {
 		t.Fatal("a flow without a claim must not be locked out")
+	}
+}
+
+// Only a console opened on the gateway's own loopback can follow Anthropic's
+// redirect back; everything else has to finish by pasting the code.
+func TestRequestHostIsLoopback(t *testing.T) {
+	cases := map[string]bool{
+		"localhost:18093":       true,
+		"127.0.0.1:18093":       true,
+		"[::1]:18093":           true,
+		"173.249.207.202:18093": false,
+		"gateway.example.com":   false,
+		"192.168.1.5:18093":     false,
+	}
+	for host, want := range cases {
+		if got := requestHostIsLoopback(host); got != want {
+			t.Fatalf("requestHostIsLoopback(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// A callback this gateway never issued usually means the browser followed the
+// loopback redirect to a different gateway on the user's machine. The page has
+// to say so and hand over the address the right console can finish with.
+func TestClaudeOAuthCallbackUnknownStateOffersTheAddress(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	req := httptest.NewRequest(http.MethodGet, "/callback?code=abc%2F123&state=lost", nil)
+	rec := httptest.NewRecorder()
+	server.handleClaudeOAuthCallback(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"没有被当前网关认领", "http://example.com/callback?code=abc%2F123&amp;state=lost", "粘贴"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the page should contain %q", want)
+		}
+	}
+	if strings.Contains(body, "<script>alert") {
+		t.Fatal("the callback must not be reflected unescaped")
+	}
+}
+
+// A remote console's browser can never reach the gateway's loopback, so only a
+// loopback-issued flow may rely on the automatic callback.
+func TestClaudeOAuthDefaultModeFollowsTheRequestHost(t *testing.T) {
+	cases := map[string]string{
+		"localhost:18093":       "localhost",
+		"127.0.0.1:18093":       "localhost",
+		"[::1]:18093":           "localhost",
+		"173.249.207.202:18093": "manual",
+		"gateway.example.com":   "manual",
+		"192.168.1.20:18093":    "manual",
+	}
+	for host, want := range cases {
+		if got := claudeOAuthDefaultMode(host); got != want {
+			t.Fatalf("claudeOAuthDefaultMode(%q) = %q, want %q", host, got, want)
+		}
 	}
 }
 

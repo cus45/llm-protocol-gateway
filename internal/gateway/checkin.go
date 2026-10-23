@@ -119,6 +119,9 @@ type checkinResult struct {
 	Until      time.Time
 	Offline    bool
 	AccountKey string
+	// loginRefused marks a failure the account's own token caused, as opposed to
+	// the endpoint refusing today's claim: only the former is worth a refresh.
+	loginRefused bool
 }
 
 // StartDailyCheckin presses the check-in of every subscription that asked for it
@@ -285,7 +288,20 @@ func (s *Server) runCheckin(ctx context.Context, vendor string, provider domain.
 		if refreshed.WorkBuddy == nil {
 			return checkinResult{}, refreshed, errors.New("WorkBuddy 尚未登录")
 		}
-		result := workBuddyCheckin(ctx, site, *refreshed.WorkBuddy)
+		stale := *refreshed.WorkBuddy
+		result, credential := workBuddyCheckin(ctx, site, stale, func() (domain.WorkBuddyCredential, error) {
+			updated, refreshErr := s.forceRefreshWorkBuddyToken(provider.ID)
+			if refreshErr != nil {
+				return stale, refreshErr
+			}
+			if updated.WorkBuddy == nil {
+				return stale, errors.New("WorkBuddy 登录已失效，请在控制台重新登录")
+			}
+			return *updated.WorkBuddy, nil
+		})
+		if credential.AccessToken != stale.AccessToken {
+			refreshed.WorkBuddy = &credential
+		}
 		return result, refreshed, nil
 	}
 	return checkinResult{}, provider, fmt.Errorf("未知的签到厂商 %q", vendor)

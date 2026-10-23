@@ -6231,16 +6231,23 @@ button.quota-clock-chip.removable:hover { border-color: var(--accent-border); ba
 .quota-chip-x { color: var(--subtle); font-size: 13px; line-height: 1; }
 .quota-clock-note { color: var(--subtle); font-size: 11.5px; }
 
-/* 下次触发是这一屏唯一的重要数字：字号与等宽都拉高，其它行退回说明文字。 */
+/* 下次触发是这一屏唯一的重要数字：字号与等宽都拉高，其它行退回说明文字。
+   卡片最窄只有 360px，"下次触发 + 今天 20:13 + 1 小时 56 分后 + 窗口预计
+   01:13 重置"一行放不下；让窗口预计固定占第二行并禁止自身折行，避免出现
+   半句掉到下一行的碎行。 */
 .quota-next {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+  column-gap: 8px; row-gap: 3px;
   padding: 9px 11px; border-radius: var(--r-md);
   background: var(--surface-sunken); border: 1px solid var(--border);
 }
 .quota-next-label { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
 .quota-next-value { color: var(--text-strong); font-family: var(--mono); font-size: 13px; font-weight: 700; }
 .quota-next-countdown { color: var(--accent); font-size: 12px; font-weight: 600; font-feature-settings: "tnum" 1; }
-.quota-next-reset { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.quota-next-reset {
+  grid-column: 1 / -1; justify-self: end; white-space: nowrap;
+  color: var(--muted); font-size: 11.5px; font-family: var(--mono); font-feature-settings: "tnum" 1;
+}
 
 .quota-providers { display: flex; flex-wrap: wrap; gap: 6px; }
 .quota-provider {

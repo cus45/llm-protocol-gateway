@@ -15,13 +15,13 @@ const passThroughLogBufferMax = 256 * 1024
 // streamInterrupter closes a pass-through SSE stream whose upstream died after
 // part of the answer was already forwarded.
 //
-// The part the client already has comes from the attempt's own body (see
-// failoverResponseWriter): closeInterruptedStream closes a turn that is live on
-// the wire, while closeReplay closes a turn known whole from the start, whose
-// open blocks are found in the recorded body.
+// cut is what streamEndReader saw of the bytes that actually went out: which
+// blocks a Claude turn left open, and the id, model and last sequence number a
+// Responses stream had already used. It is read from every byte of the stream,
+// not from the capped log copy, so a long answer is closed as accurately as a
+// short one.
 type streamInterrupter interface {
-	closeInterruptedStream(w http.ResponseWriter)
-	closeReplay(w http.ResponseWriter, body []byte)
+	closeInterruptedStream(w http.ResponseWriter, cut streamCut)
 }
 
 // claudeStreamInterrupter ends an Anthropic Messages stream that has no
@@ -29,74 +29,42 @@ type streamInterrupter interface {
 // knows the turn did not finish cleanly.
 type claudeStreamInterrupter struct{}
 
-func (claudeStreamInterrupter) closeInterruptedStream(w http.ResponseWriter) {
-	_ = writeClaudeSSE(w, "message_delta", map[string]any{
-		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": "max_tokens", "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": 0},
-	})
-	_ = writeClaudeSSE(w, "message_stop", map[string]any{"type": "message_stop"})
-}
-
-// closeReplay closes a cut turn whose body is known in full, so every block it
-// left open is closed before the turn reports max_tokens. Left open, a client
-// SDK waits for the block's content_block_stop and never reads message_stop.
-func (claudeStreamInterrupter) closeReplay(w http.ResponseWriter, body []byte) {
-	turn := claudeTurnInBody(body)
-	if !turn.messageStarted {
-		// Nothing the client could be holding open, so a stop_reason on the
-		// turn is all a cut needs.
-		claudeStreamInterrupter{}.closeInterruptedStream(w)
+func (claudeStreamInterrupter) closeInterruptedStream(w http.ResponseWriter, cut streamCut) {
+	if !cut.messageStarted {
+		// Nothing the client could be holding open: the turn ends as an error,
+		// as magpie ends a cut reply, and not with a stop_reason the model never
+		// chose.
+		_ = writeClaudeSSE(w, "error", map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "api_error",
+				"message": streamCutMessage,
+			},
+		})
+		_ = writeClaudeSSE(w, "message_stop", map[string]any{"type": "message_stop"})
 		return
 	}
-	_ = closeInterruptedClaudeStream(w, turn, TokenUsage{}, len(body))
+	// Every block left open is closed first: otherwise a client SDK waits for
+	// the block's content_block_stop and never reads message_stop.
+	_ = closeInterruptedClaudeStream(w, cut.turn(), cut.usage, int(cut.total))
 }
 
-// claudeTurnInBody reads what a Claude-shaped body left open: which blocks were
-// started without their content_block_stop.
-func claudeTurnInBody(body []byte) claudeInterruptedTurn {
-	messageStarted := false
-	open := map[int]bool{}
-	inOrder := []int{}
-	for _, event := range strings.Split(string(body), "\n\n") {
-		data := ""
-		for _, line := range strings.Split(event, "\n") {
-			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
-				data = strings.TrimSpace(rest)
-			}
-		}
-		if data == "" {
-			continue
-		}
-		var frame struct {
-			Type  string `json:"type"`
-			Index *int   `json:"index"`
-		}
-		if err := json.Unmarshal([]byte(data), &frame); err != nil {
-			continue
-		}
-		switch frame.Type {
-		case "message_start":
-			messageStarted = true
-		case "content_block_start":
-			if frame.Index == nil {
-				continue
-			}
-			if !open[*frame.Index] {
-				inOrder = append(inOrder, *frame.Index)
-			}
-			open[*frame.Index] = true
-		case "content_block_stop":
-			if frame.Index != nil {
-				delete(open, *frame.Index)
-			}
-		}
-	}
-	turn := claudeInterruptedTurn{messageStarted: messageStarted, toolOpen: map[string]int{}}
-	for _, index := range inOrder {
-		if open[index] {
-			turn.toolOpen[fmt.Sprintf("block-%d", index)] = index
-		}
+// streamCut is what the bytes of one forwarded stream say about how it ended:
+// enough to close it in its own protocol, whatever its size.
+type streamCut struct {
+	usage          TokenUsage
+	total          int64
+	messageStarted bool
+	openBlocks     []int
+	id, model      string // Responses stream identity
+	lastSequence   int    // Responses: highest sequence_number already sent
+}
+
+// turn is the Claude view of the cut, in the shape the closing helper wants.
+func (c streamCut) turn() claudeInterruptedTurn {
+	turn := claudeInterruptedTurn{messageStarted: c.messageStarted, toolOpen: map[string]int{}}
+	for _, index := range c.openBlocks {
+		turn.toolOpen[fmt.Sprintf("block-%d", index)] = index
 	}
 	return turn
 }
@@ -108,41 +76,116 @@ type openAIChatStreamInterrupter struct {
 	model string
 }
 
-func (o openAIChatStreamInterrupter) closeInterruptedStream(w http.ResponseWriter) {
-	_ = writeOpenAISSEChunk(w, map[string]any{
-		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   o.model,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "length"}},
-	})
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+func (o openAIChatStreamInterrupter) closeInterruptedStream(w http.ResponseWriter, _ streamCut) {
+	// An error event, not a finish reason: "length" and [DONE] together tell the
+	// client the model finished its answer, and a client that trusts them keeps
+	// half a sentence as the whole of it. Magpie says the same thing here
+	// (streamFailure, gateway.go:4940) and names the cause (cutMidReply, :4934).
+	writeChatStreamFailure(w, o.model, streamCutMessage)
 }
 
-// closeReplay is closeInterruptedStream: a Chat stream keeps no block open.
-func (o openAIChatStreamInterrupter) closeReplay(w http.ResponseWriter, _ []byte) {
-	o.closeInterruptedStream(w)
+// streamCutMessage is what a client is told when the upstream connection died
+// mid-reply: the same wording magpie uses, so a person reading the transcript
+// knows it was the connection and not the model.
+const streamCutMessage = "connection lost mid-reply"
+
+// writeChatStreamFailure ends a Chat stream with the protocol's own error event.
+func writeChatStreamFailure(w http.ResponseWriter, model, message string) {
+	payload := map[string]any{
+		"error": map[string]any{
+			"message": model + ": " + message,
+			"type":    "api_error",
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, "data: ")
+	_, _ = w.Write(body)
+	_, _ = io.WriteString(w, "\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // responsesStreamInterrupter ends an OpenAI Responses stream with
 // response.incomplete instead of leaving the client at EOF.
 type responsesStreamInterrupter struct{}
 
-func (responsesStreamInterrupter) closeInterruptedStream(w http.ResponseWriter) {
-	_ = writeResponsesSSEEvent(w, "response.incomplete", map[string]any{
-		"type": "response.incomplete",
-		"response": map[string]any{
-			"object":             "response",
-			"status":             "incomplete",
-			"incomplete_details": map[string]any{"reason": "upstream_stream_interrupted"},
+// closeInterruptedStream repeats the id, model and sequence number the stream
+// it closes established. A Responses SDK keys its events on sequence_number and
+// raises on one that repeats or skips, so a closing frame with a fresh number
+// of its own would make the interruption look worse than the bare EOF it
+// replaces.
+func (responsesStreamInterrupter) closeInterruptedStream(w http.ResponseWriter, cut streamCut) {
+	id, model, sequence := responsesStreamIdentity(cut)
+	// response.failed, not response.incomplete: an incomplete answer is one the
+	// model stopped on purpose (max_output_tokens), and a client that sees it
+	// keeps the half sentence as the answer. Magpie reports a cut reply the same
+	// way (streamFailure, gateway.go:4940).
+	response := map[string]any{
+		"id":     id,
+		"object": "response",
+		"status": "failed",
+		"error": map[string]any{
+			"code":    "server_error",
+			"message": streamCutMessage,
 		},
+	}
+	if model != "" {
+		response["model"] = model
+	}
+	_ = writeResponsesSSEEvent(w, "response.failed", map[string]any{
+		"type":            "response.failed",
+		"sequence_number": sequence,
+		"response":        response,
 	})
 }
 
-// closeReplay is closeInterruptedStream: a Responses stream has no block to
-// close.
-func (r responsesStreamInterrupter) closeReplay(w http.ResponseWriter, _ []byte) {
-	r.closeInterruptedStream(w)
+// responsesStreamIdentity is the response id, model and the next unused
+// sequence_number for the frame that closes a cut stream. A stream the upstream
+// cut before it sent anything keeps the shape it would have had from the start.
+func responsesStreamIdentity(cut streamCut) (id, model string, sequence int) {
+	id, model, last := cut.id, cut.model, cut.lastSequence
+	if id == "" {
+		id = fmt.Sprintf("resp_%d", time.Now().UnixNano())
+	}
+	if last < 0 {
+		return id, model, 0
+	}
+	return id, model, last + 1
+}
+
+// escapeRune is the JSON string escape character, kept as a named constant so
+// the scanner below does not have to spell it in a literal.
+const escapeRune = 0x5C
+
+// trimToEventEnd cuts a body at the end of its last JSON object, since the
+// stream's last line may be a partial frame the upstream never finished.
+func trimToEventEnd(stream []byte) []byte {
+	depth := 0
+	inString := false
+	escaped := false
+	for index, char := range stream {
+		switch {
+		case escaped:
+			escaped = false
+		case char == escapeRune && inString:
+			escaped = true
+		case char == '"':
+			inString = !inString
+		case inString:
+		case char == '{':
+			depth++
+		case char == '}':
+			depth--
+			if depth == 0 {
+				return stream[:index+1]
+			}
+		}
+	}
+	return stream
 }
 
 // limitedBuffer keeps up to max bytes for logging/usage parsing while the
@@ -231,11 +274,11 @@ func copyPassThroughHeaders(w http.ResponseWriter, response *http.Response) {
 // end then names the protocol's closing frame (see streamInterrupter): a bare
 // EOF is indistinguishable from a finished answer for a client that only waits
 // for the closing event, so the cut turn is closed properly instead.
-func writePassThroughResponse(w http.ResponseWriter, response *http.Response, stream bool, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
+func writePassThroughResponse(w http.ResponseWriter, response *http.Response, stream bool, kind usageStreamKind, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
 	if fw, ok := w.(*failoverResponseWriter); ok && stream && response.StatusCode < 400 {
 		// Headers go into the attempt's own header map, not the client's: a
 		// retry must not inherit them (a stale Retry-After outliving its 429).
-		return writeBufferedStream(fw, response, parseUsage, end...)
+		return writeBufferedStream(fw, response, kind, parseUsage, end...)
 	}
 	copyPassThroughHeaders(w, response)
 
@@ -264,6 +307,7 @@ func writePassThroughResponse(w http.ResponseWriter, response *http.Response, st
 		w.Header().Set("Connection", "keep-alive")
 	}
 	tee := newStreamTee(response)
+	usage := newStreamUsageReader(kind)
 	hw := newSSEHeartbeatResponseWriter(w)
 	hw.WriteHeader(response.StatusCode)
 	stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
@@ -272,27 +316,31 @@ func writePassThroughResponse(w http.ResponseWriter, response *http.Response, st
 
 	// hw.Write already serializes; flush after each chunk via flushWriter so
 	// we do not re-enter hw.Flush while holding hw's write lock.
-	writer := io.MultiWriter(&flushWriter{w: hw, flusher: hw}, tee)
+	writer := io.MultiWriter(&flushWriter{w: hw, flusher: hw}, tee, usage)
 	_, copyErr := io.Copy(writer, response.Body)
 	// io.Copy only reports an error when the transport itself failed; a stream
-	// cut mid-answer ends quietly as EOF, so the body is the remaining evidence.
-	if copyErr == nil && isUpstreamStreamInterruptedResponse(response, closesUpstreamStream(tee.Bytes())) {
+	// cut mid-answer ends quietly as EOF, so the stream itself is the evidence —
+	// read from every byte that went out, not from the capped log copy (an
+	// answer longer than the cap would otherwise look like it never closed).
+	if copyErr == nil && isUpstreamStreamInterruptedResponse(response, usage.closed()) {
 		if len(end) > 0 && end[0] != nil && tee.Total() > 0 {
 			// Part of the answer already reached the client, so it cannot be
 			// rewound onto another account; close the turn instead of hanging.
-			end[0].closeInterruptedStream(w)
+			end[0].closeInterruptedStream(w, usage.cut(parseUsage, tee.Bytes()))
 		}
-		return response.StatusCode, TokenUsage{}, tee.Bytes(),
+		// The tokens the stream did report are spent all the same.
+		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
 			newUpstreamStreamInterruption(io.ErrUnexpectedEOF, int(tee.Total()))
 	}
 	if copyErr != nil {
-		return response.StatusCode, TokenUsage{}, tee.Bytes(), copyErr
+		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), copyErr
 	}
-	return response.StatusCode, tee.parse(parseUsage), tee.Bytes(), nil
+	return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), nil
 }
 
 // streamTee keeps the capped log copy of a forwarded stream (and, through
-// limitedBuffer.Total, its true size for daily traffic accounting).
+// limitedBuffer.Total, its true size for daily traffic accounting). Usage does
+// not come from here but from streamUsageReader, which sees every byte.
 type streamTee struct {
 	*limitedBuffer
 }
@@ -301,74 +349,182 @@ func newStreamTee(_ *http.Response) *streamTee {
 	return &streamTee{limitedBuffer: &limitedBuffer{max: passThroughLogBufferMax}}
 }
 
-func (t *streamTee) parse(parseUsage func([]byte) TokenUsage) TokenUsage {
-	if parseUsage == nil {
-		return TokenUsage{}
-	}
-	return parseUsage(t.Bytes())
+// converterStreamWriter is the writer a converter streams through when the
+// failover loop is in front of it. Its output goes straight to the client —
+// the first byte of the answer is what streaming is for, so the turn is
+// committed then and never replayed onto another account — while a capped copy
+// is kept for the logs and the true size is counted.
+//
+// A converter that fails before writing anything commits nothing, so the
+// device stays deferrable and the loop can still hand the turn to a backup.
+type converterStreamWriter struct {
+	fw   *failoverResponseWriter
+	hw   *sseHeartbeatResponseWriter // nil until the first write commits
+	tee  *limitedBuffer
+	stop func()
+	// namedStatus says the converter named the turn's status through
+	// WriteHeader. The status itself is handed to the failover writer at once,
+	// not kept here for Write to read back: a status held in a field and read
+	// from the top of Write was not seen at the first byte (same shape that
+	// lost providers' ids in round27). Without it, the stream opening's own
+	// status — never a default 200 — is the attempt's.
+	namedStatus bool
+	// pending is what the turn wrote before it said anything of the answer:
+	// sent as a whole at the first content event, or dropped with the attempt if
+	// the account fails first.
+	pending      bytes.Buffer
+	holdingSince time.Time
 }
 
-// interceptingStreamWriter holds everything a converter writes instead of
-// sending it, so a stream the upstream cut can still be retried. It records
-// what each Write meant rather than just what it said: a deferredSSEWriter
-// commits headers on the first write, and replaying the bytes alone would send
-// the body without them.
-type interceptingStreamWriter struct {
-	header  http.Header
-	status  int                 // last status the converter set
-	records [][]byte            // the stream, in write order
-	writer  http.ResponseWriter // a fresh deferred writer that the replay fills
-	last    http.ResponseWriter // the attempt's own writer, for headers
+// converterHoldLimit bounds how long a turn may hold its leading frames: past it
+// the client would rather see them than wait for content.
+const converterHoldLimit = 1500 * time.Millisecond
+
+func newConverterStreamWriter(fw *failoverResponseWriter) *converterStreamWriter {
+	return &converterStreamWriter{fw: fw, tee: &limitedBuffer{max: passThroughLogBufferMax}}
 }
 
-func newInterceptingStreamWriter() *interceptingStreamWriter {
-	return &interceptingStreamWriter{header: make(http.Header)}
+func (s *converterStreamWriter) Header() http.Header { return s.fw.Header() }
+
+// WriteHeader is held back until the first byte: a converter sets its headers
+// before it knows whether the upstream will deliver anything. The status is
+// kept, not dropped — it is the answer's own status once the answer has bytes,
+// and a stream that produced none is written out by finishConvertedProxy with
+// the upstream's status instead.
+func (s *converterStreamWriter) WriteHeader(statusCode int) {
+	if s.hw == nil {
+		if statusCode > 0 {
+			s.fw.WriteHeader(statusCode)
+			s.namedStatus = true
+		}
+		return
+	}
+	s.hw.WriteHeader(statusCode)
 }
 
-func (s *interceptingStreamWriter) Header() http.Header { return s.header }
-
-func (s *interceptingStreamWriter) WriteHeader(statusCode int) { s.status = statusCode }
-
-func (s *interceptingStreamWriter) Write(p []byte) (int, error) {
-	s.records = append(s.records, append([]byte(nil), p...))
-	return len(p), nil
+func (s *converterStreamWriter) Write(p []byte) (int, error) {
+	if s.hw == nil {
+		// Held until the turn says something: the leading frames of every
+		// protocol (message_start, response.created, the first Chat role chunk)
+		// say only that a reply began, and a failure behind them can still be
+		// answered by the next account. Magpie holds the same way (holdWriter,
+		// fallback.go:1779-1834) and lets go at the first content event.
+		if !s.turnHasContent(p) && !s.overdue() {
+			_, _ = s.pending.Write(p)
+			if s.pending.Len() > closingBodyMax {
+				// A reply that leads on and on is not a reply: let it go so no
+				// memory is held for an answer that never starts.
+				s.release()
+			}
+			return len(p), nil
+		}
+		s.release()
+	}
+	n, err := s.hw.Write(p)
+	_, _ = s.tee.Write(p[:n])
+	s.hw.Flush()
+	return n, err
 }
 
-func (s *interceptingStreamWriter) Flush() {}
-
-// body returns the intercepted stream for logging and for the failover buffer.
-func (s *interceptingStreamWriter) body() []byte {
-	var b bytes.Buffer
-	for _, p := range s.records {
-		b.Write(p)
+// release opens the turn and sends whatever was held before it.
+func (s *converterStreamWriter) release() {
+	held := append([]byte(nil), s.pending.Bytes()...)
+	s.pending.Reset()
+	s.commit()
+	if len(held) > 0 {
+		_, _ = s.hw.Write(held)
+		_, _ = s.tee.Write(held)
+		s.hw.Flush()
 	}
-	return b.Bytes()
 }
 
-// replay writes the intercepted stream into a deferred writer, which commits
-// it on the way out just as a live stream would have been committed.
-func (s *interceptingStreamWriter) replay(base http.ResponseWriter) *deferredSSEWriter {
-	var w *deferredSSEWriter
-	if base != nil {
-		w = newDeferredSSEWriter(base)
-	} else {
-		w, _ = base.(*deferredSSEWriter)
+// overdue says the turn has been held long enough that a client waiting on it
+// would rather see the leading frames than keep waiting for content.
+func (s *converterStreamWriter) overdue() bool {
+	if s.holdingSince.IsZero() {
+		s.holdingSince = time.Now()
+		return false
 	}
-	for key, values := range s.header {
-		w.Header()[key] = values
+	return time.Since(s.holdingSince) > converterHoldLimit
+}
+
+// turnHasContent says the bytes the converter just wrote carry part of the
+// answer itself, not only the opening of the reply.
+func (s *converterStreamWriter) turnHasContent(p []byte) bool {
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimSpace(line)
+		if payload, ok := strings.CutPrefix(line, "data:"); ok {
+			line = strings.TrimSpace(payload)
+		}
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		// An event whose type names a delta is content; the openings are not.
+		if kind := streamEventType([]byte(line)); kind != "" {
+			if strings.Contains(kind, "delta") || strings.HasSuffix(kind, ".done") {
+				return true
+			}
+			continue
+		}
+		// A Chat chunk: content only when it carries text or tool arguments.
+		if strings.Contains(line, `"content":"`) || strings.Contains(line, `"arguments":"`) || strings.Contains(line, `"text":"`) {
+			if !strings.Contains(line, `"content":""`) && !strings.Contains(line, `"text":""`) {
+				return true
+			}
+		}
 	}
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	status := s.status
-	if status == 0 {
-		status = http.StatusOK
+	return false
+}
+
+// heldTurn is what the writer holds before the turn says anything.
+func (s *converterStreamWriter) heldTurn() []byte {
+	return append([]byte(nil), s.pending.Bytes()...)
+}
+
+// sendHeld writes the held turn out as it stands, still holding nothing back.
+func (s *converterStreamWriter) sendHeld() {
+	if s.hw != nil {
+		return
 	}
-	w.WriteHeader(status)
-	for _, p := range s.records {
-		_, _ = w.Write(p)
+	s.release()
+}
+
+// commit opens the turn on its first byte, through the failover writer so the
+// attempt's status — not a default 200 — is what the client's response carries.
+func (s *converterStreamWriter) commit() {
+	if !s.namedStatus {
+		// A stream is a success by definition; a converter that never named a
+		// status is writing the answer of a successful upstream.
+		s.fw.WriteHeader(http.StatusOK)
 	}
-	return w
+	s.hw = newSSEHeartbeatResponseWriter(s.fw)
+	s.fw.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	s.fw.Header().Set("Cache-Control", "no-cache")
+	s.fw.Header().Set("Connection", "keep-alive")
+	s.fw.FlushError()
+	s.stop = startSSEHeartbeat(s.hw, sseHeartbeatInterval)
+}
+
+func (s *converterStreamWriter) Flush() {
+	if s.hw != nil {
+		s.hw.Flush()
+	}
+}
+
+// Committed reports whether the client has seen part of this attempt.
+func (s *converterStreamWriter) Committed() bool { return s.hw != nil && s.hw.Committed() }
+
+// Finish stops the heartbeat and returns the capped copy of what went out.
+func (s *converterStreamWriter) Finish() []byte {
+	// A turn that never said anything but its opening still sent that opening:
+	// it is not held back from a client that has nothing else.
+	if s.hw == nil && s.pending.Len() > 0 {
+		s.release()
+	}
+	if s.stop != nil {
+		s.stop()
+	}
+	return s.tee.Bytes()
 }
 
 // writeBufferedStream forwards a successful stream through the failover
@@ -380,8 +536,9 @@ func (s *interceptingStreamWriter) replay(base http.ResponseWriter) *deferredSSE
 // last attempt is written out before returning, so when the turn is closed by
 // end (see streamInterrupter) the client gets the partial answer followed by a
 // proper closing frame instead of a bare EOF it would parse as a stall.
-func writeBufferedStream(fw *failoverResponseWriter, response *http.Response, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
+func writeBufferedStream(fw *failoverResponseWriter, response *http.Response, kind usageStreamKind, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
 	tee := newStreamTee(response)
+	usage := newStreamUsageReader(kind)
 	// The logged body is capped, so report the true streamed size separately for
 	// daily traffic accounting. response.Request carries the proxy request's
 	// context, which holds the requestTiming this rides on.
@@ -394,39 +551,44 @@ func writeBufferedStream(fw *failoverResponseWriter, response *http.Response, pa
 	if fw.Header().Get("Cache-Control") == "" {
 		fw.Header().Set("Cache-Control", "no-cache")
 	}
-	streamBody, readErr := io.ReadAll(io.TeeReader(response.Body, tee))
-	if readErr == nil && !closesUpstreamStream(streamBody) {
-		readErr = io.ErrUnexpectedEOF
-	}
-	if readErr != nil {
-		// Empty or cut: while a backup is behind this attempt nothing has reached
-		// the client, so the loop decides whether to retry here or move on. With
-		// nowhere to go the turn is the client's answer: the whole body is sent
-		// and the turn is closed, so the client waits for the closing event it
-		// would otherwise never receive.
-		if len(streamBody) > 0 && fw.failoverUnavailable() {
-			// deliver sends what the client still lacks (everything after
-			// what the attempt already delivered); closing then ends the
-			// turn on top of the whole body, never re-sending any of it.
-			fw.deliver(streamBody, response.StatusCode)
-			if len(end) > 0 && end[0] != nil {
-				end[0].closeReplay(fw, streamBody)
-			}
-			fw.FlushError()
-		}
-		return response.StatusCode, TokenUsage{}, tee.Bytes(),
-			newUpstreamStreamInterruption(readErr, int(tee.Total()))
-	}
-	// fw.Write alone leaves an uncommitted failover buffer uncommitted, and the
-	// failover loop would then drop this attempt as if it had never answered.
-	// One WriteHeader records the status; FlushError commits the attempt below.
-	fw.WriteHeader(response.StatusCode)
 	hw := newSSEHeartbeatResponseWriter(fw)
-	hw.WriteHeader(response.StatusCode)
-	if _, writeErr := hw.Write(streamBody); writeErr != nil {
-		return response.StatusCode, TokenUsage{}, tee.Bytes(), writeErr
+	stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
+	defer stopHeartbeat()
+	writer := io.MultiWriter(&flushWriter{w: hw, flusher: hw}, tee, usage)
+	_, copyErr := io.Copy(writer, response.Body)
+	// The response is committed as soon as anything reached the client, and
+	// from then on this attempt is the answer: the failover loop must not drop
+	// it as if it had never answered.
+	delivered := hw.Committed() || tee.Total() > 0
+	if delivered {
+		fw.FlushError()
 	}
-	hw.Flush()
+	if copyErr != nil {
+		if delivered {
+			// The connection died mid-answer after part of it reached the
+			// client: that prefix is the answer now, so its turn is closed and
+			// the cut reported, instead of leaving a client waiting at EOF.
+			if len(end) > 0 && end[0] != nil {
+				end[0].closeInterruptedStream(hw, usage.cut(parseUsage, tee.Bytes()))
+				hw.Flush()
+			}
+			return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
+				newUpstreamStreamInterruption(copyErr, int(tee.Total()))
+		}
+		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), copyErr
+	}
+	// io.Copy reports nothing when the body simply ends, so the closing frame —
+	// read from every byte that went out — is what says whether it was cut.
+	if isUpstreamStreamInterruptedResponse(response, usage.closed()) {
+		if delivered && len(end) > 0 && end[0] != nil {
+			// The client holds part of the answer, so the turn is closed on the
+			// wire instead of ending at a EOF it would parse as a stall.
+			end[0].closeInterruptedStream(hw, usage.cut(parseUsage, tee.Bytes()))
+			hw.Flush()
+		}
+		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
+			newUpstreamStreamInterruption(io.ErrUnexpectedEOF, int(tee.Total()))
+	}
 	fw.FlushError()
-	return response.StatusCode, tee.parse(parseUsage), tee.Bytes(), nil
+	return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), nil
 }

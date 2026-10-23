@@ -436,6 +436,7 @@ func (s *Server) ensureFreshChatGPTToken(provider domain.Provider) (domain.Provi
 	}
 	token, err := refreshChatGPTToken(context.Background(), provider.ChatGPTOAuth.RefreshToken)
 	if err != nil {
+		s.recordRenewal(provider, "chatgpt", time.Now(), err)
 		return provider, fmt.Errorf("chatgpt oauth refresh failed: %w", err)
 	}
 	cred := chatgptCredentialFromToken(token, *provider.ChatGPTOAuth)
@@ -443,6 +444,7 @@ func (s *Server) ensureFreshChatGPTToken(provider domain.Provider) (domain.Provi
 	if err != nil {
 		return provider, err
 	}
+	s.recordRenewal(updated, "chatgpt", time.Now(), nil)
 	if err := s.persistProviderOAuth(updated); err != nil {
 		s.logs.AddApp("warn", "failed to persist refreshed chatgpt oauth token", err.Error())
 	}

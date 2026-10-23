@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +15,138 @@ import (
 // maxFirstPacketTimeoutSec bounds the per-provider setting so one mistyped
 // value cannot park a request longer than any client is willing to wait.
 const maxFirstPacketTimeoutSec = 600
+
+// upstreamIdleTimeout bounds how long a stream may go silent *after* its
+// headers arrived. Without it a vendor that accepts the request and then stops
+// sending leaves the turn hanging until the client gives up, and the gateway
+// holds the connection (and the provider's lane slot) for as long as it does.
+//
+// The window is generous on purpose: a Claude turn can think for a while
+// between frames, and the heartbeat the gateway itself sends every 15s does
+// not count — this is the upstream's silence, not ours.
+const upstreamIdleTimeout = 120 * time.Second
+
+// errUpstreamIdleTimeout is what a silent upstream is reported as. Like
+// errUpstreamFirstPacketTimeout it is not a context error, so the failover loop
+// treats it as a provider fault rather than as the client hanging up.
+var errUpstreamIdleTimeout = errors.New("upstream stopped sending mid-stream")
+
+// maxUpstreamConns bounds the whole process: every silent stream now dies
+// after upstreamIdleTimeout, so idle connection slots are freed far sooner
+// than the default two-per-host pool expects.
+const maxUpstreamConns = 400
+
+// upstreamTransport is the one transport every provider request goes through.
+// http.DefaultTransport is never used directly: its connection pools are sized
+// for a browser, not for a gateway fanning out to many vendors, and its zero
+// ResponseHeaderTimeout is exactly the "wait forever" this file exists to end.
+//
+// ForceAttemptHTTP2 keeps vendor endpoints on h2 where they offer it. Go gives
+// no read timeout on an h2 connection, so a silent h2 stream is caught by the
+// per-stream guard in idleGuardedBody rather than by the transport.
+var upstreamTransport = newUpstreamTransport()
+
+func newUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		// Covers the wait for response headers on an HTTP/1 connection, which
+		// is where a vendor that accepts the request and then never answers
+		// would otherwise hold the caller forever.
+		ResponseHeaderTimeout: upstreamIdleTimeout,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          maxUpstreamConns,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// upstreamHTTPClient is the client a provider request is sent with. A caller's
+// client that names no transport is given the shared one, so no request ever
+// falls back to http.DefaultTransport and its unbounded header wait. A client
+// with a transport of its own keeps it — a test server's TLS setup, a proxy.
+func upstreamHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	if client.Transport == nil {
+		client.Transport = upstreamTransport
+	}
+	return client
+}
+
+// idleGuardedBody fails a read the upstream never answered. The window measures
+// how long the wire itself was silent, not the gap between two Reads: between
+// them the body is waiting on the caller (a slow client, back-pressure), and a
+// consumer that simply does not read yet must never be mistaken for a vendor
+// that stopped sending.
+type idleGuardedBody struct {
+	body    io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+	mu      sync.Mutex
+	reading bool
+	idle    bool
+}
+
+func newIdleGuardedBody(body io.ReadCloser, timeout time.Duration) *idleGuardedBody {
+	return &idleGuardedBody{body: body, timeout: timeout}
+}
+
+// Read arms the idle window for exactly as long as it is waiting on the wire.
+func (b *idleGuardedBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	if b.idle {
+		b.mu.Unlock()
+		return 0, errUpstreamIdleTimeout
+	}
+	b.reading = true
+	b.timer = time.AfterFunc(b.timeout, func() {
+		b.mu.Lock()
+		b.idle = true
+		b.mu.Unlock()
+		// Unblock the read that is waiting on the wire.
+		_ = b.body.Close()
+	})
+	b.mu.Unlock()
+
+	n, err := b.body.Read(p)
+
+	b.mu.Lock()
+	b.reading = false
+	// A concurrent Close may already have stopped and dropped the timer.
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+	b.mu.Unlock()
+
+	if b.tripped() {
+		return n, errUpstreamIdleTimeout
+	}
+	return n, err
+}
+
+func (b *idleGuardedBody) tripped() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.idle
+}
+
+func (b *idleGuardedBody) Close() error {
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+	b.mu.Unlock()
+	return b.body.Close()
+}
 
 // errUpstreamFirstPacketTimeout replaces the raw context error when the
 // first-packet timer fires. Returning context.Canceled would be a lie the
@@ -89,7 +223,7 @@ func (s *headerDeadlineState) didTimeOut() bool {
 func doUpstreamHTTP(ctx context.Context, client *http.Client, request *http.Request) (*http.Response, error) {
 	timeout := firstPacketTimeoutFrom(ctx)
 	if timeout <= 0 {
-		return client.Do(request)
+		return guardUpstreamIdleClient(client, request)
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)
 	request = request.WithContext(attemptCtx)
@@ -112,5 +246,29 @@ func doUpstreamHTTP(ctx context.Context, client *http.Client, request *http.Requ
 	// The cancel is deliberately not called on the success path: the body still
 	// streams under attemptCtx, which is released when the request's own
 	// context ends.
-	return response, nil
+	return guardUpstreamIdle(response), nil
+}
+
+// guardUpstreamIdleClient sends a request whose response body will be guarded:
+// the callers that do not go through doUpstreamHTTP (usage probes, OAuth
+// exchanges, alert webhooks) still get the idle guard.
+func guardUpstreamIdleClient(client *http.Client, request *http.Request) (*http.Response, error) {
+	response, err := upstreamHTTPClient(client).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	return guardUpstreamIdle(response), nil
+}
+
+// guardUpstreamIdle makes sure a response whose headers already arrived cannot
+// then go silent forever. Every caller that reads an upstream body goes through
+// here, so a vendor that answers and then stalls is reported as a provider
+// fault (errUpstreamIdleTimeout) instead of hanging the turn until the client
+// gives up, with the connection still occupied on this end.
+func guardUpstreamIdle(response *http.Response) *http.Response {
+	if response == nil || response.Body == nil || response.Body == http.NoBody {
+		return response
+	}
+	response.Body = newIdleGuardedBody(response.Body, upstreamIdleTimeout)
+	return response
 }

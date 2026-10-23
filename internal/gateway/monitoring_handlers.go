@@ -1,0 +1,1047 @@
+package gateway
+
+// The monitoring center HTTP API (/__monitor/*). Everything here is admin-only
+// and read-mostly: the console renders the account matrix, the event stream and
+// the alert list from these endpoints. Credentials never leave the process —
+// channel secrets come back as *Set booleans only.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
+)
+
+const (
+	// monitorOverviewWindow is the traffic window the summary cards cover.
+	monitorOverviewWindow = 24 * time.Hour
+	// monitorAlertScanLimit bounds the one firing-alert read that feeds both the
+	// overview counters and the per-account alert badges.
+	monitorAlertScanLimit = 500
+	// monitorProbeTimeout caps the two action endpoints, which reach upstream
+	// vendors (a refresh, a quota read).
+	monitorProbeTimeout = 15 * time.Second
+	// monitorRelatedEvents is how many events one alert detail pulls.
+	monitorRelatedEvents = 10
+)
+
+type monitorChannelView struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	MinSeverity string `json:"minSeverity"`
+	Enabled     bool   `json:"enabled"`
+	WebhookSet  bool   `json:"webhookSet,omitempty"`
+	SecretSet   bool   `json:"secretSet,omitempty"`
+	TokenSet    bool   `json:"tokenSet,omitempty"`
+	ChatID      string `json:"chatId,omitempty"`
+}
+
+// channelView is the only shape a channel ever takes on the wire: GET, POST and
+// PUT all go through it, so a response cannot leak a webhook token by being a
+// different code path.
+func channelView(channel monitoring.Channel) monitorChannelView {
+	return monitorChannelView{
+		ID: channel.ID, Type: channel.Type, Name: channel.Name,
+		MinSeverity: string(channel.MinSeverity), Enabled: channel.Enabled,
+		WebhookSet: strings.TrimSpace(channel.Config.Webhook) != "",
+		SecretSet:  strings.TrimSpace(channel.Config.Secret) != "",
+		TokenSet:   strings.TrimSpace(channel.Config.BotToken) != "",
+		ChatID:     strings.TrimSpace(channel.Config.ChatID),
+	}
+}
+
+func channelViews(channels []monitoring.Channel) []monitorChannelView {
+	out := make([]monitorChannelView, 0, len(channels))
+	for _, channel := range channels {
+		out = append(out, channelView(channel))
+	}
+	return out
+}
+
+type monitorAccountView struct {
+	ProviderID    string                     `json:"providerId"`
+	Name          string                     `json:"name"`
+	Vendor        string                     `json:"vendor"`
+	AuthType      string                     `json:"authType"`
+	Disabled      bool                       `json:"disabled"`
+	HealthStatus  string                     `json:"healthStatus"`
+	Capabilities  monitoring.Capabilities    `json:"capabilities"`
+	ExpiresAt     string                     `json:"expiresAt,omitempty"`
+	Quota         *monitoring.QuotaSnapshot  `json:"quota,omitempty"`
+	Renewal       *monitoring.RenewalOutcome `json:"renewal,omitempty"`
+	ModelFailures int                        `json:"modelFailures"`
+	ActiveAlerts  int                        `json:"activeAlerts"`
+}
+
+type monitorOverviewView struct {
+	GeneratedAt string `json:"generatedAt"`
+	WindowHours int    `json:"windowHours"`
+	Requests    struct {
+		Total        int     `json:"total"`
+		Success      int     `json:"success"`
+		SuccessRate  float64 `json:"successRate"`
+		P95LatencyMs int64   `json:"p95LatencyMs"`
+		CostMicros   int64   `json:"costMicros"`
+	} `json:"requests"`
+	Accounts struct {
+		Total       int `json:"total"`
+		Subscribed  int `json:"subscribed"`
+		Unavailable int `json:"unavailable"`
+		Disabled    int `json:"disabled"`
+	} `json:"accounts"`
+	Firing struct {
+		Total int `json:"total"`
+		P0    int `json:"p0"`
+		P1    int `json:"p1"`
+		P2    int `json:"p2"`
+	} `json:"firing"`
+	Channels struct {
+		Total   int `json:"total"`
+		Enabled int `json:"enabled"`
+	} `json:"channels"`
+	CollectorLastSuccess string             `json:"collectorLastSuccess,omitempty"`
+	RecentEvents         []monitoring.Event `json:"recentEvents"`
+}
+
+// monitorGate is the shared preamble: admin session plus a store that can
+// persist monitoring state. Without the store the console gets 503 rather than
+// a panic on a nil interface.
+func (s *Server) monitorGate(w http.ResponseWriter, r *http.Request) (sessionIdentity, bool) {
+	identity, ok := s.requireAdmin(w, r)
+	if !ok {
+		return sessionIdentity{}, false
+	}
+	if s.monitoringStore == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "监控中心未启用")
+		return sessionIdentity{}, false
+	}
+	return identity, true
+}
+
+func (s *Server) handleMonitorOverview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	now := time.Now().UTC()
+	summary, err := s.monitoringStore.MonitorRequestSummary(now.Add(-monitorOverviewWindow), now)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取请求汇总失败")
+		return
+	}
+	view := monitorOverviewView{GeneratedAt: now.Format(time.RFC3339), WindowHours: 24}
+	view.Requests.Total = summary.Total
+	view.Requests.Success = summary.Success
+	view.Requests.P95LatencyMs = summary.P95LatencyMs
+	view.Requests.CostMicros = summary.CostMicros
+	if summary.Total > 0 {
+		view.Requests.SuccessRate = roundRatio(float64(summary.Success) / float64(summary.Total))
+	}
+
+	for _, provider := range s.monitorProviders() {
+		view.Accounts.Total++
+		if provider.Disabled {
+			view.Accounts.Disabled++
+		}
+		if providerHasExpiry(provider) {
+			view.Accounts.Subscribed++
+		}
+		if strings.EqualFold(provider.HealthStatus, "unavailable") {
+			view.Accounts.Unavailable++
+		}
+	}
+
+	firing := s.monitorFiringAlerts()
+	view.Firing.Total = len(firing)
+	for _, alert := range firing {
+		switch alert.Severity {
+		case monitoring.SeverityP0:
+			view.Firing.P0++
+		case monitoring.SeverityP1:
+			view.Firing.P1++
+		case monitoring.SeverityP2:
+			view.Firing.P2++
+		}
+	}
+
+	channels := monitoring.NewConfig(s.monitoringStore).Channels()
+	view.Channels.Total = len(channels)
+	for _, channel := range channels {
+		if channel.Enabled {
+			view.Channels.Enabled++
+		}
+	}
+	view.CollectorLastSuccess = s.monitoringStore.Setting("monitor_collector_last_success")
+
+	events, err := s.monitoringStore.QueryMonitorEvents(monitoring.EventQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取事件失败")
+		return
+	}
+	view.RecentEvents = events.Items
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleMonitorAccounts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	accounts := s.monitorAccountViews()
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "total": len(accounts)})
+}
+
+func (s *Server) handleMonitorAccount(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	for _, account := range s.monitorAccountViews() {
+		if account.ProviderID == providerID {
+			writeJSON(w, http.StatusOK, account)
+			return
+		}
+	}
+	writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+}
+
+// handleMonitorAccountRefresh renews one account's credential through the same
+// path a live request uses. A credential that is not inside its refresh window
+// reports renewed:false: rotating a refresh token early would spend a token that
+// still works, and several vendors invalidate the whole chain when one token is
+// presented twice.
+func (s *Server) handleMonitorAccountRefresh(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	if !providerHasExpiry(provider) {
+		writeOpenAIError(w, http.StatusBadRequest, "该账号没有可续期的登录凭证")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), monitorProbeTimeout)
+	defer cancel()
+	renewed, renewErr := s.renewCredentialForMonitor(ctx, provider)
+	result := map[string]any{
+		"ok":         renewErr == nil,
+		"providerId": provider.ID,
+		"vendor":     providerVendorKey(provider),
+		"renewed":    providerAccessToken(renewed) != providerAccessToken(provider),
+	}
+	if expiry := providerCredentialExpiry(renewed); !expiry.IsZero() {
+		result["expiresAt"] = expiry.UTC().Format(time.RFC3339)
+	}
+	if renewErr != nil {
+		// Only the classification crosses the wire; the upstream error may quote
+		// the token it failed on.
+		result["errorKind"] = classifyQuotaError(renewErr)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleMonitorQuotaRefresh forces one vendor usage read and persists it, so the
+// console can show a fresh number instead of the last sampled hour.
+func (s *Server) handleMonitorQuotaRefresh(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	if s.monitoringSrc == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "监控中心未启用")
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	if !providerHasQuotaHandler(provider) {
+		writeOpenAIError(w, http.StatusBadRequest, "该账号不支持额度查询")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), monitorProbeTimeout)
+	defer cancel()
+	snapshot, err := s.monitoringSrc.Quota(ctx, monitoring.ProviderObservation{
+		ID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
+	})
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "额度查询失败")
+		return
+	}
+	if snapshot == nil {
+		writeOpenAIError(w, http.StatusBadGateway, "额度查询没有返回结果")
+		return
+	}
+	if snapshot.Error != "" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "errorKind": snapshot.Error})
+		return
+	}
+	snapshot.Stale = false
+	sample := monitoring.MetricSample{
+		ProviderID: provider.ID, AuthExpiresAt: monitorSampleTime(providerCredentialExpiry(provider)),
+		HealthStatus: provider.HealthStatus, ObservedAt: snapshot.ObservedAt,
+	}
+	if snapshot.Available() {
+		ratio := snapshot.Ratio
+		sample.QuotaRatio = &ratio
+	}
+	_ = s.monitoringStore.UpsertProviderMetricSample(sample)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota": snapshot})
+}
+
+func (s *Server) handleMonitorEvents(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	from, to := monitorTimeRange(r, monitorOverviewWindow)
+	query := monitoring.EventQuery{
+		Kind:     strings.TrimSpace(r.URL.Query().Get("kind")),
+		Severity: strings.TrimSpace(r.URL.Query().Get("severity")),
+		From:     from, To: to,
+		Page: monitorIntParam(r, "page", 1), PageSize: monitorIntParam(r, "pageSize", 50),
+	}
+	if target := strings.TrimSpace(r.URL.Query().Get("targetId")); target != "" {
+		query.TargetID = target
+		query.TargetType = monitoring.TargetProvider
+	}
+	page, err := s.monitoringStore.QueryMonitorEvents(query)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取事件失败")
+		return
+	}
+	writeJSONGzip(w, r, http.StatusOK, page)
+}
+
+func (s *Server) handleMonitorAlerts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	from, to := monitorTimeRange(r, 7*24*time.Hour)
+	query := monitoring.AlertQuery{
+		Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+		Disposition: strings.TrimSpace(r.URL.Query().Get("disposition")),
+		Severity:    strings.TrimSpace(r.URL.Query().Get("severity")),
+		Rule:        strings.TrimSpace(r.URL.Query().Get("rule")),
+		From:        from, To: to,
+		Page: monitorIntParam(r, "page", 1), PageSize: monitorIntParam(r, "pageSize", 50),
+	}
+	if target := strings.TrimSpace(r.URL.Query().Get("targetId")); target != "" {
+		query.TargetID = target
+		query.TargetType = monitoring.TargetProvider
+	}
+	page, err := s.monitoringStore.QueryMonitorAlerts(query)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取告警失败")
+		return
+	}
+	writeJSONGzip(w, r, http.StatusOK, page)
+}
+
+func (s *Server) handleMonitorAlertByID(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	id, ok := monitorPathID(w, r)
+	if !ok {
+		return
+	}
+	state, found, err := s.monitoringStore.MonitorAlertByID(id)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取告警失败")
+		return
+	}
+	if !found {
+		writeOpenAIError(w, http.StatusNotFound, "告警不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.monitorAlertView(state))
+}
+
+// monitorAlertAck and monitorAlertIgnore only accept a firing alert: a resolved
+// one has nothing left to acknowledge, and pretending otherwise would let a
+// stale click erase the record of how an incident was handled.
+func (s *Server) handleMonitorAlertAck(w http.ResponseWriter, r *http.Request) {
+	s.monitorDisposition(w, r, monitoring.DispositionAcknowledged, "acknowledged")
+}
+
+func (s *Server) handleMonitorAlertIgnore(w http.ResponseWriter, r *http.Request) {
+	s.monitorDisposition(w, r, monitoring.DispositionIgnored, "ignored")
+}
+
+func (s *Server) monitorDisposition(w http.ResponseWriter, r *http.Request, disposition, action string) {
+	identity, ok := s.monitorGate(w, r)
+	if !ok {
+		return
+	}
+	id, ok := monitorPathID(w, r)
+	if !ok {
+		return
+	}
+	state, found, err := s.monitoringStore.MonitorAlertByID(id)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取告警失败")
+		return
+	}
+	if !found {
+		writeOpenAIError(w, http.StatusNotFound, "告警不存在")
+		return
+	}
+	if state.Status != monitoring.StatusFiring {
+		writeOpenAIError(w, http.StatusConflict, "告警已结束，无需处置")
+		return
+	}
+	now := time.Now().UTC()
+	if err := s.monitoringStore.SetMonitorDisposition(id, disposition, now); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "处置告警失败")
+		return
+	}
+	// The acknowledgement belongs to the incident, not to a new event row: it
+	// lands in the latest event's timeline (spec §8.2).
+	if err := s.monitoringStore.AppendMonitorTimeline(state.Fingerprint, monitoring.TimelineEntry{
+		Action: action, Time: now, Actor: identity.Username,
+	}); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "记录处置历史失败")
+		return
+	}
+	updated, _, err := s.monitoringStore.MonitorAlertByID(id)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取告警失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.monitorAlertView(updated))
+}
+
+func (s *Server) handleMonitorChannels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, channelViews(monitoring.NewConfig(s.monitoringStore).Channels()))
+}
+
+type monitorChannelInput struct {
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	MinSeverity string `json:"minSeverity"`
+	Enabled     *bool  `json:"enabled"`
+	Webhook     string `json:"webhook"`
+	Secret      string `json:"secret"`
+	BotToken    string `json:"botToken"`
+	ChatID      string `json:"chatId"`
+}
+
+func (s *Server) handleMonitorCreateChannel(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	var input monitorChannelInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "渠道配置格式错误")
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	channels := cfg.Channels()
+	if _, known := monitoring.AdapterFor(strings.TrimSpace(input.Type)); !known {
+		writeOpenAIError(w, http.StatusBadRequest, "不支持的渠道类型")
+		return
+	}
+	channel := monitoring.Channel{
+		ID:          "ch-" + randomHex(6),
+		Type:        strings.TrimSpace(input.Type),
+		Name:        strings.TrimSpace(input.Name),
+		MinSeverity: monitorSeverity(input.MinSeverity, monitoring.SeverityP1),
+		Enabled:     input.Enabled == nil || *input.Enabled,
+		Config: monitoring.ChannelConfig{
+			Webhook: strings.TrimSpace(input.Webhook), Secret: strings.TrimSpace(input.Secret),
+			BotToken: strings.TrimSpace(input.BotToken), ChatID: strings.TrimSpace(input.ChatID),
+		},
+	}
+	if channel.Name == "" {
+		channel.Name = channel.Type
+	}
+	channels = append(channels, channel)
+	if err := cfg.SaveChannels(channels); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "保存渠道失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, channelView(channel))
+}
+
+func (s *Server) handleMonitorUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	channelID := strings.TrimSpace(r.PathValue("id"))
+	var input monitorChannelInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "渠道配置格式错误")
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	channels := cfg.Channels()
+	index := monitorChannelIndex(channels, channelID)
+	if index < 0 {
+		writeOpenAIError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	channel := channels[index]
+	// id and type are immutable: the type decides which adapter parses the
+	// payload, and a push row already refers to this id.
+	if name := strings.TrimSpace(input.Name); name != "" {
+		channel.Name = name
+	}
+	channel.MinSeverity = monitorSeverity(input.MinSeverity, channel.MinSeverity)
+	if input.Enabled != nil {
+		channel.Enabled = *input.Enabled
+	}
+	if chatID := strings.TrimSpace(input.ChatID); chatID != "" {
+		channel.Config.ChatID = chatID
+	}
+	// A blank secret means "keep the stored one", so the console can render an
+	// empty password field without wiping a working webhook.
+	if webhook := strings.TrimSpace(input.Webhook); webhook != "" {
+		channel.Config.Webhook = webhook
+	}
+	if secret := strings.TrimSpace(input.Secret); secret != "" {
+		channel.Config.Secret = secret
+	}
+	if token := strings.TrimSpace(input.BotToken); token != "" {
+		channel.Config.BotToken = token
+	}
+	channels[index] = channel
+	if err := cfg.SaveChannels(channels); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "保存渠道失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, channelView(channel))
+}
+
+func (s *Server) handleMonitorDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	channelID := strings.TrimSpace(r.PathValue("id"))
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	channels := cfg.Channels()
+	index := monitorChannelIndex(channels, channelID)
+	if index < 0 {
+		writeOpenAIError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	channels = append(channels[:index], channels[index+1:]...)
+	if err := cfg.SaveChannels(channels); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "删除渠道失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, channelViews(channels))
+}
+
+func (s *Server) handleMonitorTestChannel(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	channelID := strings.TrimSpace(r.PathValue("id"))
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	channel, found := monitorChannelByID(cfg.Channels(), channelID)
+	if !found {
+		writeOpenAIError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	adapter, known := monitoring.AdapterFor(channel.Type)
+	if !known {
+		writeOpenAIError(w, http.StatusBadRequest, "不支持的渠道类型")
+		return
+	}
+	result := s.monitorSend(r.Context(), adapter, channel, monitoring.Notification{
+		Kind:     "test",
+		Severity: monitoring.SeverityInfo,
+		Title:    "监控中心测试消息",
+		Markdown: "这是一条来自监控中心的测试消息，收到即表示渠道配置正确。",
+		At:       time.Now().UTC(),
+	})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMonitorRetryPush(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	eventID, ok := monitorPathEventID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ChannelID string `json:"channelId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "渠道参数格式错误")
+		return
+	}
+	event, found, err := s.monitoringStore.MonitorEventByID(eventID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "读取事件失败")
+		return
+	}
+	if !found {
+		writeOpenAIError(w, http.StatusNotFound, "事件不存在")
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	channel, exists := monitorChannelByID(cfg.Channels(), strings.TrimSpace(body.ChannelID))
+	if !exists {
+		writeOpenAIError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	adapter, known := monitoring.AdapterFor(channel.Type)
+	if !known {
+		writeOpenAIError(w, http.StatusBadRequest, "不支持的渠道类型")
+		return
+	}
+	// Rebuild the original message from the alert state so a retry reads exactly
+	// like the send that failed.
+	state, hasState := s.monitorStateForFingerprint(event.Fingerprint)
+	if !hasState {
+		state = monitoring.AlertState{
+			Fingerprint: event.Fingerprint, Severity: event.Severity,
+			TargetType: event.TargetType, TargetID: event.TargetID, TargetName: event.TargetName,
+		}
+	}
+	message := monitoring.BuildNotification(state, event, cfg.Dispatch().BaseURL, cfg.Dispatch().Location())
+	result := s.monitorSend(r.Context(), adapter, channel, message)
+	push := monitoring.EventPush{
+		EventID: eventID, ChannelID: channel.ID, Attempts: 1,
+		Status: monitoring.PushSent, UpdatedAt: time.Now().UTC(),
+	}
+	if errorText, _ := result["error"].(string); errorText != "" {
+		push.Status = monitoring.PushFailed
+		push.LastError = errorText
+	}
+	if err := s.monitoringStore.UpsertMonitorEventPush(push); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "记录推送失败")
+		return
+	}
+	pushes, err := s.monitoringStore.ListMonitorEventPushes(eventID)
+	if err == nil {
+		if status, firstError, aggregate := monitoring.AggregatePushStatus(pushes); aggregate {
+			_ = s.monitoringStore.UpdateMonitorEventPush(eventID, status, firstError)
+		}
+	}
+	if refreshed, found, err := s.monitoringStore.MonitorEventByID(eventID); err == nil && found {
+		result["pushStatus"] = refreshed.PushStatus
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMonitorDispatch(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, monitoring.NewConfig(s.monitoringStore).Dispatch())
+}
+
+func (s *Server) handleMonitorUpdateDispatch(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	current := cfg.Dispatch()
+	var input struct {
+		DigestMinutes  *int    `json:"digestMinutes"`
+		QuietEnabled   *bool   `json:"quietEnabled"`
+		QuietStart     *string `json:"quietStart"`
+		QuietEnd       *string `json:"quietEnd"`
+		RecoveryNotify *bool   `json:"recoveryNotify"`
+		Timezone       *string `json:"timezone"`
+		BaseURL        *string `json:"baseUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "推送配置格式错误")
+		return
+	}
+	updated := current
+	if input.DigestMinutes != nil {
+		if *input.DigestMinutes <= 0 || *input.DigestMinutes > 24*60 {
+			writeOpenAIError(w, http.StatusBadRequest, "合并窗口需在 1 到 1440 分钟之间")
+			return
+		}
+		updated.DigestMinutes = *input.DigestMinutes
+	}
+	if input.QuietEnabled != nil {
+		updated.QuietEnabled = *input.QuietEnabled
+	}
+	if input.QuietStart != nil {
+		updated.QuietStart = strings.TrimSpace(*input.QuietStart)
+	}
+	if input.QuietEnd != nil {
+		updated.QuietEnd = strings.TrimSpace(*input.QuietEnd)
+	}
+	for _, clock := range []string{updated.QuietStart, updated.QuietEnd} {
+		if clock != "" {
+			if _, err := time.Parse("15:04", clock); err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "静默时间格式应为 HH:MM")
+				return
+			}
+		}
+	}
+	if input.RecoveryNotify != nil {
+		updated.RecoveryNotify = *input.RecoveryNotify
+	}
+	if input.Timezone != nil {
+		zone := strings.TrimSpace(*input.Timezone)
+		if zone != "" {
+			if _, err := time.LoadLocation(zone); err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "无效时区")
+				return
+			}
+		}
+		updated.Timezone = zone
+	}
+	if updated.Timezone == "" {
+		updated.Timezone = "Asia/Shanghai"
+	}
+	if input.BaseURL != nil {
+		updated.BaseURL = strings.TrimRight(strings.TrimSpace(*input.BaseURL), "/")
+	}
+	if err := cfg.SaveDispatch(updated); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "保存推送配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg.Dispatch())
+}
+
+// ---- shared pieces ---------------------------------------------------------
+
+// monitorSend delivers one notification and reports the outcome the console
+// shows. Adapter errors are already scrubbed of the channel's own secrets by
+// the adapters in internal/monitoring.
+func (s *Server) monitorSend(ctx context.Context, adapter monitoring.ChannelAdapter, channel monitoring.Channel, message monitoring.Notification) map[string]any {
+	sendCtx, cancel := context.WithTimeout(ctx, monitorProbeTimeout)
+	defer cancel()
+	started := time.Now()
+	err := adapter.Send(sendCtx, channel, message)
+	result := map[string]any{
+		"ok":        err == nil,
+		"channelId": channel.ID,
+		"latencyMs": time.Since(started).Milliseconds(),
+	}
+	if err != nil {
+		result["status"] = monitoring.PushFailed
+		result["error"] = truncateMonitorError(err.Error())
+		return result
+	}
+	result["status"] = monitoring.PushSent
+	return result
+}
+
+func truncateMonitorError(text string) string {
+	runes := []rune(text)
+	if len(runes) > 500 {
+		return string(runes[:500]) + "..."
+	}
+	return text
+}
+
+func (s *Server) monitorProviders() []domain.Provider {
+	state := s.router.State()
+	out := make([]domain.Provider, 0, len(state.Providers))
+	for _, provider := range state.Providers {
+		if provider.Deleted {
+			continue
+		}
+		// The persisted health column only says what the last probe wrote; a live
+		// upstream failure lives in the in-memory availability tracker (the
+		// console overlays it the same way). Without this the account matrix would
+		// still say 未检测 while the Providers page shows 异常.
+		s.applyProviderAvailability(&provider)
+		out = append(out, provider)
+	}
+	return out
+}
+
+func (s *Server) monitorFiringAlerts() []monitoring.AlertView {
+	page, err := s.monitoringStore.QueryMonitorAlerts(monitoring.AlertQuery{
+		Status: monitoring.StatusFiring, Page: 1, PageSize: monitorAlertScanLimit,
+	})
+	if err != nil {
+		return nil
+	}
+	return page.Items
+}
+
+func (s *Server) monitorAccountViews() []monitorAccountView {
+	now := time.Now().UTC()
+	samples := map[string]monitoring.MetricSample{}
+	if latest, err := s.monitoringStore.LatestProviderMetricSamples(); err == nil {
+		samples = latest
+	}
+	staleAfter := time.Duration(monitoring.NewConfig(s.monitoringStore).Probe().QuotaStaleMinutes) * time.Minute
+	alertCounts := map[string]int{}
+	for _, alert := range s.monitorFiringAlerts() {
+		if alert.TargetType == monitoring.TargetProvider {
+			alertCounts[alert.TargetID]++
+		}
+	}
+	providers := s.monitorProviders()
+	out := make([]monitorAccountView, 0, len(providers))
+	for _, provider := range providers {
+		view := monitorAccountView{
+			ProviderID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
+			AuthType: provider.AuthType, Disabled: provider.Disabled,
+			HealthStatus: provider.HealthStatus,
+			Capabilities: monitoring.Capabilities{
+				OAuth:   providerHasExpiry(provider),
+				Quota:   providerHasQuotaHandler(provider),
+				Models:  providerHasModelSync(provider),
+				Checkin: providerHasCheckin(provider),
+			},
+			ActiveAlerts:  alertCounts[provider.ID],
+			ModelFailures: s.monitorModelFailures(provider.ID),
+		}
+		if expiry := providerCredentialExpiry(provider); !expiry.IsZero() {
+			view.ExpiresAt = expiry.UTC().Format(time.RFC3339)
+		}
+		if renewal, err := s.monitoringStore.RecentRenewalOutcomes(provider.ID, 10); err == nil && renewal.Known {
+			value := renewal
+			view.Renewal = &value
+		}
+		if sample, ok := samples[provider.ID]; ok {
+			view.Quota = monitorQuotaFromSample(sample, staleAfter, now)
+		}
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (s *Server) monitorModelFailures(providerID string) int {
+	if s.monitoringSrc == nil {
+		return 0
+	}
+	return s.monitoringSrc.modelFailureCount(providerID)
+}
+
+// monitorQuotaFromSample turns the last sampled row into the snapshot the
+// console renders. An absent ratio stays absent: "unknown" and "zero left" are
+// different answers and must not look the same.
+func monitorQuotaFromSample(sample monitoring.MetricSample, staleAfter time.Duration, now time.Time) *monitoring.QuotaSnapshot {
+	stale := sample.ObservedAt.IsZero() || (staleAfter > 0 && now.Sub(sample.ObservedAt) > staleAfter)
+	snapshot := &monitoring.QuotaSnapshot{
+		ObservedAt: sample.ObservedAt,
+		Error:      sample.SourceError,
+		Ratio:      -1,
+		Stale:      stale,
+	}
+	if sample.QuotaRatio != nil {
+		snapshot.Ratio = *sample.QuotaRatio
+		snapshot.Error = ""
+	}
+	if snapshot.Error == "" && snapshot.Ratio < 0 {
+		return nil
+	}
+	return snapshot
+}
+
+func (s *Server) monitorAlertView(state monitoring.AlertState) map[string]any {
+	ids, err := s.monitoringStore.MonitorEventIDsByFingerprint(state.Fingerprint, monitorRelatedEvents)
+	if err != nil {
+		ids = []int64{}
+	}
+	view := monitoring.AlertView{AlertState: state, RelatedEventIDs: ids}
+	if len(ids) > 0 {
+		if event, found, err := s.monitoringStore.MonitorEventByID(ids[0]); err == nil && found {
+			view.LatestEventID = event.ID
+			view.PushStatus = event.PushStatus
+			view.PushError = event.PushError
+			return map[string]any{"alert": view, "latestEvent": event}
+		}
+	}
+	return map[string]any{"alert": view, "latestEvent": nil}
+}
+
+func (s *Server) monitorStateForFingerprint(fingerprint string) (monitoring.AlertState, bool) {
+	if fingerprint == "" {
+		return monitoring.AlertState{}, false
+	}
+	states, err := s.monitoringStore.LoadMonitorStates()
+	if err != nil {
+		return monitoring.AlertState{}, false
+	}
+	for _, state := range states {
+		if state.Fingerprint == fingerprint {
+			return state, true
+		}
+	}
+	return monitoring.AlertState{}, false
+}
+
+// renewCredentialForMonitor routes a forced renewal to the vendor's own
+// refresh path. Every one of them is the same function a live request uses, so
+// the token rotation rules (and the per-token locks) are never duplicated here.
+func (s *Server) renewCredentialForMonitor(ctx context.Context, provider domain.Provider) (domain.Provider, error) {
+	switch provider.AuthType {
+	case domain.AuthTypeClaudeOAuth:
+		// Claude's stored expiry is the refresh-token lifetime; the console's
+		// explicit request is the one case that must renew regardless of it.
+		return s.ensureFreshClaudeTokenWithin(provider, 365*24*time.Hour)
+	case domain.AuthTypeChatGPTOAuth:
+		return s.ensureFreshChatGPTToken(provider)
+	case domain.AuthTypeCursorOAuth:
+		return s.ensureFreshCursorToken(provider)
+	case domain.AuthTypeQoderPAT, domain.AuthTypeQoderCN:
+		return s.ensureFreshQoderToken(provider)
+	case domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
+		return s.ensureFreshWorkBuddyToken(provider)
+	case domain.AuthTypeTraeCN, domain.AuthTypeTraeGlobal:
+		return s.ensureFreshTraeToken(provider)
+	default:
+		return provider, fmt.Errorf("provider %q has no renewable credential", provider.ID)
+	}
+}
+
+func providerAccessToken(p domain.Provider) string {
+	switch {
+	case p.ClaudeOAuth != nil:
+		return p.ClaudeOAuth.AccessToken
+	case p.ChatGPTOAuth != nil:
+		return p.ChatGPTOAuth.AccessToken
+	case p.CursorOAuth != nil:
+		return p.CursorOAuth.AccessToken
+	case p.QoderPAT != nil:
+		return p.QoderPAT.AccessToken
+	case p.WorkBuddy != nil:
+		return p.WorkBuddy.AccessToken
+	case p.Trae != nil:
+		return p.Trae.AccessToken
+	}
+	return ""
+}
+
+func monitorChannelIndex(channels []monitoring.Channel, id string) int {
+	for index, channel := range channels {
+		if channel.ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func monitorChannelByID(channels []monitoring.Channel, id string) (monitoring.Channel, bool) {
+	if id == "" {
+		return monitoring.Channel{}, false
+	}
+	for _, channel := range channels {
+		if channel.ID == id {
+			return channel, true
+		}
+	}
+	return monitoring.Channel{}, false
+}
+
+func monitorSeverity(raw string, fallback monitoring.Severity) monitoring.Severity {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(monitoring.SeverityP0):
+		return monitoring.SeverityP0
+	case string(monitoring.SeverityP1):
+		return monitoring.SeverityP1
+	case string(monitoring.SeverityP2):
+		return monitoring.SeverityP2
+	case string(monitoring.SeverityInfo):
+		return monitoring.SeverityInfo
+	default:
+		return fallback
+	}
+}
+
+func monitorIntParam(r *http.Request, key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func monitorPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "无效的告警编号")
+		return 0, false
+	}
+	return id, true
+}
+
+func monitorPathEventID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("eventId")), 10, 64)
+	if err != nil || id <= 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "无效的事件编号")
+		return 0, false
+	}
+	return id, true
+}
+
+// monitorTimeRange reads either an explicit from/to pair or a relative range.
+func monitorTimeRange(r *http.Request, fallback time.Duration) (time.Time, time.Time) {
+	to := time.Now().UTC()
+	if raw := strings.TrimSpace(r.URL.Query().Get("to")); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			to = parsed.UTC()
+		}
+	}
+	from := to.Add(-fallback)
+	if raw := strings.TrimSpace(r.URL.Query().Get("from")); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			from = parsed.UTC()
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("range")); raw != "" {
+		if span, ok := monitorParseSpan(raw); ok {
+			from = to.Add(-span)
+		}
+	}
+	return from, to
+}
+
+func monitorParseSpan(raw string) (time.Duration, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if strings.HasSuffix(normalized, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(normalized, "d"))
+		if err == nil && days > 0 {
+			return time.Duration(days) * 24 * time.Hour, true
+		}
+	}
+	if strings.HasSuffix(normalized, "w") {
+		weeks, err := strconv.Atoi(strings.TrimSuffix(normalized, "w"))
+		if err == nil && weeks > 0 {
+			return time.Duration(weeks) * 7 * 24 * time.Hour, true
+		}
+	}
+	span, err := time.ParseDuration(normalized)
+	if err != nil || span <= 0 {
+		return 0, false
+	}
+	return span, true
+}
+
+func monitorSampleTime(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339)
+}
+
+func roundRatio(ratio float64) float64 {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return 0
+	}
+	return float64(int(ratio*10000+0.5)) / 10000
+}

@@ -119,7 +119,7 @@ func TestCooldownTTLFollowsUpstreamHint(t *testing.T) {
 	now := time.Now()
 	s := &Server{}
 	const soft = providerSoftUnavailableTTL
-	const hard = providerFailoverRecoveryInterval
+	const hard = providerQuotaRestFloor
 	cases := []struct {
 		name       string
 		hard       bool
@@ -129,10 +129,12 @@ func TestCooldownTTLFollowsUpstreamHint(t *testing.T) {
 	}{
 		{name: "soft without hint", hard: false, want: soft},
 		{name: "hard without hint", hard: true, want: hard},
-		{name: "soft retry-after shorter than floor stretches", hard: false, retryAfter: "1", want: soft},
+		// A vendor saying "come back in 1s" is telling the truth about its own
+		// throttle; the ladder sets the default rest, not a floor over the vendor.
+		{name: "soft retry-after shorter than the default wins", hard: false, retryAfter: "1", want: 1 * time.Second},
 		{name: "soft retry-after above the soft default wins", hard: false, retryAfter: "90", want: 90 * time.Second},
-		{name: "soft longer than hard default wins", hard: false, retryAfter: "300", want: 5 * time.Minute},
-		{name: "hard retry-after below the default keeps default", hard: true, retryAfter: "10", want: hard},
+		{name: "soft retry-after capped at the rate cap", hard: false, retryAfter: "3000", want: providerRateRestCap},
+		{name: "hard retry-after below the floor keeps the floor", hard: true, retryAfter: "10", want: hard},
 		{name: "hard retry-after longer wins", hard: true, retryAfter: "900", want: 15 * time.Minute},
 		{name: "absurd hint capped", hard: true, retryAfter: "86400", want: providerCooldownCap},
 		{
@@ -235,5 +237,39 @@ func TestFailoverWriterUpstreamHeader(t *testing.T) {
 	w.passthrough = true
 	if got := w.UpstreamHeader("Retry-After"); got != "" {
 		t.Fatalf("passthrough writer leaked %q", got)
+	}
+}
+
+// The rest follows the window that is actually spent: a weekly plan window at
+// 100% with the 5h window nearly empty must not be read as "reopens in 9m".
+func TestCooldownTTLUsesTheExhaustedClaudeWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	s := &Server{oauthUsageCache: newOAuthUsageCache()}
+	s.oauthUsageCache.set("claude:c2", ClaudeOAuthUsageReport{
+		Available: true,
+		FiveHour: &ClaudeOAuthUsageBucket{
+			Utilization: 5,
+			ResetsAt:    now.Add(9 * time.Minute).UTC().Format(time.RFC3339),
+		},
+		SevenDay: &ClaudeOAuthUsageBucket{
+			Utilization: 100,
+			ResetsAt:    now.Add(6 * 24 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	})
+	ttl := s.cooldownTTL("c2", "", []byte(`{"error":{"message":"usage limit"}}`), true, now)
+	if ttl != providerCooldownCap {
+		t.Fatalf("ttl = %v, want the capped wait for the exhausted weekly window", ttl)
+	}
+}
+
+// A vendor's own Retry-After is the truth about its throttle: a short one is
+// neither stretched to the ladder's default nor left to replace a longer rest.
+func TestCooldownTTLHonoursAShortRetryAfter(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	s := &Server{}
+	if ttl := s.cooldownTTL("short", "2", nil, false, now); ttl != 2*time.Second {
+		t.Fatalf("ttl = %v, want the vendor's 2s", ttl)
 	}
 }

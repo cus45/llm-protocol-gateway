@@ -734,6 +734,7 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	defer cancel()
 	renewed, err := traeRenew(ctx, site, current, "")
 	if err != nil {
+		s.recordRenewal(provider, "trae", time.Now(), err)
 		if traeErrorMeansSignIn(err) {
 			return provider, fmt.Errorf("Trae 登录已失效，请重新登录：%w", err)
 		}
@@ -749,6 +750,7 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	if err != nil {
 		return provider, err
 	}
+	s.recordRenewal(updated, "trae", time.Now(), nil)
 	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 	if err := s.persistProviderOAuth(updated); err != nil {
 		return updated, err
@@ -1835,7 +1837,7 @@ func (s *Server) proxyTraeChat(w http.ResponseWriter, r *http.Request, provider 
 	if !stream && response.StatusCode < 400 {
 		_ = forcedStreamAsCompletion(response, model, workBuddyStreamAsCompletion)
 	}
-	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
+	status, usage, responseBody, err := writePassThroughResponse(w, response, stream, usageStreamOpenAI, ParseOpenAIUsage, openAIChatStreamInterrupter{model: model})
 	if err == nil && sendErr != nil && status >= 400 {
 		// Trae's own reason is what the request log should carry, not the
 		// writer's success at moving its body along.

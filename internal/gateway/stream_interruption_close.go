@@ -1,9 +1,9 @@
 package gateway
 
 import (
+	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -13,36 +13,14 @@ import (
 // is never presented as a finished one — and, when nothing visible was written,
 // report the turn as the interruption it was so a backup account can take over.
 
-// isUpstreamStreamInterruptedReader reports whether r ended because the
-// upstream dropped. A live SSE response has no Content-Length, so the transport
-// cannot say the body was truncated; net/http leaves the length negative until
-// the reader reaches the end, and only sets it after a complete body, which is
-// when the converter saw the closing event anyway.
+// isUpstreamStreamInterruptedReader reports whether a converter's read of the
+// upstream ended because the upstream dropped. A live SSE response has no
+// Content-Length, so the transport cannot say the body was truncated; only the
+// read error can. io.EOF is the normal end of a body — the closing frame is
+// what decides completeness (see streamEndReader) — while io.ErrUnexpectedEOF
+// and any other error mean the bytes stopped early.
 func isUpstreamStreamInterruptedReader(r countingReader) bool {
-	return r.err == io.EOF
-}
-
-// closesUpstreamStream reports whether an SSE body ended with the closing frame
-// of its protocol, the only mark a stream carries that it was complete:
-// [DONE] for Chat, response.completed/incomplete for Responses, message_stop
-// for Anthropic, response.completed for Codex Chat (a Chat body shaped as a
-// Responses event). A body cut mid-frame keeps its partial tail, which matches
-// none of them.
-func closesUpstreamStream(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	tail := body
-	if len(tail) > 4096 {
-		tail = tail[len(tail)-4096:]
-	}
-	text := string(tail)
-	for _, marker := range []string{"response.completed", "response.incomplete", "message_stop", "response.failed", "[DONE]"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
+	return r.err != nil && !errors.Is(r.err, io.EOF)
 }
 
 // newUpstreamStreamInterruption wraps a scanner error from a stream the
@@ -75,32 +53,27 @@ func closeInterruptedChatStream(
 		// Nothing a client could keep: do not pass off silence as an answer.
 		return interrupted
 	}
-	finishReason := mapClaudeStopReasonToOpenAI(*stopReason)
-	if finishReason == "" || finishReason == "stop" {
-		finishReason = "length"
-	}
-	finalChunk := map[string]any{
-		"id":      chunkID,
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []map[string]any{{
-			"index":         0,
-			"delta":         map[string]any{},
-			"finish_reason": finishReason,
-		}},
-	}
+	// A cut turn carries no finish reason at all: "length" and [DONE] together
+	// tell the client the model finished its answer, and a client that trusts
+	// them keeps half a sentence. The usage the stream reported stays with the
+	// answer — a cut costs what it spent — and the turn then ends as the
+	// protocol's error frame, as magpie ends a severed reply.
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheTokens > 0 {
-		finalChunk["usage"] = claudeUsageToOpenAIUsage(usage, map[string]any{
-			"cache_read_input_tokens":     usage.CacheTokens,
-			"cache_creation_input_tokens": usage.CacheWriteTokens,
+		_ = writeOpenAISSEChunk(w, map[string]any{
+			"id":      chunkID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": nil}},
+			"usage": claudeUsageToOpenAIUsage(usage, map[string]any{
+				"cache_read_input_tokens":     usage.CacheTokens,
+				"cache_creation_input_tokens": usage.CacheWriteTokens,
+			}),
 		})
 	}
-	if err := writeOpenAISSEChunk(w, finalChunk); err != nil {
-		return err
-	}
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	writeChatStreamFailure(w, model, streamCutMessage)
 	_ = sentRole
+	_ = stopReason
 	return interrupted
 }
 
@@ -143,10 +116,16 @@ func closeInterruptedClaudeStream(w http.ResponseWriter, turn claudeInterruptedT
 			return err
 		}
 	}
-	if err := writeClaudeSSE(w, "message_delta", map[string]any{
-		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": "max_tokens", "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": usage.OutputTokens},
+	// The turn ends as an error, not as a finished answer: stop_reason
+	// max_tokens says the model chose to stop, and a client that trusts it keeps
+	// half a sentence as the whole of it. Magpie sends the protocol's error event
+	// for a cut reply (streamFailure, gateway.go:4940).
+	if err := writeClaudeSSE(w, "error", map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "api_error",
+			"message": streamCutMessage,
+		},
 	}); err != nil {
 		return err
 	}
@@ -183,17 +162,28 @@ func closeInterruptedChatToResponsesStream(state *chatToResponsesStreamState, by
 	if err := state.ensureResponseCreated(); err != nil {
 		return err
 	}
-	return writeResponsesSSEEvent(state.w, "response.incomplete", map[string]any{
-		"type":            "response.incomplete",
+	// The frame tells the client the turn stopped early; the interruption is
+	// reported either way, so the loop and the logs never read a cut turn as a
+	// finished one.
+	// response.failed, not response.incomplete: "incomplete" is what a model
+	// reports when it stopped on purpose, and a client keeps it as the answer.
+	if err := writeResponsesSSEEvent(state.w, "response.failed", map[string]any{
+		"type":            "response.failed",
 		"sequence_number": state.nextSeq(),
 		"response": map[string]any{
-			"id":                 state.responseID,
-			"object":             "response",
-			"model":              state.model,
-			"status":             "incomplete",
-			"incomplete_details": map[string]any{"reason": "upstream_stream_interrupted"},
+			"id":     state.responseID,
+			"object": "response",
+			"model":  state.model,
+			"status": "failed",
+			"error": map[string]any{
+				"code":    "server_error",
+				"message": streamCutMessage,
+			},
 		},
-	})
+	}); err != nil {
+		return interrupted
+	}
+	return interrupted
 }
 
 // closeInterruptedResponsesToChatStream ends a Chat stream converted from
@@ -203,19 +193,47 @@ func closeInterruptedResponsesToChatStream(w http.ResponseWriter, chunkID, model
 	if !*sawAny || (!*textSeen && !hasToolCall) {
 		return interrupted
 	}
-	_ = roleSent
-	finishReason := "length"
-	if hasToolCall {
-		finishReason = "tool_calls"
+	// A cut turn is an error, not a finish reason: "length" plus [DONE] reads as
+	// the model having finished, and the half sentence becomes the answer. The
+	// usage the stream reported stays with it.
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheTokens > 0 {
+		_ = writeOpenAISSEChunk(w, map[string]any{
+			"id":      chunkID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": nil}},
+			"usage": map[string]any{
+				"prompt_tokens":     usage.InputTokens,
+				"completion_tokens": usage.OutputTokens,
+				"total_tokens":      usage.InputTokens + usage.OutputTokens,
+			},
+		})
 	}
-	_ = writeOpenAISSEChunk(w, map[string]any{
-		"id":      chunkID,
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   model,
-		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}},
-	})
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	_ = usage
+	writeChatStreamFailure(w, model, streamCutMessage)
+	_ = roleSent
+	_ = hasToolCall
 	return interrupted
 }
+
+// cleanEOFInterruption reports the stream a converter's reads ended as an
+// interruption when the upstream stopped at a clean EOF without its protocol's
+// closing frame. A client sees a truncated answer as a finished one otherwise:
+// a live SSE response has no Content-Length to disagree with, so the closing
+// frame is the only evidence the answer was whole. The converter supplies that
+// verdict from what it saw, since it alone knows which frame closes its
+// upstream's stream.
+func cleanEOFInterruption(r countingReader, closed bool) bool {
+	if r.err == nil || !errors.Is(r.err, io.EOF) {
+		// Nothing read, or a read that failed: isUpstreamStreamInterruptedReader
+		// is the verdict.
+		return false
+	}
+	return r.n > 0 && !closed
+}
+
+// errStreamWithoutClosingFrame stands in for the read error of a body that
+// ended cleanly at EOF without the closing frame that would have made it whole:
+// there was no error, and the missing frame is the one fact that says the
+// answer stopped short.
+var errStreamWithoutClosingFrame = errors.New("upstream stream ended without its closing frame")

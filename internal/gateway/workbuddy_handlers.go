@@ -91,8 +91,7 @@ func (s *Server) handleWorkBuddyUsage(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	site, ok := workBuddySiteForAuthType(provider.AuthType)
-	if !ok || provider.WorkBuddy == nil {
+	if !isWorkBuddyProvider(provider) || provider.WorkBuddy == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"error": "WorkBuddy 尚未登录", "windows": []any{}})
 		return
 	}
@@ -107,12 +106,8 @@ func (s *Server) handleWorkBuddyUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	quota := workBuddyQuotaFor(ctx, site, *refreshed.WorkBuddy)
+	quota := s.workBuddyQuota(ctx, refreshed)
 	view := s.checkinViewFor(refreshed)
 	quota.Checkin = &view
-	// The refresh may have rotated the token; keep the stored one current.
-	if refreshed.WorkBuddy.AccessToken != provider.WorkBuddy.AccessToken {
-		_ = s.persistProviderOAuth(refreshed)
-	}
 	writeJSON(w, http.StatusOK, quota)
 }

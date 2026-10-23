@@ -2955,19 +2955,41 @@ function App() {
     }
   }
 
+  // Anthropic's loopback callback only works when the browser and the gateway
+  // share a machine. A console opened over a LAN or public address is finished
+  // by pasting the code back instead — otherwise the redirect lands on whatever
+  // gateway happens to answer localhost on the user's own computer.
+  function claudeOAuthCanUseLocalhostCallback() {
+    const host = window.location.hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  }
+
   async function startClaudeOAuthConnect(providerId: string = editingProviderID) {
     if (!providerId) return;
     setClaudeOAuthBusy(true);
     setClaudeOAuthError('');
+    const mode = claudeOAuthCanUseLocalhostCallback() ? 'localhost' : 'manual';
     try {
       const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerId)}/claude-oauth/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'localhost' }),
+        body: JSON.stringify({ mode }),
       });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json() as { authUrl: string; state: string; flowId?: string; mode?: string; instructions?: string };
       setClaudeOAuthState(data.state);
+      if (data.mode === 'manual') {
+        setClaudeOAuthFlowId('');
+        setClaudeOAuthCallbackHint('授权完成后，浏览器会停在 Anthropic 的回调页；把页面给出的 code（或 code#state）粘贴到下面即可。');
+        window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+        try {
+          await navigator.clipboard.writeText(data.authUrl);
+          showToast('请在授权完成后，把回调页上的 code 粘贴到下方');
+        } catch {
+          showToast('已打开 Claude 授权页面');
+        }
+        return;
+      }
       setClaudeOAuthCallbackHint(data.instructions || '');
       if (data.flowId) setClaudeOAuthFlowId(data.flowId);
       // window.open 传 noopener/noreferrer 时规范规定返回值恒为 null（无论是否

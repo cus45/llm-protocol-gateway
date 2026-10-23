@@ -162,6 +162,20 @@ func (s *Store) UpdateScheduledTaskSchedule(id, lastRunAt, nextRunAt string) err
 	return err
 }
 
+// UpdateScheduledTaskProviders writes the pruned provider list. The keeper
+// calls it when a provider was deleted, possibly while a batch is writing back
+// timestamps, so it touches only this column (plus the enabled flag that goes
+// with an empty list) instead of replacing the whole row.
+func (s *Store) UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool) error {
+	enabledValue := 0
+	if enabled {
+		enabledValue = 1
+	}
+	_, err := s.db.Exec(`UPDATE scheduled_tasks SET provider_ids = ?, enabled = ? WHERE id = ?`,
+		encodeProviderIDList(providerIDs), enabledValue, strings.TrimSpace(id))
+	return err
+}
+
 // DeleteScheduledTask drops the task together with its run history.
 func (s *Store) DeleteScheduledTask(id string) error {
 	id = strings.TrimSpace(id)

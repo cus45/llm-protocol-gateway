@@ -175,6 +175,7 @@ func (s *Server) handleQoderPATReconnect(w http.ResponseWriter, r *http.Request)
 		renewed, err = renewQoderCredential(ctx, site, credential)
 	}
 	if err != nil {
+		s.recordRenewal(provider, "qoder", time.Now(), err)
 		// See handleQoderPATComplete: a refused credential is a client-input
 		// problem, and 502 is indistinguishable from a Cloudflare page.
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
@@ -186,6 +187,7 @@ func (s *Server) handleQoderPATReconnect(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.recordRenewal(updated, "qoder", time.Now(), nil)
 	if err := s.persistProviderOAuth(updated); err != nil {
 		s.logs.AddApp("warn", "failed to persist qoder reconnect", err.Error())
 	}

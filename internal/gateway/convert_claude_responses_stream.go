@@ -247,10 +247,10 @@ func streamResponsesToClaudeEventsDirect(w http.ResponseWriter, reader io.Reader
 		return nil
 	}
 
+	closed := false
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	interrupted := isUpstreamStreamInterruptedReader(r)
 	eventName := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -411,6 +411,7 @@ func streamResponsesToClaudeEventsDirect(w http.ResponseWriter, reader io.Reader
 				}
 			}
 		case "response.completed", "response.incomplete", "response.failed":
+			closed = true
 			if response, ok := chunk["response"].(map[string]any); ok {
 				incompleteReason := ""
 				if details, ok := response["incomplete_details"].(map[string]any); ok {
@@ -423,7 +424,10 @@ func streamResponsesToClaudeEventsDirect(w http.ResponseWriter, reader io.Reader
 	if err := scanner.Err(); err != nil {
 		return usage, newUpstreamStreamInterruption(err, r.n)
 	}
-	if interrupted {
+	// Decided from what the reads actually saw: before the loop nothing has
+	// been read, a normal end of body is io.EOF, and a body that ends without
+	// a terminal response event was cut however cleanly the socket closed.
+	if isUpstreamStreamInterruptedReader(r) || cleanEOFInterruption(r, closed) {
 		turn := claudeInterruptedTurn{
 			messageStarted:    messageStarted,
 			textBlockOpen:     textBlockOpen,

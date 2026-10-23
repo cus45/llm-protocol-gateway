@@ -43,10 +43,11 @@ func TestIsUpstreamStreamInterruption(t *testing.T) {
 	}
 }
 
-// A stream that breaks after the client already saw text can still be handed to
-// the backup provider when the attempt was buffered: nothing was committed, so
-// finishConvertedProxy must report it retryable instead of ending the turn.
-func TestFinishConvertedProxyMidStreamDropIsRetryableWhenDeferred(t *testing.T) {
+// A converted stream that reached the client with its first byte belongs to
+// the account that started it: the cut is closed on the wire and reported, and
+// the failover loop is told not to replay it — even though the attempt could
+// still be deferred, it no longer can be.
+func TestFinishConvertedProxyMidStreamDropIsNotRetriedAfterFirstByte(t *testing.T) {
 	s := &Server{}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -65,11 +66,14 @@ func TestFinishConvertedProxyMidStreamDropIsRetryableWhenDeferred(t *testing.T) 
 	if status != http.StatusOK {
 		t.Fatalf("status=%d", status)
 	}
-	if err == nil || !retryable {
-		t.Fatalf("want retryable interruption, got err=%v retryable=%v", err, retryable)
+	if err == nil || !errors.Is(err, errUpstreamStreamInterrupted) {
+		t.Fatalf("the cut must be reported, got err=%v", err)
 	}
-	if rec.Body.Len() != 0 {
-		t.Fatalf("client should not see the interrupted attempt, got %q", rec.Body.String())
+	if retryable {
+		t.Fatalf("a turn the client already started must not be replayed (err=%v)", err)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "partial") {
+		t.Fatalf("client should keep the prefix it received, got %q", got)
 	}
 }
 
@@ -97,12 +101,9 @@ func TestFinishConvertedProxyMidStreamDropEndsStreamWithoutFailoverWriter(t *tes
 	}
 }
 
-// The last attempt of the loop has no backup left, but it is still buffered:
-// nothing reached the client, so the loop decides whether the truncated turn is
-// worth one more try on the same account. The converter sent nothing itself, so
-// a retry cannot replay a half answer the client already saw; when the loop does
-// stop, the turn is written out as it stands instead of vanishing.
-func TestFinishConvertedProxyMidStreamDropRetryableOnLastAttempt(t *testing.T) {
+// The last attempt of the loop has no backup left; its cut turn is still the
+// answer the client already holds, and it is delivered once, never replayed.
+func TestFinishConvertedProxyMidStreamDropOnLastAttemptDeliversOnce(t *testing.T) {
 	s := &Server{}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -121,11 +122,14 @@ func TestFinishConvertedProxyMidStreamDropRetryableOnLastAttempt(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status=%d", status)
 	}
-	if err == nil || !retryable {
-		t.Fatalf("want retryable interruption, got err=%v retryable=%v", err, retryable)
+	if err == nil || !errors.Is(err, errUpstreamStreamInterrupted) {
+		t.Fatalf("the cut must be reported, got err=%v", err)
+	}
+	if retryable {
+		t.Fatalf("the last attempt has nowhere to go, got retryable")
 	}
 	if !strings.Contains(rec.Body.String(), "partial") {
-		t.Fatalf("the half answer must not vanish when nothing is left to retry: %q", rec.Body.String())
+		t.Fatalf("the half answer must not vanish: %q", rec.Body.String())
 	}
 	if strings.Count(rec.Body.String(), "partial") != 1 {
 		t.Fatalf("the half answer was replayed: %q", rec.Body.String())
@@ -154,8 +158,10 @@ func TestFinishConvertedProxyInterruptionClassification(t *testing.T) {
 }
 
 // End to end: the primary opens the stream and then aborts before finishing its
-// turn; the backup must serve the client a complete answer.
-func TestFailoverAfterMidStreamInterruption(t *testing.T) {
+// turn. The client's time-to-first-token is what streaming is for, so the turn
+// it received is the answer: it is closed on the wire (max_tokens) and the
+// backup is not asked to replay it into a client that already has half of it.
+func TestMidStreamInterruptionClosesTheTurnInsteadOfReplaying(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -199,8 +205,8 @@ func TestFailoverAfterMidStreamInterruption(t *testing.T) {
 		"client-model", map[string]any{"model": "client-model", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
 		domain.ProtocolClaude, true, dropKey, true,
 	)
-	if execErr != nil {
-		t.Fatalf("exec err: %v", execErr)
+	if !errors.Is(execErr, errUpstreamStreamInterrupted) {
+		t.Fatalf("a cut turn must be reported as an interruption, got %v", execErr)
 	}
 	if status != http.StatusOK {
 		t.Fatalf("status=%d", status)
@@ -208,15 +214,23 @@ func TestFailoverAfterMidStreamInterruption(t *testing.T) {
 	if model != "client-model" {
 		t.Fatalf("model=%s", model)
 	}
-	if backupHits != 1 {
-		t.Fatalf("backup hits=%d, want 1", backupHits)
+	if backupHits != 0 {
+		t.Fatalf("backup hits=%d, want 0: a started turn is not replayed", backupHits)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "half an ans") {
-		t.Fatalf("client saw the aborted attempt: %q", body)
+	if !strings.Contains(body, "half an ans") {
+		t.Fatalf("client did not get the streamed prefix: %q", body)
 	}
-	if !strings.Contains(body, "the whole answer") || !strings.Contains(body, "message_stop") {
-		t.Fatalf("client did not get the backup's stream: %q", body)
+	if strings.Contains(body, "the whole answer") {
+		t.Fatalf("client saw a replayed answer on top of its prefix: %q", body)
+	}
+	// A cut turn is told as an error event, not as a stop_reason the model never
+	// chose (magpie's streamFailure), and still ends the stream properly.
+	if !strings.Contains(body, "event: error") || strings.Count(body, "event: message_stop") != 1 {
+		t.Fatalf("the cut turn was not closed: %q", body)
+	}
+	if strings.Count(body, "event: message_start") != 1 {
+		t.Fatalf("the stream must not be repeated: %q", body)
 	}
 }
 
@@ -304,11 +318,11 @@ func TestClaudeToResponsesInterruptedStreamEmitsIncomplete(t *testing.T) {
 	if !strings.Contains(out, "response.output_text.delta") || !strings.Contains(out, "cut") {
 		t.Fatalf("client should keep the text it got: %q", out)
 	}
-	if !strings.Contains(out, "response.incomplete") {
-		t.Fatalf("truncated turn must end response.incomplete, got %q", out)
+	if !strings.Contains(out, "response.failed") {
+		t.Fatalf("truncated turn must end response.failed, got %q", out)
 	}
-	if !strings.Contains(out, `"reason":"upstream_stream_interrupted"`) {
-		t.Fatalf("missing incomplete reason: %q", out)
+	if !strings.Contains(out, `"code":"server_error"`) {
+		t.Fatalf("missing failure reason: %q", out)
 	}
 }
 func TestUpstreamStreamInterruptedResponse(t *testing.T) {
@@ -337,9 +351,16 @@ func TestUpstreamStreamInterruptedResponse(t *testing.T) {
 			t.Fatalf("closing frame not recognised: %q", body)
 		}
 	}
-	for _, body := range []string{"", "data: {\"delta\":\"half", ": ping\n\n"} {
+	for _, body := range []string{"", "data: {\"delta\":\"half", "data: {\"a\":1}\n\ndata: [DO"} {
 		if closesUpstreamStream([]byte(body)) {
 			t.Fatalf("partial body taken for complete: %q", body)
+		}
+	}
+	// A body that is not a stream has no closing frame to wait for; a heartbeat
+	// alone is a live stream that stops before its first event.
+	for _, body := range []string{": ping\n\n", `{"choices":[]}`} {
+		if !closesUpstreamStream([]byte(body)) {
+			t.Fatalf("a body that never spoke SSE has nothing to close: %q", body)
 		}
 	}
 }
@@ -407,9 +428,13 @@ func TestFailoverWriterCutTurnClosesAfterCommittedPrefix(t *testing.T) {
 	}
 	// The upstream then died without closing the turn: the attempt already
 	// delivered opening+rest, so closing it must add only the closing frames.
-	claudeStreamInterrupter{}.closeReplay(fw, fw.body.Bytes())
+	claudeStreamInterrupter{}.closeInterruptedStream(fw, cutFromBody(fw.body.Bytes()))
 	fw.FlushError()
-	want := opening + rest + "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	want := opening + rest +
+		"event: error" + "\n" +
+		`data: {"error":{"message":"connection lost mid-reply","type":"api_error"},"type":"error"}` + "\n\n" +
+		"event: message_stop" + "\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
 	if out := rec.Body.String(); out != want {
 		t.Fatalf("client body %q, want %q", out, want)
 	}
@@ -427,7 +452,7 @@ func TestFailoverWriterCutTurnAfterEmptyCommitSendsWholeBody(t *testing.T) {
 	}
 	body := "event: message_start\ndata: {}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
 	turn := fw.deliver([]byte(body), http.StatusOK)
-	claudeStreamInterrupter{}.closeReplay(turn, turn.body.Bytes())
+	claudeStreamInterrupter{}.closeInterruptedStream(turn, cutFromBody(turn.body.Bytes()))
 	turn.FlushError()
 	out := rec.Body.String()
 	if got := strings.Count(out, "event: message_start"); got != 1 {
@@ -459,7 +484,7 @@ func TestClaudeReplayClosesOnlyBlocksLeftOpen(t *testing.T) {
 		``,
 	}, "\n")
 	rec := httptest.NewRecorder()
-	claudeStreamInterrupter{}.closeReplay(rec, []byte(body))
+	claudeStreamInterrupter{}.closeInterruptedStream(rec, cutFromBody([]byte(body)))
 	out := rec.Body.String()
 	if got := strings.Count(out, "event: content_block_stop"); got != 1 {
 		t.Fatalf("closing must stop the single open block, got %d: %q", got, out)
@@ -470,7 +495,7 @@ func TestClaudeReplayClosesOnlyBlocksLeftOpen(t *testing.T) {
 	if strings.Contains(out, `"index":0,"type":"content_block_stop"`) {
 		t.Fatalf("an already stopped block was stopped twice: %q", out)
 	}
-	if !strings.Contains(out, `"stop_reason":"max_tokens"`) || !strings.Contains(out, "event: message_stop") {
+	if !strings.Contains(out, "event: error") || !strings.Contains(out, "event: message_stop") {
 		t.Fatalf("turn not ended: %q", out)
 	}
 }

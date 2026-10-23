@@ -254,7 +254,10 @@ func isModelProtocolPath(path string) bool {
 	case path == "/v1/models",
 		strings.HasPrefix(path, "/v1/chat/completions"),
 		strings.HasPrefix(path, "/v1/images/"),
-		strings.HasPrefix(path, "/v1/embeddings"):
+		strings.HasPrefix(path, "/v1/embeddings"),
+		// Speech-to-text: the body is a multipart upload, still a model call
+		// (it is admitted, quota-checked and billed like one).
+		strings.HasPrefix(path, "/v1/audio/"):
 		return true
 	case strings.HasPrefix(path, "/openai/v1"):
 		return true

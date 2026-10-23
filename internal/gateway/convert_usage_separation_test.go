@@ -41,7 +41,7 @@ func TestResponsesToClaudeInputTokensExcludeCache(t *testing.T) {
 // future tweak cannot silently change what every provider's usage means.
 func TestNormalizeInclusiveInputTokensBoundary(t *testing.T) {
 	cases := []struct{ base, cache, miss, want int64 }{
-		{120, 96, 0, 120},   // inclusive: prompt >= cache
+		{120, 96, 0, 120},    // inclusive: prompt >= cache
 		{678, 9218, 0, 9896}, // exclusive prompt without miss
 		{10, 96, 4, 100},     // exclusive prompt with explicit miss
 		{0, 0, 0, 0},

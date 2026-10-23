@@ -138,6 +138,18 @@ func scrubSensitiveRequestBody(body []byte) []byte {
 	return rewritten
 }
 
+// scrubSensitiveMessage scrubs free text that is recorded or shown on its own
+// (the request log's ErrorDescription), not as a body: known secret prefixes
+// and JWTs are replaced in place. Unlike scrubSensitiveRequestBody it never
+// re-encodes anything, so the summary text keeps its shape.
+func scrubSensitiveMessage(message string) string {
+	if message == "" {
+		return message
+	}
+	changed := false
+	return scrubSensitiveText(message, &changed)
+}
+
 // jwtValuePattern matches a JSON Web Token wherever it appears in free text.
 var jwtValuePattern = regexp.MustCompile(
 	`\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}`)

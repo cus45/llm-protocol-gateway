@@ -678,16 +678,18 @@ func (s *claudeToResponsesDirectStreamState) interrupt(cause error, model string
 	if err := s.closeRemainingBlocks(); err != nil {
 		return err
 	}
-	reason := "upstream_stream_interrupted"
 	s.completed = true
+	// response.failed, not response.incomplete: "incomplete" is what a model
+	// reports when it stopped on purpose, and a client keeps it as the answer.
 	response := map[string]any{
 		"id":     s.responseID,
 		"object": "response",
 		"model":  s.model,
-		"status": "incomplete",
+		"status": "failed",
 		"output": s.outputItems,
-		"incomplete_details": map[string]any{
-			"reason": reason,
+		"error": map[string]any{
+			"code":    "server_error",
+			"message": streamCutMessage,
 		},
 		"usage": map[string]any{
 			"input_tokens":          s.usage.InputTokens,
@@ -697,8 +699,8 @@ func (s *claudeToResponsesDirectStreamState) interrupt(cause error, model string
 			"output_tokens_details": map[string]any{"reasoning_tokens": 0},
 		},
 	}
-	if writeErr := writeResponsesSSEEvent(s.w, "response.incomplete", map[string]any{
-		"type":            "response.incomplete",
+	if writeErr := writeResponsesSSEEvent(s.w, "response.failed", map[string]any{
+		"type":            "response.failed",
 		"sequence_number": s.nextSeq(),
 		"response":        response,
 	}); writeErr != nil {
@@ -720,6 +722,9 @@ func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader
 		reader = io.TeeReader(reader, debugTee)
 	}
 
+	// message_stop is how the Claude stream says it finished; without it the
+	// answer stops wherever the socket closed, however clean that close was.
+	closed := false
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -779,7 +784,7 @@ func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader
 		case "message_delta":
 			state.handleMessageDelta(event)
 		case "message_stop":
-			// finalize below
+			closed = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -787,6 +792,9 @@ func streamClaudeToResponsesEventsDirect(w http.ResponseWriter, reader io.Reader
 		// than letting EOF pass for a normal end: a client that only reads
 		// response.completed sees a half sentence as the final answer.
 		return state.usage, state.interrupt(err, model, debugTee, r.n)
+	}
+	if cleanEOFInterruption(r, closed) {
+		return state.usage, state.interrupt(errStreamWithoutClosingFrame, model, debugTee, r.n)
 	}
 
 	// Detect the thinking-only-empty upstream bug before committing anything:
