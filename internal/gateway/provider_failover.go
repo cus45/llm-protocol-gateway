@@ -200,6 +200,13 @@ type failoverResponseWriter struct {
 	passthrough bool
 	discarded   bool
 	wroteHeader bool
+	// body is the whole turn this attempt produced: the bytes before its commit
+	// followed by everything written after it. delivered is how much of that
+	// turn the client already has — a commit hands over its bytes, a write after
+	// the commit goes straight out — and is all a cut turn may be closed on top
+	// of without sending anything twice.
+	body      bytes.Buffer
+	delivered int
 }
 
 func newFailoverResponseWriter(base http.ResponseWriter, canDefer bool) *failoverResponseWriter {
@@ -235,12 +242,55 @@ func (w *failoverResponseWriter) failoverUnavailable() bool {
 // closing frame, i.e. the turn was closed (by the upstream or by a converter
 // that closed a cut stream itself) and only needs to be delivered.
 func (w *failoverResponseWriter) streamClosed() bool {
-	return closesUpstreamStream(w.buf.Bytes())
+	return closesUpstreamStream(w.stream())
 }
 
-// recordsForRetry marks the writer as a failover buffer for the converted
-// stream path (see streamRetryRecorder): every attempt written through it is
-// kept back, so an interrupted stream may be retried even on the last attempt.
+// Prefix returns what the attempt handed to the client when it committed its
+// headers: the start of its turn. A cut turn is completed on top of it, since
+// the stream after it never arrived. Empty when the commit carried no body.
+func (w *failoverResponseWriter) Prefix() []byte {
+	if w.delivered == 0 {
+		return nil
+	}
+	return append([]byte(nil), w.body.Bytes()[:w.delivered]...)
+}
+
+// stream is the stream this attempt took, prefix excluded.
+func (w *failoverResponseWriter) stream() []byte {
+	if w.delivered > w.body.Len() {
+		return nil
+	}
+	return w.body.Bytes()[w.delivered:]
+}
+
+// StreamLen is the size of the stream the attempt took, prefix excluded.
+func (w *failoverResponseWriter) StreamLen() int {
+	return w.body.Len() - w.delivered
+}
+
+// streamStart is how much of the turn body the client already has, i.e. how
+// much of a replayed copy of the body is already sent. A commit that carried
+// bytes wrote all of them, so the whole prefix counts; a commit that carried
+// nothing sent none of them, so the body starts over.
+func (w *failoverResponseWriter) streamStart() int {
+	return w.delivered
+}
+
+// deliver sends the rest of a cut turn — the stream that was read but, because
+// this attempt is the last one, never went out — and returns the attempt with
+// it recorded, so the turn can be closed on top of everything sent so far.
+func (w *failoverResponseWriter) deliver(streamBody []byte, statusCode int) *failoverResponseWriter {
+	hw := newSSEHeartbeatResponseWriter(w)
+	hw.WriteHeader(statusCode)
+	start := w.streamStart()
+	if start > len(streamBody) {
+		// The commit delivered more than this body holds; nothing is left over.
+		start = len(streamBody)
+	}
+	_, _ = hw.Write(streamBody[start:])
+	return w
+}
+
 func (w *failoverResponseWriter) recordsForRetry() {}
 
 func (w *failoverResponseWriter) Header() http.Header {
@@ -261,7 +311,7 @@ func (w *failoverResponseWriter) WriteHeader(statusCode int) {
 		}
 		return
 	}
-	if !w.canDefer || statusCode < 400 {
+	if !w.canDefer || (statusCode > 0 && statusCode < 400) {
 		w.commitHeaders(statusCode)
 		return
 	}
@@ -273,12 +323,20 @@ func (w *failoverResponseWriter) Write(p []byte) (int, error) {
 	if w.discarded {
 		return len(p), nil
 	}
-	if !w.wroteHeader && !w.passthrough {
-		w.WriteHeader(http.StatusOK)
-	}
 	if w.passthrough {
-		return w.base.Write(p)
+		// Committed already: everything from here on goes straight to the
+		// client, and is kept so a cut turn can be reported as delivered.
+		// A partial write is not a write: the bytes the client did not take are
+		// reported as unwritten so the caller stops copying and the client-gone
+		// path is reached instead of the stream looking fully delivered.
+		n, err := w.base.Write(p)
+		w.body.Write(p[:n])
+		w.delivered = w.body.Len()
+		return n, err
 	}
+	// A deferred attempt keeps its stream to itself until the loop settles on
+	// it: a Write here must not commit the headers (writeBufferedStream calls
+	// FlushError for that), or a discarded attempt would already be on the wire.
 	return w.buf.Write(p)
 }
 
@@ -314,7 +372,12 @@ func (w *failoverResponseWriter) commitHeaders(statusCode int) {
 	w.wroteHeader = true
 	w.passthrough = true
 	if w.buf.Len() > 0 {
+		// These bytes leave with the headers, ahead of anything streamed after
+		// them; the attempt keeps them as the start of its recorded turn, so a
+		// cut turn is completed on top of what the client already has.
 		_, _ = w.base.Write(w.buf.Bytes())
+		_, _ = w.body.Write(w.buf.Bytes())
+		w.delivered = w.body.Len()
 		w.buf.Reset()
 	}
 }
@@ -333,6 +396,8 @@ func (w *failoverResponseWriter) BufferedBody() []byte {
 func (w *failoverResponseWriter) Discard() {
 	w.discarded = true
 	w.buf.Reset()
+	w.body.Reset()
+	w.delivered = 0
 	w.header = make(http.Header)
 	w.status = 0
 	w.wroteHeader = false

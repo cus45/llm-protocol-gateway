@@ -262,6 +262,17 @@ func TestNoFailoverReplayAfterMidStreamInterruption(t *testing.T) {
 	if got := strings.Count(rec.Body.String(), `"once"`); got != 1 {
 		t.Fatalf("client saw the text %d times: %q", got, rec.Body.String())
 	}
+	// The opening frames leave with the committed headers, ahead of the stream
+	// the client still lacks; closing the turn must not replay them.
+	if got := strings.Count(rec.Body.String(), "event: message_start"); got != 1 {
+		t.Fatalf("client saw message_start frames %d times: %q", got, rec.Body.String())
+	}
+	if got := strings.Count(rec.Body.String(), "event: content_block_start"); got != 1 {
+		t.Fatalf("client saw content_block_start %d times: %q", got, rec.Body.String())
+	}
+	if got := strings.Count(rec.Body.String(), "event: message_stop"); got != 1 {
+		t.Fatalf("cut turn should be closed once, got %d message_stop: %q", got, rec.Body.String())
+	}
 }
 
 // The Responses client path answers through the same converter and must not
@@ -372,3 +383,94 @@ func streamDropDecision(routeID, providerID string) domain.RouteDecision {
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// The attempt committed the start of its turn, then streamed the rest to the
+// client before the upstream died. Closing that turn must add the closing
+// frames only — never a second copy of what the client already has.
+func TestFailoverWriterCutTurnClosesAfterCommittedPrefix(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw := newFailoverResponseWriter(rec, false)
+	fw.Header().Set("Content-Type", "text/event-stream")
+	opening := "event: message_start\ndata: {}\n\n"
+	if _, err := io.WriteString(fw, opening); err != nil {
+		t.Fatal(err)
+	}
+	fw.FlushError()
+	if got := string(fw.Prefix()); got != opening {
+		t.Fatalf("committed prefix %q, want the opening %q", got, opening)
+	}
+	// The attempt keeps streaming after its commit; the client gets those
+	// bytes as they come.
+	rest := "event: content_block_delta\ndata: {\"type\":\"text_delta\",\"text\":\"once\"}\n\n"
+	if _, err := io.WriteString(fw, rest); err != nil {
+		t.Fatal(err)
+	}
+	// The upstream then died without closing the turn: the attempt already
+	// delivered opening+rest, so closing it must add only the closing frames.
+	claudeStreamInterrupter{}.closeReplay(fw, fw.body.Bytes())
+	fw.FlushError()
+	want := opening + rest + "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	if out := rec.Body.String(); out != want {
+		t.Fatalf("client body %q, want %q", out, want)
+	}
+}
+
+// A commit that carried nothing sent nothing of the turn: the stream that
+// follows it is the whole turn, so it is delivered whole, once.
+func TestFailoverWriterCutTurnAfterEmptyCommitSendsWholeBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw := newFailoverResponseWriter(rec, false)
+	fw.Header().Set("Content-Type", "text/event-stream")
+	fw.WriteHeader(http.StatusOK)
+	if got := fw.Prefix(); len(got) != 0 {
+		t.Fatalf("empty commit reported a prefix %q", got)
+	}
+	body := "event: message_start\ndata: {}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	turn := fw.deliver([]byte(body), http.StatusOK)
+	claudeStreamInterrupter{}.closeReplay(turn, turn.body.Bytes())
+	turn.FlushError()
+	out := rec.Body.String()
+	if got := strings.Count(out, "event: message_start"); got != 1 {
+		t.Fatalf("client saw the opening %d times: %q", got, out)
+	}
+	if !strings.HasSuffix(out, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n") {
+		t.Fatalf("cut turn not closed: %q", out)
+	}
+}
+
+// A cut turn leaves its open blocks in the recorded body: closing it must stop
+// every block it started, and only those, before ending the turn.
+func TestClaudeReplayClosesOnlyBlocksLeftOpen(t *testing.T) {
+	body := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"read"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pa"}}`,
+		``,
+	}, "\n")
+	rec := httptest.NewRecorder()
+	claudeStreamInterrupter{}.closeReplay(rec, []byte(body))
+	out := rec.Body.String()
+	if got := strings.Count(out, "event: content_block_stop"); got != 1 {
+		t.Fatalf("closing must stop the single open block, got %d: %q", got, out)
+	}
+	if !strings.Contains(out, `{"index":1,"type":"content_block_stop"}`) && !strings.Contains(out, `"index":1`) {
+		t.Fatalf("the open tool block was not stopped: %q", out)
+	}
+	if strings.Contains(out, `"index":0,"type":"content_block_stop"`) {
+		t.Fatalf("an already stopped block was stopped twice: %q", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"max_tokens"`) || !strings.Contains(out, "event: message_stop") {
+		t.Fatalf("turn not ended: %q", out)
+	}
+}
