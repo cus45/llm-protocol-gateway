@@ -38,12 +38,12 @@ func TestChatParallelToolCallsToClaude(t *testing.T) {
 		},
 		{
 			name:       "none is left alone",
-			body:       `{"messages":[{"role":"user","content":"hi"}],"tool_choice":"none","parallel_tool_calls":false}`,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"a"}}],"tool_choice":"none","parallel_tool_calls":false}`,
 			wantChoice: map[string]any{"type": "none"},
 		},
 		{
 			name:       "enabled adds nothing",
-			body:       `{"messages":[{"role":"user","content":"hi"}],"tool_choice":"required","parallel_tool_calls":true}`,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"a"}}],"tool_choice":"required","parallel_tool_calls":true}`,
 			wantChoice: map[string]any{"type": "any"},
 		},
 	}
@@ -123,29 +123,50 @@ func TestResponsesAllowedToolsToClaude(t *testing.T) {
 }
 
 // 线上验证用的形状（GLM 的 Anthropic 端点接受的）要能被 JSON 原样发出去：
-// any + disable_parallel_tool_use 同时在场，allowed_tools 用 tools 包一层。
-func TestClaudeToolChoiceWireShape(t *testing.T) {
+// Chat→Claude 的工具约束要走真实转换路径：any + disable_parallel_tool_use
+// 同时在场，且客户端没有 tools 时不得凭空出现 tool_choice。
+func TestChatToClaudeToolChoiceWireShape(t *testing.T) {
 	var req map[string]any
 	if err := json.Unmarshal([]byte(`{
 		"model":"glm-5.3",
 		"max_tokens":100,
 		"messages":[{"role":"user","content":"hi"}],
-		"tools":[{"name":"get_time","input_schema":{"type":"object","properties":{}}}],
+		"tools":[{"type":"function","function":{"name":"get_time","parameters":{"type":"object","properties":{}}}}],
 		"tool_choice":{"type":"any","disable_parallel_tool_use":true}
 	}`), &req); err != nil {
 		t.Fatalf("request is not json: %v", err)
 	}
-	body, err := json.Marshal(req)
+	claudeReq, err := openAIChatToClaudeRequest(req, "glm-5.3", 0)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("convert: %v", err)
 	}
-	var round map[string]any
-	if err := json.Unmarshal(body, &round); err != nil {
-		t.Fatalf("round trip: %v", err)
+	choice, ok := claudeReq["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_choice missing: %#v", claudeReq)
 	}
-	choice := round["tool_choice"].(map[string]any)
 	if choice["type"] != "any" || choice["disable_parallel_tool_use"] != true {
 		t.Fatalf("tool_choice = %#v", choice)
+	}
+	tools, _ := claudeReq["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", claudeReq["tools"])
+	}
+	if name := stringValue(tools[0].(map[string]any)["name"]); name != "get_time" {
+		t.Fatalf("tool name = %q", name)
+	}
+
+	noTools := map[string]any{
+		"model":       "glm-5.3",
+		"max_tokens":  float64(100),
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tool_choice": map[string]any{"type": "auto"},
+	}
+	claudeNoTools, err := openAIChatToClaudeRequest(noTools, "glm-5.3", 0)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if _, present := claudeNoTools["tool_choice"]; present {
+		t.Fatalf("tool_choice without tools: %#v", claudeNoTools["tool_choice"])
 	}
 }
 

@@ -817,12 +817,11 @@ func claudeToolChoiceToOpenAI(choice any) any {
 }
 
 func copyToolsField(source map[string]any, target map[string]any, toClaude bool) {
-	rawTools, exists := source["tools"]
-	if !exists {
-		return
-	}
+	rawTools := source["tools"]
 	tools := asMapSlice(rawTools)
 	if len(tools) == 0 {
+		// 没有可调用的工具时 tool_choice 没有意义；部分上游（Anthropic 端点）
+		// 见到它而没有 tools 会直接 400。
 		return
 	}
 	if toClaude {
@@ -842,6 +841,12 @@ func copyToolChoiceField(source map[string]any, target map[string]any, toClaude 
 		return
 	}
 	if toClaude {
+		if _, has := target["tools"]; !has {
+			// Anthropic 端点在没有 tools 时会拒绝 tool_choice（400），而 Chat
+			// 允许两者并存的消息里只有 tool_choice。没有可调用的工具，这个
+			// 选择就没有意义，丢掉。
+			return
+		}
 		// Chat 的 parallel_tool_calls=false 落到 Claude 的
 		// tool_choice.disable_parallel_tool_use；Responses 的 allowed_tools
 		// 白名单收窄成 Claude 的 allowed_tools。
