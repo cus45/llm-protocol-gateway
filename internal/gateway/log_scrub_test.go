@@ -77,3 +77,28 @@ func TestScrubSensitiveRequestBodyLeavesCleanBodiesAlone(t *testing.T) {
 		t.Fatalf("text secret not scrubbed: %s", got)
 	}
 }
+
+// 上游把凭据回显在响应里（错误文案、工具结果的嵌套 JSON、SSE 错误事件）时，
+// 响应正文落库前同样要脱敏，否则管理界面会把 key 原样展示出去。
+func TestScrubSensitiveResponseBody(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{
+			name: "nested json inside a tool result",
+			body: `{"content":[{"type":"text","text":"{\"refreshToken\":\"abc\",\"secretKey\":\"def\",\"accessKey\":\"ghi\",\"headers\":{\"Cookie\":\"sid=1\"},\"jwt\":\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl\"}"}]}`,
+		},
+		{
+			name: "sse error event",
+			body: "event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"auth failed\",\"refresh_token\":\"abc\",\"detail\":\"{\\\"secretAccessKey\\\":\\\"def\\\",\\\"token\\\":\\\"ghi\\\"}\"}}\n\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := string(scrubSensitiveRequestBody([]byte(tc.body)))
+			for _, leaked := range []string{"\"abc\"", "\"def\"", "\"ghi\"", "sid=1", "eyJhbGciOiJIUzI1NiJ9"} {
+				if strings.Contains(out, leaked) {
+					t.Fatalf("%s leaked: %s", leaked, out)
+				}
+			}
+		})
+	}
+}

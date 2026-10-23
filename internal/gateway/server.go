@@ -1400,13 +1400,15 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		entry.APIKeyName = "Route Test"
 	}
 	if status >= 400 || responseErrorMessage != "" {
-		entry.ResponseBody = truncateForLog(responseBody, logBodyCapError)
+		// 上游常把凭据回显在错误里（"Incorrect API key provided: sk-…"），工具
+		// 结果也会带回下游配置里的 key；落库前按与请求正文相同的规则脱敏。
+		entry.ResponseBody = truncateForLog(scrubSensitiveRequestBody(responseBody), logBodyCapError)
 		entry.ErrorDescription = responseErrorMessage
 		if entry.ErrorDescription == "" && status >= 400 {
 			entry.ErrorDescription = summarizeUpstreamHTTPError(status, responseBody)
 		}
 	} else if logSuccessBodies {
-		entry.ResponseBody = truncateForLog(responseBody, logBodyCapOK)
+		entry.ResponseBody = truncateForLog(scrubSensitiveRequestBody(responseBody), logBodyCapOK)
 	}
 	s.logs.Add(entry)
 	usageUserID := ""
