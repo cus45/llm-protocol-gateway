@@ -227,6 +227,12 @@ func (s *Store) PruneMonitoringData(now time.Time) error {
 		monitorTime(now.AddDate(0, 0, -30))); err != nil {
 		return err
 	}
+	// 探测记录比事件短：它每天最多几条、只用来回答「昨天到底通不通」，
+	// 30 天足够复盘，再久就是白占写放大。
+	if _, err := s.db.Exec(`DELETE FROM monitor_probe_runs WHERE time < ?`,
+		monitorTime(now.AddDate(0, 0, -30))); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`DELETE FROM checkin_history WHERE day < ?`,
 		now.AddDate(0, 0, -90).UTC().Format("2006-01-02")); err != nil {
 		return err

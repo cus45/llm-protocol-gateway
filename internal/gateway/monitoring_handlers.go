@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -1046,4 +1047,146 @@ func roundRatio(ratio float64) float64 {
 		return 0
 	}
 	return float64(int(ratio*10000+0.5)) / 10000
+}
+
+// ── 探测 ────────────────────────────────────────────────────────────────
+
+// monitorProbeAccount 是探测页的账号行。Probed=false 表示这个账号还从来没探过，
+// 界面要能说「暂无数据」，不能把零值显示成「0 次失败 = 健康」。
+type monitorProbeAccount struct {
+	ProviderID          string    `json:"providerId"`
+	Name                string    `json:"name"`
+	Vendor              string    `json:"vendor,omitempty"`
+	Disabled            bool      `json:"disabled"`
+	Probed              bool      `json:"probed"`
+	ConsecutiveFailures int       `json:"consecutiveFailures"`
+	LastProbeAt         time.Time `json:"lastProbeAt,omitempty"`
+	LastStatus          int       `json:"lastStatus,omitempty"`
+	Skipped             string    `json:"skipped,omitempty"`
+	UsedToday           int       `json:"usedToday"`
+	MaxPerDay           int       `json:"maxPerDay"`
+}
+
+func (s *Server) handleMonitorProbes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore).Probe()
+	day := monitorProbeDay(s, time.Now().UTC())
+	state := s.router.State()
+	accounts := make([]monitorProbeAccount, 0, len(state.Providers))
+	for _, provider := range state.Providers {
+		if provider.Deleted {
+			continue
+		}
+		row := monitorProbeAccount{
+			ProviderID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
+			Disabled: provider.Disabled, MaxPerDay: cfg.EventDriven.MaxPerDayPerAccount,
+		}
+		outcome, used, err := s.monitoringStore.MonitorProbeOutcome(provider.ID, day)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "探测记录读取失败")
+			return
+		}
+		row.Probed = outcome.Known
+		row.ConsecutiveFailures = outcome.Consecutive
+		row.LastProbeAt = outcome.LastAt
+		row.LastStatus = outcome.LastStatus
+		row.Skipped = outcome.Skipped
+		row.UsedToday = used
+		accounts = append(accounts, row)
+	}
+	runs, err := s.monitoringStore.LatestMonitorProbeRuns(strings.TrimSpace(r.URL.Query().Get("providerId")), 50)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "探测记录读取失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "runs": runs, "config": cfg})
+}
+
+// handleMonitorProbeRun 手动跑一发，用于排障。同账号已有探测在跑时回 409 而不是
+// 悄悄排队：运维点是「现在就确认」，排队只会让他以为没生效再点一次。
+func (s *Server) handleMonitorProbeRun(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	var in struct {
+		ProviderID string `json:"providerId"`
+		Kind       string `json:"kind"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&in); err != nil || strings.TrimSpace(in.ProviderID) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "providerId 必填")
+		return
+	}
+	kind := strings.TrimSpace(in.Kind)
+	if kind == "" {
+		kind = probeKindLight
+	}
+	if kind != probeKindLight {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "errorKind": "kind_unavailable"})
+		return
+	}
+	if _, err := s.router.ProviderByID(in.ProviderID); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "Provider 不存在或已删除")
+		return
+	}
+	run := s.runLightProbe(r.Context(), in.ProviderID)
+	body := map[string]any{
+		"ok":         !run.Failed(),
+		"providerId": run.ProviderID,
+		"kind":       run.Kind,
+		"at":         run.At,
+		"cases":      run.Cases,
+		"skipped":    run.Skipped,
+	}
+	if run.Skipped == "in_flight" {
+		writeJSON(w, http.StatusConflict, body)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (s *Server) handleMonitorProbeConfig(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, monitoring.NewConfig(s.monitoringStore).Probe())
+}
+
+// handleMonitorProbeConfigUpdate 只校验会烧额度的那几个字段：上限、间隔、窗口。
+// 窗口写坏会让「每天一次」变成全天候发探测，所以宁可拒掉也不猜。
+func (s *Server) handleMonitorProbeConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	var incoming monitoring.ProbeConfig
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&incoming); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "配置格式不正确")
+		return
+	}
+	if incoming.EventDriven.MaxPerDayPerAccount < 0 || incoming.EventDriven.MaxPerDayPerAccount > 24 {
+		writeOpenAIError(w, http.StatusBadRequest, "每账号每日探测次数要在 0-24 之间（0 表示不限）")
+		return
+	}
+	if incoming.EventDriven.MinIntervalMinutes < 0 || incoming.EventDriven.MinIntervalMinutes > 1440 {
+		writeOpenAIError(w, http.StatusBadRequest, "最小间隔要在 0-1440 分钟之间")
+		return
+	}
+	if incoming.EventDriven.IdleMinutes < 0 || incoming.EventDriven.IdleMinutes > 1440 {
+		writeOpenAIError(w, http.StatusBadRequest, "闲置阈值要在 0-1440 分钟之间")
+		return
+	}
+	if _, err := clockMinutes(incoming.Daily.WindowStart); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "每日窗口开始时间格式应为 HH:MM")
+		return
+	}
+	if _, err := clockMinutes(incoming.Daily.WindowEnd); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "每日窗口结束时间格式应为 HH:MM")
+		return
+	}
+	if err := monitoring.NewConfig(s.monitoringStore).SaveProbe(incoming); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "配置保存失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, monitoring.NewConfig(s.monitoringStore).Probe())
 }
