@@ -24,6 +24,49 @@ type providerChatTestRequest struct {
 	ThinkingValue string `json:"thinkingValue"`
 	// MaxTokens 是输出上限，0 表示按各协议既有默认。监控探测必须带上它。
 	MaxTokens int `json:"maxTokens,omitempty"`
+	// IncludeTools 让请求体带上一个无参工具声明。只走 api_key 直连三家协议
+	// （Claude / OpenAI Chat / Responses）的路径，监控探测的 tools case 用它。
+	IncludeTools bool `json:"includeTools,omitempty"`
+}
+
+// probeToolName 是探测用工具的名字；三家协议共用同一份声明，含义必须一致。
+const probeToolName = "get_time"
+
+// providerProbeToolSchema 是探测工具的入参 schema：无参对象、不允许额外字段。
+func providerProbeToolSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
+}
+
+// probeClaudeTool 给出 Claude Messages 的工具形状。
+func probeClaudeTool() map[string]any {
+	return map[string]any{
+		"name":         probeToolName,
+		"description":  "Return the current time.",
+		"input_schema": providerProbeToolSchema(),
+	}
+}
+
+// probeChatTool 给出 OpenAI Chat Completions 的工具形状。
+func probeChatTool() map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        probeToolName,
+			"description": "Return the current time.",
+			"parameters":  providerProbeToolSchema(),
+		},
+	}
+}
+
+// probeResponsesTool 给出 OpenAI Responses 的工具形状。Responses 的 function 工具
+// 是扁平的，没有 Chat 那层 function 包装。
+func probeResponsesTool() map[string]any {
+	return map[string]any{
+		"type":        "function",
+		"name":        probeToolName,
+		"description": "Return the current time.",
+		"parameters":  providerProbeToolSchema(),
+	}
 }
 
 func resolveProviderTestModel(model string) string {
@@ -121,16 +164,21 @@ func buildProviderCacheRound1UserPrompt(req providerChatTestRequest) string {
 	return userPrompt
 }
 
-func buildProviderChatPayload(model string, messages []map[string]any) map[string]any {
+// includeTools 只在探测的 tools case 里为 true；普通对话与缓存测试不写 tools。
+func buildProviderChatPayload(model string, messages []map[string]any, includeTools bool) map[string]any {
 	resolvedModel := resolveProviderTestModel(model)
 	if resolvedModel == "" {
 		resolvedModel = "request-model-not-set"
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"model":    resolvedModel,
 		"stream":   false,
 		"messages": messages,
 	}
+	if includeTools {
+		payload["tools"] = []any{probeChatTool()}
+	}
+	return payload
 }
 
 func buildProviderClaudeChatPayload(model string, req providerChatTestRequest) map[string]any {
@@ -154,6 +202,9 @@ func buildProviderClaudeChatPayload(model string, req providerChatTestRequest) m
 	if systemPrompt := strings.TrimSpace(req.SystemPrompt); systemPrompt != "" {
 		payload["system"] = systemPrompt
 	}
+	if req.IncludeTools {
+		payload["tools"] = []any{probeClaudeTool()}
+	}
 	return payload
 }
 
@@ -176,11 +227,15 @@ func buildProviderResponsesChatPayload(model string, req providerChatTestRequest
 	if systemPrompt := strings.TrimSpace(req.SystemPrompt); systemPrompt != "" {
 		input = append([]map[string]any{{"role": "system", "content": systemPrompt}}, input...)
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"model":  resolvedModel,
 		"stream": false,
 		"input":  input,
 	}
+	if req.IncludeTools {
+		payload["tools"] = []any{probeResponsesTool()}
+	}
+	return payload
 }
 
 func applyProviderThinkingPayload(payload map[string]any, provider domain.Provider, field, value string) {
@@ -379,7 +434,7 @@ func (s *Server) testProviderChat(r *http.Request, providerID string, req provid
 		payload = buildProviderResponsesChatPayload(model, req)
 	default:
 		messages := buildProviderChatMessages(req)
-		payload = buildProviderChatPayload(model, messages)
+		payload = buildProviderChatPayload(model, messages, req.IncludeTools)
 	}
 	// 探测要的是「还活着吗」，不是回答长度。不给上限就按上游默认跑（Claude 这条
 	// 路径写死 4096），每轮探测白烧一次订阅额度。Responses 的字段名不一样，单独覆盖。
@@ -551,11 +606,11 @@ func (s *Server) testProviderCacheChat(r *http.Request, providerID string, req p
 	userPrompt := buildProviderCacheRound1UserPrompt(req)
 	round1Started := time.Now()
 	messages1 := buildOpenAIChatCacheMessages(req, []map[string]any{{"role": "user", "content": userPrompt}})
-	payload1 := buildProviderChatPayload(model, messages1)
+	payload1 := buildProviderChatPayload(model, messages1, false)
 	round1 := s.executeProviderChatHTTP(r, provider, model, payload1, round1Started)
 	assistantContent := extractAssistantContent([]byte(round1.ResponseBody))
 	messages2 := buildProviderCacheRound2Messages(req, assistantContent)
-	payload2 := buildProviderChatPayload(model, messages2)
+	payload2 := buildProviderChatPayload(model, messages2, false)
 	round2 := s.executeProviderChatHTTP(r, provider, model, payload2, time.Now())
 	return s.buildProviderCacheChatResult(provider.ID, model, started, round1, round2), http.StatusOK
 }
@@ -729,7 +784,7 @@ func (s *Server) testProviderThinkingChat(r *http.Request, providerID string, re
 	}
 
 	messages := buildProviderChatMessages(req)
-	payload := buildProviderChatPayload(model, messages)
+	payload := buildProviderChatPayload(model, messages, false)
 	applyProviderThinkingPayload(payload, provider, field, value)
 	round := s.executeProviderChatHTTP(r, provider, model, payload, started)
 	success := round.Error == "" && round.Status >= 200 && round.Status < 300

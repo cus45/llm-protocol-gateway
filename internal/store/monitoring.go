@@ -950,6 +950,11 @@ func (s *Store) InsertMonitorProbeRun(record monitoring.ProbeRunRecord) error {
 // (no model configured, CLI missing) is not a verdict, so it neither extends
 // the failure streak nor resets it — only a run that actually reached the
 // upstream does.
+//
+// 一轮轻探测落多行（chat / tools 各一行，同一轮的时间戳相同）。连续失败与当日
+// 计数都按「轮」算：maxPerDayPerAccount 的语义是一次探测，不是一次上游请求，
+// 否则默认 4 次会悄悄变成 2 轮。轮判定失败时，轮状态与鉴权标记跟失败 case 走，
+// 否则「对话 200、tools 401」会被显示成正常。
 func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error) {
 	outcome := monitoring.ProbeOutcome{}
 	rows, err := s.reader().Query(`SELECT kind, case_key, ok, status, skipped, time
@@ -959,6 +964,7 @@ func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.P
 	}
 	defer rows.Close()
 	streakBroken := false
+	lastRound := ""
 	for rows.Next() {
 		var (
 			kind, caseKey, skipped, stamp string
@@ -975,12 +981,26 @@ func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.P
 		if skipped != "" {
 			continue
 		}
-		if !outcome.Known {
+		firstOfRound := stamp != lastRound
+		inLatestRound := lastRound == ""
+		lastRound = stamp
+		if inLatestRound {
 			outcome.Known = true
 			outcome.LastAt = at
 			outcome.LastStatus = status
 			outcome.Skipped = ""
 			outcome.AuthFailure = status == 401 || status == 403
+		}
+		if inLatestRound && ok == 0 {
+			// 最近一轮里失败的 case 说了算：chat 过了、tools 401 时，轮状态是 401
+			// 而不是开头的 200。更早的轮次不覆写最近结果。
+			outcome.LastStatus = status
+			if status == 401 || status == 403 {
+				outcome.AuthFailure = true
+			}
+		}
+		if !firstOfRound {
+			continue
 		}
 		if streakBroken {
 			continue
@@ -994,8 +1014,10 @@ func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.P
 	if err := rows.Err(); err != nil {
 		return outcome, 0, fmt.Errorf("iterate probe runs: %w", err)
 	}
+	// 当日配额按轮计，不按行。
 	var used int
-	if err := s.reader().QueryRow(`SELECT COUNT(*) FROM monitor_probe_runs WHERE provider_id = ? AND day = ? AND skipped = ''`,
+	if err := s.reader().QueryRow(`SELECT COUNT(*) FROM (SELECT 1 FROM monitor_probe_runs
+		WHERE provider_id = ? AND day = ? AND skipped = '' GROUP BY time)`,
 		providerID, day).Scan(&used); err != nil {
 		return outcome, 0, fmt.Errorf("count probe runs: %w", err)
 	}

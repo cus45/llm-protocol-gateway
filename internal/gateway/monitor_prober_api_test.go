@@ -82,8 +82,13 @@ func TestMonitorProbeRunLightConflictAndGuards(t *testing.T) {
 	if body["ok"] != true || body["kind"] != probeKindLight {
 		t.Fatalf("body = %+v", body)
 	}
-	if calls != 1 {
-		t.Fatalf("upstream calls = %d", calls)
+	// 一轮轻探测 = chat + tools 两个 case，各一发上游请求。
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want chat + tools", calls)
+	}
+	// 两行记录只扣一次当日配额：maxPerDayPerAccount 按「次」（轮）算。
+	if _, used, err := db.MonitorProbeOutcome("p1", monitorProbeDay(server, time.Now().UTC())); err != nil || used != 1 {
+		t.Fatalf("daily budget used = %d err = %v, want one round", used, err)
 	}
 
 	server.claimQuotaProbe("p1")
@@ -105,7 +110,7 @@ func TestMonitorProbeRunLightConflictAndGuards(t *testing.T) {
 			t.Fatalf("%s must not succeed", item.name)
 		}
 	}
-	if calls != 1 {
+	if calls != 2 {
 		t.Fatalf("rejected calls must not reach the upstream, calls = %d", calls)
 	}
 }

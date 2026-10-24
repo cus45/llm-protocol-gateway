@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,8 +103,16 @@ func TestWithinClockWindow(t *testing.T) {
 // 一个 tick 只补 probeDailyBatchPerTick 发，剩下的顺延到下一个 tick，
 // 这样 20 个账号不会把一次 tick 拖成几分钟的串行外呼。
 func TestRunProbeTickDailyRoundIsBatched(t *testing.T) {
+	// 只数 chat case：tools case 一律 400，好让「一次上游调用 = 一个账号的一轮」
+	// 仍然成立，batch 计数不会被每轮多出的那发请求打乱。
 	calls := 0
 	upstream := chatUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), `"tools"`) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"tools not supported"}}`)
+			return
+		}
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
@@ -144,6 +153,12 @@ func TestRunProbeTickDailyRoundIsBatched(t *testing.T) {
 	server.runProbeTick(context.Background(), now.Add(2*time.Minute))
 	if calls != probeDailyBatchPerTick+1 {
 		t.Fatalf("third tick total = %d, want no further probes", calls)
+	}
+	// 两个 case 一轮：三个账号共 6 行探测记录，但当日配额只该扣 3 次。
+	for _, id := range []string{"a", "b", "c"} {
+		if _, used, err := db.MonitorProbeOutcome(id, monitorProbeDay(server, now)); err != nil || used != 1 {
+			t.Fatalf("provider %s used = %d err = %v, want one round", id, used, err)
+		}
 	}
 }
 

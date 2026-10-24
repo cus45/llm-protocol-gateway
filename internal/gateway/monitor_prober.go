@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,11 +18,16 @@ const (
 	// lightProbeTimeout 是一发轻探测的上限。慢到 30 秒以上的账号交给 TTFT 规则
 	// 去盯，探测只回答「还能不能用」。
 	lightProbeTimeout = 30 * time.Second
-	// monitorProbeMaxTokens 刻意给到最小：探测不该消耗订阅额度。
+	// monitorProbeMaxTokens 刻意给到最小：探测不该消耗订阅额度。tools case 同样
+	// 16：判定只看「200 且可解析」，模型是否真调工具不影响结论，额度理由优先。
 	monitorProbeMaxTokens = 16
 	probeKindLight        = "light"
 	probeCaseChat         = "chat"
-	probeChatPrompt       = "reply with the single word ok"
+	// probeCaseTools 在 chat 之外再发一发带工具声明的请求，覆盖工具 schema 被
+	// 上游拒收这一类回归（见计划 §7 第 4 条）。
+	probeCaseTools  = "tools"
+	probeChatPrompt = "reply with the single word ok"
+	probeToolPrompt = "call the get_time tool"
 )
 
 // probeCaseResult 是一发探测的结论。Status 为 0 表示传输层失败（连不上/超时）——
@@ -80,6 +86,16 @@ func (r probeRun) LastStatus() int {
 	return 0
 }
 
+// FailedCase 返回第一个失败 case 的名字，供事件 detail 标出是哪一发坏了。
+func (r probeRun) FailedCase() string {
+	for _, item := range r.Cases {
+		if !item.OK {
+			return item.Case
+		}
+	}
+	return ""
+}
+
 func lightProbeModel(provider domain.Provider) string {
 	if model := strings.TrimSpace(provider.DefaultModel); model != "" {
 		return model
@@ -92,11 +108,14 @@ func lightProbeModel(provider domain.Provider) string {
 	return ""
 }
 
-// runLightProbe 对一个账号发一轮最小 chat 探测。
+// runLightProbe 对一个账号发一轮轻探测：chat 与 tools 两个 case。
 //
 // 它刻意走 chat-test 而不是 /v1 数据面：chat-test 不写 request_logs，所以既不进
 // 账号成功率也不进成本账本。与额度保活共用同一把单飞锁，避免「保活一发 + 监控一发」
 // 同时打在同一账号上——那既多花额度又像滥用。
+//
+// 一轮 = 一次配额：两个 case 各写一行 monitor_probe_runs，但当日计数按「轮」去重
+// （见 store.MonitorProbeOutcome），所以 maxPerDayPerAccount 按次而不是按上游请求数算。
 func (s *Server) runLightProbe(ctx context.Context, providerID string) probeRun {
 	run := probeRun{ProviderID: providerID, Kind: probeKindLight, At: time.Now().UTC()}
 	provider, err := s.router.ProviderByID(providerID)
@@ -120,39 +139,67 @@ func (s *Server) runLightProbe(ctx context.Context, providerID string) probeRun 
 	}
 	defer s.releaseQuotaProbe(providerID)
 
-	run.Cases = append(run.Cases, s.probeChatCase(ctx, providerID, model))
+	run.Cases = append(run.Cases,
+		s.probeChatCase(ctx, providerID, model, probeCaseChat, probeChatPrompt, false),
+		s.probeChatCase(ctx, providerID, model, probeCaseTools, probeToolPrompt, true))
 	s.recordProbeRun(run)
 	return run
 }
 
-func (s *Server) probeChatCase(ctx context.Context, providerID, model string) probeCaseResult {
+// probeChatCase 发一个 case：chat-test 路径与普通对话测试完全一致，只是这里带固定
+// 的 max_tokens，tools case 再多带一份工具声明。判定只看 HTTP 2xx 且响应体可解析
+// 成 JSON——模型是否真的调用工具是模型行为，不是链路问题。
+func (s *Server) probeChatCase(ctx context.Context, providerID, model, caseKey, prompt string, includeTools bool) probeCaseResult {
 	started := time.Now().UTC()
 	req := providerChatTestRequest{
-		Model:      model,
-		Message:    probeChatPrompt,
-		UserPrompt: probeChatPrompt,
-		MaxTokens:  monitorProbeMaxTokens,
+		Model:        model,
+		Message:      prompt,
+		UserPrompt:   prompt,
+		MaxTokens:    monitorProbeMaxTokens,
+		IncludeTools: includeTools,
 	}
 	callCtx, cancel := context.WithTimeout(ctx, lightProbeTimeout)
 	defer cancel()
 	request, err := quotaProbeHTTPRequest(callCtx, providerID, req)
 	if err != nil {
-		return probeCaseResult{Case: probeCaseChat, Status: 0, Duration: time.Since(started).Milliseconds(), Error: err.Error()}
+		return probeCaseResult{Case: caseKey, Status: 0, Duration: time.Since(started).Milliseconds(), Error: err.Error()}
 	}
 	result, _ := s.testProviderChat(request, providerID, req, started)
 	status := mapIntValue(result, "status")
 	ok, _ := result["success"].(bool)
 	caseResult := probeCaseResult{
-		Case:     probeCaseChat,
+		Case:     caseKey,
 		OK:       ok,
 		Status:   status,
 		Duration: mapInt64Value(result, "latencyMs"),
 		Model:    mapStringValue(result, "model"),
 	}
-	if !ok {
+	switch {
+	case !ok:
 		caseResult.Error = truncateRunReason(mapStringValue(result, "error"))
+	case !probeResponseParseable(mapStringValue(result, "responseBody")):
+		// 2xx 但不是 JSON：多半是 HTML 错误页或网关伪装的成功应答，链路不可信。
+		// 状态码原样保留，结论按失败算。
+		caseResult.OK = false
+		caseResult.Error = "unparseable response body"
+	}
+	if !caseResult.OK && caseResult.Error == "" {
+		// success=false 却也没带 error（例如上游直接回了非 2xx 却没经过错误分支），
+		// 留一句状态说明，否则 detail 里只看得到一个没有原因的失败。
+		caseResult.Error = fmt.Sprintf("upstream status %d", status)
 	}
 	return caseResult
+}
+
+// probeResponseParseable 判响应体是不是一个 JSON 对象。不做字段级校验：不同上游
+// 的错误信封、usage 形状差异很大，验字段会把「能用」误判成「坏了」。
+func probeResponseParseable(body string) bool {
+	var payload map[string]any
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || json.Unmarshal([]byte(trimmed), &payload) != nil {
+		return false
+	}
+	return payload != nil
 }
 
 // monitorProbeDay 按投递时区给出探测所属的自然日。当日次数上限与每日窗口都以它
@@ -230,7 +277,10 @@ func (s *Server) recordProbeRun(run probeRun) {
 			"kind":    run.Kind,
 			"ok":      !run.Failed(),
 			"skipped": run.Skipped,
-			"cases":   cases,
+			// case 标出第一个失败的 case（chat / tools），界面和告警一眼能看出
+			// 是「对话不通」还是「工具声明被拒」。
+			"case":  run.FailedCase(),
+			"cases": cases,
 		},
 	}); err != nil {
 		// 探测记录失败不影响探测本身，也不能把账号判成不可用。

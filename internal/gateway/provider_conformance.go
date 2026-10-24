@@ -333,11 +333,11 @@ func (s *Server) conformanceCaseCacheHit(r *http.Request, provider domain.Provid
 	default: // openai_chat
 		userPrompt := buildProviderCacheRound1UserPrompt(req)
 		messages1 := buildOpenAIChatCacheMessages(req, []map[string]any{{"role": "user", "content": userPrompt}})
-		payload1 := buildProviderChatPayload(model, messages1)
+		payload1 := buildProviderChatPayload(model, messages1, false)
 		round1 = s.executeProviderProtocolHTTP(r, provider, model, payload1, "application/json", caseStarted)
 		assistant := extractAssistantContent([]byte(round1.ResponseBody))
 		messages2 := buildProviderCacheRound2Messages(req, assistant)
-		payload2 := buildProviderChatPayload(model, messages2)
+		payload2 := buildProviderChatPayload(model, messages2, false)
 		round2 = s.executeProviderProtocolHTTP(r, provider, model, payload2, "application/json", time.Now())
 	}
 	out.LatencyMs = time.Since(caseStarted).Milliseconds()
@@ -372,7 +372,7 @@ func buildConformanceNonStreamPayload(protocol domain.Protocol, model string, re
 	case domain.ProtocolOpenAIResponses:
 		return buildProviderResponsesChatPayload(model, req)
 	default:
-		return buildProviderChatPayload(model, buildProviderChatMessages(req))
+		return buildProviderChatPayload(model, buildProviderChatMessages(req), req.IncludeTools)
 	}
 }
 
