@@ -53,7 +53,13 @@ desktop/frontend/.history/
 **/cert.pem
 **/tunnel-config.yml
 !internal/tunnel/quick_tunnel_config.yml
-.workbuddy/
+# 审查产物：账本与报告必须进版本控制（它们是对抗式审查的唯一事实源，
+# 曾因整个目录被删而丢失）。证据目录（探针、日志、DB）体积大，仍忽略。
+.workbuddy/*
+!.workbuddy/reviews/
+.workbuddy/reviews/*
+!.workbuddy/reviews/LEDGER.md
+!.workbuddy/reviews/round*-agent-code-review.md
 
 # Trellis & agent metadata
 .trellis/
