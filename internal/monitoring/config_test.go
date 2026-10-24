@@ -4,8 +4,9 @@ import "testing"
 
 func TestDefaultRulesCoverPhaseOne(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 16 {
-		t.Fatalf("phase 1 rules = %d, want 16", len(rules))
+	// 阶段 1 的 16 条 + 阶段 3 上线的 probe_failed / checkin_failed。
+	if len(rules) != 18 {
+		t.Fatalf("active rules = %d, want 18", len(rules))
 	}
 	byKey := map[string]RuleConfig{}
 	for _, r := range rules {
@@ -18,6 +19,15 @@ func TestDefaultRulesCoverPhaseOne(t *testing.T) {
 	}
 	if byKey["oauth_expiring"].Severity != SeverityP0 {
 		t.Fatal("oauth_expiring must default to p0")
+	}
+	if byKey["probe_failed"].Severity != SeverityP1 {
+		t.Fatal("probe_failed must default to p1; authSeverity only escalates a hit")
+	}
+	if byKey["probe_failed"].Params["authSeverity"] != float64(SeverityP0.Rank()) {
+		t.Fatal("probe_failed must carry the authSeverity escalation target")
+	}
+	if byKey["checkin_failed"].Severity != SeverityP2 {
+		t.Fatal("checkin_failed is a reminder, not a page-worthy alert")
 	}
 }
 

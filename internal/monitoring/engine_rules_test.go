@@ -231,3 +231,116 @@ func ruleTicksProvider(t *testing.T, engine *Engine, now time.Time, provider Pro
 	}
 	return out
 }
+
+// providerRuleTicks 逐分钟推进引擎，只返回某一条规则的迁移，让探测/签到这类
+// 「连续计数」规则可以按 tick 断言，而不被同快照里的邻居规则干扰。
+func providerRuleTicks(t *testing.T, engine *Engine, now time.Time, p ProviderObservation, ruleKey string) []Transition {
+	t.Helper()
+	transitions, err := engine.Evaluate(context.Background(), providerSnap(now, p, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]Transition, 0, len(transitions))
+	for _, item := range transitions {
+		if item.State.RuleKey == ruleKey {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func probeObservation(consecutive, status int, authFailure bool) ProviderObservation {
+	return ProviderObservation{ID: "p1", Name: "P1", Probe: ProbeOutcome{
+		Known: true, Consecutive: consecutive, LastStatus: status, AuthFailure: authFailure,
+	}}
+}
+
+// 探测规则钉住三件事：单次失败不报警（探测本身会抖动）、连续 2 次成级、
+// 401/403 抬到 authSeverity。注意 Consecutive 类规则是**双门**：观测侧要数够，
+// 引擎侧还要看到同样多的「命中 tick」，所以成级比第 2 次失败晚一个 tick
+// （60 秒），这是既有约定，不是 bug——它换来的是「一次抖动不会成级」。
+func TestProbeRuleNeedsTwoFailuresAndEscalatesAuthFailure(t *testing.T) {
+	base := time.Date(2026, 10, 24, 3, 0, 0, 0, time.UTC)
+	engine := NewEngine(newFakeStore(), DefaultRules())
+
+	if got := providerRuleTicks(t, engine, base, probeObservation(1, 502, false), "probe_failed"); len(got) != 0 {
+		t.Fatalf("one probe failure must stay silent, got %+v", got)
+	}
+	if got := providerRuleTicks(t, engine, base.Add(time.Minute), probeObservation(2, 502, false), "probe_failed"); len(got) != 0 {
+		t.Fatalf("first hit tick must still wait for the second, got %+v", got)
+	}
+	firing := providerRuleTicks(t, engine, base.Add(2*time.Minute), probeObservation(2, 502, false), "probe_failed")
+	if len(firing) != 1 || firing[0].State.Severity != SeverityP1 {
+		t.Fatalf("two failures must fire p1, got %+v", firing)
+	}
+	if firing[0].State.Detail["lastStatus"] != 502 {
+		t.Fatalf("detail must carry the upstream status: %+v", firing[0].State.Detail)
+	}
+	escalated := providerRuleTicks(t, engine, base.Add(3*time.Minute), probeObservation(3, 401, true), "probe_failed")
+	if len(escalated) != 1 || escalated[0].State.Severity != SeverityP0 || !escalated[0].Upgraded {
+		t.Fatalf("auth failure must escalate to p0, got %+v", escalated)
+	}
+	// 恢复要等两个干净 tick，且恢复事件带的是证明恢复那一次的计数。
+	clean := probeObservation(0, 200, false)
+	if got := providerRuleTicks(t, engine, base.Add(4*time.Minute), clean, "probe_failed"); len(got) != 0 {
+		t.Fatalf("one clean tick must not resolve yet, got %+v", got)
+	}
+	resolved := providerRuleTicks(t, engine, base.Add(5*time.Minute), clean, "probe_failed")
+	if len(resolved) != 1 || !resolved[0].Resolved {
+		t.Fatalf("second clean tick must resolve, got %+v", resolved)
+	}
+}
+
+// 「没跑成」不等于「跑失败」：从未探测与本轮跳过（CLI 未安装）都必须停在
+// unavailable，既不报警也不报恢复，否则界面会把「没有数据」显示成「正常」。
+func TestProbeRuleStaysUnavailableWithoutData(t *testing.T) {
+	base := time.Date(2026, 10, 24, 3, 0, 0, 0, time.UTC)
+
+	never := ProviderObservation{ID: "p2", Name: "P2"}
+	store := newFakeStore()
+	engine := NewEngine(store, DefaultRules())
+	if got := providerRuleTicks(t, engine, base, never, "probe_failed"); len(got) != 0 {
+		t.Fatalf("unknown probe state must not transition, got %+v", got)
+	}
+	for _, item := range store.states {
+		if item.RuleKey == "probe_failed" {
+			t.Fatalf("unknown probe state must not create a state row: %+v", item)
+		}
+	}
+
+	skipped := ProviderObservation{ID: "p3", Name: "P3", Probe: ProbeOutcome{
+		Known: true, Consecutive: 9, Skipped: "cli_missing",
+	}}
+	if got := providerRuleTicks(t, engine, base.Add(time.Minute), skipped, "probe_failed"); len(got) != 0 {
+		t.Fatalf("skipped probes must never alert, got %+v", got)
+	}
+}
+
+// 签到规则按自然日累计，且只对有签到接口的厂商生效——不支持签到的账号必须
+// 显示「不适用」，绝不能因为「今天没有签到成功」而报警。
+func TestCheckinRuleCountsConsecutiveDaysOnlyWhenSupported(t *testing.T) {
+	base := time.Date(2026, 10, 24, 3, 0, 0, 0, time.UTC)
+	engine := NewEngine(newFakeStore(), DefaultRules())
+
+	checkin := func(days int) ProviderObservation {
+		return ProviderObservation{ID: "p1", Name: "P1", Checkin: CheckinOutcome{
+			Known: true, Supported: true, Consecutive: days,
+		}}
+	}
+	if got := providerRuleTicks(t, engine, base, checkin(1), "checkin_failed"); len(got) != 0 {
+		t.Fatalf("a single failed day must stay silent, got %+v", got)
+	}
+	if got := providerRuleTicks(t, engine, base.Add(time.Minute), checkin(2), "checkin_failed"); len(got) != 0 {
+		t.Fatalf("first hit tick must still wait for the second, got %+v", got)
+	}
+	firing := providerRuleTicks(t, engine, base.Add(2*time.Minute), checkin(2), "checkin_failed")
+	if len(firing) != 1 || firing[0].State.Severity != SeverityP2 {
+		t.Fatalf("two failed days must fire p2, got %+v", firing)
+	}
+
+	unsigned := ProviderObservation{ID: "p4", Name: "P4", Checkin: CheckinOutcome{Supported: false}}
+	engine2 := NewEngine(newFakeStore(), DefaultRules())
+	if got := providerRuleTicks(t, engine2, base, unsigned, "checkin_failed"); len(got) != 0 {
+		t.Fatalf("providers without check-in must be unavailable, got %+v", got)
+	}
+}

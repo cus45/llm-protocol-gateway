@@ -282,7 +282,30 @@ type ProviderObservation struct {
 	Quota           *QuotaSnapshot
 	Renewal         RenewalOutcome
 	ModelFailures   int
+	Probe           ProbeOutcome
+	Checkin         CheckinOutcome
 	BaselineTTFTP95 int64
+}
+
+// ProbeOutcome 是主动探测给出的结论。Known=false 表示从未探测过——规则必须判
+// unavailable，不能把「没有数据」当成「正常」。Skipped 非空（如 cli_missing）
+// 同样判 unavailable：没跑成不等于跑失败。
+type ProbeOutcome struct {
+	Known       bool
+	Consecutive int
+	LastAt      time.Time
+	LastStatus  int
+	AuthFailure bool
+	Skipped     string
+}
+
+// CheckinOutcome 是每日签到的连续失败自然日数。Supported=false 表示该厂商根本没有
+// 签到接口，与「今天签到失败」是两回事，绝不能混成告警。
+type CheckinOutcome struct {
+	Known         bool
+	Supported     bool
+	Consecutive   int
+	LastAttemptAt time.Time
 }
 
 type KeyObservation struct {

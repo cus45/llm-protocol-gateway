@@ -472,7 +472,7 @@ func (e *Engine) evaluateAll(snap Snapshot, now time.Time) []evaluation {
 }
 
 func (e *Engine) providerEvaluations(p ProviderObservation, now time.Time) []evaluation {
-	out := make([]evaluation, 0, 5)
+	out := make([]evaluation, 0, 7)
 	name := p.Name
 	if name == "" {
 		name = p.ID
@@ -525,6 +525,46 @@ func (e *Engine) providerEvaluations(p ProviderObservation, now time.Time) []eva
 		}
 		out = append(out, makeEvaluation(rule, TargetProvider, p.ID, name, available, hit,
 			fmt.Sprintf("%s 积分即将到期", name), detail))
+	}
+
+	if rule, ok := e.rule("probe_failed"); ok {
+		// 没跑成 ≠ 跑失败：从未探测与本轮跳过都判 unavailable，让界面能说
+		// 「不适用/暂无数据」而不是骗人一句「正常」。
+		available := p.Probe.Known && p.Probe.Skipped == ""
+		want := paramInt(rule.Params, "consecutiveFailures")
+		hit := available && p.Probe.Consecutive >= want
+		detail := map[string]any{
+			"consecutiveFailures": p.Probe.Consecutive,
+			"threshold":           want,
+			"lastStatus":          p.Probe.LastStatus,
+		}
+		if !p.Probe.LastAt.IsZero() {
+			detail["lastProbeAt"] = timeString(p.Probe.LastAt)
+		}
+		if p.Probe.Skipped != "" {
+			detail["skipped"] = p.Probe.Skipped
+		}
+		ev := makeEvaluation(rule, TargetProvider, p.ID, name, available, hit,
+			fmt.Sprintf("%s 轻探测失败", name), detail)
+		if hit && p.Probe.AuthFailure {
+			// 401/403 说明凭证已经废了，比「上游不通」更需要立刻动手；apply() 在
+			// firing 期间按 Rank 只升不降，所以这里给高级别不会被后续 tick 冲掉。
+			ev.Severity = severityAtRankParam(rule.Params, "authSeverity", rule.Severity)
+			detail["escalated"] = true
+		}
+		out = append(out, ev)
+	}
+
+	if rule, ok := e.rule("checkin_failed"); ok {
+		available := p.Checkin.Known && p.Checkin.Supported
+		want := paramInt(rule.Params, "consecutiveDays")
+		hit := available && p.Checkin.Consecutive >= want
+		detail := map[string]any{"consecutiveDays": p.Checkin.Consecutive, "threshold": want}
+		if !p.Checkin.LastAttemptAt.IsZero() {
+			detail["lastAttemptAt"] = timeString(p.Checkin.LastAttemptAt)
+		}
+		out = append(out, makeEvaluation(rule, TargetProvider, p.ID, name, available, hit,
+			fmt.Sprintf("%s 连续签到失败", name), detail))
 	}
 	return out
 }
@@ -735,6 +775,22 @@ func hasDataError(dataErrors []string, prefix string) bool {
 }
 
 func paramInt(params map[string]float64, key string) int { return int(params[key]) }
+
+// severityAtRankParam 取一个按 Severity.Rank() 编码（3=p0、2=p1、1=p2）的级别参数。
+// RuleConfig.Params 只有 float64，用 rank 存级别可以省掉一张字符串对照表，
+// 也让「参数越界」退化成规则自己的默认级别而不是崩溃。
+func severityAtRankParam(params map[string]float64, key string, fallback Severity) Severity {
+	switch int(params[key]) {
+	case SeverityP0.Rank():
+		return SeverityP0
+	case SeverityP1.Rank():
+		return SeverityP1
+	case SeverityP2.Rank():
+		return SeverityP2
+	default:
+		return fallback
+	}
+}
 
 func timeString(t time.Time) string {
 	if t.IsZero() {

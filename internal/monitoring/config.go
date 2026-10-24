@@ -38,24 +38,15 @@ var ruleDefs = []RuleDef{
 	{Key: "empty_response", Name: "空响应", TargetType: TargetProvider, DefaultParams: map[string]float64{"windowMinutes": 10, "minSamples": 10, "maxRatio": 0.05}, Interval: time.Minute},
 	{Key: "ttft_regression", Name: "首包延迟回退", TargetType: TargetProvider, DefaultParams: map[string]float64{"windowMinutes": 15, "minSamples": 20, "floorMs": 5000, "factor": 2}, Interval: time.Minute},
 	{Key: "model_unavailable", Name: "模型列表拉取失败", TargetType: TargetProvider, DefaultParams: map[string]float64{"consecutiveFailures": 3}, Interval: 15 * time.Minute, Consecutive: true},
+	{Key: "probe_failed", Name: "轻探测失败", TargetType: TargetProvider, DefaultParams: map[string]float64{"consecutiveFailures": 2, "authSeverity": float64(SeverityP0.Rank())}, Interval: time.Minute, Consecutive: true},
+	{Key: "checkin_failed", Name: "签到连续失败", TargetType: TargetProvider, DefaultParams: map[string]float64{"consecutiveDays": 2}, Interval: 24 * time.Hour, Consecutive: true},
 	{Key: "multi_ip", Name: "API Key 多 IP 使用", TargetType: TargetAPIKey, DefaultParams: map[string]float64{"windowMinutes": 10, "minIPs": 5}, Interval: time.Minute},
 	{Key: "concurrent_ip", Name: "API Key 并发 IP", TargetType: TargetAPIKey, DefaultParams: map[string]float64{"minIPs": 4}, Interval: time.Minute},
 	{Key: "collector_stale", Name: "监控采集器停滞", TargetType: TargetGateway, DefaultParams: map[string]float64{"maxAgeMinutes": 5}, Interval: time.Minute},
 }
 
-// 阶段 3 才启用的规则，阶段 1 只登记定义，不进入默认配置。
-var deferredRuleDefs = []RuleDef{
-	{Key: "probe_failed", Name: "轻探测失败", TargetType: TargetProvider, DefaultParams: map[string]float64{"consecutiveFailures": 2}, Interval: time.Minute, Consecutive: true},
-	{Key: "checkin_failed", Name: "签到连续失败", TargetType: TargetProvider, DefaultParams: map[string]float64{"consecutiveDays": 2}, Interval: 24 * time.Hour, Consecutive: true},
-}
-
 func RuleDefinition(key string) (RuleDef, bool) {
 	for _, def := range ruleDefs {
-		if def.Key == key {
-			return def, true
-		}
-	}
-	for _, def := range deferredRuleDefs {
 		if def.Key == key {
 			return def, true
 		}
@@ -81,7 +72,7 @@ func defaultSeverity(key string) Severity {
 	switch key {
 	case "oauth_expiring", "oauth_refresh_failed", "auth_invalid", "multi_ip", "concurrent_ip":
 		return SeverityP0
-	case "key_budget_warn", "credit_expiring", "ttft_regression", "model_unavailable", "collector_stale":
+	case "key_budget_warn", "credit_expiring", "ttft_regression", "model_unavailable", "collector_stale", "checkin_failed":
 		return SeverityP2
 	default:
 		return SeverityP1
