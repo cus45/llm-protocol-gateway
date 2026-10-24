@@ -164,7 +164,7 @@ export function Metric({
   const sparkPath = sparkPoints ? createSmoothPath(sparkPoints) : '';
 
   return (
-    <div className="card metric modern-metric-card">
+    <div className="card metric modern-metric-card metric-card-fixed">
       <div className="metric-header-row">
         <span className="metric-label">{label}</span>
         {badge ? <span className={`metric-badge badge-${badgeTone}`}>{badge}</span> : null}

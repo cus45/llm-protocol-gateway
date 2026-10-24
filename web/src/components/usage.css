@@ -49,14 +49,19 @@ html[data-theme="dark"] .usage-page {
 .usage-share-bar .usage-metric-switch { background: var(--surface); }
 
 /* 概览指标 */
-/* 7 张 KPI：6 列会甩出一张孤卡，4 列排成 4+3，最后一格留空比整行只有一张卡稳。 */
+/* 7 张 KPI：4 列排成 4+3，第二行第三格留空是刻意接受的——补成整行只能靠第 7 张
+   跨列独占，那张卡会被拉成两倍多宽，比留空更难看。≤1279px 落回 3 列，≤900px 两列。 */
 .usage-page .usage-metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.usage-metric-grid .modern-metric-card { padding: 15px 16px; }
-.usage-metric-grid .metric-main-row { gap: 8px; }
+.usage-metric-grid .modern-metric-card { padding: 15px 16px; min-height: 123px; }
+.usage-metric-grid .metric-main-row { gap: 8px; min-height: calc(22px * 1.2); }
 .usage-metric-grid .metric-sparkline-wrap { width: 50px; }
 .usage-metric-grid .metric-value { font-size: 22px; font-weight: 700; letter-spacing: -0.03em; color: var(--text-strong); }
 .usage-metric-grid .metric-label { font-size: 11px; font-weight: 500; color: var(--muted); }
 .usage-metric-grid .metric-note { font-size: 10.5px; line-height: 1.55; color: var(--muted); margin-top: 5px; }
+/* 备注固定两行、数值行按大号字托底：以前每张卡按自己的内容撑高，同排「标签 + 数值 +
+   备注」结构却差出 17–19px。被截掉的全文仍在 title 里。只作用于用量概览的栅格，
+   不影响监控概览等别处用到的 .metric。 */
+.usage-metric-grid .metric-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 
 .usage-pulse-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 14px 0 4px; }
 .usage-pulse-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 14px 12px 16px; border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--r-lg); background: var(--surface-sunken); }
@@ -342,7 +347,9 @@ html[data-theme="dark"] .perf-rate.is-bad { color: #fda4af; }
   .usage-stat > strong { font-size: 24px; }
   .usage-pulse-strip { grid-template-columns: 1fr; }
   .usage-stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .usage-filter-row select { flex: 1 1 140px; max-width: none; }
+  /* min-width:0 是必须的：<option> 文本会把 select 的 min-content 撑到 400px 以上，
+     flex-basis 再小也缩不下来，390 下右侧 43px 被裁出视口。 */
+  .usage-filter-row select { flex: 1 1 140px; max-width: none; min-width: 0; }
   .usage-search { width: 100%; }
   .usage-export-btn { margin-left: 0; }
   .usage-ranking-summary { gap: 18px; flex-wrap: wrap; }

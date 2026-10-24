@@ -1236,9 +1236,10 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .checkbox-field span { color: var(--muted); font-size: 12.5px; font-weight: 500; }
 .checkbox-grid { display: grid; gap: 8px; }
 .muted-text { color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* 事件流右侧的原始键值（costLimitMicros=… 这类排错证据）：落一档弱化，
-   不跟同行的标题抢视觉重量。 */
-.text-aux { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--subtle); }
+/* 事件流右侧的原始键值（costLimitMicros=… 这类排错证据）：比标题弱一档，但不许
+   用 --subtle（浅底上约 2.1:1，低于 AA，正文读不清）；--muted 才是在两主题下都能读的
+   辅助档。长键值仍靠 title 看全文，不许再压字号。 */
+.text-aux { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 
 /* ----------------------------------------------------------------
    11. 可搜索下拉（含 Portal 菜单）
