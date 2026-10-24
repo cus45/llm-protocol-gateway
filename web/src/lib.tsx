@@ -1601,6 +1601,56 @@ export function providerDisplayLabel(provider: Provider | undefined, missing = '
  * 拿日志的 routeId 反查路由首选、再对照密钥的备选顺序，就能在纯前端算出
  * "首选没服务、这条走了备选 N"，不用加库字段。
  */
+export type DecisionAggregate = {
+  providerId: string;
+  /** 出现在候选里/被尝试的次数 */
+  attempts: number;
+  /** 真正服务了这条请求的次数 */
+  served: number;
+  /** 发出去但失败（回答被丢弃或报错）的次数 */
+  failed: number;
+  /** 根本没发出去（未授权 / 未锁定模型 / 已禁用）的次数 */
+  skipped: number;
+  /** 平均到服务成功的耗时（毫秒），只看 served 的尝试 */
+  avgServedMs?: number;
+};
+
+/**
+ * 把请求日志里的调度尝试聚合成"每个账号被怎么对待"的一张表：多选一次就换号、
+ * AI 网关最常见的排障问题（谁老被跳过、谁老失败）用不着逐条翻详情。
+ * 只统计带 attempts 的日志（调度路径），其余日志不进这张表。
+ */
+export function aggregateScheduleAttempts(logs: LogEntry[]): DecisionAggregate[] {
+  const byProvider = new Map<string, DecisionAggregate & { servedMsTotal: number }>();
+  for (const log of logs) {
+    const attempts = log.analysis?.attempts;
+    if (!attempts || attempts.length === 0) continue;
+    for (const attempt of attempts) {
+      const providerId = attempt.providerId?.trim();
+      if (!providerId) continue;
+      const row = byProvider.get(providerId) ?? { providerId, attempts: 0, served: 0, failed: 0, skipped: 0, servedMsTotal: 0 };
+      row.attempts += 1;
+      if (attempt.skipped) {
+        row.skipped += 1;
+      } else if (attempt.deferred) {
+        row.failed += 1;
+      } else if (!attempt.status || (attempt.status >= 200 && attempt.status < 300)) {
+        row.served += 1;
+        if (typeof attempt.ms === 'number') row.servedMsTotal += attempt.ms;
+      } else {
+        row.failed += 1;
+      }
+      byProvider.set(providerId, row);
+    }
+  }
+  return Array.from(byProvider.values())
+    .map(({ servedMsTotal, ...row }) => ({
+      ...row,
+      avgServedMs: row.served > 0 ? Math.round(servedMsTotal / row.served) : undefined,
+    }))
+    .sort((a, b) => b.attempts - a.attempts || a.providerId.localeCompare(b.providerId));
+}
+
 export function trafficLogServing(log: LogEntry, providers: Provider[], routes: Route[], apiKeys: APIKey[]) {
   const route = routes.find((item) => item.id === log.routeId);
   const primaryId = route?.providerId || '';

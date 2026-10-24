@@ -67,6 +67,7 @@ import {
     isTraeConnectKind,
     isTrafficLogError,
     isVisionModel,
+    aggregateScheduleAttempts,
     isWorkBuddyConnectKind,
     isZCodeConnectKind,
     loadBootSession,
@@ -300,6 +301,8 @@ function App() {
       (log.providerId && log.providerId.toLowerCase().includes(kw))
     );
   }, [logs, logsKeyword]);
+  // 当前页日志里的调度尝试聚合：谁被尝试、谁真服务、谁被跳过/失败。
+  const decisionAggregate = useMemo(() => aggregateScheduleAttempts(displayedLogs), [displayedLogs]);
   const [selfcheckCaseDetail, setSelfcheckCaseDetail] = useState<SelfcheckCaseResult | null>(null);
   const [requestStats, setRequestStats] = useState<RequestStatsSnapshot | null>(null);
   const usageRequestVersion = useRef(0);
@@ -6085,6 +6088,26 @@ function App() {
                   </div>
                 </div>
               </div>
+
+              {decisionAggregate.length > 0 ? (
+                <div className="decision-aggregate" title="当前页日志里每个账号被如何调度：尝试 / 服务 / 失败 / 未发出">
+                  <div className="decision-aggregate-title">调度决策（当前页）</div>
+                  <div className="decision-aggregate-rows">
+                    {decisionAggregate.map((row) => (
+                      <div className="decision-aggregate-row" key={row.providerId}>
+                        <span className="decision-aggregate-provider">
+                          {providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId)}
+                        </span>
+                        <span className="num" title="被尝试的次数">尝试 {row.attempts}</span>
+                        <span className={`num${row.served ? ' ok' : ''}`} title="真正服务了请求的次数">服务 {row.served}</span>
+                        <span className={`num${row.failed ? ' bad' : ''}`} title="发出后失败或回答被丢弃的次数">失败 {row.failed}</span>
+                        <span className={`num${row.skipped ? ' muted' : ''}`} title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发 {row.skipped}</span>
+                        {row.avgServedMs != null ? <span className="num muted" title="服务成功时的平均耗时">均 {row.avgServedMs}ms</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               {/* 日志表格 */}
               <div className="log-table">

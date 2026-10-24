@@ -413,6 +413,20 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .nav-item:hover .nav-icon { color: var(--sidebar-text); }
 .nav-item.active .nav-icon { color: var(--sidebar-active-text); }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decision-aggregate {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.decision-aggregate-title { font-weight: 600; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.decision-aggregate-rows { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.decision-aggregate-row { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.decision-aggregate-provider { font-weight: 600; }
+.decision-aggregate-row .num.ok { color: var(--green, #2f9e44); }
+.decision-aggregate-row .num.bad { color: var(--red, #e5484d); }
+.decision-aggregate-row .num.muted { color: var(--muted); }
 .nav-badge {
   margin-left: auto;
   min-width: 18px;
