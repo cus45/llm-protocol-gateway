@@ -94,7 +94,11 @@ var secretValuePattern = regexp.MustCompile(
 		`|AKIA[0-9A-Z]{16}` +
 		`|AIza[0-9A-Za-z_\-]{30,}` +
 		`|xox[baprs]-[0-9A-Za-z\-]{10,}` +
-		`|glpat-[0-9A-Za-z_\-]{16,})`)
+		`|glpat-[0-9A-Za-z_\-]{16,}` +
+		// 厂商私有的不透明凭据：Google 的 OAuth refresh token（1//0g…）与
+		// xAI 的 API token（pac_…）。它们没有通用前缀规则，只能按各自的形状认。
+		`|1//0[0-9A-Za-z_\-]{20,}` +
+		`|pac_[0-9A-Za-z_\-]{20,})`)
 
 const scrubbedValue = "[redacted]"
 

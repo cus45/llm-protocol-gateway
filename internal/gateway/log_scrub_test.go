@@ -150,3 +150,17 @@ func TestScrubMatchesHeaderCaseVariants(t *testing.T) {
 		}
 	}
 }
+
+// 厂商私有的不透明 token 没有通用前缀可依，只能按形状认：Google 的 OAuth
+// refresh token（1//0g…）与 xAI 的 API token（pac_…）。
+func TestScrubCatchesVendorOpaqueTokens(t *testing.T) {
+	for _, secret := range []string{
+		"1//0gLx8vQ2mZpTaC-wK3nRbY7sD4fH",
+		"pac_7f3c9a1e5b2d8c4f6a0e9d3b7c1a5f8e2d6b4c",
+	} {
+		body := []byte(`{"error":"invalid token ` + secret + ` provided"}`)
+		if scrubbed := string(scrubSensitiveRequestBody(body)); strings.Contains(scrubbed, secret) {
+			t.Fatalf("vendor token survived scrubbing: %s", scrubbed)
+		}
+	}
+}

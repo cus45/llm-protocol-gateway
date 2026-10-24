@@ -17,7 +17,10 @@ var appLogSecretPattern = regexp.MustCompile(
 		`|AKIA[0-9A-Z]{16}` +
 		`|AIza[0-9A-Za-z_\-]{30,}` +
 		`|xox[baprs]-[0-9A-Za-z\-]{10,}` +
-		`|glpat-[0-9A-Za-z_\-]{16,})`)
+		`|glpat-[0-9A-Za-z_\-]{16,}` +
+		// 厂商私有的不透明凭据（Google OAuth refresh token、xAI API token）。
+		`|1//0[0-9A-Za-z_\-]{20,}` +
+		`|pac_[0-9A-Za-z_\-]{20,})`)
 
 // appLogJWTPattern matches a JSON Web Token wherever it appears in free text.
 // Access tokens for the subscription providers are JWTs, and an expiry or a
