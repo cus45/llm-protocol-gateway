@@ -84,6 +84,9 @@ func TestClaudeDisableParallelToolUseToChat(t *testing.T) {
 }
 
 // Responses 的 allowed_tools：只保留白名单里的工具并把模式带过去。
+// Anthropic 的 tool_choice 只有 type/name/disable_parallel_tool_use，没有
+// allowed_tools 字段（magpie 同样只下发 {"type":"any"}），白名单只靠收窄
+// tools 数组达成——把白名单塞进 tool_choice 会被上游 400。
 func TestResponsesAllowedToolsToClaude(t *testing.T) {
 	var req map[string]any
 	if err := json.Unmarshal([]byte(`{
@@ -105,13 +108,8 @@ func TestResponsesAllowedToolsToClaude(t *testing.T) {
 	if !ok || choice["type"] != "any" {
 		t.Fatalf("tool_choice = %#v, want any", claudeReq["tool_choice"])
 	}
-	allowed, ok := choice["allowed_tools"].(map[string]any)
-	if !ok {
-		t.Fatalf("allowed_tools missing: %#v", choice)
-	}
-	tools, _ := allowed["tools"].(map[string]any)
-	if _, hasRead := tools["read"]; !hasRead || len(tools) != 1 {
-		t.Fatalf("allowed_tools = %#v", tools)
+	if _, has := choice["allowed_tools"]; has {
+		t.Fatalf("tool_choice must not carry allowed_tools (Claude has no such field): %#v", choice)
 	}
 	toolList, _ := claudeReq["tools"].([]any)
 	if len(toolList) != 1 {
@@ -119,6 +117,42 @@ func TestResponsesAllowedToolsToClaude(t *testing.T) {
 	}
 	if name := stringValue(toolList[0].(map[string]any)["name"]); name != "read" {
 		t.Fatalf("kept tool = %q", name)
+	}
+}
+
+// mode=auto 时 tool_choice 不下发（Claude 默认就是 auto），白名单仍然生效；
+// 白名单把工具全收掉时不能留 any，否则等于要求调一个不存在的工具。
+func TestResponsesAllowedToolsToClaudeAutoAndEmpty(t *testing.T) {
+	cases := []struct {
+		name       string
+		choice     string
+		wantChoice any
+		wantTools  int
+	}{
+		{"auto keeps tools only", `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"read"}]}`, nil, 1},
+		{"required with nothing left falls back to auto", `{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"absent"}]}`, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req map[string]any
+			body := `{"model":"claude-sonnet-4.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],` +
+				`"tools":[{"type":"function","name":"read","parameters":{"type":"object"}}],"tool_choice":` + tc.choice + `}`
+			if err := json.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("request is not json: %v", err)
+			}
+			claudeReq, _, err := responsesToClaudeRequestDirect(req, "claude-sonnet-4.5", 0)
+			if err != nil {
+				t.Fatalf("convert: %v", err)
+			}
+			if tc.wantChoice == nil {
+				if got, has := claudeReq["tool_choice"]; has {
+					t.Fatalf("tool_choice = %#v, want absent", got)
+				}
+			}
+			if list, _ := claudeReq["tools"].([]any); len(list) != tc.wantTools {
+				t.Fatalf("tools = %#v, want %d", claudeReq["tools"], tc.wantTools)
+			}
+		})
 	}
 }
 
@@ -143,15 +177,18 @@ func TestResponsesAllowedToolsKeepsTypeAndName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	choice, _ := claudeReq["tool_choice"].(map[string]any)
-	allowed, _ := choice["allowed_tools"].(map[string]any)
-	tools, _ := allowed["tools"].(map[string]any)
-	entry, ok := tools["read"].(map[string]any)
-	if !ok {
-		t.Fatalf("allowed_tools entry missing: %#v", tools)
+	// 白名单不再下发到 tool_choice（Claude 没有该字段），但收窄后的工具条目必须
+	// 仍是 Claude 的完整形状：type/name 与 input_schema 都要在。
+	if _, has := claudeReq["tool_choice"]; has {
+		t.Fatalf("mode=auto must not emit tool_choice: %#v", claudeReq["tool_choice"])
 	}
-	if got := stringValue(entry["type"]); got != "function" {
-		t.Fatalf("entry type = %q, want function", got)
+	list, _ := claudeReq["tools"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("tools = %#v, want the single allow-listed tool", claudeReq["tools"])
+	}
+	entry, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatalf("narrowed tool is not an object: %#v", list[0])
 	}
 	if got := stringValue(entry["name"]); got != "read" {
 		t.Fatalf("entry name = %q, want read", got)

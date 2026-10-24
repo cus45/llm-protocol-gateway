@@ -507,24 +507,31 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	}
 	if allowed, mode, ok := responsesAllowedToolsChoice(responsesReq["tool_choice"]); ok {
 		// tool_choice={"type":"allowed_tools","mode":…,"tools":[…]}：只有列出的
-		// 工具能调。Claude 的 allowed_tools 正好是这个形状，直接落下去，
-		// mode=required 对应 Claude 的 any。
-		claudeMode := "auto"
-		if mode == "required" {
-			claudeMode = "any"
-		}
-		claudeReq["tool_choice"] = map[string]any{
-			"type":          claudeMode,
-			"allowed_tools": map[string]any{"tools": allowed},
-		}
-		if tools, isList := claudeReq["tools"].([]any); isList {
-			claudeReq["tools"] = narrowClaudeTools(tools, allowed)
-		} else if tools, isList := claudeReq["tools"].([]map[string]any); isList {
+		// 工具能调。Anthropic 的 tool_choice 只有 type/name/disable_parallel_tool_use，
+		// 没有 allowed_tools 字段——把白名单塞进 tool_choice 会被上游 400。白名单
+		// 的效果完全由收窄 tools 数组达成，tool_choice 只保留 Claude 认识的形状。
+		narrowed := claudeReq["tools"]
+		if tools, isList := narrowed.([]any); isList {
+			narrowed = narrowClaudeTools(tools, allowed)
+		} else if tools, isList := narrowed.([]map[string]any); isList {
 			list := make([]any, 0, len(tools))
 			for _, tool := range tools {
 				list = append(list, tool)
 			}
-			claudeReq["tools"] = narrowClaudeTools(list, allowed)
+			narrowed = narrowClaudeTools(list, allowed)
+		}
+		if narrowed != nil {
+			claudeReq["tools"] = narrowed
+		}
+		narrowedTools, _ := narrowed.([]any)
+		// 只剩一个工具都没有时不强制调用：mode=required 在 Claude 里是 any，
+		// 白名单把工具全收掉之后再 any 会要求调一个不存在的工具。
+		claudeMode := "auto"
+		if mode == "required" && len(narrowedTools) > 0 {
+			claudeMode = "any"
+		}
+		if claudeMode != "auto" || responsesReq["parallel_tool_calls"] != nil {
+			claudeReq["tool_choice"] = map[string]any{"type": claudeMode}
 		}
 	} else if rawChoice, exists := responsesReq["tool_choice"]; exists || responsesReq["parallel_tool_calls"] != nil {
 		normalized := toolCtx.normalizeToolChoice(rawChoice)
