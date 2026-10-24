@@ -1818,7 +1818,7 @@ function ClientTab({
               <span>复制 curl</span>
             </button>
           </div>
-          <pre className="akc-code-block plain">{routeTestCurl(route, endpoints, keyItem, publicBase, primary)}</pre>
+          <div className="akc-code-block plain"><pre>{routeTestCurl(route, endpoints, keyItem, publicBase, primary)}</pre></div>
         </div>
       ) : null}
 
@@ -1955,9 +1955,9 @@ function SandboxCard({keyItem, onTest, onUpdateField}: {
               <b>{result.model || '—'}</b>
             </div>
           </div>
-          <pre className={`akc-code-block plain${result.success ? '' : ' error'}`}>
-            {result.preview || result.error || '（无内容）'}
-          </pre>
+          <div className={`akc-code-block plain${result.success ? '' : ' error'}`}>
+            <pre>{result.preview || result.error || '（无内容）'}</pre>
+          </div>
         </>
       ) : null}
       {serverError ? <div className="akc-hint error">{serverError}</div> : null}

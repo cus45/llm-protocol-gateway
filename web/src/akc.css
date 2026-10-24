@@ -693,6 +693,9 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 
 .akc-code-block { position: relative; margin: 0; min-width: 0; }
 .akc-code-block pre {
+  display: block;
+  width: 100%; max-width: 100%;
+  box-sizing: border-box;
   margin: 0; padding: 10px 12px;
   max-height: 260px; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -713,7 +716,11 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
   background: var(--surface); color: var(--text); font-size: 12.5px;
 }
 .akc-sandbox-input input:focus { outline: none; border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
-.akc-stats-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; min-width: 0; }
+.akc-stats-4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+  gap: 8px; min-width: 0;
+}
 .akc-stats-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .akc-stats-4 > div, .akc-stats-2 > div {
   display: grid; gap: 2px; min-width: 0;
@@ -723,6 +730,7 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 }
 .akc-stats-4 > div > span, .akc-stats-2 > div > span { color: var(--subtle); font-size: 10.5px; font-weight: 600; }
 .akc-stats-4 > div > b, .akc-stats-2 > div > b {
+  min-width: 0;
   color: var(--text-strong);
   font-family: var(--mono); font-size: 13px; font-weight: 700;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -730,6 +738,9 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 .akc-stats-4 > div > b.ok { color: var(--green); }
 .akc-stats-4 > div > b.bad { color: var(--red); }
 .akc-stats-4 > div > b.accent { color: var(--accent-strong); }
+/* 沙箱结果：长回答只在框内滚动，任何宽度下都不撑破卡片 */
+.akc-card .akc-code-block,
+.akc-card .akc-code-block pre { max-width: 100%; min-width: 0; overflow-x: hidden; }
 .akc-sandbox-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--subtle); font-size: 11.5px; }
 
 /* — 全量数据表 — */
@@ -957,3 +968,18 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 }
 .akc-pop-check.on { border-color: var(--accent); background: var(--accent); }
 .akc-pop-empty { padding: 14px 10px; color: var(--subtle); font-size: 12px; text-align: center; }
+
+/* 模型页：同一服务商多账号合并后，卡片上标出来源账号 */
+.model-sources {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+  margin: -2px 0 2px;
+  font-size: 11px;
+}
+.model-sources .provider-label-name { font-size: 11px; }
+.model-sources-more { color: var(--subtle); font-family: var(--mono); font-size: 10.5px; }
+.model-provider-count {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-soft);
+  color: var(--muted); font-size: 11px; font-weight: 600;
+}

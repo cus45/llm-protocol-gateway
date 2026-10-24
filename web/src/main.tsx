@@ -20,6 +20,7 @@ import {
     type ApiKeyViewMode
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
+import {mergeModelsAcrossAccounts, type MergedModel} from './model_merge';
 import {
     activePublicBaseURL,
     activeUIPublicBaseURL,
@@ -179,6 +180,7 @@ import {
     LegacyRequestStatsSnapshot,
     LogEntry,
     LogPage,
+    Model,
     NavItemID,
     Protocol,
     Provider,
@@ -798,6 +800,12 @@ function App() {
     }
   }, [modelsSearchQuery]);
 
+  // 同一服务商下多个账号列的是几乎完全一样的模型（每家 WorkBuddy 订阅都是同 19 个），
+  // 平铺出来就是 285 张一模一样的卡片。选中服务商或单个账号时按模型名合并，每张
+  // 卡片带上「哪些账号有这个模型」；只有没选服务商（全部）时才逐账号陈列。
+  const modelsMergeAcrossAccounts = Boolean(modelsActiveGroup);
+  const modelsByProviderId = useMemo(() => new Map(state.providers.map((provider) => [provider.id, provider])), [state.providers]);
+
   const filteredModels = useMemo(() => {
     const base = modelsFilterProviderIDs
       ? state.models.filter((model) => modelsFilterProviderIDs.has(model.providerId))
@@ -832,13 +840,15 @@ function App() {
           }
           return true;
         });
-    return [...capabilityMatched].sort((a, b) => {
+    const sorted = [...capabilityMatched].sort((a, b) => {
       const ca = recentModelRequestCounts.get(`${a.providerId}::${a.id}`) || recentModelRequestCounts.get(a.id) || 0;
       const cb = recentModelRequestCounts.get(`${b.providerId}::${b.id}`) || recentModelRequestCounts.get(b.id) || 0;
       if (ca !== cb) return cb - ca;
       return a.id.localeCompare(b.id);
     });
-  }, [state.models, state.providers, modelsFilterProviderIDs, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts]);
+    if (!modelsMergeAcrossAccounts) return sorted;
+    return mergeModelsAcrossAccounts(sorted, modelsByProviderId) as Model[];
+  }, [state.models, state.providers, modelsFilterProviderIDs, modelsCapabilityFilter, modelsSearch, recentModelRequestCounts, modelsMergeAcrossAccounts, modelsByProviderId]);
 
   // 筛选条件一变就回到第一屏，否则用户改完筛选还停在“加载了 480 个”的位置。
   useEffect(() => { setModelsVisibleCount(60); }, [modelsBrandFilter, modelsProviderFilter, modelsCapabilityFilter, modelsSearchQuery]);
@@ -5815,6 +5825,7 @@ function App() {
                 </div>
                 <div className="models-toolbar-meta">
                   当前显示 {filteredModels.length} 个模型
+                  {modelsMergeAcrossAccounts ? '（同名模型已跨账号合并）' : ''}
                   {modelsCapabilityFilter !== 'all' ? ` · 特性「${modelsCapabilityFilter === 'thinking' ? '思考/推理' : modelsCapabilityFilter === 'vision' ? '视觉多模态' : '128K+ 上下文'}」` : ''}
                   {modelsFilterCaption ? ` · ${modelsFilterCaption}` : ''}
                   {modelsSearchQuery.trim() ? ` · 检索「${modelsSearchQuery.trim()}」` : ''}
@@ -5888,7 +5899,9 @@ function App() {
                               {modelAlias(model) ? <span className="model-id-alias">{modelAlias(model)}</span> : null}
                             </td>
                             <td>
-                              {provider ? <ProviderLabel provider={provider} size={15} /> : <span className="provider-label missing">{model.providerId}</span>}
+                              {(model as MergedModel).providers && ((model as MergedModel).providers!.length) > 1
+                                ? <span className="model-provider-count" title={(model as MergedModel).providers!.map((item) => item.name).join(' / ')}>{(model as MergedModel).providers!.length} 个账号可用</span>
+                                : provider ? <ProviderLabel provider={provider} size={15} /> : <span className="provider-label missing">{model.providerId}</span>}
                             </td>
                             <td>
                               <div className="model-tags-row">
@@ -5926,6 +5939,16 @@ function App() {
                       const isLongContext = (model.contextLength || 0) >= 128000;
                       return (
                         <div className="model-card compact" key={`${model.providerId}-${model.id}`}>
+                          {(() => {
+                            const sources = (model as MergedModel).providers;
+                            // 18 个账号各画一枚图标会挤满卡片，只写数量，悬浮看完整名单。
+                            if (!sources || sources.length < 2) return null;
+                            return (
+                              <div className="model-sources" title={sources.map((item) => providerOptionLabel(item)).join(' / ')}>
+                                <span className="model-provider-count">{sources.length} 个账号可用</span>
+                              </div>
+                            );
+                          })()}
                           <div className="model-card-head">
                             <div className="model-card-title-row">
                               <div className="model-id-main">
@@ -5949,7 +5972,9 @@ function App() {
                             />
                           </div>
                           <div className="provider-meta" title={provider?.name || model.providerId}>
-                            {provider ? <ProviderLabel provider={provider} size={14} /> : model.providerId}
+                            {(model as MergedModel).providers && ((model as MergedModel).providers!.length) > 1
+                              ? null
+                              : provider ? <ProviderLabel provider={provider} size={14} /> : model.providerId}
                           </div>
                           <div className="model-tags-row">
                             {isThinking ? <span className="model-tag reasoning">思考/推理</span> : null}
