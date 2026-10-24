@@ -367,3 +367,27 @@ export function probeCaseText(key: string): string {
   if (key === 'tools') return '工具调用';
   return key || '—';
 }
+
+// ── 规则（阶段 4）─────────────────────────────────────────────────────────
+
+/** 规则级别只有三档；`info` 是事件用的，规则配置不接受。 */
+export type MonitorRuleSeverity = 'p0' | 'p1' | 'p2';
+
+/**
+ * `/__monitor/rules` 的一行：定义（名称、目标类型、默认参数、检查间隔）与当前配置合成。
+ * `params` 永远存在；`defaultParams` 是「恢复默认」的唯一来源。
+ */
+export interface MonitorRule {
+  key: string;
+  name: string;
+  targetType: string;
+  enabled: boolean;
+  severity: MonitorRuleSeverity;
+  cooldownMinutes: number;
+  /** 引擎检查这条规则的间隔（由后端 Interval 换算成分钟，不是纳秒）。 */
+  intervalMinutes: number;
+  params: Record<string, number>;
+  defaultParams: Record<string, number>;
+  /** true: 参数是「连续失败/连续天数」而不是时长窗口。 */
+  consecutive: boolean;
+}

@@ -6965,3 +6965,75 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   .mrow-probe > :nth-child(5) { display: none; }
   .mrow-probe > :nth-child(6) { grid-column: 1 / -1; justify-self: stretch; }
 }
+
+/* 规则页（阶段 4）：开关 / 名称+目标徽标+检查间隔 / 级别 / 冷却 / 参数 / 恢复默认。
+   参数格按 defaultParams 动态渲染，条数在 1–4 之间浮动，所以参数列是 grid 子网格，
+   窄屏时整块折到下一行自己排；控制件只用 36/28 两档高度里的 28（行内档）。 */
+.mrow-rule {
+  /* 级别列 88px：选项文案「P0 · 严重」实测约 47px，加上左右内边距与 24px 的
+     下拉箭头，64px 只剩 32px 可用宽度，会把文字裁成「P0 · 严」。 */
+  grid-template-columns: 76px minmax(0, 1.3fr) 88px 112px minmax(0, 2fr) 84px;
+}
+.mrow-rule > .rules-actions { justify-self: end; }
+.rules-switch { display: flex; align-items: center; min-width: 0; }
+.rules-name { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.rules-name > .badge { flex: 0 0 auto; }
+.rules-name > .m-row-num { flex: 0 0 auto; }
+.rules-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rules-cell-label { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.3; }
+.rules-cell-note { color: var(--muted); font-size: 11px; line-height: 1.3; }
+/* 冷却与「分钟」同处一行：输入框与单位都用 .rules-control 的 28px 行高，单位只占文字高度。 */
+.rules-cooldown > .rules-control { flex: 1 1 auto; }
+.rules-cooldown { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.rules-cooldown > .muted-text { flex: 0 0 auto; }
+.rules-params { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.rules-param { display: flex; flex-direction: column; gap: 2px; min-width: 0; width: 96px; }
+.rules-param-wide { width: 116px; }
+.rules-ratio-note { color: var(--subtle); font-variant-numeric: tabular-nums; }
+.rules-param > .m-row-num { font-size: 12px; }
+.rules-control {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-h-sm);
+  box-sizing: border-box;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  color: var(--text);
+  background-color: var(--surface);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  outline: none;
+}
+.rules-control:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+select.rules-control {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 24px;
+  background-image: var(--select-caret);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+.rules-num { font-variant-numeric: tabular-nums; }
+.rules-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.rules-dirty { border-color: var(--accent-border); }
+.rules-inline-error { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; min-width: 0; flex-wrap: wrap; }
+.rules-err { color: var(--red); }
+@media (max-width: 1100px) {
+  /* .mrow 的两列档把首尾格铺满整行；规则行自己排：开关+名称一行，级别/冷却/恢复默认
+     一行，参数整行铺开。 */
+  .mrow-rule { grid-template-columns: 76px minmax(0, 1fr) 88px 112px; }
+  .mrow-rule > .rules-switch,
+  .mrow-rule > .rules-actions { grid-column: auto; }
+  .mrow-rule > .rules-params { grid-column: 1 / -1; }
+  .rules-actions > .btn { white-space: nowrap; }
+}
+@media (max-width: 640px) {
+  .mrow-rule { grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr); }
+  .mrow-rule > .rules-params { grid-column: 1 / -1; }
+  .mrow-rule > .rules-actions { grid-column: 1 / -1; justify-self: start; }
+}

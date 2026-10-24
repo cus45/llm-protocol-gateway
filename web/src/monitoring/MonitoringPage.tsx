@@ -42,15 +42,17 @@ import {AccountsTab} from './AccountsTab';
 import {AlertsTab} from './AlertsTab';
 import {OverviewTab} from './OverviewTab';
 import {PROBE_KIND_LIGHT, ProbesTab} from './ProbesTab';
+import {RulesTab} from './RulesTab';
 import {SettingsTab} from './SettingsTab';
 
-type TabID = 'overview' | 'accounts' | 'alerts' | 'probes' | 'settings';
+type TabID = 'overview' | 'accounts' | 'alerts' | 'probes' | 'rules' | 'settings';
 
 const TABS: Array<{ id: TabID; label: string }> = [
   { id: 'overview', label: '概览' },
   { id: 'accounts', label: '账号' },
   { id: 'alerts', label: '告警' },
   { id: 'probes', label: '探测' },
+  { id: 'rules', label: '规则' },
   { id: 'settings', label: '设置' },
 ];
 
@@ -119,6 +121,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [settingsError, setSettingsError] = useState('');
+  // 规则页的保存只写规则；成功/失败都由页面内部提示，失败更不刷新（否则响应会把编辑冲掉）。
+  const [rulesNotice, setRulesNotice] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
   // 抽屉里的动作要就地给反馈：账号页在 Modal 打开时，面板顶部的错误行会被抽屉挡住。
@@ -528,6 +532,15 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           }}
           onOpenAccount={openAccount}
           onLoadMore={loadMoreAlerts}
+        />
+      )}
+
+      {tab === 'rules' && (
+        <RulesTab
+          onNotice={(text) => setRulesNotice(text)}
+          error={error}
+          timezone={timezone}
+          notice={tab === 'rules' ? rulesNotice : ''}
         />
       )}
 

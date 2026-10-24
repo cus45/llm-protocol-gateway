@@ -1,0 +1,429 @@
+import {useEffect, useMemo, useState} from 'react';
+import {Switch} from '../components/ui';
+import {fetchRules, MonitorAPIError, saveRules} from './api';
+import type {MonitorRule, MonitorRuleSeverity} from './types';
+import {SEVERITY_TEXT} from './types';
+
+/**
+ * 规则页。保存是整表替换（PUT 全部规则），所以草稿必须是整张表：
+ * 只改一条也要把其余条目原样带回——缺项会被后端当成「恢复默认」。
+ *
+ * 轮询不覆盖未保存的编辑：草稿只在本组件第一次拿到后端值、以及保存成功
+ * （用响应覆盖）时重置。失败时草稿原样保留，不闪回。
+ */
+
+export interface RulesTabProps {
+  onNotice: (text: string) => void;
+  /** 页面顶部错误行（读取失败一类）；行内保存错误由本组件就地显示。 */
+  error: string;
+  /** 保存成功的提示（由外层持有，切走再回来仍在）。 */
+  notice: string;
+  timezone: string;
+}
+
+/** 只有三档级别可配；`info` 是事件用的，不能设成规则级别。 */
+const RULE_SEVERITIES: MonitorRuleSeverity[] = ['p0', 'p1', 'p2'];
+const SEVERITY_LABEL: Record<MonitorRuleSeverity, string> = { p0: 'P0', p1: 'P1', p2: 'P2' };
+/** 窗口后端只接受 5/10/15，前端给三档选择器而不是自由输入。 */
+const WINDOW_CHOICES = [5, 10, 15];
+const COOLDOWN_MIN = 5;
+const COOLDOWN_MAX = 1440;
+/** 与 internal/monitoring/config.go 的 DefaultRules / defaultSeverity 保持一致。 */
+const DEFAULT_COOLDOWN_MINUTES = 60;
+const DEFAULT_SEVERITY: Record<string, MonitorRuleSeverity> = {
+  oauth_expiring: 'p0',
+  oauth_refresh_failed: 'p0',
+  auth_invalid: 'p0',
+  multi_ip: 'p0',
+  concurrent_ip: 'p0',
+  key_budget_warn: 'p2',
+  credit_expiring: 'p2',
+  ttft_regression: 'p2',
+  model_unavailable: 'p2',
+  collector_stale: 'p2',
+  checkin_failed: 'p2',
+};
+
+/**
+ * 参数名文案与量纲。带 Ratio 的占比是指 0–1；minSamples / minCount / maxCount / minIPs
+ * 是正整数计数；ttft_regression.factor 是倍数。未列出的 key（probe_failed.authSeverity
+ * 是级别码，不是阈值）不渲染成输入框。
+ */
+interface ParamSpec {
+  label: string;
+  unit: string;
+  kind: 'ratio' | 'int' | 'number';
+}
+
+const PARAM_SPECS: Record<string, ParamSpec> = {
+  leadMinutes: { label: '提前提醒', unit: '分钟', kind: 'int' },
+  leadHours: { label: '提前提醒', unit: '小时', kind: 'int' },
+  consecutiveFailures: { label: '连续失败', unit: '次', kind: 'int' },
+  consecutiveDays: { label: '连续失败', unit: '天', kind: 'int' },
+  windowMinutes: { label: '统计窗口', unit: '', kind: 'int' },
+  minCount: { label: '最少次数', unit: '次', kind: 'int' },
+  minSamples: { label: '最少样本', unit: '次', kind: 'int' },
+  maxCount: { label: '次数上限', unit: '次', kind: 'int' },
+  minIPs: { label: 'IP 数', unit: '个', kind: 'int' },
+  maxAgeMinutes: { label: '最大滞后', unit: '分钟', kind: 'int' },
+  minRatio: { label: '最低占比', unit: '', kind: 'ratio' },
+  maxRatio: { label: '占比上限', unit: '', kind: 'ratio' },
+  maxSuccessRatio: { label: '成功率下限', unit: '', kind: 'ratio' },
+  maxErrorRatio: { label: '错误率上限', unit: '', kind: 'ratio' },
+  warnRatio: { label: '预警占比', unit: '', kind: 'ratio' },
+  criticalRatio: { label: '耗尽占比', unit: '', kind: 'ratio' },
+  floorMs: { label: '延迟地板', unit: 'ms', kind: 'int' },
+  factor: { label: '回退倍数', unit: '倍', kind: 'number' },
+};
+
+/** targetType 徽标文案。 */
+const TARGET_TEXT: Record<string, string> = {
+  provider: '账号',
+  api_key: '密钥',
+  gateway: '网关',
+};
+
+/** 草稿里参数一律按字符串存：type=number 清空时是 ''，直接转数字会变成 0。 */
+interface RuleDraft {
+  key: string;
+  enabled: boolean;
+  severity: MonitorRuleSeverity;
+  cooldownMinutes: string;
+  params: Record<string, string>;
+}
+
+/** 后端 PUT 的条目：params 只带填了值的项（空 = 这一条按定义的默认参数落库）。 */
+function toRequest(draft: RuleDraft): MonitorRule {
+  const params: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(draft.params)) {
+    if (raw.trim() === '') continue;
+    params[key] = Number(raw);
+  }
+  return {
+    key: draft.key,
+    enabled: draft.enabled,
+    severity: draft.severity,
+    cooldownMinutes: Number(draft.cooldownMinutes),
+    params,
+  } as MonitorRule;
+}
+
+function toDraft(rule: MonitorRule): RuleDraft {
+  const params: Record<string, string> = {};
+  for (const key of Object.keys(rule.defaultParams ?? {}).sort()) {
+    const value = rule.params?.[key];
+    // 未配置/不适用留空，渲染成「—」；写 0 会被后端当成缺项而静默补默认值。
+    params[key] = typeof value === 'number' && value > 0 ? String(value) : '';
+  }
+  return {
+    key: rule.key,
+    enabled: rule.enabled,
+    severity: rule.severity === 'p0' || rule.severity === 'p2' ? rule.severity : 'p1',
+    cooldownMinutes: String(rule.cooldownMinutes),
+    params,
+  };
+}
+
+function toDrafts(rules: MonitorRule[]): RuleDraft[] {
+  return rules.map(toDraft);
+}
+
+/** 两条规则配置是否相同。不用 JSON.stringify 比：参数对象的键顺序不受控。 */
+function sameRule(a: MonitorRule | undefined, b: MonitorRule | undefined): boolean {
+  if (!a || !b) return a === b;
+  if (a.enabled !== b.enabled || a.severity !== b.severity || a.cooldownMinutes !== b.cooldownMinutes) return false;
+  const keys = new Set([...Object.keys(a.params), ...Object.keys(b.params)]);
+  for (const key of keys) {
+    if (a.params[key] !== b.params[key]) return false;
+  }
+  return true;
+}
+
+/** 前端预检：只是体验，唯一的防线仍是服务端 ValidateRules。 */
+function checkDraft(draft: RuleDraft): string {
+  const cooldown = Number(draft.cooldownMinutes);
+  if (draft.cooldownMinutes.trim() === '' || !Number.isInteger(cooldown) || cooldown < COOLDOWN_MIN || cooldown > COOLDOWN_MAX) {
+    return '冷却需为 5–1440 的整数分钟';
+  }
+  for (const [key, raw] of Object.entries(draft.params)) {
+    if (raw.trim() === '') continue;
+    const spec = PARAM_SPECS[key];
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return `${spec?.label ?? key}：需要数字`;
+    if (value <= 0) return `${spec?.label ?? key}：需大于 0`;
+    if (spec?.kind === 'int' && !Number.isInteger(value)) return `${spec?.label ?? key}：需要整数`;
+    if (key === 'windowMinutes' && !WINDOW_CHOICES.includes(value)) return '统计窗口只能是 5/10/15 分钟';
+    if (key === 'minSamples' && (value < 1 || value > 10000)) return '最少样本需为 1–10000';
+    if (spec?.kind === 'ratio' && value > 1) return `${spec.label}：取值 0–1`;
+  }
+  return '';
+}
+
+/** 比率后面跟的百分比：0.05 → 5%，让 0–1 的取值一眼可见。 */
+function ratioText(value: string): string {
+  const number = Number(value);
+  if (value.trim() === '' || !Number.isFinite(number)) return value;
+  return `${(number * 100).toFixed((number * 100) % 1 === 0 ? 0 : 1)}%`;
+}
+
+function paramHint(key: string, spec: ParamSpec | undefined): string {
+  if (key === 'windowMinutes') return '5/10/15';
+  if (key === 'minSamples') return '1–10000';
+  if (spec?.kind === 'ratio') return '0–1';
+  return '';
+}
+
+export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
+  const [rules, setRules] = useState<MonitorRule[]>([]);
+  const [drafts, setDrafts] = useState<RuleDraft[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // 首次进入规则页读一次。之后只有保存成功才用响应覆盖——页面轮询不覆盖草稿。
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void fetchRules()
+      .then((next) => {
+        if (cancelled) return;
+        setRules(next);
+        setDrafts(toDrafts(next));
+        setLoadError('');
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setLoadError(reason instanceof MonitorAPIError ? reason.message : '规则读取失败');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const ruleOf = useMemo(() => new Map(rules.map((rule) => [rule.key, rule])), [rules]);
+  // 「改没改」的比较：两侧都过 toRequest（只留填了值的参数），参数键顺序不同不会被当成脏。
+  const cleanOf = new Map(rules.map((rule) => [rule.key, toRequest(toDraft(rule))]));
+  const dirtyKeys = new Set(
+    drafts.filter((draft) => !sameRule(toRequest(draft), cleanOf.get(draft.key))).map((draft) => draft.key),
+  );
+
+  const updateDraft = (key: string, patch: Partial<RuleDraft>, paramPatch?: Record<string, string>) => {
+    setSaveError('');
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.key === key ? { ...draft, ...patch, params: paramPatch ? { ...draft.params, ...paramPatch } : draft.params } : draft,
+      ),
+    );
+  };
+
+  /**
+   * 恢复默认：只重置这一条。参数取这一条的 defaultParams；开关/级别/冷却的默认值
+   * 后端没有随 rules GET 下发（响应里只有 defaultParams），所以在前端常量里照抄
+   * internal/monitoring/config.go 的 DefaultRules / defaultSeverity。
+   */
+  const restoreOne = (key: string) => {
+    const rule = ruleOf.get(key);
+    if (!rule) return;
+    updateDraft(key, {
+      enabled: true,
+      severity: DEFAULT_SEVERITY[rule.key] ?? 'p1',
+      cooldownMinutes: String(DEFAULT_COOLDOWN_MINUTES),
+      params: Object.fromEntries(Object.entries(rule.defaultParams ?? {}).map(([name, value]) => [name, String(value)])),
+    });
+  };
+
+  const save = async () => {
+    setSaveError('');
+    for (const draft of drafts) {
+      const rule = ruleOf.get(draft.key);
+      const problem = rule ? checkDraft(draft) : '规则定义缺失';
+      if (problem) {
+        setSaveError(`${rule?.name ?? draft.key}：${problem}`);
+        return;
+      }
+    }
+    setSaving(true);
+    try {
+      const saved = await saveRules(drafts.map(toRequest));
+      setRules(saved);
+      setDrafts(toDrafts(saved));
+      setSaveError('');
+      onNotice(`规则已保存（${saved.length} 条），下一拍调度生效`);
+    } catch (reason) {
+      // 保留编辑：只显示错误，不把草稿换回后端值。
+      setSaveError(reason instanceof MonitorAPIError ? reason.message : '规则保存失败，请稍后重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card panel">
+      <div className="panel-header">
+        <div>
+          <h2 className="panel-title">{`规则（${rules.length}）`}</h2>
+          <p className="panel-desc">
+            {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
+          </p>
+        </div>
+        <div className="panel-header-actions rules-actions">
+          {dirtyKeys.size > 0 && <span className="muted-text">{`${dirtyKeys.size} 条未保存`}</span>}
+          <button className="btn btn-sm primary" disabled={saving || drafts.length === 0} onClick={() => void save()}>
+            {saving ? '保存中…' : '保存规则'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="metric-value rules-err">{error}</div>}
+      {loadError && <div className="metric-value rules-err">{loadError}</div>}
+      {notice && !saveError && (
+        <div className="rules-inline-error">
+          <span className="muted-text">{notice}</span>
+        </div>
+      )}
+      {saveError && (
+        <div className="rules-inline-error" role="alert">
+          <span className="rules-err">{`未保存：${saveError}`}</span>
+        </div>
+      )}
+      {loading && drafts.length === 0 && <div className="muted-text">{'读取中…'}</div>}
+
+      {drafts.map((draft) => {
+        const rule = ruleOf.get(draft.key);
+        if (!rule) return null;
+        const paramKeys = Object.keys(rule.defaultParams ?? {}).sort();
+        const dirty = dirtyKeys.has(draft.key);
+        return (
+          <div className={`log-row${dirty ? ' rules-dirty' : ''}`} key={draft.key}>
+            <div className="mrow mrow-rule">
+              <span className="rules-switch">
+                <Switch
+                  checked={draft.enabled}
+                  label={draft.enabled ? '启用' : '停用'}
+                  onChange={(value) => updateDraft(draft.key, { enabled: value })}
+                />
+              </span>
+              <span className="rules-name">
+                <span className="m-clip" title={`${rule.name}（${rule.key}）`} style={{ fontWeight: 600 }}>
+                  {rule.name}
+                </span>
+                <span className={`badge ${rule.targetType === 'api_key' ? 'purple' : rule.targetType === 'gateway' ? 'slate' : 'cyan'}`}>
+                  {TARGET_TEXT[rule.targetType] ?? rule.targetType}
+                </span>
+                <span className="muted-text m-row-num" title="引擎检查这条规则的间隔">
+                  {`每 ${rule.intervalMinutes} 分钟检查`}
+                </span>
+              </span>
+              <label className="rules-cell">
+                <span className="rules-cell-label">{'级别'}</span>
+                <select
+                  className="rules-control"
+                  aria-label={`${rule.name} 级别`}
+                  value={draft.severity}
+                  onChange={(event) => updateDraft(draft.key, { severity: event.target.value as MonitorRuleSeverity })}
+                >
+                  {RULE_SEVERITIES.map((value) => (
+                    <option key={value} value={value}>
+                      {`${SEVERITY_LABEL[value]} · ${SEVERITY_TEXT[value].split(' ')[1]}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="rules-cell">
+                <span className="rules-cell-label" title="同一条告警在这段时间内不重复通知；5–1440 分钟">
+                  {'冷却'}
+                </span>
+                <span className="rules-cooldown">
+                  <input
+                    className="rules-control rules-num"
+                    type="number"
+                    min={COOLDOWN_MIN}
+                    max={COOLDOWN_MAX}
+                    step={1}
+                    aria-label={`${rule.name} 冷却分钟`}
+                    value={draft.cooldownMinutes}
+                    onChange={(event) => updateDraft(draft.key, { cooldownMinutes: event.target.value })}
+                  />
+                  <span className="muted-text">{'分钟'}</span>
+                </span>
+              </label>
+              <span className="rules-params">
+                {paramKeys.length === 0 && <span className="muted-text">{'—'}</span>}
+                {paramKeys.map((key) => {
+                  const spec = PARAM_SPECS[key];
+                  const raw = draft.params[key] ?? '';
+                  if (!spec) {
+                    // 界面不认识的参数（probe_failed.authSeverity 是「认证失败时按该级别通知」）：
+                    // 按级别文字显示，既不出现裸数字，也不变成 0。
+                    return (
+                      <span className="rules-param" key={key} title={`${key} · 认证失败时按该级别通知`}>
+                        <span className="rules-cell-label">{'认证失败级别'}</span>
+                        <span className="m-row-num">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
+                      </span>
+                    );
+                  }
+                  const hint = paramHint(key, spec);
+                  const ratio = spec.kind === 'ratio' && raw !== '' && raw !== '0';
+                  return (
+                    <label
+                      className={`rules-param${key === 'windowMinutes' ? ' rules-param-wide' : ''}`}
+                      key={key}
+                      title={`${key}${hint ? ` · ${hint}` : ''}`}
+                    >
+                      <span className="rules-cell-label">
+                        {spec.label}
+                        {spec.unit ? `（${spec.unit}）` : ''}
+                        {ratio && <span className="rules-ratio-note">{` ${ratioText(raw)}`}</span>}
+                      </span>
+                      {key === 'windowMinutes' ? (
+                        <select
+                          className="rules-control"
+                          aria-label={`${rule.name} ${key}`}
+                          value={raw}
+                          onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
+                        >
+                          {WINDOW_CHOICES.map((value) => (
+                            <option key={value} value={String(value)}>{`${value} 分钟`}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className={`rules-control ${spec.kind === 'int' ? 'rules-num' : ''}`}
+                          type="number"
+                          step={spec.kind === 'int' ? 1 : 'any'}
+                          min={0}
+                          aria-label={`${rule.name} ${key}`}
+                          placeholder="—"
+                          value={raw}
+                          onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
+                        />
+                      )}
+                    </label>
+                  );
+                })}
+              </span>
+              <span className="rules-actions">
+                <button
+                  className="btn btn-sm"
+                  disabled={!dirty}
+                  title="只把这一条恢复成默认值；保存后才生效"
+                  onClick={() => restoreOne(draft.key)}
+                >
+                  {'恢复默认'}
+                </button>
+              </span>
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="metric-note">
+        {`恢复默认只作用于单条；保存是整表提交，同一时刻的其它改动会一起写入。时间按投递时区 ${timezone} 计算。`}
+      </div>
+    </div>
+  );
+}

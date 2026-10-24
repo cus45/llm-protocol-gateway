@@ -15,6 +15,7 @@ import type {
   MonitorProbeRunResult,
   MonitorQuotaResult,
   MonitorRenewalResult,
+  MonitorRule,
   MonitorSeverity,
 } from './types';
 
@@ -236,4 +237,17 @@ export function fetchProbeConfig(): Promise<MonitorProbeConfig> {
 
 export function saveProbeConfig(config: MonitorProbeConfig): Promise<MonitorProbeConfig> {
   return request<MonitorProbeConfig>('/probe-config', { method: 'PUT', body: JSON.stringify(config) });
+}
+
+/** 规则定义与当前配置（18 条，按 key 排序）。 */
+export function fetchRules(): Promise<MonitorRule[]> {
+  return request<MonitorRule[]>('/rules');
+}
+
+/**
+ * 整表替换，不是逐条 patch：少给的条目后端按「恢复默认」补齐。
+ * 非法参数 400 且不落库；返回落库后的规范化结果。
+ */
+export function saveRules(rules: Array<Partial<MonitorRule> & { key: string }>): Promise<MonitorRule[]> {
+  return request<MonitorRule[]>('/rules', { method: 'PUT', body: JSON.stringify(rules) });
 }
