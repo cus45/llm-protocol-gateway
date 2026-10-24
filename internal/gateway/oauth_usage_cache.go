@@ -192,6 +192,20 @@ func (c *oauthUsageCache) bindAccount(key, accountID string) {
 // setFailureForAccount is setFailure, but first drops an entry left by a
 // different account so its last good value never survives the swap.
 func (c *oauthUsageCache) setFailureForAccount(key, accountID string, err error) {
+	// What was cached belongs to the account that answered; if the key is now
+	// bound to a different account, both the value and its cooldown are that
+	// old account's and must not describe the new one.
+	if accountID != "" {
+		c.mu.Lock()
+		previous := c.entries[key].accountID
+		c.mu.Unlock()
+		if previous != "" && previous != accountID {
+			c.mu.Lock()
+			delete(c.entries, key)
+			c.mu.Unlock()
+			return
+		}
+	}
 	c.bindAccount(key, accountID)
 	c.setFailure(key, err)
 }

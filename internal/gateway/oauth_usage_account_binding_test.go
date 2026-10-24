@@ -82,3 +82,27 @@ func TestOAuthUsageAccountIDIsNotTheToken(t *testing.T) {
 		t.Fatal("different accounts must get different ids")
 	}
 }
+
+// 账号 A 失败一次后切到 B：A 的冷却不得冻住 B 的刷新。线上的后果是新账号的
+// 报告最多 10 分钟不更新，而旧值已经被删掉——控制台与调度在这段时间里"无数据"。
+func TestOauthUsageFailureDoesNotFreezeTheNextAccount(t *testing.T) {
+	cache := newOAuthUsageCache()
+	cache.setForAccount("claude:p", "account-a", ClaudeOAuthUsageReport{Available: true})
+	cache.setFailureForAccount("claude:p", "account-a", errUsageProbeFailed)
+
+	if cache.needsRefresh("claude:p") {
+		t.Fatalf("the first account's failure must hold its entry in cooldown")
+	}
+	// 切到账号 B：B 从没失败过，必须立刻可刷新。
+	cache.bindAccount("claude:p", "account-b")
+	if !cache.needsRefresh("claude:p") {
+		t.Fatalf("the next account inherited the previous account's cooldown")
+	}
+	// 直接以 B 的身份上报失败：仍然不能被 A 的冷却吞掉。
+	cache.setFailureForAccount("claude:p", "account-a", errUsageProbeFailed)
+	cache.setFailureForAccount("claude:p", "account-b", errUsageProbeFailed)
+	cache.bindAccount("claude:p", "account-c")
+	if !cache.needsRefresh("claude:p") {
+		t.Fatalf("a fresh account must never inherit another account's failure")
+	}
+}
