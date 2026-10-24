@@ -4356,9 +4356,15 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 
 	status, usage, responseLog, err := s.proxyOpenAIImages(w, r, provider, model, body, route.OutputProtocol)
 	if err != nil {
+		// A refusal at admission is the gateway's 429, not an upstream 502: the
+		// account is busy, nothing was sent.
+		failureStatus := http.StatusBadGateway
+		if errors.Is(err, errProviderSaturated) {
+			failureStatus = http.StatusTooManyRequests
+		}
 		s.logs.AddApp("error", "image generation request failed", err.Error())
-		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, http.StatusBadGateway, usage, body, []byte(err.Error()))
-		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, failureStatus, usage, body, []byte(err.Error()))
+		writeOpenAIError(w, failureStatus, err.Error())
 		return
 	}
 	s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, logModel, "pass_through", "images/generations", r.URL.Path, status, usage, body, responseLog)

@@ -43,6 +43,9 @@ func TestImageGenerationTakesTheAccountLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route: %v", err)
 	}
+	if _, err := server.router.AddAPIKey(domain.APIKey{ID: "lane-key", Name: "lane-key", Key: "sk-gw-admin", RouteID: route.ID}); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
 	first := make(chan int, 1)
 	go func() {
 		recorder := httptest.NewRecorder()
@@ -59,6 +62,16 @@ func TestImageGenerationTakesTheAccountLane(t *testing.T) {
 	status, _, _, err := server.proxyOpenAIImages(recorder, request, provider, "gpt-image-2", []byte(`{"model":"gpt-image-2","prompt":"a dog"}`), route.OutputProtocol)
 	if status != http.StatusTooManyRequests {
 		t.Fatalf("second render = %d (%v), want 429 from the account's lane", status, err)
+	}
+	// Through the real handler the refusal must also reach the client as 429,
+	// not as a 502 "upstream failed".
+	handlerRecorder := httptest.NewRecorder()
+	handlerRequest := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"a dog"}`))
+	handlerRequest.Header.Set("Content-Type", "application/json")
+	handlerRequest.Header.Set("Authorization", "Bearer sk-gw-admin")
+	server.handleOpenAIImagesGenerations(handlerRecorder, handlerRequest)
+	if handlerRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("the handler answered %d, want 429 for a saturated account", handlerRecorder.Code)
 	}
 	if got := recorder.Header().Get("Retry-After"); got == "" {
 		t.Fatalf("a saturated account must tell the client when to retry")
