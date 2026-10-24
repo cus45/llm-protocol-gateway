@@ -89,6 +89,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ## 注意事项
 
+- **构建溯源**：二进制内嵌 `vcs.revision` / `vcs.modified`，线上产物必须 `vcs.modified=false`
+  且 revision 等于部署的 commit。检查方法见
+  [裸机部署 · 4.3 构建溯源](deploy-linux-bare-metal.md#43-构建溯源线上二进制必须能对应到一个-commit)
+  或直接运行 `./scripts/verify-build-provenance.sh <binary> <commit>`。
 - **持久化**：务必挂载 `/data`，否则容器重建会丢失 Provider / Key / 日志配置。
 - **管理员密码**：经 Service/Ingress（非 loopback）访问时不免密，首访设密码即可。
 - **OAuth 类 Provider**（Claude / ChatGPT / Cursor）登录需交互式浏览器回调，headless

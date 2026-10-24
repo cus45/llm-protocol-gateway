@@ -152,7 +152,7 @@ func (s *Server) providerQuotaHeadroom(providerID string) (float64, bool) {
 		return 0, false
 	}
 	for _, prefix := range quotaReportPrefixes {
-		cached, ok := s.oauthUsageCache.getAllowStale(prefix + ":" + providerID)
+		cached, ok := s.oauthUsageCache.getAllowStale(s.oauthUsageCacheKeyFor(prefix, providerID))
 		if !ok {
 			continue
 		}

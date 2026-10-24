@@ -184,14 +184,14 @@ func (s *Server) refreshAllOAuthUsage(ctx context.Context) {
 }
 
 func (s *Server) refreshDeepSeekBalance(providerID string) {
-	cacheKey := "deepseek:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("deepseek", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	s.refreshDeepSeekBalanceHoldingLock(providerID)
 }
 
 func (s *Server) maybeRefreshDeepSeekBalanceAsync(providerID string) {
-	cacheKey := "deepseek:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("deepseek", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -205,6 +205,7 @@ func (s *Server) maybeRefreshDeepSeekBalanceAsync(providerID string) {
 }
 
 func (s *Server) refreshDeepSeekBalanceHoldingLock(providerID string) {
+	cacheKey := s.oauthUsageCacheKeyFor("deepseek", providerID)
 	provider, err := s.router.ProviderByID(providerID)
 	if err != nil || provider.Disabled {
 		return
@@ -220,25 +221,25 @@ func (s *Server) refreshDeepSeekBalanceHoldingLock(providerID string) {
 	defer cancel()
 	report, err := fetchDeepSeekBalance(ctx, provider.BaseURL, apiKey)
 	if err != nil {
-		s.oauthUsageCache.setFailure("deepseek:"+providerID, err)
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), err)
 		return
 	}
-	s.oauthUsageCache.clearFailure("deepseek:" + providerID)
+	s.oauthUsageCache.clearFailure(cacheKey)
 	// Cache both success and "unsupported" so relays are not hammered.
 	if report.Available || report.Unsupported {
-		s.oauthUsageCache.set("deepseek:"+providerID, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 }
 
 func (s *Server) refreshZhipuUsage(providerID string) {
-	cacheKey := "zhipu:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("zhipu", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	s.refreshZhipuUsageHoldingLock(providerID)
 }
 
 func (s *Server) maybeRefreshZhipuUsageAsync(providerID string) {
-	cacheKey := "zhipu:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("zhipu", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -252,6 +253,7 @@ func (s *Server) maybeRefreshZhipuUsageAsync(providerID string) {
 }
 
 func (s *Server) refreshZhipuUsageHoldingLock(providerID string) {
+	cacheKey := s.oauthUsageCacheKeyFor("zhipu", providerID)
 	provider, err := s.router.ProviderByID(providerID)
 	if err != nil || provider.Disabled {
 		return
@@ -267,35 +269,35 @@ func (s *Server) refreshZhipuUsageHoldingLock(providerID string) {
 	defer cancel()
 	report, err := fetchZhipuUsageForProvider(ctx, provider, apiKey)
 	if err != nil {
-		s.oauthUsageCache.setFailure("zhipu:"+providerID, err)
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), err)
 		return
 	}
-	s.oauthUsageCache.clearFailure("zhipu:" + providerID)
+	s.oauthUsageCache.clearFailure(cacheKey)
 	if report.resetsError != "" {
 		s.logs.AddApp("info", "zhipu reset list unread", "provider="+providerID+" "+report.resetsError)
 	}
 	// Cache both success and "unsupported" so we don't keep hammering 按量 keys.
 	if report.Available || report.Unsupported {
-		s.oauthUsageCache.set("zhipu:"+providerID, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 }
 
 func (s *Server) refreshClaudeOAuthUsage(providerID string) {
-	cacheKey := "claude:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("claude", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	s.refreshClaudeOAuthUsageHoldingLock(providerID)
 }
 
 func (s *Server) refreshCursorOAuthUsage(providerID string) {
-	cacheKey := "cursor:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("cursor", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	s.refreshCursorOAuthUsageHoldingLock(providerID)
 }
 
 func (s *Server) maybeRefreshClaudeOAuthUsageAsync(providerID string) {
-	cacheKey := "claude:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("claude", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -310,7 +312,7 @@ func (s *Server) maybeRefreshClaudeOAuthUsageAsync(providerID string) {
 }
 
 func (s *Server) maybeRefreshCursorOAuthUsageAsync(providerID string) {
-	cacheKey := "cursor:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("cursor", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -324,7 +326,7 @@ func (s *Server) maybeRefreshCursorOAuthUsageAsync(providerID string) {
 }
 
 func (s *Server) refreshChatGPTOAuthUsage(providerID string) {
-	cacheKey := "chatgpt:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("chatgpt", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	s.refreshChatGPTOAuthUsageHoldingLock(providerID)
@@ -335,7 +337,7 @@ func (s *Server) refreshChatGPTOAuthUsage(providerID string) {
 // bare 401 and the reader refreshes it then. The result is not cached — the
 // console's usage endpoint reads live — the sweep exists for the repair.
 func (s *Server) refreshWorkBuddyUsage(providerID string) {
-	cacheKey := "workbuddy:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("workbuddy", providerID)
 	unlock := s.lockOAuthUsageFetch(cacheKey)
 	defer unlock()
 	provider, err := s.router.ProviderByID(providerID)
@@ -356,7 +358,7 @@ func (s *Server) refreshWorkBuddyUsage(providerID string) {
 }
 
 func (s *Server) maybeRefreshChatGPTOAuthUsageAsync(providerID string) {
-	cacheKey := "chatgpt:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("chatgpt", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -372,7 +374,7 @@ func (s *Server) maybeRefreshChatGPTOAuthUsageAsync(providerID string) {
 // refreshClaudeOAuthUsageHoldingLock runs the Claude usage fetch while the
 // caller already holds lockOAuthUsageFetch("claude:"+providerID).
 func (s *Server) refreshClaudeOAuthUsageHoldingLock(providerID string) {
-	cacheKey := "claude:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("claude", providerID)
 	// Coalesce stampedes: many UI tabs may race after fresh TTL; only the first
 	// holder that still sees a stale cache should hit Anthropic.
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
@@ -391,25 +393,25 @@ func (s *Server) refreshClaudeOAuthUsageHoldingLock(providerID string) {
 	report, err := fetchClaudeOAuthUsage(context.Background(), refreshed.ClaudeOAuth.AccessToken)
 	if err != nil {
 		slog.Debug("claude oauth usage refresh failed", "provider", providerID, "error", err)
-		s.oauthUsageCache.setFailure(cacheKey, err)
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), err)
 		return
 	}
 	if !report.Available && report.Error != "" {
 		// A 429 or a refusal comes back as a report, not an error: it is still
 		// a failed probe and must not be re-asked on every console poll.
-		s.oauthUsageCache.setFailure(cacheKey, errors.New(report.Error))
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), errors.New(report.Error))
 		return
 	}
 	s.oauthUsageCache.clearFailure(cacheKey)
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 }
 
 // refreshCursorOAuthUsageHoldingLock runs the Cursor usage fetch while the
 // caller already holds lockOAuthUsageFetch("cursor:"+providerID).
 func (s *Server) refreshCursorOAuthUsageHoldingLock(providerID string) {
-	cacheKey := "cursor:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("cursor", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -426,17 +428,17 @@ func (s *Server) refreshCursorOAuthUsageHoldingLock(providerID string) {
 	report, err := fetchCursorOAuthUsage(context.Background(), refreshed.CursorOAuth.AccessToken)
 	if err != nil {
 		slog.Debug("cursor oauth usage refresh failed", "provider", providerID, "error", err)
-		s.oauthUsageCache.setFailure(cacheKey, err)
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), err)
 		return
 	}
 	s.oauthUsageCache.clearFailure(cacheKey)
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 }
 
 func (s *Server) refreshChatGPTOAuthUsageHoldingLock(providerID string) {
-	cacheKey := "chatgpt:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("chatgpt", providerID)
 	if !s.oauthUsageCache.needsRefresh(cacheKey) {
 		return
 	}
@@ -453,11 +455,11 @@ func (s *Server) refreshChatGPTOAuthUsageHoldingLock(providerID string) {
 	report, err := fetchChatGPTOAuthUsage(context.Background(), refreshed)
 	if err != nil {
 		slog.Debug("chatgpt oauth usage refresh failed", "provider", providerID, "error", err)
-		s.oauthUsageCache.setFailure(cacheKey, err)
+		s.oauthUsageCache.setFailureForAccount(cacheKey, oauthUsageAccountID(provider), err)
 		return
 	}
 	s.oauthUsageCache.clearFailure(cacheKey)
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 }

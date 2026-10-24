@@ -9,9 +9,15 @@
 #   ./deploy/deploy-linux.sh                # 完整部署（构建 + 上传 + 重启 + 验证）
 #   ./deploy/deploy-linux.sh --skip-web     # 跳过前端构建（只更后端）
 #   ./deploy/deploy-linux.sh --allow-dirty  # 明知工作区有未提交改动仍构建（产物不可回滚到 commit）
+#   ./deploy/deploy-linux.sh --build-only   # 只构建 + 校验溯源，不上传（CI / 提前排错）
 #   ./deploy/deploy-linux.sh --skip-go      # 跳过后端构建（只更前端）
 #   ./deploy/deploy-linux.sh --rollback     # 回滚到服务器上最近一次备份
 #   ./deploy/deploy-linux.sh --status       # 只查看服务器当前状态，不改动任何东西
+#
+# 溯源规则（round35 P0-1）：默认只允许从干净工作区部署，且构建后必须校验
+#   二进制内嵌的 vcs.modified=false、vcs.revision == git rev-parse HEAD，否则拒绝上传。
+#   显式跳过（--allow-dirty / --skip-go 复用旧产物 / 无 vcs 信息）只能靠
+#   ALLOW_UNVERIFIED_BUILD=1 放行，并会打印醒目的警告。校验脚本：scripts/verify-build-provenance.sh
 #
 # 可用环境变量覆盖默认配置（无需改脚本）：
 #   SERVER_HOST   目标服务器 IP/域名      默认 173.249.207.202
@@ -23,6 +29,7 @@
 #   GOARCH_TARGET 目标架构                默认 amd64（arm64 服务器请改）
 #   INSTALL_RTK   rtk CLI 安装策略        默认 auto（缺失才装），可选 always/never
 #   RTK_VERSION   rtk 版本（如 v0.50.0）  默认空=安装最新版
+#   ALLOW_UNVERIFIED_BUILD  1=允许溯源校验不通过继续部署（仅应急，务必记录原因）
 #
 # 示例：
 #   SERVER_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519 ./deploy/deploy-linux.sh
@@ -44,6 +51,7 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-5}"   # 服务器上保留的历史版本份数
 # always 每次部署都升级到最新/指定版本，never 完全不碰服务器上的 rtk。
 INSTALL_RTK="${INSTALL_RTK:-auto}"
 RTK_VERSION="${RTK_VERSION:-}"
+ALLOW_UNVERIFIED_BUILD="${ALLOW_UNVERIFIED_BUILD:-0}"
 
 SKIP_WEB=0
 ALLOW_DIRTY=0
@@ -68,7 +76,7 @@ SCP_OPTS=("${SSH_BASE_OPTS[@]}" -P "$SSH_PORT")
 REMOTE="${SERVER_USER}@${SERVER_HOST}"
 rsh() { ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 # ───────────────────────── 参数解析 ─────────────────────────
 for arg in "$@"; do
@@ -76,6 +84,7 @@ for arg in "$@"; do
     --skip-web) SKIP_WEB=1 ;;
     --skip-go)  SKIP_GO=1 ;;
     --allow-dirty) ALLOW_DIRTY=1 ;;
+    --build-only) MODE="build" ;;
     --rollback) MODE="rollback" ;;
     --status)   MODE="status" ;;
     -h|--help)  usage ;;
@@ -85,15 +94,47 @@ done
 
 # ───────────────────────── 前置检查 ─────────────────────────
 step "0. 前置检查"
-[[ -f "$SSH_KEY" ]] || die "找不到 SSH 私钥: $SSH_KEY（用 SSH_KEY=... 指定）"
-command -v ssh >/dev/null || die "缺少 ssh 命令"
-command -v scp >/dev/null || die "缺少 scp 命令"
+if [[ "$MODE" != "build" ]]; then
+  [[ -f "$SSH_KEY" ]] || die "找不到 SSH 私钥: $SSH_KEY（用 SSH_KEY=... 指定）"
+  command -v ssh >/dev/null || die "缺少 ssh 命令"
+  command -v scp >/dev/null || die "缺少 scp 命令"
+fi
 command -v tar >/dev/null || die "缺少 tar 命令"
+command -v go >/dev/null || die "缺少 go 命令（溯源校验需要 go version -m）"
+command -v git >/dev/null || die "缺少 git 命令（溯源校验需要 git rev-parse）"
 
 if [[ "$MODE" == "deploy" ]]; then
   [[ "$SKIP_GO"  == "1" ]] || command -v go >/dev/null  || die "缺少 go 命令（或用 --skip-go）"
   [[ "$SKIP_WEB" == "1" ]] || command -v npm >/dev/null || die "缺少 npm 命令（或用 --skip-web）"
+elif [[ "$MODE" == "build" ]]; then
+  [[ "$SKIP_WEB" == "1" ]] || command -v npm >/dev/null || die "缺少 npm 命令（或用 --skip-web）"
 fi
+
+# ── 源码必须干净、且构建的必须是已提交的 HEAD ──
+# 检查已跟踪文件的改动/新增/删除。未跟踪文件（.workbuddy/、bin/ 等构建与评审产物）不算，
+# 否则每轮评审都会拦住部署；但它们会被打包（web/dist、cursor-bridge/dist），见下面的溯源校验。
+# 用 diff-index HEAD 而不是 git status（Go 的 buildvcs 也用它判 modified）：
+#   git add 过但没提交的改动 status 会显示为 "M "，diff-index HEAD 仍然算脏；
+#   而 vcs.modified 只反映未跟踪文件和构建期才发生的改动，单靠它查不出「源码与 HEAD 不一致」。
+#   （git ls-files -m 不行：bash 的 [[ -n ]] 会忽略只含空白字符的输出。）
+TRACKED_DIRTY="$(git status --porcelain --untracked-files=no)"
+commit_now() {
+  local rev; rev="$(git rev-parse HEAD 2>/dev/null)"
+  [[ -n "$rev" ]] || die "无法解析 git HEAD，拒绝部署（源码不是从 git 仓库构建的）"
+  printf '%s' "$rev"
+}
+# 只接受退出码 0/1：被 git 配置（pager / 彩色输出 / diff 外部工具）干扰产生的其他退出码一律按脏处理。
+tree_is_clean() { git -c core.pager=cat -c color.ui=never -c diff.external= diff-index --quiet HEAD --; }
+if ! tree_is_clean && [[ "$ALLOW_DIRTY" != "1" ]]; then
+  warn "工作区有未提交改动（含已 add 未 commit 的）："
+  git status --porcelain --untracked-files=no | sed 's/^/    /'
+  die "拒绝构建脏包。先提交改动，或在明知不可回滚时加 --allow-dirty"
+fi
+EXPECT_REVISION="$(commit_now)"
+if ! tree_is_clean; then
+  warn "工作区与 HEAD 不一致（--allow-dirty）：产物无法对应到 commit，回滚只能凭这份产物本身"
+fi
+info "目标 commit: $EXPECT_REVISION  ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached))"
 
 case "$INSTALL_RTK" in
   auto|always|never) ;;
@@ -104,10 +145,12 @@ if [[ -n "$RTK_VERSION" && ! "$RTK_VERSION" =~ ^v?[0-9][0-9A-Za-z._-]*$ ]]; then
   die "RTK_VERSION 格式不合法: $RTK_VERSION（示例: v0.50.0）"
 fi
 
-info "目标: ${REMOTE}:${SSH_PORT}  目录: ${INSTALL_DIR}  服务: ${SERVICE_NAME}"
-rsh "echo ok" >/dev/null 2>&1 || die "SSH 连接失败，请检查 ${SSH_KEY} 与服务器状态"
-ok "SSH 连接正常"
-[[ $EUID -eq 0 ]] && warn "当前以 root 运行；本地构建其实不需要 root"
+if [[ "$MODE" != "build" ]]; then
+  info "目标: ${REMOTE}:${SSH_PORT}  目录: ${INSTALL_DIR}  服务: ${SERVICE_NAME}"
+  rsh "echo ok" >/dev/null 2>&1 || die "SSH 连接失败，请检查 ${SSH_KEY} 与服务器状态"
+  ok "SSH 连接正常"
+  [[ $EUID -eq 0 ]] && warn "当前以 root 运行；本地构建其实不需要 root"
+fi
 
 # ═════════════════════ 模式：status ═════════════════════
 if [[ "$MODE" == "status" ]]; then
@@ -190,19 +233,14 @@ fi
 # ── 2. 构建后端 ──
 # 线上二进制必须能对应到一个 commit：带着未提交改动编译出来的包，vcs.modified=true，
 # 回滚时没有任何 commit 可回滚，只能凭记忆重编（round26 G26-1 就是这样丢了两次）。
-if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" && "$ALLOW_DIRTY" != "1" ]]; then
-  warn "工作区有未提交改动："
-  git status --porcelain --untracked-files=no | sed 's/^/    /'
-  die "拒绝构建脏包。先提交改动，或在明知不可回滚时加 --allow-dirty"
-fi
-if [[ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-  info "构建来源 commit: $(git rev-parse --short HEAD 2>/dev/null || echo 未知)"
-fi
-
+# 脏工作区的拦截已在「0. 前置检查」里做，这里只负责构建与构建后的溯源校验。
 if [[ "$SKIP_GO" == "0" ]]; then
   step "2. 交叉编译后端 (linux/${GOARCH_TARGET})"
   mkdir -p bin
   info "go build ..."
+  # 不加 -buildvcs 参数，用默认 auto：go build 自己内嵌 vcs.revision / vcs.modified。
+  # 注意不要放进 git 仓库*外*的临时目录（如 /tmp）构建：go 会静默跳过 VCS 标记（二进制
+  # 里没有 vcs 信息），校验脚本会拒绝这种产物。
   CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
     go build -trimpath -ldflags "-s -w" -o bin/gateway-linux ./cmd/gateway
   [[ -f bin/gateway-linux ]] || die "后端构建失败"
@@ -210,6 +248,41 @@ if [[ "$SKIP_GO" == "0" ]]; then
 else
   warn "跳过后端构建（--skip-go）"
   [[ -f bin/gateway-linux ]] || die "跳过后端构建，但 bin/gateway-linux 不存在，无法上传"
+fi
+
+# ── 2.5 溯源校验：二进制必须内嵌 vcs 信息，modified=false，revision == 目标 commit ──
+# 拦截的绕过路径：工作区与 HEAD 不一致（--allow-dirty）、复用旧产物（--skip-go 指向的不是刚构建
+# 的文件）、在仓库外/临时目录构建（没有 vcs 信息）、构建时漏掉 -trimpath 等。通过才允许上传。
+# （vcs.modified 只反映未跟踪文件和构建期改动，「已跟踪文件未提交」由上面的 diff-index 拦截。）
+step "2.5 构建溯源校验"
+PROVENANCE_OK=0
+# --allow-dirty：先构建、再改文件重编一次，让内嵌标记如实反映脏工作区；
+# 直接跳过校验会让「脏包」无声无息地上线。（只对已跟踪文件重编：bin/ 之类未跟踪产物不影响标记。）
+if ! tree_is_clean; then
+  warn "工作区与 HEAD 不一致，重新构建并如实内嵌 vcs.modified=true ..."
+  CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+    go build -trimpath -ldflags "-s -w" -o bin/gateway-linux ./cmd/gateway
+fi
+if bash "$ROOT/scripts/verify-build-provenance.sh" bin/gateway-linux "$EXPECT_REVISION"; then
+  # 可复现性：同一 commit 两次构建应得到逐字节相同的二进制。缺 -trimpath（例如 GOFLAGS 里
+  # 把它覆盖掉、或 .git/go.env 设置了 GOFLAGS）会让产物带本机绝对路径，别人无法复现、
+  # 也就无法独立核对服务器上的文件。这里只告警不拦截。
+  if ! go version -m bin/gateway-linux 2>/dev/null | grep -q -- '-trimpath=true'; then
+    warn "产物缺少 -trimpath（检查 GOFLAGS / .git/go.env）：两次构建不会逐字节相同"
+  fi
+  PROVENANCE_OK=1
+else
+  warn "溯源校验未通过（见上）"
+  if [[ "$ALLOW_UNVERIFIED_BUILD" != "1" ]]; then
+    die "拒绝上传：产物无法对应到 commit $EXPECT_REVISION。修正方式：提交改动后重新部署；应急可用 ALLOW_UNVERIFIED_BUILD=1 跳过（须在发布记录里写明原因）"
+  fi
+  warn "ALLOW_UNVERIFIED_BUILD=1：跳过溯源校验继续部署——本次上线的产物无法证明来源，请在发布记录里写明原因"
+fi
+
+if [[ "$MODE" == "build" ]]; then
+  step "构建完成（--build-only，不上传）"
+  [[ "$PROVENANCE_OK" == "1" ]] && ok "bin/gateway-linux 溯源校验通过 @ $EXPECT_REVISION" || warn "bin/gateway-linux 溯源校验未通过"
+  exit 0
 fi
 
 # ── 3. 打包 ──

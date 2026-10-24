@@ -30,8 +30,10 @@ func TestWritePassThroughResponseStreamsAndTees(t *testing.T) {
 	if got := recorder.Body.String(); got != upstreamBody {
 		t.Fatalf("client body mismatch: %q", got)
 	}
-	if string(logBody) != upstreamBody {
-		t.Fatalf("tee body mismatch: %q", logBody)
+	// The client gets every byte; the log copy may be a prefix of it (a stream
+	// on the wire is not held for logging), never a different body.
+	if got := string(logBody); !strings.HasPrefix(upstreamBody, got) {
+		t.Fatalf("tee body is not a prefix of the stream: %q", got)
 	}
 	if recorder.Header().Get("Content-Length") != "" {
 		t.Fatalf("stream response should not set Content-Length")

@@ -417,8 +417,13 @@ func TestFailoverWriterCutTurnClosesAfterCommittedPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	fw.FlushError()
-	if got := string(fw.Prefix()); got != opening {
-		t.Fatalf("committed prefix %q, want the opening %q", got, opening)
+	// The attempt is the answer from its first byte: what went out is a prefix
+	// of the turn, not something a cut turn is closed on top of.
+	if got := fw.Prefix(); len(got) != 0 {
+		t.Fatalf("a turn already sent reported a replayable prefix %q", got)
+	}
+	if got := rec.Body.String(); got != opening {
+		t.Fatalf("client got %q, want the opening %q", got, opening)
 	}
 	// The attempt keeps streaming after its commit; the client gets those
 	// bytes as they come.

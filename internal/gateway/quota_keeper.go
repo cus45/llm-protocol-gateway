@@ -27,7 +27,7 @@ type ScheduledTaskStore interface {
 	ScheduledTaskByID(id string) (domain.ScheduledTask, error)
 	SaveScheduledTask(task domain.ScheduledTask) error
 	UpdateScheduledTaskSchedule(id, lastRunAt, nextRunAt string) error
-	UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool) error
+	UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool, pausedBy string) error
 	DeleteScheduledTask(id string) error
 	AppendScheduledTaskRuns(runs []domain.ScheduledTaskRun) error
 	ListScheduledTaskRuns(taskID string, limit int) ([]domain.ScheduledTaskRun, error)
@@ -417,12 +417,15 @@ func (s *Server) pauseIfNothingSchedulable(task *domain.ScheduledTask, live []st
 			return false
 		}
 	}
-	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, false); err != nil {
+	// The pause is marked as the keeper's own: reviveScheduledTask only undoes
+	// this mark, so a pause a person asked for on a healthy task stays put.
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, false, domain.ScheduledTaskPausedByKeeper); err != nil {
 		slog.Warn("quota keeper: pause task failed", "task", task.ID, "error", err)
 		return false
 	}
 	task.ProviderIDs = live
 	task.Enabled = false
+	task.PausedBy = domain.ScheduledTaskPausedByKeeper
 	return true
 }
 
@@ -435,11 +438,23 @@ func (s *Server) persistPrunedScheduledProviders(task *domain.ScheduledTask, liv
 		return nil
 	}
 	enabled := task.Enabled && len(live) > 0
-	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, enabled); err != nil {
+	pausedBy := ""
+	if !enabled {
+		// The same write carries the pause an empty list causes; mark it as the
+		// keeper's so the restore that undoes the delete can also undo the pause.
+		pausedBy = strings.TrimSpace(task.PausedBy)
+		if pausedBy == "" {
+			pausedBy = domain.ScheduledTaskPausedByKeeper
+		}
+	}
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, enabled, pausedBy); err != nil {
 		slog.Warn("quota keeper: prune purged providers failed", "task", task.ID, "error", err)
 	}
 	task.ProviderIDs = live
 	task.Enabled = enabled
+	if !enabled {
+		task.PausedBy = pausedBy
+	}
 	return dropped
 }
 
@@ -477,10 +492,19 @@ func (s *Server) schedulableProviderIDs(task domain.ScheduledTask) (live []strin
 // reviveScheduledTask re-enables a task the keeper paused because every member
 // was soft-deleted, once at least one member resolves again (restored from the
 // trash, or re-created by a console re-import). It reports whether it wrote.
-// Only a paused task the keeper can see as all-unresolvable qualifies, so a
-// person's deliberate pause on a healthy task is never undone here.
+// Only a task carrying the keeper's own pause mark qualifies: "disabled with at
+// least one live provider" also describes a task the operator switched off by
+// hand, and reviving that every minute would undo their decision.
 func (s *Server) reviveScheduledTask(task *domain.ScheduledTask) bool {
 	if task.Enabled || len(task.ProviderIDs) == 0 {
+		return false
+	}
+	// A legacy row (paused before the column existed) carries no mark, but it is
+	// only revivable while every member is still gone, and that is exactly the
+	// keeper's own pause: a user's pause needs a live member to be worth pausing,
+	// and pausing all-deleted tasks was never the user's to do.
+	pausedBy := strings.TrimSpace(task.PausedBy)
+	if pausedBy != "" && pausedBy != domain.ScheduledTaskPausedByKeeper {
 		return false
 	}
 	if live, _ := s.schedulableProviderIDs(*task); len(live) == 0 {
@@ -490,11 +514,12 @@ func (s *Server) reviveScheduledTask(task *domain.ScheduledTask) bool {
 	// goes with it: an enabled task left without a stamp would be read as "first
 	// sight" and wait a whole extra cycle before its first fire.
 	nextRunAt := quotaNextStamp(*task, time.Now())
-	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, task.ProviderIDs, true); err != nil {
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, task.ProviderIDs, true, ""); err != nil {
 		slog.Warn("quota keeper: resume task failed", "task", task.ID, "error", err)
 		return false
 	}
 	task.Enabled = true
+	task.PausedBy = ""
 	if nextRunAt != "" && nextRunAt != task.NextRunAt {
 		if err := s.scheduledTaskStore.UpdateScheduledTaskSchedule(task.ID, task.LastRunAt, nextRunAt); err != nil {
 			slog.Warn("quota keeper: resume task schedule failed", "task", task.ID, "error", err)
@@ -525,6 +550,15 @@ func (s *Server) resumeTasksForProvider(providerID string) {
 			s.logs.AddApp("info", "quota keeper resumed task", fmt.Sprintf("task=%s Provider %s 已恢复", task.ID, providerID))
 		}
 	}
+}
+
+// scheduledTaskPauseMark is the paused_by value for a task saved as the user
+// left it: none when it is enabled, the user's mark when it is switched off.
+func scheduledTaskPauseMark(enabled bool) string {
+	if enabled {
+		return ""
+	}
+	return domain.ScheduledTaskPausedByUser
 }
 
 func quotaTaskNamesProvider(task domain.ScheduledTask, providerID string) bool {

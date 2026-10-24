@@ -38,6 +38,9 @@ type streamEndReader struct {
 	id, model    string
 	lastSequence int
 	tailBytes    []byte
+	// tailReachesEnd says the tail has been cut to its size and reaches the
+	// stream's end: the reader is done, and what it keeps is final.
+	tailReachesEnd bool
 
 	// body is the bytes written so far, flat and capped: the closing verdict is
 	// taken from it alone.
@@ -776,12 +779,14 @@ func (r *streamEndReader) scanLine(line []byte) {
 }
 
 // scanResponses keeps the tail of a Responses stream, from which the id, model
-// and last sequence number are recovered in one pass at the end.
+// and last sequence number are recovered in one pass at the end. The tail is
+// moved along as the stream grows rather than left to grow: it is a stream's
+// last events that name it, and the first ones are never read again.
 func (r *streamEndReader) scanResponses(payload []byte) {
 	if sequence, ok := lineSequence(payload); ok {
 		r.lastSequence = max(r.lastSequence, sequence)
 	}
-	if r.id != "" && r.model != "" {
+	if r.id != "" && r.model != "" && r.tailReachesEnd {
 		return
 	}
 	r.tailBytes = append(append(r.tailBytes, '\n'), payload...)
@@ -789,10 +794,29 @@ func (r *streamEndReader) scanResponses(payload []byte) {
 		id, model, _ := responsesStreamIdentityFrom(r.tailBytes)
 		r.id, r.model = id, model
 	}
-	if len(r.tailBytes) > 2*passThroughLogBufferMax {
-		r.tailBytes = append(r.tailBytes[:0], r.tailBytes[len(r.tailBytes)-passThroughLogBufferMax:]...)
+	if len(r.tailBytes) > 2*readTailBytes {
+		r.tailBytes = append(r.tailBytes[:0], r.tailBytes[len(r.tailBytes)-readTailBytes:]...)
 	}
 }
+
+// readTailBytes is the window of a stream streamEndReader keeps while it is read
+// — as large as the log copy, so a log copy no longer than that can be judged
+// from it alone.
+const readTailBytes = passThroughLogBufferMax
+
+// settleTail cuts the tail to its window once the stream has ended: its last
+// events are then all that is ever read of it again, and the log copy of the
+// first bytes can be let go (streamTee.releaseLogCopy).
+func (r *streamEndReader) settleTail() {
+	if len(r.tailBytes) > readTailBytes {
+		r.tailBytes = append(r.tailBytes[:0], r.tailBytes[len(r.tailBytes)-readTailBytes:]...)
+	}
+	r.tailReachesEnd = true
+}
+
+// reachesEnd reports that this reader keeps the stream's end: the log copy is
+// no longer its only record.
+func (r *streamEndReader) reachesEnd() bool { return r.tailReachesEnd }
 
 // scanClaude folds the Claude event a data line carried, so the cut turn can be
 // closed with exactly the blocks it left open.

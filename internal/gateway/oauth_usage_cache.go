@@ -33,6 +33,11 @@ type oauthUsageCacheEntry struct {
 	err       error
 	nextRetry time.Time
 	failures  int
+	// accountID is the OAuth account (see oauthUsageAccountID) the entry was
+	// fetched for. A report outlives its account otherwise: swapping the
+	// account behind a provider would keep showing — and scheduling on — the
+	// previous account's usage until the stale TTL ran out.
+	accountID string
 }
 
 // oauthUsageCache stores recent Claude/Cursor usage reports keyed by provider.
@@ -136,10 +141,59 @@ func (c *oauthUsageCache) set(key string, value any) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = oauthUsageCacheEntry{
+	entry := oauthUsageCacheEntry{
 		value:     value,
 		fetchedAt: time.Now(),
 	}
+	if previous, ok := c.entries[key]; ok {
+		entry.accountID = previous.accountID
+	}
+	c.entries[key] = entry
+}
+
+// setForAccount is set, recording the account the value was fetched for.
+func (c *oauthUsageCache) setForAccount(key, accountID string, value any) {
+	if c == nil || value == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = oauthUsageCacheEntry{
+		value:     value,
+		fetchedAt: time.Now(),
+		accountID: accountID,
+	}
+}
+
+// bindAccount tells the cache which account backs key now. An entry fetched for
+// a different account is dropped — including its recorded failure, which says
+// nothing about the new account. An entry with no identity yet (written by a
+// caller that does not know the account) is adopted as-is.
+func (c *oauthUsageCache) bindAccount(key, accountID string) {
+	if c == nil || accountID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return
+	}
+	if entry.accountID == "" {
+		entry.accountID = accountID
+		c.entries[key] = entry
+		return
+	}
+	if entry.accountID != accountID {
+		delete(c.entries, key)
+	}
+}
+
+// setFailureForAccount is setFailure, but first drops an entry left by a
+// different account so its last good value never survives the swap.
+func (c *oauthUsageCache) setFailureForAccount(key, accountID string, err error) {
+	c.bindAccount(key, accountID)
+	c.setFailure(key, err)
 }
 
 // setFailure records a failed refresh: the last good value stays, the error is

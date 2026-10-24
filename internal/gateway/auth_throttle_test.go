@@ -3,9 +3,11 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,5 +111,81 @@ func TestAuthLoginThrottledAfterFailures(t *testing.T) {
 	}
 	if rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("429 must carry Retry-After")
+	}
+}
+
+// 被限流的来源在解析正文之前就被挡下：即使发来的是畸形 JSON，也只会拿到 429，
+// 不会被 Decode 的 400 抢先 —— 证明 rejectIfAuthThrottled 跑在 Decode 之前。
+func TestAuthLoginThrottledBeforeDecode(t *testing.T) {
+	server, store := newAuthTestServer(t)
+	hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.SetSetting(settingAdminPassword, string(hash))
+	_ = store.SetSetting(settingAdminSession, "test-secret")
+	for i := 0; i < authMaxFailures; i++ {
+		server.authThrottle.fail("203.0.113.11", "admin")
+	}
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/__auth/login", strings.NewReader(`{"username":"admin","password":`))
+	req.Host = "console.lucadesign.uk"
+	req.RemoteAddr = "203.0.113.11:443"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("throttled malformed body: status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("429 must carry Retry-After")
+	}
+}
+
+// 预读账号名后正文必须原样还给 Decode：正常登录照旧成功。
+func TestAuthLoginPeekLeavesBodyIntact(t *testing.T) {
+	server, store := newAuthTestServer(t)
+	hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.SetSetting(settingAdminPassword, string(hash))
+	_ = store.SetSetting(settingAdminSession, "test-secret")
+	handler := server.Handler()
+
+	body, _ := json.Marshal(map[string]string{"password": "password123", "username": "admin"})
+	req := httptest.NewRequest(http.MethodPost, "/__auth/login", bytes.NewReader(body))
+	req.Host = "console.lucadesign.uk"
+	req.RemoteAddr = "203.0.113.12:443"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// peekUsername 只认第一个 username 字符串；取不到时返回空串（按 admin 桶计数）。
+func TestPeekUsername(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"username":"alice","password":"x"}`, "alice"},
+		{`{"password":"x","username":" bob "}`, "bob"},
+		{`{"password":"x"}`, ""},
+		{`{"username":42}`, ""},
+		{`not json`, ""},
+		{``, ""},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/__auth/login", strings.NewReader(c.body))
+		if got := peekUsername(req); got != c.want {
+			t.Fatalf("peekUsername(%q) = %q, want %q", c.body, got, c.want)
+		}
+		// 探过之后正文必须完整可读。
+		rest, _ := io.ReadAll(req.Body)
+		if string(rest) != c.body {
+			t.Fatalf("peekUsername(%q) consumed body, left %q", c.body, rest)
+		}
 	}
 }

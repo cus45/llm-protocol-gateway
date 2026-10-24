@@ -149,7 +149,7 @@ import {providerIcon, ProviderLabel} from './components/provider_label';
 import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
-import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
+import {ReplayPanel, ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
 import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
@@ -7467,6 +7467,11 @@ function App() {
                 <pre className="json-preview">{curlCmd}</pre>
               </div>
             )}
+
+            {/* 重放不单独占一页：排错时看完报文下一步就是「再发一次」。 */}
+            <div className="log-body-card">
+              <ReplayPanel key={trafficLogDetail.id ?? 'noid'} log={trafficLogDetail} apiKeys={state.apiKeys || []} />
+            </div>
           </div>
           <div className="actions modal-actions">
             <button className="btn" onClick={() => setTrafficLogDetail(null)}>关闭</button>

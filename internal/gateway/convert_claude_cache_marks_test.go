@@ -149,3 +149,33 @@ func TestClaudeCacheMarksFromResponses(t *testing.T) {
 		t.Fatalf("responses tail cache_control = %#v", mark)
 	}
 }
+
+// H-5: agent 续跑那一轮以 tool_result 收尾，断点必须落在它上面
+// （magpie anthropic.go:921-928 只排除 thinking）。
+func TestClaudeCacheMarksToolResultTail(t *testing.T) {
+	req := decodeClaudeCacheTest(t, []byte(`{
+		"model":"claude-sonnet-4.5",
+		"messages":[
+			{"role":"user","content":"list files"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"ls","input":{}}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"ls","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"a.txt"}
+		]
+	}`))
+	claudeReq, err := openAIChatToClaudeRequest(req, "claude-sonnet-4.5", 0)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	messages := claudeReq["messages"].([]map[string]any)
+	content := messages[len(messages)-1]["content"]
+	blocks, ok := content.([]any)
+	if !ok || len(blocks) == 0 {
+		t.Fatalf("tail content = %#v", content)
+	}
+	last := blocks[len(blocks)-1].(map[string]any)
+	if last["type"] != "tool_result" {
+		t.Fatalf("expected tool_result tail, got %#v", last)
+	}
+	if mark := cacheMarkAt(t, content); mark["type"] != "ephemeral" {
+		t.Fatalf("tool_result tail must carry the mark: %#v", mark)
+	}
+}

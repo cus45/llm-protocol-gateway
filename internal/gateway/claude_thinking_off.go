@@ -27,6 +27,17 @@ import (
 // claude-sonnet-5-5@20261001, claude-fable-5-1.
 var claudeModelLine = regexp.MustCompile(`(?:^|[^a-z0-9])(?:claude-)?(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:[-.](\d{1,2}))?(?:[^0-9]|$)`)
 
+// claudeLegacyLine reads the 3rd-generation naming order, claude-3-opus,
+// claude-3.5-sonnet, claude-3-5-sonnet-20241022, claude-3-7-sonnet-latest,
+// anthropic/claude-3.5-sonnet or claude-3-5-haiku@20241022. A request naming
+// one of these is a known Claude; left unrecognized it was treated as a
+// non-Claude model, its thinking deleted and its max_tokens padded (N34-1).
+var claudeLegacyLine = regexp.MustCompile(`(?:^|[^a-z0-9])claude-(\d{1,2})(?:[-.](\d{1,2}))?-(opus|sonnet|haiku)(?:[^0-9]|$)`)
+
+// claudeAutoLine reads Claude 2.1 and earlier, which take thinking off as sent
+// like every Claude before 4.6.
+var claudeAutoLine = regexp.MustCompile(`(?:^|[^a-z0-9])claude-(?:instant|v\d|(\d)(?:\.(\d))?)(?:[^0-9]|$)`)
+
 type claudeThinkingOff int
 
 const (
@@ -40,8 +51,14 @@ const (
 // claudeThinkingOffOf is how model takes thinking turned off and whether the
 // model is a Claude thinking line at all.
 func claudeThinkingOffOf(model string) (claudeThinkingOff, bool) {
-	match := claudeModelLine.FindStringSubmatch(strings.ToLower(strings.TrimSpace(model)))
+	id := strings.ToLower(strings.TrimSpace(model))
+	match := claudeModelLine.FindStringSubmatch(id)
 	if match == nil {
+		// 版本写在族名前面的老命名（claude-3-5-sonnet）与 2.x 及更早：都已
+		// 原样接受 disabled。
+		if claudeLegacyLine.MatchString(id) || claudeAutoLine.MatchString(id) {
+			return claudeOffTaken, true
+		}
 		return claudeOffUnknown, false
 	}
 	major, _ := strconv.Atoi(match[2])
@@ -268,9 +285,11 @@ func normalizeClaudeEndpointThinkingOffBody(body []byte, model string) []byte {
 		if removeClaudeThinkingOff(payload) {
 			if effort, ok := claudeEndpointReasoningEffort(model); ok {
 				payload["reasoning_effort"] = effort
-			}
-			if shortBudget {
-				padClaudeEndpointBudget(payload, model, budget)
+				// 余量只补给已知「默认思考」的模型；不认识的模型不能凭空
+				// 抬高 max_tokens（N34-1：上限低于补后值会被上游 400）。
+				if shortBudget {
+					padClaudeEndpointBudget(payload, model, budget)
+				}
 			}
 			changed = true
 		}

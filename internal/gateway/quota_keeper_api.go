@@ -239,6 +239,7 @@ func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "所选 Provider 都已删除，请重新选择")
 		return
 	}
+	task.PausedBy = scheduledTaskPauseMark(task.Enabled)
 	task.NextRunAt = quotaNextStamp(task, now)
 	if err := s.scheduledTaskStore.SaveScheduledTask(task); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
@@ -302,6 +303,14 @@ func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Reques
 	// Re-anchoring the schedule is the point of an edit: "改成 10 点" should not
 	// keep waiting on a next-run stamp computed for the old times. A disabled
 	// task stores nothing, so re-enabling recomputes from that moment.
+	// A switch-off here is the user's: mark it so the keeper does not revive the
+	// task on its next tick. Leaving the flag alone keeps the keeper's own pause
+	// mark, so a restored provider still brings its task back.
+	if task.Enabled != existing.Enabled {
+		task.PausedBy = scheduledTaskPauseMark(task.Enabled)
+	} else {
+		task.PausedBy = existing.PausedBy
+	}
 	task.NextRunAt = quotaNextStamp(task, time.Now())
 	task.LastRunAt = existing.LastRunAt
 	if err := s.scheduledTaskStore.SaveScheduledTask(task); err != nil {

@@ -488,6 +488,18 @@ func responsesToClaudeRequestDirect(responsesReq map[string]any, model string, m
 	if user := strings.TrimSpace(stringValue(responsesReq["user"])); user != "" {
 		claudeReq["metadata"] = map[string]any{"user_id": user}
 	}
+	// Responses 的 safety_identifier 与 metadata.user_id 同义（终端用户标识），
+	// 一起来时不覆盖已有的 user_id；Claude 回 Responses 时再还原（D32-6）。
+	if id := strings.TrimSpace(stringValue(responsesReq["safety_identifier"])); id != "" {
+		metadata, _ := claudeReq["metadata"].(map[string]any)
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		if strings.TrimSpace(stringValue(metadata["user_id"])) == "" {
+			metadata["user_id"] = id
+		}
+		claudeReq["metadata"] = metadata
+	}
 
 	// Tools: flatten Codex namespace / tool_search / custom into Claude tools.
 	if tools := toolCtx.ClaudeTools(); len(tools) > 0 {

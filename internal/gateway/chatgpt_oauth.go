@@ -338,8 +338,11 @@ func refreshChatGPTToken(ctx context.Context, refreshToken string) (chatgptToken
 	return postChatGPTToken(ctx, form)
 }
 
+// chatgptOAuthTokenURLVar is the token endpoint, swappable in tests.
+var chatgptOAuthTokenURLVar = func() string { return chatgptOAuthTokenURL }
+
 func postChatGPTToken(ctx context.Context, form url.Values) (chatgptTokenResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptOAuthTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptOAuthTokenURLVar(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return chatgptTokenResponse{}, err
 	}
@@ -428,21 +431,29 @@ func (s *Server) ensureFreshChatGPTToken(provider domain.Provider) (domain.Provi
 	// which invalidates the whole chain. Serialize per provider.
 	unlock := s.lockOAuthUsageFetch("chatgpt-token:" + provider.ID)
 	defer unlock()
-	// Re-read after acquiring the lock: another goroutine may have refreshed
-	// while we waited, making our in-memory copy stale.
-	fresh, err := s.router.ProviderByID(provider.ID)
-	if err == nil && fresh.ChatGPTOAuth != nil && !chatgptTokenNeedsRefresh(fresh.ChatGPTOAuth) {
-		return fresh, nil
-	}
-	token, err := refreshChatGPTToken(context.Background(), provider.ChatGPTOAuth.RefreshToken)
-	if err != nil {
-		s.recordRenewal(provider, "chatgpt", time.Now(), err)
-		return provider, fmt.Errorf("chatgpt oauth refresh failed: %w", err)
-	}
-	cred := chatgptCredentialFromToken(token, *provider.ChatGPTOAuth)
-	updated, err := s.router.SetProviderChatGPTOAuth(provider.ID, cred)
+	// Re-read after acquiring the lock and work on the live credential, never on
+	// the caller's snapshot: another goroutine may have refreshed while we
+	// waited, rotating the refresh token. Spending the snapshot's old
+	// refresh_token would answer refresh_token_reused and kill the chain.
+	current, err := s.router.ProviderByID(provider.ID)
 	if err != nil {
 		return provider, err
+	}
+	if current.ChatGPTOAuth == nil || strings.TrimSpace(current.ChatGPTOAuth.RefreshToken) == "" {
+		return current, fmt.Errorf("provider %q has no ChatGPT OAuth refresh token", provider.ID)
+	}
+	if !chatgptTokenNeedsRefresh(current.ChatGPTOAuth) {
+		return current, nil
+	}
+	token, err := refreshChatGPTToken(context.Background(), current.ChatGPTOAuth.RefreshToken)
+	if err != nil {
+		s.recordRenewal(current, "chatgpt", time.Now(), err)
+		return current, fmt.Errorf("chatgpt oauth refresh failed: %w", err)
+	}
+	cred := chatgptCredentialFromToken(token, *current.ChatGPTOAuth)
+	updated, err := s.router.SetProviderChatGPTOAuth(current.ID, cred)
+	if err != nil {
+		return current, err
 	}
 	s.recordRenewal(updated, "chatgpt", time.Now(), nil)
 	if err := s.persistProviderOAuth(updated); err != nil {

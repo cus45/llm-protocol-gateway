@@ -5402,6 +5402,28 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 .schedule-trace-model { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schedule-trace-ms { color: var(--muted); margin-left: auto; }
 .schedule-trace-error { font-size: 11px; color: var(--red); flex-basis: 100%; overflow-wrap: anywhere; }
+/* 一键重放：控件一行、说明一行，结果按调度轨迹的行样式摊开。 */
+.replay-panel { display: flex; flex-direction: column; gap: 8px; }
+.replay-panel-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.replay-panel-controls label { color: var(--muted); }
+.replay-panel-controls select { height: var(--control-h-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; max-width: 220px; }
+.replay-panel-target { color: var(--subtle); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.replay-panel-controls .mini-btn { margin-left: auto; }
+.replay-panel-note { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.replay-attempt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  font-size: 12px;
+}
+.replay-attempt.error { border-left: 2px solid var(--red); }
+.replay-rank { color: var(--muted); font-family: var(--mono); min-width: 22px; }
+.replay-note { color: var(--muted); margin-left: auto; font-size: 11.5px; }
+.replay-text { flex-basis: 100%; margin: 4px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--text); }
 
 .log-status-banner-title {
   display: flex;

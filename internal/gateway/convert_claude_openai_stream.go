@@ -137,7 +137,7 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 			case "tool_use", "server_tool_use", "mcp_tool_use":
 				openAIToolIndex++
 				currentToolOpenAIIndex = openAIToolIndex
-				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), resolveOpenAIToolNameFromClaude(stringValue(block["name"]), clientToolNames), ""); err != nil {
+				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), restoreDeclaredToolName(stringValue(block["name"]), clientToolNames), ""); err != nil {
 					return usage, err
 				}
 			case "thinking", "redacted_thinking":

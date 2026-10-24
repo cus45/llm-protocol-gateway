@@ -922,3 +922,23 @@ func TestChatToClaudeDistinctToolIDsStayDistinct(t *testing.T) {
 		t.Fatalf("tool_result ids %v do not pair with tool_use ids %v", resultIDs, useIDs)
 	}
 }
+
+// D32-2：模型改写了工具名大小写（Bash → bash）时，回包必须还原成客户端声明的
+// 写法，否则客户端答 "unsupported call"。
+func TestClaudeToolUseBlocksRestoreDeclaredToolNameCase(t *testing.T) {
+	blocks := []any{
+		map[string]any{"type": "tool_use", "id": "toolu_1", "name": "bash", "input": map[string]any{"command": "ls"}},
+		map[string]any{"type": "tool_use", "id": "toolu_2", "name": "todowrite", "input": map[string]any{}},
+	}
+	declared := map[string]struct{}{"Bash": {}, "TodoWrite": {}, "Read": {}}
+	calls := claudeToolUseBlocksToOpenAIToolCalls(blocks, declared)
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %#v", calls)
+	}
+	for i, want := range []string{"Bash", "TodoWrite"} {
+		function, _ := calls[i].(map[string]any)["function"].(map[string]any)
+		if function["name"] != want {
+			t.Fatalf("call %d name = %#v, want %q", i, function["name"], want)
+		}
+	}
+}

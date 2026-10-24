@@ -525,8 +525,9 @@ func (r *streamUsageReader) cut(parseUsage func([]byte) TokenUsage, logTail []by
 // final is the usage of the whole stream. A frame the upstream cut before its
 // newline is still folded: it is all the client got.
 //
-// An unfoldable kind has no incremental total, so it falls back to the
-// caller's whole-body parser — but only on a body as long as the stream
+// An unfoldable kind, and a foldable one that folded nothing (the upstream
+// sent no usage), has no incremental total, so it falls back to the caller's
+// whole-body parser — but only on a body as long as the stream
 // (streamEndReader.seen counts every byte, body may be a capped copy). A
 // longer stream parses to a truncated prefix that would under-count without
 // saying so; it reports nothing instead, so the caller's own estimate applies.
@@ -537,12 +538,30 @@ func (r *streamUsageReader) final(parseUsage func([]byte) TokenUsage, body []byt
 		r.consume(append(trailing, byte(10)))
 	}
 	if r.fold != nil {
+		var usage TokenUsage
 		if r.claude.used {
-			return r.claude.result()
+			usage = r.claude.result()
+		} else {
+			usage = r.usage
 		}
-		return r.usage
+		if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheTokens > 0 {
+			return usage
+		}
+		// 折叠一无所获（上游流里没带 usage，或只有被 JSON 整流掉的计数事件）：
+		// 与不可折叠的流一样退回整段解析，别让上层退到 len/4 的假账。
 	}
 	if parseUsage == nil || int64(len(body)) < r.streamEndReader.seen || len(body) > maxFinalFallbackBytes {
+		return TokenUsage{}
+	}
+	if r.fold == nil {
+		// 不可折叠的流：非流式的 JSON 响应（如转录）照旧整段解析。
+		return parseUsage(body)
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || (trimmed[0] == '{' && json.Valid(trimmed)) {
+		// 可折叠的流走到这里，说明它一行 data: 都没有、整段就是一个 JSON 文档：
+		// 那是上游的错误体（配额耗尽的报错会引用一份 usage），不是流，解析它
+		// 等于把没花的 token 记成花了。
 		return TokenUsage{}
 	}
 	return parseUsage(body)

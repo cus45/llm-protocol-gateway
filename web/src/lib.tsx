@@ -793,6 +793,74 @@ export function buildCurlCommand(log: LogEntry, host = window.location.origin): 
   return `curl -X POST '${url}' \\\n  ${headers.join(' \\\n  ')}`;
 }
 
+function protocolForPath(path: string): ReplayPlan['protocol'] {
+  if (path.includes('/messages')) return 'Claude';
+  if (path.includes('/responses')) return 'OpenAI Responses';
+  if (path.includes('/chat/completions') || path.includes('/completions')) return 'OpenAI Chat';
+  return '';
+}
+
+/** 重放计划：把一条历史日志还原成「客户端当时会发的那个请求」。 */
+export type ReplayPlan = {
+  /** 请求路径（取自日志的 path，去掉查询串）。 */
+  path: string;
+  /** 客户端协议，决定鉴权头与版本头怎么写。 */
+  protocol: 'Claude' | 'OpenAI Chat' | 'OpenAI Responses' | '';
+  /** 需要告知用户的额外说明（例如 Responses 重放会新存一条），没有则为空。 */
+  note: string;
+};
+
+/**
+ * 一条日志能不能重放、往哪儿重放。
+ *
+ * 日志的 `path` 就是网关当时收到的客户端路径，直接回放它保证走同一条协议入口
+ * 与路由；只有旧日志缺 path 时才按协议流向推一个默认入口。流向记的是
+ * 「上游 Provider 协议 -> 路由输出协议」，客户端说的是输出那一侧。
+ */
+export function replayPlan(log: LogEntry): ReplayPlan | null {
+  if (!log.requestBody?.trim()) return null;
+  const flow = log.protocolFlow || '';
+  const index = flow.lastIndexOf('->');
+  const output = (index >= 0 ? flow.slice(index + 2) : flow).trim();
+  // action 为 compact 的日志是客户端调 /responses/compact 触发的，回放要回同一个入口。
+  if (log.action === 'compact') return { path: '/v1/responses/compact', protocol: 'OpenAI Responses', note: '' };
+  const path = (log.path || '').split('?')[0].trim();
+  if (path) return { path, protocol: protocolForPath(path) || (output as ReplayPlan['protocol']) || '', note: '' };
+  if (output === 'Claude') return { path: '/v1/messages', protocol: 'Claude', note: '' };
+  if (output === 'OpenAI Responses') return { path: '/v1/responses', protocol: 'OpenAI Responses', note: '' };
+  if (output === 'OpenAI Chat') return { path: '/v1/chat/completions', protocol: 'OpenAI Chat', note: '' };
+  return null;
+}
+
+/** 重放请求头。密钥只进 Authorization，调用方负责不把它写进任何展示文本。 */
+export function buildReplayHeaders(plan: ReplayPlan, key: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
+  if (plan.protocol === 'Claude') headers['anthropic-version'] = '2023-06-01';
+  return headers;
+}
+
+/**
+ * 把重放收到的 SSE / 普通响应收成一段可读文本：优先取回复正文，
+ * 解析不出正文时退回原始报文，避免面板空白。
+ */
+export function summarizeReplayBody(raw: string, streamed: boolean): string {
+  if (!raw) return '';
+  if (!streamed) {
+    try {
+      const parsed = JSON.parse(raw) as { choices?: Array<{ message?: { content?: string } }>; output_text?: string; content?: Array<{ text?: string }>; error?: { message?: string } };
+      const text = parsed.output_text
+        || parsed.choices?.[0]?.message?.content
+        || parsed.content?.map(part => part.text || '').join('')
+        || parsed.error?.message;
+      if (text) return text;
+    } catch {
+      // 非 JSON（例如纯文本错误）就原样返回。
+    }
+    return raw;
+  }
+  return parseSSEStreamContent(raw) || raw;
+}
+
 export function formatTrafficLogJSON(log: LogEntry, providers: Provider[] = []): string {
   const provider = providers.find((p) => p.id === log.providerId);
   const data = {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -264,89 +265,65 @@ func copyPassThroughHeaders(w http.ResponseWriter, response *http.Response) {
 // writePassThroughResponse forwards an upstream response to the client.
 // Non-stream (or error) responses are fully buffered.
 //
-// A successful stream with a backup account behind it (a failover response
-// writer that can still defer) takes the buffered path: an empty stream
-// retries on the same provider, and a stream the upstream cut mid-answer
-// returns a retryable interruption so the failover loop can hand the turn to
-// the backup — the client has seen nothing yet.
+// A stream goes to the client as it comes — the first byte is what streaming is
+// for — whether or not a failover writer is in front of it, and a stream that is
+// cut is closed on the wire by end.
 //
 // Otherwise the first byte goes straight through, so nothing can be retried.
 // end then names the protocol's closing frame (see streamInterrupter): a bare
 // EOF is indistinguishable from a finished answer for a client that only waits
 // for the closing event, so the cut turn is closed properly instead.
 func writePassThroughResponse(w http.ResponseWriter, response *http.Response, stream bool, kind usageStreamKind, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
-	if fw, ok := w.(*failoverResponseWriter); ok && stream && response.StatusCode < 400 {
-		// Headers go into the attempt's own header map, not the client's: a
-		// retry must not inherit them (a stale Retry-After outliving its 429).
-		return writeBufferedStream(fw, response, kind, parseUsage, end...)
+	if stream && response.StatusCode < 400 {
+		// The logged body is capped, the true streamed size is reported
+		// separately for daily traffic accounting. response.Request carries the
+		// proxy request's context, which holds the requestTiming this rides on.
+		tee := newStreamTee(response)
+		if response.Request != nil {
+			defer func() { requestTimingFrom(response.Request.Context()).recordStreamedTxBytes(tee.Total()) }()
+		}
+		return streamPassThroughResponse(w, tee, response, kind, parseUsage, end...)
 	}
+
+	// Not a stream, or a stream that failed: the body is buffered whole so
+	// clients and logs get it.
 	copyPassThroughHeaders(w, response)
-
-	// Error responses are always fully buffered so clients and logs get the body.
-	if !stream || response.StatusCode >= 400 {
-		responseBody, readErr := io.ReadAll(response.Body)
-		if readErr != nil {
-			return 0, TokenUsage{}, nil, readErr
-		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
-		w.WriteHeader(response.StatusCode)
-		if _, writeErr := w.Write(responseBody); writeErr != nil {
-			return response.StatusCode, TokenUsage{}, responseBody, writeErr
-		}
-		usage := TokenUsage{}
-		if parseUsage != nil {
-			usage = parseUsage(responseBody)
-		}
-		return response.StatusCode, usage, responseBody, nil
+	responseBody, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		return 0, TokenUsage{}, nil, readErr
 	}
-
-	if w.Header().Get("Cache-Control") == "" {
-		w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
+	w.WriteHeader(response.StatusCode)
+	if _, writeErr := w.Write(responseBody); writeErr != nil {
+		return response.StatusCode, TokenUsage{}, responseBody, writeErr
 	}
-	if w.Header().Get("Connection") == "" {
-		w.Header().Set("Connection", "keep-alive")
+	usage := TokenUsage{}
+	if parseUsage != nil {
+		usage = parseUsage(responseBody)
 	}
-	tee := newStreamTee(response)
-	usage := newStreamUsageReader(kind)
-	hw := newSSEHeartbeatResponseWriter(w)
-	hw.WriteHeader(response.StatusCode)
-	stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
-	defer stopHeartbeat()
-	hw.Flush()
-
-	// hw.Write already serializes; flush after each chunk via flushWriter so
-	// we do not re-enter hw.Flush while holding hw's write lock.
-	writer := io.MultiWriter(&flushWriter{w: hw, flusher: hw}, tee, usage)
-	_, copyErr := io.Copy(writer, response.Body)
-	// io.Copy only reports an error when the transport itself failed; a stream
-	// cut mid-answer ends quietly as EOF, so the stream itself is the evidence —
-	// read from every byte that went out, not from the capped log copy (an
-	// answer longer than the cap would otherwise look like it never closed).
-	if copyErr == nil && isUpstreamStreamInterruptedResponse(response, usage.closed()) {
-		if len(end) > 0 && end[0] != nil && tee.Total() > 0 {
-			// Part of the answer already reached the client, so it cannot be
-			// rewound onto another account; close the turn instead of hanging.
-			end[0].closeInterruptedStream(w, usage.cut(parseUsage, tee.Bytes()))
-		}
-		// The tokens the stream did report are spent all the same.
-		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
-			newUpstreamStreamInterruption(io.ErrUnexpectedEOF, int(tee.Total()))
-	}
-	if copyErr != nil {
-		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), copyErr
-	}
-	return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), nil
+	return response.StatusCode, usage, responseBody, nil
 }
 
 // streamTee keeps the capped log copy of a forwarded stream (and, through
 // limitedBuffer.Total, its true size for daily traffic accounting). Usage does
 // not come from here but from streamUsageReader, which sees every byte.
+//
+// The log copy is the first passThroughLogBufferMax bytes of the stream; the
+// Responses reader keeps a later window of the same stream while it still needs
+// the stream's identity, so the first copy can be let go once that window
+// covers the stream's end.
 type streamTee struct {
 	*limitedBuffer
 }
 
 func newStreamTee(_ *http.Response) *streamTee {
 	return &streamTee{limitedBuffer: &limitedBuffer{max: passThroughLogBufferMax}}
+}
+
+// releaseLogCopy lets the log copy go. Called once the stream is read and the
+// end reader has kept what it needs of the stream's end.
+func (t *streamTee) releaseLogCopy() {
+	t.buf = nil
 }
 
 // converterStreamWriter is the writer a converter streams through when the
@@ -527,68 +504,170 @@ func (s *converterStreamWriter) Finish() []byte {
 	return s.tee.Bytes()
 }
 
-// writeBufferedStream forwards a successful stream through the failover
-// buffer. A stream that sent its closing frame is forwarded whole; a stream cut
-// mid-answer becomes a retryable interruption, because the client never saw it
-// and the backup account can still deliver the turn.
-//
-// The retry only holds while the failover loop still has somewhere to go. The
-// last attempt is written out before returning, so when the turn is closed by
-// end (see streamInterrupter) the client gets the partial answer followed by a
-// proper closing frame instead of a bare EOF it would parse as a stall.
-func writeBufferedStream(fw *failoverResponseWriter, response *http.Response, kind usageStreamKind, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
-	tee := newStreamTee(response)
+func streamPassThroughResponse(w http.ResponseWriter, tee *streamTee, response *http.Response, kind usageStreamKind, parseUsage func([]byte) TokenUsage, end ...streamInterrupter) (int, TokenUsage, []byte, error) {
+	copyPassThroughHeaders(w, response)
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if w.Header().Get("Connection") == "" {
+		w.Header().Set("Connection", "keep-alive")
+	}
 	usage := newStreamUsageReader(kind)
-	// The logged body is capped, so report the true streamed size separately for
-	// daily traffic accounting. response.Request carries the proxy request's
-	// context, which holds the requestTiming this rides on.
-	if response.Request != nil {
-		defer func() { requestTimingFrom(response.Request.Context()).recordStreamedTxBytes(tee.Total()) }()
-	}
-	if response.Header.Get("Content-Type") != "" {
-		fw.Header().Set("Content-Type", response.Header.Get("Content-Type"))
-	}
-	if fw.Header().Get("Cache-Control") == "" {
-		fw.Header().Set("Cache-Control", "no-cache")
-	}
-	hw := newSSEHeartbeatResponseWriter(fw)
+	stream := &passThroughOpeningWriter{w: w, limit: passThroughLogBufferMax, tee: tee}
+	stream.setEnd(&usage.streamEndReader)
+	hw := newSSEHeartbeatResponseWriter(stream)
+	hw.WriteHeader(response.StatusCode)
 	stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
 	defer stopHeartbeat()
-	writer := io.MultiWriter(&flushWriter{w: hw, flusher: hw}, tee, usage)
-	_, copyErr := io.Copy(writer, response.Body)
-	// The response is committed as soon as anything reached the client, and
-	// from then on this attempt is the answer: the failover loop must not drop
-	// it as if it had never answered.
-	delivered := hw.Committed() || tee.Total() > 0
-	if delivered {
-		fw.FlushError()
-	}
-	if copyErr != nil {
-		if delivered {
-			// The connection died mid-answer after part of it reached the
-			// client: that prefix is the answer now, so its turn is closed and
-			// the cut reported, instead of leaving a client waiting at EOF.
-			if len(end) > 0 && end[0] != nil {
-				end[0].closeInterruptedStream(hw, usage.cut(parseUsage, tee.Bytes()))
-				hw.Flush()
-			}
-			return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
-				newUpstreamStreamInterruption(copyErr, int(tee.Total()))
+	hw.Flush()
+	// The failover loop reads this attempt as answered from its first forwarded
+	// byte: the client's time-to-first-token has been paid, and a cut turn closes
+	// on the wire instead of being handed to a backup that cannot rewind it.
+	startForwardedStream(w, response.StatusCode)
+
+	reads := &clientGoneReader{src: response.Body}
+	// hw.Write already serializes, the stream writer hands each byte to the
+	// client at once, and usage sees every byte rather than the capped copy.
+	_, copyErr := writeWithClientGone(io.MultiWriter(hw, usage), reads)
+	usage.streamEndReader.settleTail()
+	cut := stream.cut(usage, parseUsage, tee.Bytes())
+	closeTurn := func() {
+		if len(end) > 0 && end[0] != nil && tee.Total() > 0 {
+			end[0].closeInterruptedStream(hw, cut)
+			hw.Flush()
 		}
-		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), copyErr
 	}
 	// io.Copy reports nothing when the body simply ends, so the closing frame —
 	// read from every byte that went out — is what says whether it was cut.
-	if isUpstreamStreamInterruptedResponse(response, usage.closed()) {
-		if delivered && len(end) > 0 && end[0] != nil {
-			// The client holds part of the answer, so the turn is closed on the
-			// wire instead of ending at a EOF it would parse as a stall.
-			end[0].closeInterruptedStream(hw, usage.cut(parseUsage, tee.Bytes()))
-			hw.Flush()
-		}
-		return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(),
+	// A client that went away cut nothing worth closing, and nothing is handed
+	// to another account for it.
+	if copyErr == nil && !reads.clientGone() && isUpstreamStreamInterruptedResponse(response, usage.closed()) {
+		// Part of the answer already reached the client, so it cannot be
+		// rewound onto another account; close the turn instead of hanging.
+		closeTurn()
+		// The tokens the stream did report are spent all the same.
+		return response.StatusCode, cut.usage, tee.Bytes(),
 			newUpstreamStreamInterruption(io.ErrUnexpectedEOF, int(tee.Total()))
 	}
-	fw.FlushError()
-	return response.StatusCode, usage.final(parseUsage, tee.Bytes()), tee.Bytes(), nil
+	if copyErr != nil {
+		// The connection died mid-answer after part of it reached the client:
+		// that prefix is the answer now, so its turn is closed.
+		closeTurn()
+		return response.StatusCode, cut.usage, tee.Bytes(),
+			newUpstreamStreamInterruption(copyErr, int(tee.Total()))
+	}
+	return response.StatusCode, cut.usage, tee.Bytes(), nil
+}
+
+// startForwardedStream tells a failover writer that what it carries from here on
+// is the client's answer, not a response to show the loop.
+func startForwardedStream(w http.ResponseWriter, statusCode int) {
+	if fw, ok := w.(*failoverResponseWriter); ok {
+		fw.startStream(statusCode)
+	}
+}
+
+// clientGoneReader is the stream a forwarded turn is read from, and the record
+// of whether the client left while it was read: the bytes it asks for are the
+// bytes that will be written, so a write that fails is its own question asked
+// and refused. A client that left cut nothing worth closing, and nothing is
+// handed to another account for it.
+type clientGoneReader struct {
+	src  io.Reader
+	gone atomic.Bool
+}
+
+func (r *clientGoneReader) Read(p []byte) (int, error) { return r.src.Read(p) }
+
+func (r *clientGoneReader) clientGone() bool { return r.gone.Load() }
+
+// writeWithClientGone copies src to dst chunk by chunk, so a write that never
+// reached the client — the one failure a stream to a client that has left looks
+// like — is not mistaken for the upstream's.
+func writeWithClientGone(dst io.Writer, src *clientGoneReader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			m, writeErr := dst.Write(buf[:n])
+			written += int64(m)
+			if writeErr != nil {
+				src.gone.Store(true)
+				return written, writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
+}
+
+// passThroughOpeningWriter is the writer a forwarded stream goes through: every
+// byte goes to the client as it comes, into two records — the opening of the
+// turn, up to the log cap, which is all a cut turn is closed on top of, and the
+// capped log copy.
+type passThroughOpeningWriter struct {
+	w       http.ResponseWriter
+	limit   int
+	opened  bool
+	opening bytes.Buffer
+	tee     *streamTee
+	end     *streamEndReader // to tell when the log copy can be let go
+}
+
+// setEnd names the reader that keeps the stream's end: once it does, the log
+// copy in tee is not the only record left.
+func (o *passThroughOpeningWriter) setEnd(end *streamEndReader) { o.end = end }
+
+func (o *passThroughOpeningWriter) Header() http.Header { return o.w.Header() }
+
+func (o *passThroughOpeningWriter) WriteHeader(statusCode int) { o.w.WriteHeader(statusCode) }
+
+func (o *passThroughOpeningWriter) Write(p []byte) (int, error) {
+	if !o.opened && o.opening.Len() < o.limit {
+		keep := min(len(p), o.limit-o.opening.Len())
+		_, _ = o.opening.Write(p[:keep])
+	}
+	if len(p) > 0 {
+		o.opened = true
+	}
+	o.tee.Write(p)
+	if o.opening.Len() >= o.limit && o.end.reachesEnd() {
+		// The log copy is full and the stream's end is kept elsewhere: it is
+		// only held for a log that is written once the stream is over.
+		o.tee.releaseLogCopy()
+	}
+	return o.w.Write(p)
+}
+
+// cut is what the stream wrote of its turn, as a turn cut after its opening:
+// the usage the whole stream reported, and the opening a closing frame repeats.
+// Nothing of the stream's log copy is needed once the stream has ended: the
+// end reader keeps the identity a closing frame repeats, and the log copy may
+// already have been let go.
+func (o *passThroughOpeningWriter) cut(usage *streamUsageReader, parseUsage func([]byte) TokenUsage, logTail []byte) streamCut {
+	cut := usage.cut(parseUsage, logTail)
+	cut.total = int64(o.opening.Len())
+	opening := cutFromBody(o.opening.Bytes())
+	cut.messageStarted = opening.messageStarted
+	cut.openBlocks = opening.openBlocks
+	if cut.id == "" || cut.model == "" {
+		cut.id, cut.model, _ = responsesStreamIdentityFrom(o.opening.Bytes())
+	}
+	if cut.id == "" || cut.model == "" {
+		// A stream with no opening inside the log cap says nothing of who it
+		// was; the end reader's own tail is the rest of it.
+		id, model, _ := responsesStreamIdentityFrom(usage.tailBytes)
+		if cut.id == "" {
+			cut.id = id
+		}
+		if cut.model == "" {
+			cut.model = model
+		}
+	}
+	return cut
 }

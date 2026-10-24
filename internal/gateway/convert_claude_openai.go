@@ -213,6 +213,13 @@ func openAIChatToClaudeRequest(openAIReq map[string]any, model string, maxTokens
 	applyOpenAIThinkingToClaudeRequest(openAIReq, claudeReq, model)
 	// Cursor / Chat clients may set parallel_tool_calls=false; map onto Claude.
 	applyResponsesParallelToolCallsToClaude(openAIReq, claudeReq)
+	// Chat 的 stop 在 Claude 里叫 stop_sequences；转换器不写的话客户端给的
+	// 停止串会被静默丢掉，上游一直生成到 max_tokens。
+	if claudeReq["stop_sequences"] == nil {
+		if stop := chatStopToClaudeSequences(openAIReq); len(stop) > 0 {
+			claudeReq["stop_sequences"] = toAnySliceOfStrings(stop)
+		}
+	}
 	// 别的协议不写 Claude 的缓存断点，转换后补上，否则每轮全价重算前缀。
 	applyClaudeCacheMarks(claudeReq, openAIReq["cache_control"])
 	return claudeReq, nil
@@ -318,16 +325,47 @@ func mapReasoningEffortToClaudeEffort(depth, model string) string {
 	return "high"
 }
 
+// applyAdaptiveThinking 打开自适应思考并给出 effort。output_config 里已有
+// 别的键（response_format 落的 format）时合并保留，不能整块覆盖。
 func applyAdaptiveThinking(claudeReq map[string]any, effort string) {
 	claudeReq["thinking"] = map[string]any{"type": "adaptive"}
-	claudeReq["output_config"] = map[string]any{"effort": effort}
+	config, _ := claudeReq["output_config"].(map[string]any)
+	if config == nil {
+		config = map[string]any{}
+	}
+	config["effort"] = effort
+	claudeReq["output_config"] = config
 }
 
 func applyEnabledThinking(claudeReq map[string]any, budgetTokens int) {
 	claudeReq["thinking"] = map[string]any{
 		"type":          "enabled",
-		"budget_tokens": budgetTokens,
+		"budget_tokens": claudeThinkingBudget(claudeReq, budgetTokens),
 	}
+}
+
+// thinkingBudgetFloor is the least a thinking budget is clamped to: Anthropic
+// refuses budget_tokens below 1024.
+const thinkingBudgetFloor = 1024
+
+// claudeThinkingBudget fits a thinking budget under the request's max_tokens:
+// Anthropic answers 400 when budget_tokens is not below max_tokens (magpie's
+// "budget = min(budget, maxTokens-1024)"), and a key-level max_tokens override
+// can be far smaller than the effort's default budget. Left unclamped the
+// override's own request 400s.
+func claudeThinkingBudget(claudeReq map[string]any, budgetTokens int) int {
+	maxTokens, ok := intFromAny(claudeReq["max_tokens"])
+	if !ok || maxTokens <= 0 {
+		return budgetTokens
+	}
+	room := maxTokens - 1024
+	if room < thinkingBudgetFloor {
+		room = thinkingBudgetFloor
+	}
+	if budgetTokens > room {
+		return room
+	}
+	return budgetTokens
 }
 
 func normalizeExplicitThinkingForModel(thinking map[string]any, model string) (map[string]any, map[string]any) {
@@ -391,9 +429,21 @@ func applyOpenAIThinkingToClaudeRequest(openAIReq map[string]any, claudeReq map[
 	if rawThinking, exists := openAIReq["thinking"]; exists {
 		if thinking, ok := rawThinking.(map[string]any); ok {
 			normalizedThinking, outputConfig := normalizeExplicitThinkingForModel(thinking, model)
+			if _, hasBudget := normalizedThinking["budget_tokens"]; hasBudget {
+				budget, _ := intFromAny(normalizedThinking["budget_tokens"])
+				normalizedThinking["budget_tokens"] = claudeThinkingBudget(claudeReq, budget)
+			}
 			claudeReq["thinking"] = normalizedThinking
+			// 已有 output_config（response_format 落的 format）不能被思考设置冲掉。
 			if outputConfig != nil {
-				claudeReq["output_config"] = outputConfig
+				config, _ := claudeReq["output_config"].(map[string]any)
+				if config == nil {
+					config = map[string]any{}
+				}
+				for key, value := range outputConfig {
+					config[key] = value
+				}
+				claudeReq["output_config"] = config
 			}
 		}
 		normalizeClaudeTemperatureForThinking(claudeReq)

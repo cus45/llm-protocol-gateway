@@ -306,7 +306,7 @@ func (f *fakeScheduledTaskStore) UpdateScheduledTaskSchedule(id, lastRunAt, next
 	return nil
 }
 
-func (f *fakeScheduledTaskStore) UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool) error {
+func (f *fakeScheduledTaskStore) UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool, pausedBy string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	task, ok := f.tasks[id]
@@ -315,6 +315,10 @@ func (f *fakeScheduledTaskStore) UpdateScheduledTaskProviders(id string, provide
 	}
 	task.ProviderIDs = append([]string{}, providerIDs...)
 	task.Enabled = enabled
+	if enabled {
+		pausedBy = ""
+	}
+	task.PausedBy = pausedBy
 	f.tasks[id] = task
 	return nil
 }
@@ -760,7 +764,7 @@ func TestResumeTasksForProviderRevivesOnlyMatchingPausedTasks(t *testing.T) {
 	})
 	store.SaveScheduledTask(domain.ScheduledTask{
 		ID: "paused-elsewhere", Enabled: false, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
-		ProviderIDs: []string{"px"},
+		ProviderIDs: []string{"px"}, PausedBy: domain.ScheduledTaskPausedByKeeper,
 	})
 	server.resumeTasksForProvider("p1")
 	if !store.task("paused-p1").Enabled {
@@ -1024,4 +1028,46 @@ func TestRunDueScheduledTasksFiresAndRespectsGrace(t *testing.T) {
 			t.Fatalf("disabled task's schedule rewritten: %q", got)
 		}
 	})
+}
+
+// D31-1: "disabled, with at least one live provider" used to read as "the keeper
+// auto-paused this after a delete", so a task the operator switched off by hand
+// was revived on the very next tick. Only the keeper's own pause may be undone.
+func TestUserPausedTaskIsNotRevivedByKeeper(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL,
+		testClaudeProvider("p1", "Claude 1", upstream.URL))
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-1", Enabled: false, PausedBy: domain.ScheduledTaskPausedByUser,
+		Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1"}, NextRunAt: formatScheduleStamp(time.Now().Add(-time.Minute)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-1"); stored.Enabled {
+		t.Fatal("a task the user paused must stay paused while its provider is alive")
+	}
+	server.resumeTasksForProvider("p1")
+	if stored := store.task("task-1"); stored.Enabled {
+		t.Fatal("restoring a provider must not undo the user's own pause")
+	}
+
+	// The keeper's own pause is still revived when a member comes back.
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-2", Enabled: false, PausedBy: domain.ScheduledTaskPausedByKeeper,
+		Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1"},
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-2"); !stored.Enabled || stored.PausedBy != "" {
+		t.Fatalf("keeper-paused task must be revived and lose its mark, got enabled=%v pausedBy=%q", stored.Enabled, stored.PausedBy)
+	}
+	// Auto-pause stamps the keeper mark, so a later restore can undo it.
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-3", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"gone"}, NextRunAt: formatScheduleStamp(time.Now().Add(-time.Minute)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-3"); stored.Enabled || stored.PausedBy != domain.ScheduledTaskPausedByKeeper {
+		t.Fatalf("auto-pause must be marked as the keeper's: enabled=%v pausedBy=%q", stored.Enabled, stored.PausedBy)
+	}
 }

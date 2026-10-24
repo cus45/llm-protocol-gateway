@@ -3,8 +3,10 @@ package gateway
 import "strings"
 
 // Chat 与 Responses 之间只搬两边同义的字段：prompt_cache_key 让上游按对话复用
-// KV 缓存，service_tier 决定 fast 档。两边都没有对应字段的（metadata、store、
-// include……）不搬，免得让不认识它们的上游 400。
+// KV 缓存，service_tier 决定 fast 档，safety_identifier 是上游做安全审计的终端
+// 用户标识（Responses 客户端如 Codex 每轮都带，丢了上游就看不到说话的人）。
+// 两边都没有对应字段的（metadata、store、include……）不搬，免得让不认识它们的
+// 上游 400。
 
 // openAIServiceTiers 是 Chat 与 Responses 共有的 service_tier 取值。
 var openAIServiceTiers = map[string]struct{}{
@@ -24,8 +26,8 @@ func normalizedOpenAIServiceTier(value any) (string, bool) {
 	return text, true
 }
 
-// forwardChatConversationFields 把 Chat 的 prompt_cache_key / service_tier 带到
-// Responses 请求里。
+// forwardChatConversationFields 把 Chat 的 prompt_cache_key / service_tier /
+// safety_identifier 带到 Responses 请求里。
 func forwardChatConversationFields(chatReq, responsesReq map[string]any) {
 	if key := strings.TrimSpace(stringValue(chatReq["prompt_cache_key"])); key != "" {
 		responsesReq["prompt_cache_key"] = key
@@ -33,15 +35,21 @@ func forwardChatConversationFields(chatReq, responsesReq map[string]any) {
 	if tier, ok := normalizedOpenAIServiceTier(chatReq["service_tier"]); ok {
 		responsesReq["service_tier"] = tier
 	}
+	if id := strings.TrimSpace(stringValue(chatReq["safety_identifier"])); id != "" {
+		responsesReq["safety_identifier"] = id
+	}
 }
 
 // forwardResponsesConversationFields 把 Responses 的 prompt_cache_key /
-// service_tier 带到 Chat 请求里。
+// service_tier / safety_identifier 带到 Chat 请求里。
 func forwardResponsesConversationFields(responsesReq, chatReq map[string]any) {
 	if key := strings.TrimSpace(stringValue(responsesReq["prompt_cache_key"])); key != "" {
 		chatReq["prompt_cache_key"] = key
 	}
 	if tier, ok := normalizedOpenAIServiceTier(responsesReq["service_tier"]); ok {
 		chatReq["service_tier"] = tier
+	}
+	if id := strings.TrimSpace(stringValue(responsesReq["safety_identifier"])); id != "" {
+		chatReq["safety_identifier"] = id
 	}
 }

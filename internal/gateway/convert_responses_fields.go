@@ -68,7 +68,8 @@ func responsesTextFormatToClaudeOutputFormat(format map[string]any) map[string]a
 			"type":   "json_schema",
 			"schema": sanitizeClaudeStructuredOutputSchema(schema),
 		}
-		// Claude GA structured outputs reject format.name ("Extra inputs are not permitted").
+		// Claude GA structured outputs reject format.name ("Extra inputs are not permitted");
+		// magpie likewise sends only {type, schema} (internal/gateway/anthropic.go:981-987).
 		return out
 	case "json_object":
 		// Claude has no dedicated json_object mode; approximate with a loose object schema.

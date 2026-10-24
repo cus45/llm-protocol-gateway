@@ -489,6 +489,11 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "admin password is not configured yet")
 		return
 	}
+	// 口令可被离线穷举前先挡一层：同一来源反复试同一账号，超过阈值直接 429。
+	// 必须在解析正文之前判断 —— 被挡下的来源不该再消耗一次 JSON 解析。
+	if s.rejectIfAuthThrottledPeek(w, r) {
+		return
+	}
 	var payload struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -498,10 +503,6 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(payload.Username)
-	// 口令可被离线穷举前先挡一层：同一来源反复试同一账号，超过阈值直接 429。
-	if s.rejectIfAuthThrottled(w, r, username) {
-		return
-	}
 	// Empty username or "admin" logs in as the administrator (legacy password).
 	if username == "" || strings.EqualFold(username, "admin") {
 		hash := s.adminAuth.Setting(settingAdminPassword)

@@ -268,3 +268,38 @@ func TestStreamEndReaderFoldsClaudeBlocksAcrossChunks(t *testing.T) {
 		t.Fatalf("open blocks %v, want [2]", cut.openBlocks)
 	}
 }
+
+// N23-5：可折叠的流里折叠一无所获时，final 退回整段解析，而不是一手空账
+// 让上层按 len/4 估一笔假账。
+func TestStreamUsageReaderFoldableFallsBackToBody(t *testing.T) {
+	foldedBody := []byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	reader.Write(foldedBody)
+	if got := reader.final(ParseOpenAIUsage, foldedBody); got.InputTokens != 12 || got.OutputTokens != 3 {
+		t.Fatalf("folded usage lost: %+v", got)
+	}
+
+	silent := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+	reader = newStreamUsageReader(usageStreamOpenAI)
+	reader.Write(silent)
+	if got := reader.final(ParseOpenAIUsage, silent); got != (TokenUsage{}) {
+		t.Fatalf("silent stream usage = %+v, want zero", got)
+	}
+
+	// 折叠什么都没捡到、但整段 body 解析得出 usage：必须用真实数字。
+	counted := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\n\n")
+	reader = newStreamUsageReader(usageStreamClaude)
+	reader.Write(counted)
+	reader.claude = claudeUsageTotals{}
+	if got := reader.final(ParseClaudeUsage, counted); got.InputTokens != 7 || got.OutputTokens != 1 {
+		t.Fatalf("body fallback usage = %+v, want the body's figures", got)
+	}
+
+	// 截断的前缀（body 比流短）不回退解析：数字会偏小且无处说明。
+	reader = newStreamUsageReader(usageStreamClaude)
+	reader.Write(append(append([]byte(nil), counted...), []byte("                              ")...))
+	reader.claude = claudeUsageTotals{}
+	if got := reader.final(ParseClaudeUsage, counted); got != (TokenUsage{}) {
+		t.Fatalf("truncated prefix counted as usage: %+v", got)
+	}
+}

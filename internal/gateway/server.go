@@ -504,6 +504,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /chat/completions", s.handleOpenAIChat)
 	mux.HandleFunc("POST /v1/embeddings", s.handleOpenAIEmbeddings)
 	mux.HandleFunc("POST /openai/v1/embeddings", s.handleOpenAIEmbeddings)
+	mux.HandleFunc("POST /v1/audio/transcriptions", s.handleOpenAIAudioTranscriptions)
+	mux.HandleFunc("POST /openai/v1/audio/transcriptions", s.handleOpenAIAudioTranscriptions)
+	mux.HandleFunc("POST /v1/audio/translations", s.handleOpenAIAudioTranslations)
+	mux.HandleFunc("POST /openai/v1/audio/translations", s.handleOpenAIAudioTranslations)
 	mux.HandleFunc("POST /v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/responses", s.handleOpenAIResponses)
@@ -2653,7 +2657,7 @@ func (s *Server) handleClaudeOAuthUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cacheKey := "claude:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("claude", providerID)
 	forceRefresh := strings.EqualFold(r.URL.Query().Get("refresh"), "1") || strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	if forceRefresh {
 		s.oauthUsageCache.invalidate(cacheKey)
@@ -2687,7 +2691,7 @@ func (s *Server) handleClaudeOAuthUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -2717,7 +2721,7 @@ func (s *Server) handleCursorOAuthUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cacheKey := "cursor:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("cursor", providerID)
 	forceRefresh := strings.EqualFold(r.URL.Query().Get("refresh"), "1") || strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	if forceRefresh {
 		s.oauthUsageCache.invalidate(cacheKey)
@@ -2751,7 +2755,7 @@ func (s *Server) handleCursorOAuthUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -2781,7 +2785,7 @@ func (s *Server) handleChatGPTOAuthUsage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	cacheKey := "chatgpt:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("chatgpt", providerID)
 	forceRefresh := strings.EqualFold(r.URL.Query().Get("refresh"), "1") || strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	if forceRefresh {
 		s.oauthUsageCache.invalidate(cacheKey)
@@ -2815,7 +2819,7 @@ func (s *Server) handleChatGPTOAuthUsage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if report.Available {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -2869,7 +2873,7 @@ func (s *Server) handleChatGPTOAuthResetConsume(w http.ResponseWriter, r *http.R
 	if result.Code == "reset" {
 		// The cached snapshot still shows the old windows; drop it so the panel
 		// reads the account afresh on its next poll.
-		s.oauthUsageCache.invalidate("chatgpt:" + providerID)
+		s.oauthUsageCache.invalidate(s.oauthUsageCacheKeyFor("chatgpt", providerID))
 		go s.refreshChatGPTOAuthUsage(providerID)
 		s.logs.AddApp("info", "chatgpt reset credit used", fmt.Sprintf("provider=%s windows=%d", providerID, result.WindowsReset))
 	}
@@ -2905,7 +2909,7 @@ func (s *Server) handleZhipuUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := "zhipu:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("zhipu", providerID)
 	forceRefresh := strings.EqualFold(r.URL.Query().Get("refresh"), "1") || strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	if forceRefresh {
 		s.oauthUsageCache.invalidate(cacheKey)
@@ -2938,7 +2942,7 @@ func (s *Server) handleZhipuUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cache success + unsupported (非编程套餐) so card polling stays quiet.
 	if report.Available || report.Unsupported {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -2967,7 +2971,7 @@ func (s *Server) handleDeepSeekBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := "deepseek:" + providerID
+	cacheKey := s.oauthUsageCacheKeyFor("deepseek", providerID)
 	forceRefresh := strings.EqualFold(r.URL.Query().Get("refresh"), "1") || strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	if forceRefresh {
 		s.oauthUsageCache.invalidate(cacheKey)
@@ -2997,7 +3001,7 @@ func (s *Server) handleDeepSeekBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cache success + unsupported (第三方中转无此端点) so card polling stays quiet.
 	if report.Available || report.Unsupported {
-		s.oauthUsageCache.set(cacheKey, report)
+		s.oauthUsageCache.setForAccount(cacheKey, oauthUsageAccountID(provider), report)
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -3089,19 +3093,14 @@ func (s *Server) handleProviderThinkingTest(w http.ResponseWriter, r *http.Reque
 // A base URL that already names the endpoint is used as given: the operator
 // configured an exact path on purpose, and appending a second one 404s.
 func resolveProviderEmbeddingsURL(provider domain.Provider) string {
-	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-	if strings.HasSuffix(strings.ToLower(upstreamURL), "/embeddings") {
-		return upstreamURL
-	}
-	return upstreamURL + "/embeddings"
+	return resolveProviderEndpointURL(provider, "/embeddings")
 }
 
+// resolveProviderImageURL 按与 resolveProviderEndpointURL 相同的后缀判据拼出图片
+// 生成端点：BaseURL 已经以 /images/generations 结尾就不再追加（用 Contains 会把
+// .../images/generations/<某段> 这种地址误判成已带端点）。
 func resolveProviderImageURL(provider domain.Provider) string {
-	upstreamURL := strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-	if !strings.Contains(strings.ToLower(upstreamURL), "/images/generations") {
-		upstreamURL += "/images/generations"
-	}
-	return upstreamURL
+	return resolveProviderEndpointURL(provider, "/images/generations")
 }
 
 // resolveProviderEndpointURL appends an OpenAI-style endpoint path to the
@@ -4273,7 +4272,9 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	}
 
 	// 出图只有一条腿，没有 failover 兜底，也只会原样转发 OpenAI Images 请求：
-	// 在动任何凭证、发任何请求之前，先把不可能的落点拒掉。
+	// 在动任何凭证、发任何请求之前，先把不可能的落点拒掉。路由级的检查先做，
+	// Provider 级的检查留到真正落点定下来以后再校验（见下方），因为出图可能
+	// 落在兜底 Provider 而不是路由默认值上。
 	if refusal, ok := imagesRouteRefusal(s.router, route); ok {
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "pass_through", "images/generations", r.URL.Path, refusal.status, TokenUsage{}, body, []byte(refusal.message))
 		writeOpenAIError(w, refusal.status, refusal.message)
@@ -4286,7 +4287,16 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	if gatewayKeyMatched {
 		providerID := s.imagesEffectiveProvider(matchedKey, route)
 		if providerID == "" {
-			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("provider %q is not assigned to your account", strings.TrimSpace(route.ProviderID)))
+			// Nothing on the chain is left to send to: revoked for a normal
+			// user (403), disabled or deleted for an admin key (503).
+			status := http.StatusServiceUnavailable
+			message := "no enabled provider on the key's provider chain"
+			if strings.TrimSpace(matchedKey.OwnerUserID) != "" {
+				status = http.StatusForbidden
+				message = fmt.Sprintf("provider %q is not assigned to your account", strings.TrimSpace(route.ProviderID))
+			}
+			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "pass_through", "images/generations", r.URL.Path, status, TokenUsage{}, body, []byte(message))
+			writeOpenAIError(w, status, message)
 			return
 		}
 		decision, err = s.router.DecideForProvider(route.ID, providerID)
@@ -4295,6 +4305,13 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// 被真正使用的 Provider（decision），不是路由默认值：出图没有兜底，
+	// 禁用、已删除或协议不支持的落点必须当场拒绝。
+	if refusal, ok := imagesProviderRefusal(s.router, decision.ProviderID); ok {
+		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, decision.ProviderID, "", "pass_through", "images/generations", r.URL.Path, refusal.status, TokenUsage{}, body, []byte(refusal.message))
+		writeOpenAIError(w, refusal.status, refusal.message)
 		return
 	}
 
@@ -4489,7 +4506,7 @@ func (s *Server) serveOpenAIPassThrough(w http.ResponseWriter, r *http.Request, 
 
 	releaseSlot, admissionErr := s.acquireProviderSlot(r.Context(), provider)
 	if admissionErr != nil {
-		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(provider.ID, time.Now())))
+		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSecondsFor(provider, time.Now())))
 		status := http.StatusBadGateway
 		if errors.Is(admissionErr, errProviderSaturated) {
 			status = http.StatusTooManyRequests
@@ -6237,22 +6254,40 @@ func extractConsumerAPIKey(r *http.Request) string {
 	return ""
 }
 
-// imagesRouteRefusal rejects a route whose output can never serve images, before
-// the handler reads credentials or builds an upstream URL.
-func imagesRouteRefusal(router *Router, route domain.Route) (struct {
+// imagesRefusal is the status/message pair of an images request refused before
+// any credential is read or request sent.
+type imagesRefusal struct {
 	status  int
 	message string
-}, bool) {
-	refusal := struct {
-		status  int
-		message string
-	}{}
+}
+
+// imagesRouteRefusal rejects a route whose output can never serve images, before
+// the handler reads credentials or builds an upstream URL. The route's default
+// provider is checked too, but the provider actually used is validated
+// separately by imagesProviderRefusal once the key's binding is resolved.
+func imagesRouteRefusal(router *Router, route domain.Route) (imagesRefusal, bool) {
+	refusal := imagesRefusal{}
 	if !route.Enabled {
 		refusal.status = http.StatusServiceUnavailable
 		refusal.message = fmt.Sprintf("route %q is disabled", route.ID)
 		return refusal, true
 	}
-	provider, err := router.ProviderByID(route.ProviderID)
+	refusal, ok := imagesProviderRefusal(router, route.ProviderID)
+	if ok {
+		if refusal.status == http.StatusServiceUnavailable {
+			refusal.message = fmt.Sprintf("route %q default provider is disabled", route.ID)
+		}
+		return refusal, true
+	}
+	return refusal, false
+}
+
+// imagesProviderRefusal rejects a provider that cannot serve images at all:
+// disabled, soft-deleted or speaking a protocol with no images/generations
+// endpoint.
+func imagesProviderRefusal(router *Router, providerID string) (imagesRefusal, bool) {
+	refusal := imagesRefusal{}
+	provider, err := router.ProviderByID(providerID)
 	if err != nil {
 		refusal.status = http.StatusBadGateway
 		refusal.message = err.Error()

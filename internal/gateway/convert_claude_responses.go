@@ -287,6 +287,8 @@ func claudeToResponsesRequestDirect(claudeReq map[string]any, model string) (map
 	if metadata, ok := claudeReq["metadata"].(map[string]any); ok {
 		if userID := strings.TrimSpace(stringValue(metadata["user_id"])); userID != "" {
 			responsesReq["user"] = userID
+			// Claude 只有 user_id，Responses 里的安全审计字段一并还原。
+			responsesReq["safety_identifier"] = userID
 		}
 	}
 	if effort := claudeThinkingToResponsesEffort(claudeReq); effort != "" {

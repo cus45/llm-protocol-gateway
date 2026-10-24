@@ -959,7 +959,19 @@ type ScheduledTask struct {
 	LastRunAt string `json:"lastRunAt,omitempty"`
 	NextRunAt string `json:"nextRunAt,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
+	// PausedBy records who turned the task off. Only ScheduledTaskPausedByKeeper
+	// tasks are resumed automatically: the keeper pauses a task whose providers
+	// were all deleted and revives it once one comes back, but a pause a person
+	// asked for must stay until a person lifts it.
+	PausedBy string `json:"pausedBy,omitempty"`
 }
+
+const (
+	// ScheduledTaskPausedByKeeper marks a pause the quota keeper made itself.
+	ScheduledTaskPausedByKeeper = "keeper"
+	// ScheduledTaskPausedByUser marks a pause an operator asked for.
+	ScheduledTaskPausedByUser = "user"
+)
 
 // ScheduledTaskRun is one provider's outcome inside one firing of a task. A
 // firing writes one row per provider, so the console can show "3 家成功、1 家跳过"

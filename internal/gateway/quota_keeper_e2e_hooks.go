@@ -1,3 +1,5 @@
+//go:build testhooks
+
 package gateway
 
 import (
@@ -10,6 +12,8 @@ import (
 
 // Test hooks for the end-to-end quota-keeper tests that live in internal/app:
 // they exercise the real SQLite store, so they cannot reuse the in-package fakes.
+// Gated by `-tags testhooks` so production builds never export an admin-only
+// restore handler; scripts/test-hooks.sh runs those tests with the tag on.
 
 // RunQuotaKeeperTickForTest runs one keeper tick synchronously.
 func (s *Server) RunQuotaKeeperTickForTest(ctx context.Context) {

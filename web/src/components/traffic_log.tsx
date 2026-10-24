@@ -1,10 +1,16 @@
+import {useEffect, useRef, useState} from 'react';
 import type {APIKey, LogEntry, Provider, Route} from '../types';
 import {ProviderLabel} from './provider_label';
 import {
+    API_BASE,
     actionLabel,
+    buildReplayHeaders,
+    formatBytes,
     isTrafficLogError,
     providerDisplayLabel,
+    replayPlan,
     scheduleModeLabel,
+    summarizeReplayBody,
     trafficLogKeyLabel,
     trafficLogKeyTitle,
     trafficLogProviderLabel,
@@ -138,6 +144,97 @@ export function ScheduleTracePanel({ log, providers }: { log: LogEntry; provider
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+type ReplayState = {
+  phase: 'idle' | 'running' | 'done' | 'error';
+  status?: number;
+  latencyMs?: number;
+  streamed?: boolean;
+  bytes?: number;
+  text?: string;
+  error?: string;
+};
+
+/**
+ * 一键重放：拿日志里留存的请求体，按它当时进来的协议入口再发一次。
+ *
+ * 密钥用用户自己选的那一把（日志只记名字，不记原文），请求头只放 Authorization，
+ * 界面上任何位置都不显示密钥值。结果按「上游尝试」的样子摊开：状态、耗时、
+ * 是否流式、字节数与解包后的回复，和调度轨迹一个读法。
+ */
+export function ReplayPanel({ log, apiKeys }: { log: LogEntry; apiKeys: APIKey[] }) {
+  const plan = replayPlan(log);
+  const [keyId, setKeyId] = useState('');
+  const [state, setState] = useState<ReplayState>({ phase: 'idle' });
+  const abortRef = useRef<AbortController | null>(null);
+  const preferred = apiKeys.find((item) => item.id === log.apiKeyId && item.enabled) || apiKeys.find((item) => item.enabled) || apiKeys[0];
+  const key = apiKeys.find((item) => item.id === keyId) || preferred;
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  if (!log.requestBody?.trim()) {
+    return <div className="hint-text">重放：这条请求没有留存请求正文（旧日志或未开启正文落盘），无法重放。</div>;
+  }
+  if (!plan) {
+    return <div className="hint-text">重放：这条请求走的是「{actionLabel(log.action)}」类调用（{log.path || '无路径'}），不是模型对话入口，暂无对应重放方式。</div>;
+  }
+
+  const run = async () => {
+    if (!key) {
+      setState({ phase: 'error', error: '没有可用的 API 密钥：请先新建一把再重放。' });
+      return;
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const started = performance.now();
+    setState({ phase: 'running' });
+    try {
+      const response = await fetch(`${API_BASE}${plan.path}`, {
+        method: 'POST',
+        headers: buildReplayHeaders(plan, key.key),
+        body: log.requestBody,
+        credentials: 'same-origin',
+        signal: controller.signal,
+      });
+      const raw = await response.text();
+      const latencyMs = Math.round(performance.now() - started);
+      const streamed = (response.headers.get('content-type') || '').includes('event-stream') || raw.includes('data:');
+      setState({ phase: 'done', status: response.status, latencyMs, streamed, bytes: raw.length, text: summarizeReplayBody(raw, streamed) });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setState({ phase: 'error', error: String(error), latencyMs: Math.round(performance.now() - started) });
+    }
+  };
+
+  return (
+    <div className="replay-panel">
+      <div className="replay-panel-controls">
+        <label>重放密钥</label>
+        <select aria-label="重放密钥" value={key?.id || ''} onChange={(event) => setKeyId(event.target.value)}>
+          {apiKeys.map((item) => <option key={item.id} value={item.id} disabled={!item.enabled}>{item.name}{item.enabled ? '' : '（已禁用）'}</option>)}
+        </select>
+        <span className="replay-panel-target mono" title={`POST ${plan.path}`}>POST {plan.path}</span>
+        <button className="mini-btn" type="button" disabled={state.phase === 'running' || !key || !key.enabled} onClick={() => void run()}>
+          {state.phase === 'running' ? '重放中…' : '发送重放'}
+        </button>
+      </div>
+      <div className="replay-panel-note">
+        请求体取自 {new Date(log.time).toLocaleString()} 的这次调用（{formatBytes(log.requestBody.length)}，落盘时可能已截断）；
+        密钥只用于本次 Authorization 头，不会显示或写入日志。重放会真实消耗额度并生成一条新日志。
+      </div>
+      {state.phase === 'error' ? <div className="replay-attempt error"><Badge tone="red">失败</Badge><span>{state.error}</span></div> : null}
+      {state.phase === 'done' ? (
+        <div className={`replay-attempt${state.status && state.status >= 400 ? ' error' : ''}`}>
+          <span className="replay-rank">#{1}</span>
+          <Badge tone={state.status && state.status >= 400 ? 'red' : 'green'}>HTTP {state.status}</Badge>
+          <span className="mono">{state.latencyMs} ms</span>
+          <span className="replay-note">{state.streamed ? '流式' : '非流式'} · {formatBytes(state.bytes)}</span>
+          <pre className="replay-text">{state.text || '（空响应）'}</pre>
+        </div>
+      ) : null}
     </div>
   );
 }

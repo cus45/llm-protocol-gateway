@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +18,9 @@ const (
 	authFailureWindow   = 10 * time.Minute
 	authMaxFailures     = 8
 	authThrottleSweepAt = 1024
+	// authLoginBodyPeekLimit 是登录限流预读正文的上限：一个登录请求体远小于此，
+	// 超出的部分原样留在 r.Body 里交给 Decode。
+	authLoginBodyPeekLimit = 64 << 10
 )
 
 type authFailureKey struct {
@@ -111,6 +117,58 @@ func (s *Server) rejectIfAuthThrottled(w http.ResponseWriter, r *http.Request, u
 	w.Header().Set("Retry-After", strconv.Itoa(retry))
 	writeOpenAIError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
 	return true
+}
+
+// rejectIfAuthThrottledPeek 只看请求体里的 username 决定挡不挡，不读正文。
+// 登录在解析 JSON 之前就要限流（被挡下的来源不该再消耗一次解析），用一个只认
+// 字符串值的轻量扫描取账号名：取不到就按 admin 桶处理，最多是多挡一层，不会漏。
+func (s *Server) rejectIfAuthThrottledPeek(w http.ResponseWriter, r *http.Request) bool {
+	return s.rejectIfAuthThrottled(w, r, peekUsername(r))
+}
+
+// peekUsername 只读请求头，从请求体 JSON 里认出 username 字符串；正文原样留给
+// 后续的 Decode。它只是限流用的提示，格式不合法的正文照样交给 Decode 去报错。
+func peekUsername(r *http.Request) string {
+	if r == nil || r.Body == nil || r.Body == http.NoBody {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, authLoginBodyPeekLimit))
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), r.Body))
+	if r.GetBody != nil && int64(len(raw)) < authLoginBodyPeekLimit {
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(raw)), nil
+		}
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return ""
+		}
+		if key != "username" {
+			if err := dec.Decode(new(json.RawMessage)); err != nil {
+				return ""
+			}
+			continue
+		}
+		var username string
+		if err := dec.Decode(&username); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(username)
+	}
+	return ""
 }
 
 // recordAuthFailure 记一次口令失败（供后续限流判断）。
