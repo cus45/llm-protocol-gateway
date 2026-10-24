@@ -6,6 +6,7 @@
 // 服务端状态，不做第二份草稿。
 import React from 'react';
 import {ProviderLabel} from './provider_label';
+import {providerAccountFace} from './provider_select';
 import {
   ApiKeyDetailPanel,
   ApiKeyFallbackProvidersModal,
@@ -13,7 +14,8 @@ import {
   ApiKeyQuotaSection,
 } from './apikeys';
 import {providerSelectOptions} from './provider_select';
-import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './selects';
+import {FilterPopoverSelect, type PopoverFilterOption} from './filter_popover';
+import {IconSelect, SearchableModelSelect} from './selects';
 import {Badge, BrandIcon, InfoTip, Switch} from './ui';
 import {
   API_BASE,
@@ -200,6 +202,8 @@ const ICONS = {
   edit: <><path d="M4 20h4.2L20 8.2 15.8 4 4 15.8V20Z" /><path d="m13.6 6.2 4.2 4.2" /></>,
   play: <path d="M8 5.2v13.6L19 12 8 5.2Z" />,
   sort: <><path d="M7 4.5v15M4 16.5l3 3 3-3" /><path d="M13 7h7M13 12h5M13 17h3" /></>,
+  pause: <><path d="M9 5.5v13M15 5.5v13" /></>,
+  grip: <><circle cx="9" cy="6" r="1.2" /><circle cx="15" cy="6" r="1.2" /><circle cx="9" cy="12" r="1.2" /><circle cx="15" cy="12" r="1.2" /><circle cx="9" cy="18" r="1.2" /><circle cx="15" cy="18" r="1.2" /></>,
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +262,27 @@ export function ApiKeysTopBar({
       </div>
     </div>
   );
+}
+
+
+/**
+ * 「输入 Provider」筛选选项。不能直接用 providerSelectOptions 的 label：那个
+ * label 是给「左品牌栏 + 右账号栏」两级菜单用的账号短名（WorkBuddy 的几个订阅
+ * 账号会并排显示成同一条「WorkBuddy 订阅」，在平铺菜单里完全分不出来）。这里写
+ * 完整名称；同名时把脱敏账号补到第二行，才选得中想要的那个。
+ */
+export function apiKeyProviderFilterOptions(providers: Provider[]): PopoverFilterOption[] {
+  return providerSelectOptions(providers, {withProtocol: false}).map((option) => {
+    const provider = providers.find((item) => item.id === option.value);
+    const full = provider ? providerAccountFace(provider) : option.label;
+    return {
+      id: option.value,
+      label: full,
+      // 第二行只放「名字里没有的账号」：名字本身已经带了账号（或没有账号可认）就省略
+      hint: provider && option.label !== full && !full.includes(option.label) ? option.label : undefined,
+      icon: option.icon,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -326,28 +351,37 @@ export function ApiKeyFilterFields({filters, providers}: {filters: ApiKeyFilters
       </div>
       <div className={`akc-filter-grid${filters.showOwner ? '' : ' no-owner'}`}>
         {filters.showOwner ? (
-          <MultiSelectFilter
-            label="所属用户"
-            options={filters.ownerOptions}
-            selected={filters.owner}
-            onChange={filters.setOwner}
-            allLabel="全部用户"
-          />
+          <div className="akc-filter-cell">
+            <label>所属用户</label>
+            <FilterPopoverSelect
+              label="所属用户"
+              options={filters.ownerOptions}
+              selected={filters.owner}
+              onChange={filters.setOwner}
+              allLabel="全部用户"
+            />
+          </div>
         ) : null}
-        <MultiSelectFilter
-          label="输入 Provider"
-          options={providerSelectOptions(providers, {withProtocol: false}).map((option) => ({id: option.value, label: option.label, icon: option.icon}))}
-          selected={filters.provider}
-          onChange={filters.setProvider}
-          allLabel="全部 Provider"
-        />
-        <MultiSelectFilter
-          label="输出协议"
-          options={(['openai_chat', 'openai_responses', 'claude'] as Protocol[]).map((protocol) => ({id: protocol, label: protocolLabel(protocol)}))}
-          selected={filters.protocol}
-          onChange={filters.setProtocol}
-          allLabel="全部协议"
-        />
+        <div className="akc-filter-cell">
+          <label>输入 Provider</label>
+          <FilterPopoverSelect
+            label="输入 Provider"
+            options={apiKeyProviderFilterOptions(providers)}
+            selected={filters.provider}
+            onChange={filters.setProvider}
+            allLabel="全部 Provider"
+          />
+        </div>
+        <div className="akc-filter-cell">
+          <label>输出协议</label>
+          <FilterPopoverSelect
+            label="输出协议"
+            options={(['openai_chat', 'openai_responses', 'claude'] as Protocol[]).map((protocol) => ({id: protocol, label: protocolLabel(protocol)}))}
+            selected={filters.protocol}
+            onChange={filters.setProtocol}
+            allLabel="全部协议"
+          />
+        </div>
       </div>
     </>
   );
@@ -374,6 +408,7 @@ export function ApiKeyFleetPane({
   onBatchDelete,
   onCopyKey,
   copiedKeyId,
+  onToggleEnabled,
   createDisabled,
   onCreate,
 }: {
@@ -394,6 +429,8 @@ export function ApiKeyFleetPane({
   onBatchDelete: () => void;
   onCopyKey: (key: APIKey) => void;
   copiedKeyId: string;
+  /** 行内一键启用 / 停用：列表里就能直接切换，不必先点进详情。 */
+  onToggleEnabled: (key: APIKey) => void;
   createDisabled?: boolean;
   onCreate: () => void;
 }) {
@@ -551,6 +588,19 @@ export function ApiKeyFleetPane({
                   }}
                 >
                   <Icon path={copiedKeyId === key.id ? ICONS.check : ICONS.copy} size={13} />
+                </button>
+                <button
+                  type="button"
+                  className={`akc-key-toggle${key.enabled ? '' : ' enable'}`}
+                  disabled={saving}
+                  title={key.enabled ? '停用该密钥（客户端将立即收到 401）' : '重新启用该密钥'}
+                  aria-label={`${key.enabled ? '停用' : '启用'} ${key.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleEnabled(key);
+                  }}
+                >
+                  <Icon path={key.enabled ? ICONS.pause : ICONS.play} size={12} />
                 </button>
               </div>
             </div>
@@ -849,7 +899,73 @@ function RoutingTab({
   const overrides = keyItem.fallbackModelOverrides || {};
   const primary = providers.find((item) => item.id === primaryProviderId);
   const servingProviderId = keyItem.activeProviderId || primaryProviderId;
+  const [dragState, setDragState] = React.useState<RowDragState>({draggingId: '', overId: '', after: false});
+  const drag: RowDragBinding = {
+    state: dragState,
+    onPointerDown: (event, id) => {
+      const list = event.currentTarget.closest('.akc-chain-list');
+      if (!list) return;
+      const startY = event.clientY;
+      let active = false;
+      const state: RowDragState = {draggingId: '', overId: '', after: false};
 
+      // 命中哪一行、落在该行上半还是下半：用列表里每一行的中线判断，比逐行绑
+      // pointerenter 稳（快速拖动时指针可能跳过整行）。
+      const updateTarget = (clientY: number, targetId: string) => {
+        const rows = [...list.querySelectorAll<HTMLElement>('.akc-chain-row.draggable')];
+        for (const row of rows) {
+          const rect = row.getBoundingClientRect();
+          if (clientY < rect.top || clientY > rect.bottom) continue;
+          const rowId = row.dataset.fallbackId || '';
+          if (!rowId || rowId === targetId) { state.overId = ''; return; }
+          state.overId = rowId;
+          state.after = clientY > rect.top + rect.height / 2;
+          return;
+        }
+        state.overId = '';
+      };
+
+      const onMove = (moveEvent: PointerEvent) => {
+        if (!active) {
+          if (Math.abs(moveEvent.clientY - startY) < 4) return;
+          active = true;
+          state.draggingId = id;
+          document.body.classList.add('akc-dragging');
+        }
+        moveEvent.preventDefault();
+        updateTarget(moveEvent.clientY, id);
+        setDragState({...state});
+      };
+
+      const finish = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        document.body.classList.remove('akc-dragging');
+        if (!active) return;
+        const {overId: over, after} = state;
+        setDragState({draggingId: '', overId: '', after: false});
+        if (!over) return;
+        const next = moveFallbackId(fallbackIds, id, over, after);
+        if (next === fallbackIds) return;
+        void panel.onUpdateFallbacks(keyItem, next, overrides);
+      };
+      const onUp = () => finish();
+      const onCancel = () => {
+        state.overId = '';
+        active = active ? active : false;
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        document.body.classList.remove('akc-dragging');
+        setDragState({draggingId: '', overId: '', after: false});
+      };
+
+      window.addEventListener('pointermove', onMove, {passive: false});
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+    },
+  };
   return (
     <div className="akc-stack">
       {/* 方案切换条：一行放完，右侧是新建 / 重命名 / 删除 */}
@@ -943,10 +1059,7 @@ function RoutingTab({
             testingProviderID={testingProviderID}
             onRefreshModels={panel.onRefreshModels}
             onRemove={() => undefined}
-            onMove={() => undefined}
             onPromote={() => undefined}
-            canMoveUp={false}
-            canMoveDown={false}
           />
           {fallbackIds.map((id, index) => {
             const provider = providers.find((item) => item.id === id);
@@ -963,12 +1076,10 @@ function RoutingTab({
                 serving={servingProviderId === id}
                 saving={saving}
                 testingProviderID={testingProviderID}
+                drag={drag}
                 onRefreshModels={panel.onRefreshModels}
                 onRemove={() => void panel.onUpdateFallbacks(keyItem, fallbackIds.filter((item) => item !== id), removeKey(overrides, id))}
-                onMove={(delta) => void panel.onUpdateFallbacks(keyItem, moveItem(fallbackIds, index, delta), overrides)}
                 onPromote={() => void panel.onUpdateBinding(keyItem, id, outputProtocol)}
-                canMoveUp={index > 0}
-                canMoveDown={index < fallbackIds.length - 1}
               />
             );
           })}
@@ -987,7 +1098,7 @@ function RoutingTab({
           <span className="akc-chain-foot-note">
             {fallbackIds.length === 0
               ? '未配置备选：首选额度耗尽后，这个密钥不会自动换到别的 Provider。'
-              : '当前承接节点以绿点标出；「设为首选」会交换绑定，其余备选顺序不变。'}
+              : '按住备选行拖动即可调整顺序，松手后保存；「设为首选」会交换绑定，其余备选顺序不变。'}
           </span>
         </div>
       </div>
@@ -1001,14 +1112,6 @@ function removeKey(source: Record<string, string>, key: string) {
   return next;
 }
 
-function moveItem(list: string[], index: number, delta: number) {
-  const target = index + delta;
-  if (target < 0 || target >= list.length) return list;
-  const next = [...list];
-  const [item] = next.splice(index, 1);
-  next.splice(target, 0, item);
-  return next;
-}
 
 function PipelineRow({
   rank,
@@ -1021,12 +1124,10 @@ function PipelineRow({
   saving,
   testingProviderID,
   providerModelCount,
+  drag,
   onRefreshModels,
   onRemove,
-  onMove,
   onPromote,
-  canMoveUp,
-  canMoveDown,
 }: {
   rank: string;
   primary?: boolean;
@@ -1038,17 +1139,41 @@ function PipelineRow({
   saving: boolean;
   testingProviderID: string;
   providerModelCount?: number;
+  /** 备选行的拖拽状态与事件；首选行不传。 */
+  drag?: RowDragBinding;
   onRefreshModels: (providerId: string, providerName: string) => Promise<void>;
   onRemove: () => void;
-  onMove: (delta: number) => void;
   onPromote: () => void;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
 }) {
   const health = provider?.healthStatus;
   const unhealthy = health === 'unavailable';
+  const className = [
+    'akc-chain-row',
+    primary ? 'primary' : '',
+    serving ? ' serving' : '',
+    unhealthy ? ' unhealthy' : '',
+    drag ? ' draggable' : '',
+    drag?.state.draggingId === fallbackProviderId ? ' dragging' : '',
+    drag?.state.overId === fallbackProviderId ? (drag.state.after ? ' drop-after' : ' drop-before') : '',
+  ].filter(Boolean).join(' ');
+  // 指针拖拽：鼠标与触屏同一套事件。按住行内任意位置都可拖，但按钮和文字选择不
+  // 抢手势；按下后没有移动 4px 就当作普通点击，不会误触发排序。
+  const dragProps = drag ? {
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (saving || event.button !== 0) return;
+      if ((event.target as HTMLElement).closest('button')) return;
+      drag.onPointerDown(event, fallbackProviderId);
+    },
+  } : {};
   return (
-    <div className={`akc-chain-row${primary ? ' primary' : ''}${serving ? ' serving' : ''}${unhealthy ? ' unhealthy' : ''}`}>
+    <div className={className} data-fallback-id={drag ? fallbackProviderId : undefined} {...dragProps}>
+      {drag ? (
+        <span className="akc-drag-handle" aria-hidden="true" title="按住拖动可调整备选顺序">
+          <Icon path={ICONS.grip} size={13} />
+        </span>
+      ) : (
+        <span className="akc-drag-spacer" />
+      )}
       <span className={`akc-chain-rank${primary ? ' primary' : ''}`}>{rank}</span>
       <div className="akc-chain-identity">
         {provider ? (
@@ -1088,23 +1213,34 @@ function PipelineRow({
           <span className="akc-row-model-note">{providerModelCount ? `${providerModelCount} 个模型` : ''}</span>
         )}
         {!primary ? (
-          <>
-            <span className="akc-row-order">
-              <button type="button" className="akc-row-icon" disabled={saving || !canMoveUp} title="上移" onClick={() => onMove(-1)}>
-                <Icon path={ICONS.up} size={13} />
-              </button>
-              <button type="button" className="akc-row-icon" disabled={saving || !canMoveDown} title="下移" onClick={() => onMove(1)}>
-                <Icon path={ICONS.down} size={13} />
-              </button>
-            </span>
-            <button type="button" className="akc-row-text-btn danger" disabled={saving} title="从备选链移除" onClick={onRemove}>
-              移除
-            </button>
-          </>
+          <button type="button" className="akc-row-text-btn danger" disabled={saving} title="从备选链移除" onClick={onRemove}>
+            移除
+          </button>
         ) : null}
       </div>
     </div>
   );
+}
+
+/**
+ * 备选链的拖拽排序：HTML5 原生拖拽，拖到某一行上半 = 插到它前面，下半 = 插到它后面。
+ * 松手才落库（一次 PATCH），失败时由下方回弹到服务端顺序——不在拖拽过程中逐格提交，
+ * 否则每划过一行就发一次请求，撤销一次要多点几次。
+ */
+type RowDragState = {draggingId: string; overId: string; after: boolean};
+type RowDragBinding = {
+  state: RowDragState;
+  onPointerDown: (event: React.PointerEvent<HTMLElement>, id: string) => void;
+};
+
+export function moveFallbackId(ids: string[], fromId: string, toId: string, after: boolean) {
+  if (fromId === toId) return ids;
+  const fromIndex = ids.indexOf(fromId);
+  if (fromIndex < 0 || !ids.includes(toId)) return ids;
+  const next = ids.filter((id) => id !== fromId);
+  const targetIndex = next.indexOf(toId);
+  next.splice(after ? targetIndex + 1 : targetIndex, 0, fromId);
+  return next.every((id, index) => id === ids[index]) ? ids : next;
 }
 
 function SchemeActions({
@@ -1580,6 +1716,12 @@ function ClientTab({
           <div className="akc-hint">
             {route ? `当前输出协议：${protocolLabel(route.outputProtocol)}` : '请先在「基本绑定」里为该密钥选择 Provider 与输出协议。'}
           </div>
+          <ol className="akc-steps">
+            <li><b>先选网关地址</b>：本机或同一局域网用「内网」，外部网络用「公网域名」。</li>
+            <li><b>点上面的复制按钮</b>：会按选中地址生成本工具托管的配置片段（含 Base URL 与密钥）。</li>
+            <li><b>粘贴到客户端配置</b>：OpenCode → <code>opencode.json</code>，Codex → <code>config.toml</code>，Claude → 环境变量。</li>
+            <li><b>发一条消息验证</b>：在「在线调试沙箱」里点发送，能看到状态、时延和协议转换结果。</li>
+          </ol>
         </div>
 
         <div className="akc-card">
@@ -1597,15 +1739,18 @@ function ClientTab({
             ))}
           </div>
           <div className="akc-kv">
-            <span>Base URL</span>
-            <code>{active.base}</code>
+            <span className="akc-kv-key">Base URL</span>
+            <code className="akc-kv-value" title={active.base}>{active.base}</code>
             <button type="button" className="akc-row-text-btn" onClick={() => onCopy(active.base, '已复制 Base URL')}>复制</button>
           </div>
           <div className="akc-kv">
-            <span>鉴权头</span>
-            <code>{active.auth}</code>
-            <span>密钥</span>
-            <code title={keyItem.key}>{maskKey(keyItem.key)}</code>
+            <span className="akc-kv-key">鉴权头</span>
+            <code className="akc-kv-value">{active.auth}</code>
+            <button type="button" className="akc-row-text-btn" onClick={() => onCopy(`${active.auth}: ${keyItem.key}`, '已复制鉴权头')}>复制</button>
+          </div>
+          <div className="akc-kv">
+            <span className="akc-kv-key">密钥</span>
+            <code className="akc-kv-value mono" title={keyItem.key}>{maskKey(keyItem.key)}</code>
             <button type="button" className="akc-row-text-btn" onClick={() => onCopy(keyItem.key, '已复制 API Key')}>复制</button>
           </div>
           <div className="akc-code-block">
@@ -1614,6 +1759,11 @@ function ClientTab({
             </button>
             <pre>{active.code}</pre>
           </div>
+          <ul className="akc-notes">
+            <li>密钥通过 <code>{active.auth}</code> 发送，内网、公网同一把。</li>
+            <li>请求里的模型名默认按原样转发；要固定模型请到「基本绑定与模型覆写」设置。</li>
+            <li>输出协议决定网关替你转换到哪种方言，客户端只认 {route ? protocolLabel(route.outputProtocol) : '当前协议'}。</li>
+          </ul>
         </div>
       </div>
 

@@ -989,6 +989,34 @@ function App() {
 
   const apiKeyUsageMap = useMemo(() => buildApiKeyUsageMap(apiKeyUsageSnapshot), [apiKeyUsageSnapshot]);
 
+  // 「哪个节点在服务」由后端的 activeProviderId 决定，而它会在失败转移、回切探测、
+  // 别的标签页里发请求时变化——只刷新用量的话，控制台上的绿点会一直停在旧节点，
+  // 直到手动点一次刷新。所以停在密钥页时静默轮询 /__state（不弹 toast、不闪 loading）。
+  useEffect(() => {
+    if (activeNav !== 'api-keys') return undefined;
+    let cancelled = false;
+    const tick = () => {
+      if (!isDocumentActive()) return;
+      void fetchWithTimeout(`${API_BASE}/__state`, {credentials: 'same-origin'})
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+        .then((data: GatewayState) => {
+          if (cancelled) return;
+          setState((current) => normalizeGatewayState(data, current));
+          markBackendReachable();
+          setDataFetchedAt(new Date());
+        })
+        .catch(() => { /* 轮询失败保持现状，下一轮再试 */ });
+    };
+    const timer = window.setInterval(tick, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
+    const onVisible = () => { if (isDocumentActive()) tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [activeNav]);
+
   const resetApiKeyFilters = useCallback(() => {
     setApiKeyKeyword('');
     setApiKeyOwnerFilter([]);
@@ -4813,6 +4841,7 @@ function App() {
                   onBatchDelete={() => void deleteCheckedApiKeys()}
                   onCopyKey={copyApiKeyValue}
                   copiedKeyId={copiedApiKeyID}
+                  onToggleEnabled={toggleApiKeyEnabled}
                   createDisabled={saving || state.providers.length === 0}
                   onCreate={openApiKeyModal}
                 />

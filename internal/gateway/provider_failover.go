@@ -1446,23 +1446,39 @@ func cloneRequestMap(req map[string]any) map[string]any {
 
 // providerFailoverRecoveryInterval 控制回切探测周期：前置 Provider 恢复后，
 // 最多等待一个周期即可自动切回，避免长时间滞留在备用 Provider。
+//
+// 这里和「上游冷却」用同一个常量（见 cooldownTTL），所以把它压到 30s 就等于让
+// 被 429/5xx 打下线的账号最多 30s 就重新参与调度，会放大打爆上游账号的风险。
+// 因此回切探测走 independent 的 providerRecoveryProbeInterval：它只发一次很轻的
+// /models 探测，与真实请求的冷却计时互不影响。
 const providerFailoverRecoveryInterval = 2 * time.Minute
+
+// providerRecoveryProbeInterval 是回切探测的周期：比上游冷却短得多，这样
+// 「首选已经恢复」在控制台上最迟半分钟内就能看到，而不是等两分钟。探测本身
+// 只读 /models，不消耗生成额度；失败也不会延长上游的冷却时间。
+const providerRecoveryProbeInterval = 30 * time.Second
 
 // StartProviderFailoverRecovery periodically probes higher-priority providers
 // for keys stuck on a fallback, and switches back when one becomes available.
+// 回切探测（每 30s）与被标记不可用的 Provider 重探（每 2min，与冷却同拍）
+// 分开计时：前者要让控制台尽快看到「首选已恢复」，后者决定账号能否接流量。
 func (s *Server) StartProviderFailoverRecovery(ctx context.Context) {
 	go func() {
 		// 启动后先等一小段，避开冷启动阶段的探测抖动。
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
+		recoveryTimer := time.NewTimer(providerRecoveryProbeInterval)
+		defer recoveryTimer.Stop()
+		reprobeTimer := time.NewTimer(providerFailoverRecoveryInterval)
+		defer reprobeTimer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-timer.C:
+			case <-recoveryTimer.C:
 				s.recoverAPIKeyPreferredProviders(context.Background())
+				recoveryTimer.Reset(providerRecoveryProbeInterval)
+			case <-reprobeTimer.C:
 				s.reprobeUnavailableProviders(context.Background())
-				timer.Reset(providerFailoverRecoveryInterval)
+				reprobeTimer.Reset(providerFailoverRecoveryInterval)
 			}
 		}
 	}()
