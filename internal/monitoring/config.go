@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"time"
 )
 
@@ -226,11 +225,6 @@ type ProbeConfig struct {
 		WindowStart string `json:"windowStart"`
 		WindowEnd   string `json:"windowEnd"`
 	} `json:"daily"`
-	WeeklyCLI struct {
-		Enabled bool   `json:"enabled"`
-		Weekday int    `json:"weekday"`
-		Time    string `json:"time"`
-	} `json:"weeklyCli"`
 	QuotaStaleMinutes int `json:"quotaStaleMinutes"`
 }
 
@@ -243,27 +237,7 @@ func DefaultProbeConfig() ProbeConfig {
 	cfg.Daily.Enabled = true
 	cfg.Daily.WindowStart = "04:00"
 	cfg.Daily.WindowEnd = "06:00"
-	cfg.WeeklyCLI.Enabled = true
-	cfg.WeeklyCLI.Weekday = 0
-	cfg.WeeklyCLI.Time = "05:00"
 	return cfg
-}
-
-// ValidateWeeklyCLI 校验每周 CLI 深检的排程字段：weekday 0=周日 … 6=周六，
-// time 严格是 HH:MM。写坏的值会让「每周一次」变成「每周零次」或天天跑，宁可拒掉。
-func ValidateWeeklyCLI(weekday int, at string) error {
-	if weekday < 0 || weekday > 6 {
-		return fmt.Errorf("weeklyCli.weekday must be 0..6, got %d", weekday)
-	}
-	if len(at) != 5 || at[2] != ':' {
-		return fmt.Errorf("weeklyCli.time must be HH:MM, got %q", at)
-	}
-	hour, errHour := strconv.Atoi(at[:2])
-	minute, errMinute := strconv.Atoi(at[3:])
-	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return fmt.Errorf("weeklyCli.time must be HH:MM, got %q", at)
-	}
-	return nil
 }
 
 type MigrationMarker struct {
@@ -343,6 +317,11 @@ func (c *Config) SaveChannels(channels []Channel) error {
 	return c.settings.SetSetting("monitor_channels", string(raw))
 }
 
+// Probe reads the stored probe schedule.
+//
+// 已撤下的字段（旧版每周 CLI 深检的 "weeklyCli"）在库里可能还留着键：json 解析
+// 会忽略未知字段，所以旧库照常读得出；下一次 SaveProbe 写回时该键自然消失，这是
+// 期望行为（该深检已整个移除，不保留兼容写入）。
 func (c *Config) Probe() ProbeConfig {
 	cfg := DefaultProbeConfig()
 	if raw := c.settings.Setting("monitor_probe"); raw != "" {

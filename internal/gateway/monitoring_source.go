@@ -43,13 +43,8 @@ type monitoringStore interface {
 	// Probe history: the rule needs consecutive failures, the scheduler needs
 	// the daily budget, and neither may reset because the process restarted.
 	MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error)
-	InsertMonitorProbeRun(monitoring.ProbeRunRecord) error
 	InsertMonitorProbeRuns([]monitoring.ProbeRunRecord) error
-	ReplaceMonitorProbeRun(providerID, runningCase string, records []monitoring.ProbeRunRecord) error
 	LatestMonitorProbeRuns(providerID string, limit int) ([]monitoring.ProbeRunRecord, error)
-	LatestMonitorProbeRunsOfKind(kind, providerID string, limit int) ([]monitoring.ProbeRunRecord, error)
-	LastMonitorProbeRunAt(providerID string) (time.Time, bool, error)
-	LastCLIProbeRunAt() (time.Time, bool, error)
 }
 
 // windowStatsStore is implemented by the store's request-log aggregation. It is

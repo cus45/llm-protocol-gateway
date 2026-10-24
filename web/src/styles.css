@@ -13,7 +13,7 @@
    ============================================================ */
 
 /* ----------------------------------------------------------------
-   1. 设计 Token
+   0. 设计 Token
    ---------------------------------------------------------------- */
 :root {
   color-scheme: light;
@@ -173,7 +173,7 @@ html[data-theme="dark"] {
 }
 
 /* ----------------------------------------------------------------
-   2. 基础
+   1. 基础
    ---------------------------------------------------------------- */
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -221,7 +221,7 @@ html[data-theme="dark"] *:hover { scrollbar-color: rgba(152, 162, 184, 0.28) tra
 html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152, 162, 184, 0.28); }
 
 /* ----------------------------------------------------------------
-   3. Shell 布局：深色侧栏 + 浅色画布
+   2. Shell 布局：深色侧栏 + 浅色画布
    ---------------------------------------------------------------- */
 .shell {
   width: min(1600px, calc(100% - 32px));
@@ -267,7 +267,7 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
 .panel { padding: 18px 20px 20px; }
 
 /* ----------------------------------------------------------------
-   4. 品牌 + 状态胶囊 + Badge
+   3. 品牌 + 状态胶囊 + Badge
    ---------------------------------------------------------------- */
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 4px; min-width: 0; }
 .brand-text { min-width: 0; flex: 1; }
@@ -354,7 +354,7 @@ html[data-theme="dark"] .badge.purple { color: #c4b5fd; }
 html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 
 /* ----------------------------------------------------------------
-   5. 侧栏导航
+   4. 侧栏导航
    ---------------------------------------------------------------- */
 .nav {
   display: flex; flex-direction: column; gap: 2px;
@@ -517,7 +517,7 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .card .theme-switch .theme-icon { width: 16px; height: 16px; }
 
 /* ----------------------------------------------------------------
-   6. 面板 / 区段
+   5. 面板 / 区段
    ---------------------------------------------------------------- */
 .panel-header {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -541,7 +541,7 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .section-grid > *, .section-full > *, .grid-4 > *, .flow-board > * { min-width: 0; }
 
 /* ----------------------------------------------------------------
-   7. 按钮系统（统一 5 类 × 3 尺寸）
+   6. 按钮系统（统一 5 类 × 3 尺寸）
    ----------------------------------------------------------------
    | 变体          | 默认态                                     | 用途                  |
    | ------------- | ------------------------------------------ | --------------------- |
@@ -768,7 +768,7 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .quick-input:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
 
 /* ----------------------------------------------------------------
-   8. 指标卡 / 流程板
+   7. 指标卡 / 流程板
    ---------------------------------------------------------------- */
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .metric {
@@ -829,7 +829,7 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .flow-arrow span { z-index: 1; padding: 6px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); }
 
 /* ----------------------------------------------------------------
-   9. Provider / 路由 / 模型 卡片
+   8. Provider / 路由 / 模型 卡片
    ---------------------------------------------------------------- */
 .providers-toolbar {
   display: flex; flex-wrap: wrap; align-items: center;
@@ -1152,7 +1152,7 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .model-card-stats span { padding: 3px 8px; border-radius: 999px; background: var(--surface-sunken); color: var(--muted); }
 
 /* ----------------------------------------------------------------
-   10. 表单
+   9. 表单
    ---------------------------------------------------------------- */
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .form-grid.compact { margin-top: 12px; }
@@ -1243,7 +1243,7 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .text-aux { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 
 /* ----------------------------------------------------------------
-   11. 可搜索下拉（含 Portal 菜单）
+   10. 可搜索下拉（含 Portal 菜单）
    ---------------------------------------------------------------- */
 .searchable-select { position: relative; width: 100%; }
 .searchable-select-input {
@@ -1416,7 +1416,7 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .modal-multi-select .searchable-select-input { height: var(--control-h); }
 
 /* ----------------------------------------------------------------
-   12. API 密钥页
+   11. API 密钥页
    ---------------------------------------------------------------- */
 .api-keys-panel { width: 100%; }
 .api-keys-toolbar {
@@ -1631,7 +1631,7 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .fallback-active-note b { color: var(--text); font-family: var(--mono); font-weight: 600; }
 
 /* ----------------------------------------------------------------
-   13. 模型映射
+   12. 模型映射
    ---------------------------------------------------------------- */
 .model-mapping-trigger { display: flex; }
 .model-mapping-btn { width: 100%; height: var(--control-h); justify-content: center; color: var(--blue); background: var(--blue-soft); border-color: transparent; box-shadow: none; }
@@ -1687,7 +1687,7 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .model-mapping-row input::placeholder { color: var(--subtle); }
 
 /* ----------------------------------------------------------------
-   14. 代码块 / 提示 / 测试结果
+   13. 代码块 / 提示 / 测试结果
    ---------------------------------------------------------------- */
 .code {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1833,7 +1833,7 @@ html[data-theme="dark"] .test-result-card.fail { background: rgba(239, 68, 68, 0
 .runtime-meta { margin-top: 8px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
 
 /* ----------------------------------------------------------------
-   15. 日志（流量 / 应用 / 告警）
+   14. 日志（流量 / 应用 / 告警）
    ---------------------------------------------------------------- */
 .log-row {
   display: grid; gap: 4px;
@@ -1977,7 +1977,7 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
 .single-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 /* ----------------------------------------------------------------
-   16. 空状态 / Toast
+   15. 空状态 / Toast
    ---------------------------------------------------------------- */
 .empty-state {
   padding: 28px 20px;
@@ -2012,7 +2012,7 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ----------------------------------------------------------------
-   17. 用量统计（图表 / 日历 / 表格）
+   16. 用量统计（图表 / 日历 / 表格）
    ---------------------------------------------------------------- */
 .usage-table-wrap { margin-top: 18px; }
 
@@ -2872,7 +2872,7 @@ html[data-theme="dark"] .usage-calendar-day.edge { background: var(--accent); co
 .side-card p { margin: 0 0 12px; color: var(--sidebar-muted); font-size: 12px; line-height: 1.55; }
 
 /* ----------------------------------------------------------------
-   18. OAuth 用量面板 — 紧凑、信息密度高的卡片
+   17. OAuth 用量面板 — 紧凑、信息密度高的卡片
    ---------------------------------------------------------------- */
 .claude-oauth-panel, .claude-usage-panel {
   margin-top: 12px;
@@ -3074,10 +3074,8 @@ details.chatgpt-reset-credits.expandable > .chatgpt-reset-credits-list { padding
 .zhipu-reset-credits > span:nth-child(2) { font-weight: 600; color: var(--text-muted); font-size: 12px; }
 .zhipu-reset-credits .zhipu-reset-credits-hint { font-weight: 500; color: var(--subtle); font-size: 11px; }
 
-/* 19. 自检 —— 随自检入口一并移除；后续段落编号保持不变，避免无谓的连锁改动。 */
-
 /* ----------------------------------------------------------------
-   20. 用户管理
+   19. 用户管理
    ---------------------------------------------------------------- */
 .users-table-head {
   display: grid; gap: 10px; align-items: center;
@@ -3106,7 +3104,7 @@ html[data-theme="dark"] .provider-chip { color: #93c5fd; }
 .provider-chip-remove:hover { opacity: 1; }
 
 /* ----------------------------------------------------------------
-   21. 公网访问
+   20. 公网访问
    ---------------------------------------------------------------- */
 .url-row {
   display: grid;
@@ -3140,7 +3138,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .url-label { color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
 
 /* ----------------------------------------------------------------
-   22. 弹窗
+   21. 弹窗
    ---------------------------------------------------------------- */
 .modal-backdrop {
   position: fixed; inset: 0;
@@ -3279,7 +3277,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .field-inline.grow input { flex: 1; min-width: 0; }
 
 /* ----------------------------------------------------------------
-   23. 登录 / 认证 (macOS Terminal Style)
+   22. 登录 / 认证 (macOS Terminal Style)
    ---------------------------------------------------------------- */
 .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .auth-card {
@@ -3696,7 +3694,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 }
 
 /* ----------------------------------------------------------------
-   24. 机器状态
+   23. 机器状态
    ---------------------------------------------------------------- */
 .machine-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .machine-grid .metric { min-height: 122px; padding: 16px 18px; }
@@ -3759,7 +3757,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 }
 
 /* ----------------------------------------------------------------
-   25. 杂项
+   24. 杂项
    ---------------------------------------------------------------- */
 .toggle-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .adapter-editor {
@@ -3773,7 +3771,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 .adapter-editor textarea.json-preview { width: 100%; min-height: 160px; resize: vertical; }
 
 /* ----------------------------------------------------------------
-   26. 响应式
+   25. 响应式
    ---------------------------------------------------------------- */
 /* 768–1240px：导航降为 76px 图标栏，主区保留纵向空间；
    比把侧栏折成三行横条（约 260px 高）可读得多。 */
@@ -3845,7 +3843,7 @@ details:not([open]) > *:not(summary) { display: none !important; }
 }
 
 /* ----------------------------------------------------------------
-   28. 侧边栏收起态（collapsed）
+   27. 侧边栏收起态（collapsed）
    - 品牌文字 / 组标题 / 导航文字 / 用户卡文字 / GitHub 文字全部隐藏
    - 图标与头像居中，靠 title 属性提供 tooltip
    ---------------------------------------------------------------- */
@@ -4005,10 +4003,10 @@ html.theme-anim, html.theme-anim *, html.theme-anim *::before, html.theme-anim *
 html[data-theme="dark"] .card { box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.03); }
 
 /* ----------------------------------------------------------------
-   30. Provider 集群运行概览条 (Cluster Health Summary Bar)
+   29. Provider 集群运行概览条 (Cluster Health Summary Bar)
    ---------------------------------------------------------------- */
 /* ----------------------------------------------------------------
-   31. 协议网关接入中心 (Protocol Gateway Endpoints Showcase)
+   30. 协议网关接入中心 (Protocol Gateway Endpoints Showcase)
    ---------------------------------------------------------------- */
 .output-hero-card {
   padding: 18px 22px;
@@ -4209,7 +4207,7 @@ html[data-theme="dark"] .output-curl-head {
 }
 
 /* ----------------------------------------------------------------
-   32. 模型目录能力标签与快捷复制 (Model Catalog Enhancements)
+   31. 模型目录能力标签与快捷复制 (Model Catalog Enhancements)
    ---------------------------------------------------------------- */
 .model-card.compact {
   padding: 14px 16px;
@@ -4510,7 +4508,7 @@ html[data-theme="dark"] .output-curl-head {
 }
 
 /* ----------------------------------------------------------------
-   33. API 日志快捷状态过滤 (Traffic Quick Status Chips)
+   32. API 日志快捷状态过滤 (Traffic Quick Status Chips)
    ---------------------------------------------------------------- */
 .traffic-status-quick-chips {
   display: flex;
@@ -4563,7 +4561,7 @@ html[data-theme="dark"] .output-curl-head {
 }
 
 /* ----------------------------------------------------------------
-   34. 仪表盘指标卡与进度条优化 (Dashboard Metric Bars)
+   33. 仪表盘指标卡与进度条优化 (Dashboard Metric Bars)
    ---------------------------------------------------------------- */
 .usage-bar.ok > span {
   background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
@@ -4576,7 +4574,7 @@ html[data-theme="dark"] .output-curl-head {
 }
 
 /* ----------------------------------------------------------------
-   35. API 密钥详情分区选项卡 (API Key Detail Tabs)
+   34. API 密钥详情分区选项卡 (API Key Detail Tabs)
    ---------------------------------------------------------------- */
 .api-key-detail-tabs {
   display: flex;
@@ -4628,7 +4626,7 @@ html[data-theme="dark"] .output-curl-head {
 }
 
 /* ----------------------------------------------------------------
-   36. API 日志调用审计卡片与异常行高亮 (Log Audit & Tracing)
+   35. API 日志调用审计卡片与异常行高亮 (Log Audit & Tracing)
    ---------------------------------------------------------------- */
 .traffic-log-row.has-error {
   border-left: 3px solid var(--red);
@@ -4671,7 +4669,7 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 }
 
 /* ----------------------------------------------------------------
-   35. 全链路 APM 耗时瀑布流与弹窗选项卡 (APM Waterfall & Log Tabs)
+   34. 全链路 APM 耗时瀑布流与弹窗选项卡 (APM Waterfall & Log Tabs)
    ---------------------------------------------------------------- */
 .log-modal-tabs {
   display: flex;
@@ -4786,7 +4784,7 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 }
 
 /* ----------------------------------------------------------------
-   36. API 日志统一控制台 (Traffic Filter Dashboard)
+   35. API 日志统一控制台 (Traffic Filter Dashboard)
    ---------------------------------------------------------------- */
 .traffic-filter-dashboard {
   display: grid;
@@ -5093,7 +5091,7 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 }
 
 /* ----------------------------------------------------------------
-   37. 多样式统计图表 (Segmented Share & Leaderboard)
+   36. 多样式统计图表 (Segmented Share & Leaderboard)
    ---------------------------------------------------------------- */
 .usage-dimension-nav {
   display: flex;
@@ -6248,7 +6246,7 @@ html[data-theme="dark"] .pivot-entity-card:hover {
 .provider-tile.have { border-color: var(--accent-border); }
 
 /* ----------------------------------------------------------------
-   38. 额度保活 (Quota Keeper)
+   37. 额度保活 (Quota Keeper)
    ---------------------------------------------------------------- */
 .quota-grid {
   display: grid; gap: 12px;
@@ -6401,7 +6399,7 @@ html[data-theme="dark"] .quota-clock-chip,
 html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 
 /* ----------------------------------------------------------------
-   39. API 日志请求表 (magpie 式密集表格)
+   38. API 日志请求表 (magpie 式密集表格)
    ---------------------------------------------------------------- */
 .tlog-scroll { overflow-x: auto; }
 /* 列宽按"1250px 可视区不横向滚动"倒推：14 列一旦超宽，整张表就要左右拖，

@@ -4,7 +4,7 @@ import type {MonitorProbeAccount, MonitorProbeConfig, MonitorProbeRun, MonitorPr
 import {normalizeProbeCase, probeCaseText, probeKindText, probeSkipText} from './types';
 import {displayTime, formatLatency, relativeToNow} from './format';
 
-/** 已上线的探测种类。CLI 深检未上线，这里不出现任何入口。 */
+/** 已上线的探测种类：只有轻探测。后端对其余 kind 回 400 kind_unavailable。 */
 export const PROBE_KIND_LIGHT = 'light';
 
 export interface ProbesTabProps {
@@ -232,12 +232,9 @@ export function ProbeResultBody({ result }: ProbeResultBodyProps) {
   if (skipped) return <div className="metric-note">{skipped}</div>;
   const cases = result.cases ?? [];
   if (cases.length === 0) return <div className="metric-note">{'探测已提交，但没有返回用例结果。'}</div>;
-  // 深检（kind=cli）与轻探测的结论口径不同：深检失败不进入 probe_failed、也不会
-  // 触发任何自动处置，文案必须分开，否则运维会被误导。
-  const isCLI = result.kind === 'cli';
-  const headline = isCLI
-    ? (result.ok ? 'CLI 深检通过' : 'CLI 深检未通过：不进入 probe_failed 规则，不会自动处置账号。')
-    : (result.ok ? '轻探测通过' : '轻探测失败：只进入 probe_failed 规则，不会自动处置账号。');
+  const headline = result.ok
+    ? '轻探测通过'
+    : '轻探测失败：只进入 probe_failed 规则，不会自动处置账号。';
   return (
     <div>
       <div className="metric-note">{headline}</div>
@@ -277,8 +274,8 @@ export interface ProbeSettingsPanelProps {
 
 /**
  * 探测配置的唯一入口（设置页）。只暴露决定「会花多少额度」的参数，外加额度读数
- * 过期判定（账号页的「数据过期」标签读的就是它）。表单没覆盖的字段（例如尚未上线的
- * CLI 深检）一律原样带回，避免保存时被零值覆盖。
+ * 过期判定（账号页的「数据过期」标签读的就是它）。表单没覆盖的字段一律原样带回，
+ * 避免保存时被零值覆盖。
  */
 export function ProbeSettingsPanel(props: ProbeSettingsPanelProps) {
   const { config, timezone, draft, onChange, onSubmit, busy, error, notice } = props;

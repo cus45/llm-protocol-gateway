@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -931,15 +930,16 @@ func monitorPercentile(values []int64, p float64) int64 {
 }
 
 // InsertMonitorProbeRun stores one probe case. Rows that were skipped are kept
-// too: the daily budget and answers like "why is there no weekly deep check"
-// both have to be explainable from the database alone.
+// too: answers like "why was this account not probed" have to be explainable
+// from the database alone.
 func (s *Store) InsertMonitorProbeRun(record monitoring.ProbeRunRecord) error {
 	return s.InsertMonitorProbeRuns([]monitoring.ProbeRunRecord{record})
 }
 
 // InsertMonitorProbeRuns writes one round in a single transaction. A round is
-// several rows sharing one timestamp, and the "did this round already run"
-// checks read them as a unit: a half-written round must not be visible.
+// several rows sharing one timestamp, and the consecutive-failure / daily-budget
+// reads in MonitorProbeOutcome group them by that timestamp: a half-written round
+// must not be visible.
 func (s *Store) InsertMonitorProbeRuns(records []monitoring.ProbeRunRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -965,14 +965,9 @@ func (s *Store) InsertMonitorProbeRuns(records []monitoring.ProbeRunRecord) erro
 	return nil
 }
 
-// MonitorProbeRunningCase 是 CLI 深检「本轮已在跑」的占位行 case_key。占位行
-// 不是一次探测：它不延长失败连续数、不占当日配额，探测页也不当作结果展示；
-// 它唯一的用途是让周检的「本周已跑」在执行器返回之前就从库里成立（重启安全）。
-const MonitorProbeRunningCasePrefix = "round:running:"
-
 // MonitorProbeOutcome summarises one provider's probe history for the rule
 // engine, plus how many probes were already spent on `day`. A skipped round
-// (no model configured, CLI missing) is not a verdict, so it neither extends
+// (no model configured, provider disabled) is not a verdict, so it neither extends
 // the failure streak nor resets it — only a run that actually reached the
 // upstream does.
 //
@@ -982,8 +977,10 @@ const MonitorProbeRunningCasePrefix = "round:running:"
 // 否则「对话 200、tools 401」会被显示成正常。
 func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error) {
 	outcome := monitoring.ProbeOutcome{}
+	// 'round:running:%' 是已撤下的 CLI 深检留下的占位行：它从来不是一次探测，
+	// 老库里可能还有残留。这里照旧排除，免得残留行被当成一轮跳过或一次结果。
 	rows, err := s.reader().Query(`SELECT kind, case_key, ok, status, skipped, time
-		FROM monitor_probe_runs WHERE provider_id = ? AND case_key NOT LIKE '`+MonitorProbeRunningCasePrefix+`%'
+		FROM monitor_probe_runs WHERE provider_id = ? AND case_key NOT LIKE 'round:running:%'
 		ORDER BY time DESC, id DESC LIMIT 50`, providerID)
 	if err != nil {
 		return outcome, 0, fmt.Errorf("read probe runs: %w", err)
@@ -1050,99 +1047,25 @@ func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.P
 	return outcome, used, nil
 }
 
-// ReplaceMonitorProbeRun 在一段事务里删掉某账号某一轮时刻的占位行（以及本轮
-// 可能残留的行），再写入正式结果。深检收尾用它把「running」占位换成真结果：
-// 要么全换上，要么一行不动。
-func (s *Store) ReplaceMonitorProbeRun(providerID, runningCase string, records []monitoring.ProbeRunRecord) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("replace probe run: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM monitor_probe_runs
-		WHERE provider_id = ? AND case_key = ?`,
-		providerID, runningCase); err != nil {
-		return fmt.Errorf("replace probe run: %w", err)
-	}
-	for _, record := range records {
-		if _, err := tx.Exec(`INSERT INTO monitor_probe_runs
-			(provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			record.ProviderID, record.Kind, record.Case, boolToInt(record.OK), record.Status,
-			record.Skipped, record.DurationMs, record.Model, record.ErrorCode, record.Day,
-			record.Time.UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("replace probe run: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("replace probe run: %w", err)
-	}
-	return nil
-}
-
-// LastMonitorProbeRunAt 返回该账号最近一行探测记录的时间（含 round:running:*
-// 占位行）。周检的「本周已跑」用它：占位行意味着本轮已经在跑（或上一进程崩在
-// 跑的途中），也算本周跑过。
-func (s *Store) LastMonitorProbeRunAt(providerID string) (time.Time, bool, error) {
-	return s.lastMonitorProbeRunAt("WHERE provider_id = ? AND kind = ?", providerID, "cli")
-}
-
-// LastCLIProbeRunAt 返回全部账号里最近一行 CLI 深检记录的时间（含占位行）。
-// 周检的「本周已跑」是全局口径：只要本周跑过，就不该因为某个账号恰好没有行
-// 而被判成没跑。
-func (s *Store) LastCLIProbeRunAt() (time.Time, bool, error) {
-	return s.lastMonitorProbeRunAt("WHERE kind = ?", "cli")
-}
-
-func (s *Store) lastMonitorProbeRunAt(where string, args ...any) (time.Time, bool, error) {
-	var stamp string
-	err := s.reader().QueryRow(`SELECT time FROM monitor_probe_runs `+where+`
-		ORDER BY time DESC, id DESC LIMIT 1`, args...).Scan(&stamp)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return time.Time{}, false, nil
-		}
-		return time.Time{}, false, fmt.Errorf("read last probe run: %w", err)
-	}
-	at := parseMonitorTime(stamp)
-	if at.IsZero() {
-		return time.Time{}, false, nil
-	}
-	return at, true, nil
-}
-
 // LatestMonitorProbeRuns returns the most recent probe rows for one provider,
 // newest first, for the probe page.
 //
 // 原先的按账号过滤把 providerID 填进两个占位、再配合空串判断，结果过滤条件恒不
 // 成立（探测页最近结果一直是全量）。这里改成按需拼 WHERE 子句。
 func (s *Store) LatestMonitorProbeRuns(providerID string, limit int) ([]monitoring.ProbeRunRecord, error) {
-	return s.LatestMonitorProbeRunsOfKind("", providerID, limit)
-}
-
-// LatestMonitorProbeRunsOfKind narrows the listing to one kind (light | cli).
-// The weekly deep check asks for its own kind only: a light run stamped with a
-// later clock would otherwise push the CLI rows out of a limit-sized window and
-// make "did this week run" answer wrongly.
-func (s *Store) LatestMonitorProbeRunsOfKind(kind, providerID string, limit int) ([]monitoring.ProbeRunRecord, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	// 用拼接而不是 (? = '' OR x = ?)：参数按位置绑定，同一个值填两个占位
-	// 会让其中一个条件恒不成立（见 LatestMonitorProbeRuns 的说明）。kind /
-	// providerID 只是加不加 WHERE 子句的选择。
-	// 占位行（round:running:*，CLI 深检起跑时写入、收尾时删除）不是探测结果，
-	// 对外接口一律不返回：同一行数据不能一边被调度器当作「本轮已跑」，一边在
-	// 探测页被当作一次探测。调度侧用 LastMonitorProbeRunAt 单独读它。
-	where := "case_key NOT LIKE '" + MonitorProbeRunningCasePrefix + "%'"
-	args := make([]any, 0, 3)
+	// 会让其中一个条件恒不成立（见 LatestMonitorProbeRuns 的说明）。providerID
+	// 只是加不加 WHERE 子句的选择。
+	// 'round:running:%' 是已撤下的 CLI 深检留下的占位行，老库里可能还有残留：
+	// 它不是探测结果，对外接口一律不返回。
+	where := "case_key NOT LIKE 'round:running:%'"
+	args := make([]any, 0, 2)
 	if providerID != "" {
 		where += " AND provider_id = ?"
 		args = append(args, providerID)
-	}
-	if kind != "" {
-		where += " AND kind = ?"
-		args = append(args, kind)
 	}
 	args = append(args, limit)
 	rows, err := s.reader().Query(`SELECT provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time

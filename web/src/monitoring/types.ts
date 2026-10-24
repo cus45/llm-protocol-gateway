@@ -278,7 +278,6 @@ export interface MonitorProbeRun {
 export interface MonitorProbeConfig {
   eventDriven: { enabled: boolean; idleMinutes: number; maxPerDayPerAccount: number; minIntervalMinutes: number };
   daily: { enabled: boolean; windowStart: string; windowEnd: string };
-  weeklyCli: { enabled: boolean; weekday: number; time: string };
   quotaStaleMinutes: number;
 }
 
@@ -341,20 +340,14 @@ export function normalizeProbeCase(raw: MonitorProbeCaseResult): {
   };
 }
 
-/** 跳过原因的界面文案。没跑成不等于跑失败，尤其 cli_missing 绝不能显示成失败。 */
+/** 跳过原因的界面文案。没跑成不等于跑失败，跳过绝不能显示成失败。 */
 export const PROBE_SKIP_TEXT: Record<string, string> = {
-  cli_missing: 'CLI 未安装，未判定失败',
   in_flight: '已有探测在进行中',
   no_model: '没有可用模型，未发出请求',
   // 当日配额已经用完（手动与自动共用同一份额度），不是失败。
   quota_spent: '今日探测次数已用完，未发出请求',
   provider_disabled: '账号已停用，未探测',
   provider_missing: '账号不存在或已删除',
-  // CLI 深检的整轮上限（2 小时）到了，剩余用例没跑；not_run 是兜底原因。
-  // 两者都不是失败，只是「没跑完」。
-  round_budget: '整轮超过 2 小时上限，剩余用例未跑',
-  not_run: '整轮结束时仍未跑',
-  running: '深检正在进行中',
 };
 
 export function probeSkipText(skipped: string | undefined): string {
@@ -362,32 +355,15 @@ export function probeSkipText(skipped: string | undefined): string {
   return PROBE_SKIP_TEXT[skipped] ?? `已跳过（${skipped}）`;
 }
 
-/** 探测 kind 文案：轻探测 / CLI 深检。 */
+/** 探测 kind 文案：目前只有轻探测。 */
 export function probeKindText(kind: string): string {
   if (kind === 'light') return '轻探测';
-  if (kind === 'cli') return 'CLI 深检';
   return kind || '—';
 }
 
-/** 深检 caseID 形如 `<providerId>|<client>|<kind>`，映射成「客户端 · chat/tool」。 */
-const SELFCHECK_CLIENT_TEXT: Record<string, string> = {
-  opencode: 'OpenCode',
-  codex: 'Codex',
-  claude: 'Claude',
-};
-
+/** 一发 case 的文案：chat / tools。 */
 export function probeCaseText(key: string): string {
   if (key === 'chat') return '最小对话';
   if (key === 'tools') return '工具调用';
-  if (key === 'prepare' || key === 'cli') return '深检准备';
-  if (key.startsWith('selfcheck:')) {
-    const caseId = key.slice('selfcheck:'.length);
-    const parts = caseId.split('|');
-    if (parts.length === 3) {
-      const client = SELFCHECK_CLIENT_TEXT[parts[1]] ?? parts[1];
-      return `${client} · ${parts[2]}`;
-    }
-    return caseId || '—';
-  }
   return key || '—';
 }

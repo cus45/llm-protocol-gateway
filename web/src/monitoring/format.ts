@@ -100,7 +100,7 @@ export function detailPairs(detail: Record<string, unknown> | undefined, limit =
 }
 
 /**
- * 账号的探测结论。probed=false 是「还没探过」，跳过（如 cli_missing）也不是失败，
+ * 账号的探测结论。probed=false 是「还没探过」，跳过（如 no_model）也不是失败，
  * 三种情况必须分开写，否则零值会被读成「探测全过」。
  *
  * consecutiveFailures 是历史 streak（成功才归零），LastStatus 是最近一发的结果：
@@ -111,7 +111,6 @@ export function probeSummaryText(account: MonitorProbeAccount): string {
   // 行直接 continue 并置空（internal/store/monitoring.go:981-997），in_flight 也不落库。
   // 这里保留分支是给后端补齐之后用的；不要用它判断「为什么没探」，那种判断恒为假。
   if (!account.probed) {
-    if (account.skipped === 'cli_missing') return 'CLI 未安装，未判定失败';
     if (account.skipped === 'no_model') return '没有可用模型，未发出请求';
     if (account.skipped === 'in_flight') return '探测正在进行中';
     if (account.skipped) return `未成功执行（${account.skipped}）`;

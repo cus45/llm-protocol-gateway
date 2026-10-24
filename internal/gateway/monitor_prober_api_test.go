@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,8 @@ func TestMonitorProbeRunLightConflictAndGuards(t *testing.T) {
 	for _, item := range []struct{ name, body string }{
 		{"missing provider", `{}`},
 		{"unknown kind", `{"providerId":"p1","kind":"deep"}`},
+		// CLI 深检已撤下：旧界面传 kind=cli 也得被拒，且不能打上游。
+		{"retired cli kind", `{"providerId":"p1","kind":"cli"}`},
 		{"unknown provider", `{"providerId":"gone"}`},
 	} {
 		recorder := monitorCall(t, server.handleMonitorProbeRun, http.MethodPost, "/__monitor/probes/run",
@@ -109,6 +112,11 @@ func TestMonitorProbeRunLightConflictAndGuards(t *testing.T) {
 		if recorder.Code == http.StatusOK {
 			t.Fatalf("%s must not succeed", item.name)
 		}
+	}
+	if cli := monitorCall(t, server.handleMonitorProbeRun, http.MethodPost, "/__monitor/probes/run",
+		`{"providerId":"p1","kind":"cli"}`, nil, monitorAdminID()); cli.Code != http.StatusBadRequest ||
+		!strings.Contains(cli.Body.String(), "kind_unavailable") {
+		t.Fatalf("kind=cli must answer 400 kind_unavailable, got %d %s", cli.Code, cli.Body.String())
 	}
 	if calls != 2 {
 		t.Fatalf("rejected calls must not reach the upstream, calls = %d", calls)
@@ -122,7 +130,7 @@ func TestMonitorProbeConfigRoundTripAndGuards(t *testing.T) {
 
 	good := `{"eventDriven":{"enabled":true,"idleMinutes":45,"maxPerDayPerAccount":2,"minIntervalMinutes":120},` +
 		`"daily":{"enabled":true,"windowStart":"03:00","windowEnd":"05:00"},` +
-		`"weeklyCli":{"enabled":true,"weekday":0,"time":"05:00"},"quotaStaleMinutes":30}`
+		`"quotaStaleMinutes":30}`
 	saved := monitorCall(t, server.handleMonitorProbeConfigUpdate, http.MethodPut, "/__monitor/probe-config",
 		good, nil, monitorAdminID())
 	if saved.Code != http.StatusOK {
@@ -134,6 +142,9 @@ func TestMonitorProbeConfigRoundTripAndGuards(t *testing.T) {
 	}
 	if cfg.EventDriven.IdleMinutes != 45 || cfg.EventDriven.MaxPerDayPerAccount != 2 || cfg.Daily.WindowStart != "03:00" {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+	if strings.Contains(saved.Body.String(), "weeklyCli") {
+		t.Fatalf("the removed weekly CLI schedule must not come back: %s", saved.Body.String())
 	}
 
 	for _, bad := range []string{
@@ -156,5 +167,45 @@ func TestMonitorProbeConfigRoundTripAndGuards(t *testing.T) {
 	}
 	if current.EventDriven.MaxPerDayPerAccount != 2 {
 		t.Fatalf("rejected writes must not persist: %+v", current)
+	}
+}
+
+// 旧库里存着已撤下的 weeklyCli 键：解析必须照常读出其余字段、不报错；再保存一次
+// 时该键随结构体一起消失（期望行为，见 monitoring.Config.Probe 的注释）。
+func TestMonitorProbeConfigToleratesLegacyWeeklyCLIKey(t *testing.T) {
+	db := newProberTestStore(t)
+	server, _ := newQuotaTestServer(t, "http://127.0.0.1:1")
+	server.monitoringStore = db
+
+	legacy := `{"eventDriven":{"enabled":true,"idleMinutes":50,"maxPerDayPerAccount":3,"minIntervalMinutes":90},` +
+		`"daily":{"enabled":true,"windowStart":"04:30","windowEnd":"06:30"},` +
+		`"weeklyCli":{"enabled":true,"weekday":0,"time":"05:00"},"quotaStaleMinutes":45}`
+	if err := db.SetSetting("monitor_probe", legacy); err != nil {
+		t.Fatal(err)
+	}
+	cfg := monitoring.NewConfig(db).Probe()
+	if cfg.EventDriven.IdleMinutes != 50 || cfg.EventDriven.MaxPerDayPerAccount != 3 ||
+		cfg.EventDriven.MinIntervalMinutes != 90 || cfg.Daily.WindowStart != "04:30" ||
+		cfg.Daily.WindowEnd != "06:30" || cfg.QuotaStaleMinutes != 45 {
+		t.Fatalf("legacy config must still be read: %+v", cfg)
+	}
+
+	recorder := monitorCall(t, server.handleMonitorProbeConfig, http.MethodGet, "/__monitor/probe-config", "", nil, monitorAdminID())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var served monitoring.ProbeConfig
+	if err := json.Unmarshal(recorder.Body.Bytes(), &served); err != nil {
+		t.Fatalf("legacy config must decode: %v", err)
+	}
+	if served.QuotaStaleMinutes != 45 {
+		t.Fatalf("served config = %+v", served)
+	}
+
+	if err := monitoring.NewConfig(db).SaveProbe(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if raw := db.Setting("monitor_probe"); strings.Contains(raw, "weeklyCli") {
+		t.Fatalf("SaveProbe must drop the removed key, got %s", raw)
 	}
 }

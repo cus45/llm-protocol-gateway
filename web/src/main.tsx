@@ -1296,6 +1296,7 @@ function App() {
     void refreshConsoleUsers();
   }, [activeNav, authStatus?.role]);
 
+
   useEffect(() => {
     if (activeNav !== 'users') return;
     void refreshConsoleUsers();
@@ -1323,6 +1324,7 @@ function App() {
     window.history.replaceState({}, '', navPathForID('api-keys'));
     setActiveNav('api-keys');
   }, [authStatus, activeNav]);
+
 
   function goToPage(sectionID: NavItemID) {
     const path = navPathForID(sectionID);
@@ -3599,6 +3601,7 @@ function App() {
   function clearExportProviderSelection() {
     setSelectedExportProviderIDs([]);
   }
+
 
   function providersExportFilename() {
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -6128,6 +6131,7 @@ function App() {
             </div>
           </section>
           )}
+
 
           {activeNav === 'machine' && !isNormalUser && (
           <section className="section-full">
