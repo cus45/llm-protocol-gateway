@@ -308,6 +308,23 @@ type CheckinOutcome struct {
 	LastAttemptAt time.Time
 }
 
+// ProbeRunRecord 是一发探测落库的形态。Day 由调用方按投递时区算好传进来：
+// 当日次数上限是「运维在配置里挑的那个自然日」，store 自己猜时区会让配额
+// 在错误的时刻重置。
+type ProbeRunRecord struct {
+	ProviderID string    `json:"providerId"`
+	Kind       string    `json:"kind"`
+	Case       string    `json:"case"`
+	OK         bool      `json:"ok"`
+	Status     int       `json:"status"`
+	Skipped    string    `json:"skipped,omitempty"`
+	DurationMs int64     `json:"durationMs"`
+	Model      string    `json:"model,omitempty"`
+	ErrorCode  string    `json:"errorCode,omitempty"`
+	Day        string    `json:"day"`
+	Time       time.Time `json:"time"`
+}
+
 type KeyObservation struct {
 	ID              string
 	Name            string

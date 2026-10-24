@@ -22,6 +22,8 @@ type providerChatTestRequest struct {
 	UserPrompt    string `json:"userPrompt"`
 	ThinkingField string `json:"thinkingField"`
 	ThinkingValue string `json:"thinkingValue"`
+	// MaxTokens 是输出上限，0 表示按各协议既有默认。监控探测必须带上它。
+	MaxTokens int `json:"maxTokens,omitempty"`
 }
 
 func resolveProviderTestModel(model string) string {
@@ -378,6 +380,15 @@ func (s *Server) testProviderChat(r *http.Request, providerID string, req provid
 	default:
 		messages := buildProviderChatMessages(req)
 		payload = buildProviderChatPayload(model, messages)
+	}
+	// 探测要的是「还活着吗」，不是回答长度。不给上限就按上游默认跑（Claude 这条
+	// 路径写死 4096），每轮探测白烧一次订阅额度。Responses 的字段名不一样，单独覆盖。
+	if req.MaxTokens > 0 {
+		if provider.Protocol == domain.ProtocolOpenAIResponses {
+			payload["max_output_tokens"] = req.MaxTokens
+		} else {
+			payload["max_tokens"] = req.MaxTokens
+		}
 	}
 	round := s.executeProviderChatHTTP(r, provider, model, payload, started)
 	if round.Error != "" {

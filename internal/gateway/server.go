@@ -1352,6 +1352,12 @@ func (s *Server) recordRequestLogFromRequestTTFT(r *http.Request, started time.T
 		clientHost = requestClientHost(r)
 		clientIP = requestClientIP(r)
 		accessSource = classifyAccessSource(clientHost, s.router.State().PublicAccess.PublicBaseURL)
+		if strings.HasPrefix(matchedKey.Name, selfcheckKeyPrefix) {
+			// CLI 深检是拿临时密钥打真实数据面的，不标出来就会把一轮自检
+			// 记成账号自己的失败与用量。临时密钥名由网关生成，外部客户端
+			// 伪造不了这个前缀。
+			accessSource = monitor.AccessSourceMonitorProbe
+		}
 		timing = requestTimingFrom(r.Context())
 	}
 	s.recordRequestLogEx(r, started, matchedKey, gatewayKeyMatched, routeID, providerID, model, action, protocolFlow, path, status, usage, ttftMs, clientHost, clientIP, accessSource, timing, reasoningEffortFrom(r.Context()), requestBody, responseBody)

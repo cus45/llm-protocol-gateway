@@ -63,6 +63,9 @@ const (
 	AccessSourceLAN    = "lan"
 	AccessSourcePublic = "public"
 	AccessSourceLocal  = "local"
+	// AccessSourceMonitorProbe 标出监控中心自己发的流量。它必须从账号健康统计里
+	// 排除，否则探测失败会把自己算成一次线上故障，越监控越红。
+	AccessSourceMonitorProbe = "monitor_probe"
 )
 
 // Alert is one raised alert record. Unlike AppLog (in-memory, capped, lost on

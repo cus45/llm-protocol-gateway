@@ -928,3 +928,107 @@ func monitorPercentile(values []int64, p float64) int64 {
 	}
 	return sorted[index]
 }
+
+// InsertMonitorProbeRun stores one probe case. Rows that were skipped are kept
+// too: the daily budget and answers like "why is there no weekly deep check"
+// both have to be explainable from the database alone.
+func (s *Store) InsertMonitorProbeRun(record monitoring.ProbeRunRecord) error {
+	_, err := s.db.Exec(`INSERT INTO monitor_probe_runs
+		(provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ProviderID, record.Kind, record.Case, boolToInt(record.OK), record.Status,
+		record.Skipped, record.DurationMs, record.Model, record.ErrorCode, record.Day,
+		record.Time.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("insert probe run: %w", err)
+	}
+	return nil
+}
+
+// MonitorProbeOutcome summarises one provider's probe history for the rule
+// engine, plus how many probes were already spent on `day`. A skipped round
+// (no model configured, CLI missing) is not a verdict, so it neither extends
+// the failure streak nor resets it — only a run that actually reached the
+// upstream does.
+func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error) {
+	outcome := monitoring.ProbeOutcome{}
+	rows, err := s.reader().Query(`SELECT kind, case_key, ok, status, skipped, time
+		FROM monitor_probe_runs WHERE provider_id = ? ORDER BY time DESC, id DESC LIMIT 50`, providerID)
+	if err != nil {
+		return outcome, 0, fmt.Errorf("read probe runs: %w", err)
+	}
+	defer rows.Close()
+	streakBroken := false
+	for rows.Next() {
+		var (
+			kind, caseKey, skipped, stamp string
+			ok                            int
+			status                        int
+		)
+		if err := rows.Scan(&kind, &caseKey, &ok, &status, &skipped, &stamp); err != nil {
+			return outcome, 0, fmt.Errorf("scan probe run: %w", err)
+		}
+		at := parseMonitorTime(stamp)
+		if at.IsZero() {
+			continue
+		}
+		if skipped != "" {
+			continue
+		}
+		if !outcome.Known {
+			outcome.Known = true
+			outcome.LastAt = at
+			outcome.LastStatus = status
+			outcome.Skipped = ""
+			outcome.AuthFailure = status == 401 || status == 403
+		}
+		if streakBroken {
+			continue
+		}
+		if ok != 0 {
+			streakBroken = true
+			continue
+		}
+		outcome.Consecutive++
+	}
+	if err := rows.Err(); err != nil {
+		return outcome, 0, fmt.Errorf("iterate probe runs: %w", err)
+	}
+	var used int
+	if err := s.reader().QueryRow(`SELECT COUNT(*) FROM monitor_probe_runs WHERE provider_id = ? AND day = ? AND skipped = ''`,
+		providerID, day).Scan(&used); err != nil {
+		return outcome, 0, fmt.Errorf("count probe runs: %w", err)
+	}
+	return outcome, used, nil
+}
+
+// LatestMonitorProbeRuns returns the most recent probe rows for one provider,
+// newest first, for the probe page.
+func (s *Store) LatestMonitorProbeRuns(providerID string, limit int) ([]monitoring.ProbeRunRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.reader().Query(`SELECT provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time
+		FROM monitor_probe_runs WHERE (? = '' OR provider_id = ?) ORDER BY time DESC, id DESC LIMIT ?`,
+		providerID, providerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read latest probe runs: %w", err)
+	}
+	defer rows.Close()
+	out := make([]monitoring.ProbeRunRecord, 0, limit)
+	for rows.Next() {
+		var (
+			record monitoring.ProbeRunRecord
+			ok     int
+			stamp  string
+		)
+		if err := rows.Scan(&record.ProviderID, &record.Kind, &record.Case, &ok, &record.Status,
+			&record.Skipped, &record.DurationMs, &record.Model, &record.ErrorCode, &record.Day, &stamp); err != nil {
+			return nil, fmt.Errorf("scan latest probe runs: %w", err)
+		}
+		record.OK = ok != 0
+		record.Time = parseMonitorTime(stamp)
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}

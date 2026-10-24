@@ -40,6 +40,10 @@ type monitoringStore interface {
 	MonitorEventIDsByFingerprint(string, int) ([]int64, error)
 	AppendMonitorTimeline(string, monitoring.TimelineEntry) error
 	LatestProviderMetricSamples() (map[string]monitoring.MetricSample, error)
+	// Probe history: the rule needs consecutive failures, the scheduler needs
+	// the daily budget, and neither may reset because the process restarted.
+	MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error)
+	InsertMonitorProbeRun(monitoring.ProbeRunRecord) error
 }
 
 // windowStatsStore is implemented by the store's request-log aggregation. It is
@@ -74,6 +78,10 @@ func newMonitoringSource(s *Server) *monitoringSource {
 func (m *monitoringSource) Providers(ctx context.Context, now time.Time) ([]monitoring.ProviderObservation, error) {
 	state := m.server.router.State()
 	out := make([]monitoring.ProviderObservation, 0, len(state.Providers))
+	probeDay := ""
+	if m.server.monitoringStore != nil {
+		probeDay = monitorProbeDay(m.server, now)
+	}
 	for _, p := range state.Providers {
 		if p.Deleted {
 			continue
@@ -97,6 +105,9 @@ func (m *monitoringSource) Providers(ctx context.Context, now time.Time) ([]moni
 		if m.server.monitoringStore != nil {
 			if renewal, err := m.server.monitoringStore.RecentRenewalOutcomes(p.ID, 10); err == nil {
 				obs.Renewal = renewal
+			}
+			if probe, _, err := m.server.monitoringStore.MonitorProbeOutcome(p.ID, probeDay); err == nil {
+				obs.Probe = probe
 			}
 		}
 		obs.ModelFailures = m.modelFailureCount(p.ID)

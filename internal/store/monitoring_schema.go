@@ -92,10 +92,26 @@ func ensureMonitoringSchema(tx *sql.Tx) error {
 			computed_at TEXT NOT NULL,
 			PRIMARY KEY (provider_id, hour_of_day, metric)
 		)`,
+		`CREATE TABLE IF NOT EXISTS monitor_probe_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			case_key TEXT NOT NULL,
+			ok INTEGER NOT NULL DEFAULT 0,
+			status INTEGER NOT NULL DEFAULT 0,
+			skipped TEXT NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL DEFAULT '',
+			error_code TEXT NOT NULL DEFAULT '',
+			day TEXT NOT NULL,
+			time TEXT NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_monitor_events_time ON monitor_events(time DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_monitor_events_fp ON monitor_events(fingerprint, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_monitor_events_target ON monitor_events(target_type, target_id, time DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_monitor_states_status ON monitor_alert_states(status, severity)`,
+		`CREATE INDEX IF NOT EXISTS idx_probe_runs_provider_day ON monitor_probe_runs(provider_id, day)`,
+		`CREATE INDEX IF NOT EXISTS idx_probe_runs_provider_time ON monitor_probe_runs(provider_id, time DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_provider_time ON request_logs(provider_id, time DESC)`,
 	}
 	for _, statement := range statements {
