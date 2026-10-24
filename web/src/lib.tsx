@@ -1168,6 +1168,7 @@ export function protocolLabel(protocol: Protocol) {
     case 'openai_chat': return 'OpenAI Chat';
     case 'openai_responses': return 'OpenAI Responses';
     case 'claude': return 'Claude';
+    case 'gemini': return 'Gemini';
   }
 }
 
@@ -1175,6 +1176,7 @@ export function protocolFromLabel(label: string): Protocol {
   const normalized = label.trim().toLowerCase();
   if (normalized === 'openai responses' || label === 'OpenAI 响应') return 'openai_responses';
   if (normalized === 'claude' || label === 'Claude 消息') return 'claude';
+  if (normalized === 'gemini' || label === 'Gemini 原生') return 'gemini';
   if (normalized === 'openai chat' || label === 'OpenAI 对话') return 'openai_chat';
   return 'openai_chat';
 }
@@ -1184,6 +1186,7 @@ export function protocolIcon(label: string): string {
   const protocol = protocolFromLabel(label);
   if (protocol === 'claude') return 'claude-color';
   if (protocol === 'openai_responses') return 'codex-color';
+  if (protocol === 'gemini') return 'google-color';
   return 'openai';
 }
 
@@ -1234,6 +1237,12 @@ export function selfRegistrationEndpointSpec(protocol: Protocol): { path: string
         label: 'OpenAI Responses',
         hint: '请求体含 model/input（items 数组，每项有 role+content 或 type=function_call 等）；stream=true 时按 SSE 发送 response.created / response.output_text.delta / response.completed 等事件；非流式返回 { output: [...], status: "completed" }。',
       };
+    case 'gemini':
+      return {
+        path: '/v1beta/models/{model}:generateContent',
+        label: 'Gemini generateContent',
+        hint: '模型名在路径里，请求体含 contents（role user/model + parts）与 generationConfig；streamGenerateContent 以 `data: {...}` 分块返回 candidates。',
+      };
     case 'claude':
       return {
         path: '/v1/messages',
@@ -1251,10 +1260,10 @@ export function buildSelfRegistrationPrompt(provider: Provider, rawToken: string
   const registerUrl = `${originBase}/__providers/${provider.id}/self-register`;
   const tokenLine = rawToken || '<在控制台点击"生成注册令牌"后粘贴到这里>';
   // 三种协议逐条列出，供本地已有代码对号入座，不预设/不强制其中任何一种。
-  const protocolMenu = (['openai_chat', 'openai_responses', 'claude'] as Protocol[])
+  const protocolMenu = (['openai_chat', 'openai_responses', 'claude', 'gemini'] as Protocol[])
     .map((protocol) => {
       const spec = selfRegistrationEndpointSpec(protocol);
-      const header = protocol === 'claude' ? 'x-api-key: <SHARED_SECRET>' : 'Authorization: Bearer <SHARED_SECRET>';
+      const header = protocol === 'claude' ? 'x-api-key: <SHARED_SECRET>' : protocol === 'gemini' ? 'x-goog-api-key: <SHARED_SECRET>' : 'Authorization: Bearer <SHARED_SECRET>';
       return `  \u00b7 protocol="${protocol}"：POST ${spec.path}（${spec.label} 协议格式），鉴权头默认 ${header}\n    ${spec.hint}`;
     })
     .join('\n');
@@ -1942,6 +1951,7 @@ export function routeGatewayURL(route: Route, endpoints: OutputEndpoint[], base:
   if (route.outputProtocol === 'openai_responses') return `${root}/responses`;
   // Claude BasePath is /anthropic; clients append /v1/messages themselves.
   if (route.outputProtocol === 'claude') return `${root}/v1/messages`;
+  if (route.outputProtocol === 'gemini') return `${root}/models/{model}:generateContent`;
   return root;
 }
 
@@ -1955,6 +1965,7 @@ export function apiKeyClientBaseURL(route: Route, endpoints: OutputEndpoint[], p
 export function apiKeyClientAuthHint(route: Route) {
   if (route.outputProtocol === 'claude') return 'Claude Code：Base URL 填到 /anthropic（不要带 /v1）+ x-api-key';
   if (route.outputProtocol === 'openai_responses') return 'OpenAI Responses 客户端：Base URL + Bearer Key';
+  if (route.outputProtocol === 'gemini') return 'Gemini SDK：Base URL 填到 /v1beta（Google 会拼 /models/{model}:generateContent）+ x-goog-api-key';
   return 'OpenAI 客户端：Base URL（如 /v1）+ Bearer Key';
 }
 
@@ -1984,6 +1995,10 @@ export function buildApiKeyOpenCodeConfig(key: APIKey, route: Route | undefined,
   } else if (protocol === 'openai_responses') {
     npm = '@ai-sdk/openai';
     baseURL = `${root}/openai/v1`;
+  } else if (protocol === 'gemini') {
+    // Google 的 SDK 自己拼 /models/{model}:generateContent。
+    npm = '@ai-sdk/google';
+    baseURL = `${root}/v1beta`;
   }
   const aliases = key.modelAliases || {};
   const models: Record<string, { name: string; limit: { context: number; output: number } }> = {
@@ -2703,6 +2718,7 @@ export function protocolTone(protocol: Protocol): BadgeTone {
     case 'openai_chat': return 'blue';
     case 'openai_responses': return 'amber';
     case 'claude': return 'purple';
+    case 'gemini': return 'green';
   }
 }
 

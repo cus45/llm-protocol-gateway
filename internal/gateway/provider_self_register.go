@@ -187,10 +187,10 @@ func (s *Server) handleProviderSelfRegister(w http.ResponseWriter, r *http.Reque
 		}
 		v = strings.TrimSpace(v)
 		switch domain.Protocol(v) {
-		case domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude:
+		case domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude, domain.ProtocolGemini:
 		default:
 			writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf(
-				"protocol must be one of %q, %q, %q", domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude))
+				"protocol must be one of %q, %q, %q, %q", domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude, domain.ProtocolGemini))
 			return
 		}
 		protocolValue = &v

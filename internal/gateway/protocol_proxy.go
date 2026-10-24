@@ -884,6 +884,10 @@ func (s *Server) executeProtocolFlow(
 		switch decision.InputProtocol {
 		case domain.ProtocolOpenAIChat:
 			return s.proxyGeminiToOpenAIChat(w, r, provider, model, req, skipIncomingAuth)
+		case domain.ProtocolClaude:
+			return s.proxyGeminiToClaudeMessages(w, r, provider, model, req, skipIncomingAuth)
+		case domain.ProtocolOpenAIResponses:
+			return s.proxyGeminiToOpenAIResponses(w, r, provider, model, req, skipIncomingAuth)
 		}
 	case domain.ProtocolOpenAIChat:
 		switch decision.InputProtocol {

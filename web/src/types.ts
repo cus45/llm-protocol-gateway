@@ -3,7 +3,7 @@ import {navItems} from './lib';
 
 export type BadgeTone = 'green' | 'blue' | 'cyan' | 'amber' | 'red' | 'purple' | 'slate';
 
-export type Protocol = 'openai_chat' | 'openai_responses' | 'claude';
+export type Protocol = 'openai_chat' | 'openai_responses' | 'claude' | 'gemini';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
