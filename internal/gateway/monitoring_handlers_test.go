@@ -385,3 +385,288 @@ func assertNoSecrets(t *testing.T, payload string) {
 		}
 	}
 }
+
+// ── 规则接口 ────────────────────────────────────────────────────────────
+
+func monitorRulesGet(t *testing.T, server *Server, identity sessionIdentity) (int, []monitorRuleView, string) {
+	t.Helper()
+	recorder := monitorCall(t, server.handleMonitorRules, http.MethodGet, "/__monitor/rules", "", nil, identity)
+	var views []monitorRuleView
+	if recorder.Code == http.StatusOK {
+		if err := json.Unmarshal(recorder.Body.Bytes(), &views); err != nil {
+			t.Fatalf("decode rules: %v body=%s", err, recorder.Body.String())
+		}
+	}
+	return recorder.Code, views, recorder.Body.String()
+}
+
+func monitorRulesPut(t *testing.T, server *Server, body string, identity sessionIdentity) *httptest.ResponseRecorder {
+	t.Helper()
+	return monitorCall(t, server.handleMonitorUpdateRules, http.MethodPut, "/__monitor/rules", body, nil, identity)
+}
+
+func monitorRulesByKey(views []monitorRuleView) map[string]monitorRuleView {
+	out := make(map[string]monitorRuleView, len(views))
+	for _, view := range views {
+		out[view.Key] = view
+	}
+	return out
+}
+
+// GET 返回全部 18 条定义，字段齐全，且 intervalMinutes 是正整数（纳秒时长不得
+// 出现在线上）。
+func TestMonitorRulesGetComplete(t *testing.T) {
+	server, _ := monitorTestServer(t)
+
+	code, views, raw := monitorRulesGet(t, server, monitorAdminID())
+	if code != http.StatusOK {
+		t.Fatalf("GET rules = %d body=%s", code, raw)
+	}
+	if len(views) != 18 {
+		t.Fatalf("rules = %d, want 18", len(views))
+	}
+	defs := monitoring.DefaultRules()
+	wantOrder := monitoring.SortedRuleKeys(defs)
+	for i, key := range wantOrder {
+		if views[i].Key != key {
+			t.Fatalf("rules[%d] = %q, want %q (SortedRuleKeys order)", i, views[i].Key, key)
+		}
+	}
+	defaults := make(map[string]monitoring.RuleConfig, len(defs))
+	for _, rule := range defs {
+		defaults[rule.Key] = rule
+	}
+	for _, view := range views {
+		def, ok := monitoring.RuleDefinition(view.Key)
+		if !ok {
+			t.Fatalf("rule %q has no definition", view.Key)
+		}
+		if view.Name == "" || view.TargetType == "" {
+			t.Fatalf("rule %s missing name/targetType: %+v", view.Key, view)
+		}
+		if view.Severity == "" {
+			t.Fatalf("rule %s missing severity", view.Key)
+		}
+		if view.IntervalMinutes <= 0 {
+			t.Fatalf("rule %s intervalMinutes = %d, want > 0", view.Key, view.IntervalMinutes)
+		}
+		if view.IntervalMinutes != int(def.Interval/time.Minute) {
+			t.Fatalf("rule %s intervalMinutes %d does not match Interval %v", view.Key, view.IntervalMinutes, def.Interval)
+		}
+		if len(view.DefaultParams) != len(def.DefaultParams) {
+			t.Fatalf("rule %s defaultParams = %v, want %v", view.Key, view.DefaultParams, def.DefaultParams)
+		}
+		if len(view.Params) == 0 {
+			t.Fatalf("rule %s params empty", view.Key)
+		}
+		// 未配置的库读出来就是默认值，GET 也必须是默认值。
+		want := defaults[view.Key]
+		if view.Enabled != want.Enabled || view.Severity != want.Severity ||
+			view.CooldownMinutes != want.CooldownMinutes || len(view.Params) != len(want.Params) {
+			t.Fatalf("rule %s = %+v, want default %+v", view.Key, view, want)
+		}
+	}
+	if strings.Contains(raw, `"Interval"`) || strings.Contains(raw, `"interval":`) {
+		t.Fatalf("GET leaked the raw Interval field: %s", raw)
+	}
+}
+
+// PUT 合法值落库，回读一致（GET 与 PUT 的响应都对得上）。
+func TestMonitorRulesPutRoundTrip(t *testing.T) {
+	server, _ := monitorTestServer(t)
+	_, views, _ := monitorRulesGet(t, server, monitorAdminID())
+	body := make([]map[string]any, 0, len(views))
+	for _, view := range views {
+		row := map[string]any{
+			"key": view.Key, "enabled": view.Enabled, "severity": string(view.Severity),
+			"cooldownMinutes": view.CooldownMinutes, "params": view.Params,
+		}
+		if view.Key == "provider_down" {
+			row["severity"] = "p0"
+			row["cooldownMinutes"] = 15
+			row["params"] = map[string]float64{"windowMinutes": 10, "minSamples": 30, "maxSuccessRatio": 0.7}
+		}
+		if view.Key == "multi_ip" {
+			row["enabled"] = false
+		}
+		body = append(body, row)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := monitorRulesPut(t, server, string(payload), monitorAdminID())
+	if put.Code != http.StatusOK {
+		t.Fatalf("PUT rules = %d body=%s", put.Code, put.Body.String())
+	}
+	var putViews []monitorRuleView
+	if err := json.Unmarshal(put.Body.Bytes(), &putViews); err != nil {
+		t.Fatal(err)
+	}
+	_, getViews, _ := monitorRulesGet(t, server, monitorAdminID())
+	for _, got := range [][]monitorRuleView{putViews, getViews} {
+		if len(got) != 18 {
+			t.Fatalf("rules after PUT = %d, want 18", len(got))
+		}
+		byKey := monitorRulesByKey(got)
+		down := byKey["provider_down"]
+		if down.Severity != "p0" || down.CooldownMinutes != 15 ||
+			down.Params["windowMinutes"] != 10 || down.Params["minSamples"] != 30 || down.Params["maxSuccessRatio"] != 0.7 {
+			t.Fatalf("provider_down after PUT = %+v", down)
+		}
+		if byKey["multi_ip"].Enabled {
+			t.Fatalf("multi_ip should be disabled after PUT: %+v", byKey["multi_ip"])
+		}
+		if byKey["quota_low"].CooldownMinutes != 60 {
+			t.Fatalf("untouched rule changed: %+v", byKey["quota_low"])
+		}
+	}
+	stored := monitoring.NewConfig(server.monitoringStore).Rules()
+	if len(stored) != 18 {
+		t.Fatalf("stored rules = %d, want 18", len(stored))
+	}
+	var storedDown monitoring.RuleConfig
+	for _, rule := range stored {
+		if rule.Key == "provider_down" {
+			storedDown = rule
+		}
+	}
+	if storedDown.Severity != monitoring.SeverityP0 || storedDown.CooldownMinutes != 15 || storedDown.Params["minSamples"] != 30 {
+		t.Fatalf("stored provider_down = %+v", storedDown)
+	}
+}
+
+// 各类非法值各自 400，且库里配置保持 PUT 之前的样子（先写一份非默认配置做基准，
+// 再确认失败后连这份基准都没被覆盖）。
+func TestMonitorRulesPutRejectsInvalid(t *testing.T) {
+	server, _ := monitorTestServer(t)
+	baseline := `[{"key":"provider_down","severity":"p2","cooldownMinutes":30,"params":{"windowMinutes":15,"minSamples":25,"maxSuccessRatio":0.6}}]`
+	if put := monitorRulesPut(t, server, baseline, monitorAdminID()); put.Code != http.StatusOK {
+		t.Fatalf("baseline PUT = %d body=%s", put.Code, put.Body.String())
+	}
+	before := monitoring.NewConfig(server.monitoringStore).RawRules()
+	if before == "" {
+		t.Fatal("baseline did not reach the store")
+	}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"unknown rule key", `[{"key":"no_such_rule"}]`},
+		{"duplicate rule key", `[{"key":"provider_down"},{"key":"provider_down","cooldownMinutes":10}]`},
+		{"windowMinutes 7", `[{"key":"provider_down","params":{"windowMinutes":7,"minSamples":20,"maxSuccessRatio":0.8}}]`},
+		{"cooldownMinutes 1", `[{"key":"provider_down","cooldownMinutes":1}]`},
+		{"ratio 1.5", `[{"key":"provider_down","params":{"maxSuccessRatio":1.5}}]`},
+		{"unknown param name", `[{"key":"provider_down","params":{"bogusParam":1}}]`},
+		{"unknown severity", `[{"key":"provider_down","severity":"p9"}]`},
+		{"malformed json", `{"key":"provider_down"}`},
+		// [] 与 null 补齐后是整表默认值：不能借此静默清空用户的自定义规则。
+		{"empty list", `[]`},
+		{"null list", `null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := monitorRulesPut(t, server, tc.body, monitorAdminID())
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d body=%s, want 400", tc.name, recorder.Code, recorder.Body.String())
+			}
+			after := monitoring.NewConfig(server.monitoringStore).RawRules()
+			if after != before {
+				t.Fatalf("%s wrote to the store: before=%s after=%s", tc.name, before, after)
+			}
+		})
+	}
+}
+
+// 缺项 PUT：响应里该条必须是默认值（不能回显旧值，也不能悄悄保留），库里也落成
+// 默认值。
+func TestMonitorRulesPutMissingEntriesBecomeDefaults(t *testing.T) {
+	server, _ := monitorTestServer(t)
+	custom := `[{"key":"provider_down","enabled":false,"cooldownMinutes":30},{"key":"multi_ip","params":{"windowMinutes":15}}]`
+	if put := monitorRulesPut(t, server, custom, monitorAdminID()); put.Code != http.StatusOK {
+		t.Fatalf("custom PUT = %d body=%s", put.Code, put.Body.String())
+	}
+
+	put := monitorRulesPut(t, server, `[{"key":"multi_ip","cooldownMinutes":45}]`, monitorAdminID())
+	if put.Code != http.StatusOK {
+		t.Fatalf("partial PUT = %d body=%s", put.Code, put.Body.String())
+	}
+	var views []monitorRuleView
+	if err := json.Unmarshal(put.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	byKey := monitorRulesByKey(views)
+	if got := byKey["provider_down"]; !got.Enabled || got.CooldownMinutes != 60 || got.Severity != monitoring.SeverityP1 {
+		t.Fatalf("missing provider_down not reset to default: %+v", got)
+	}
+	if got := byKey["multi_ip"].Params["windowMinutes"]; got != 10 {
+		t.Fatalf("missing param should reset to default 10, got %v", got)
+	}
+	if got := byKey["multi_ip"].CooldownMinutes; got != 45 {
+		t.Fatalf("given cooldownMinutes not applied: %d", got)
+	}
+	stored := monitoring.NewConfig(server.monitoringStore).Rules()
+	storedByKey := make(map[string]monitoring.RuleConfig, len(stored))
+	for _, rule := range stored {
+		storedByKey[rule.Key] = rule
+	}
+	if !storedByKey["provider_down"].Enabled || storedByKey["provider_down"].CooldownMinutes != 60 {
+		t.Fatalf("store kept the old provider_down: %+v", storedByKey["provider_down"])
+	}
+	if storedByKey["multi_ip"].CooldownMinutes != 45 || storedByKey["multi_ip"].Params["windowMinutes"] != 10 {
+		t.Fatalf("stored multi_ip = %+v", storedByKey["multi_ip"])
+	}
+}
+
+// 规则接口管理员专属：普通用户 403、无身份 401，且 PUT 不落库。
+func TestMonitorRulesRequireAdmin(t *testing.T) {
+	server, _ := monitorTestServer(t)
+	for _, tc := range []struct {
+		method  string
+		handler http.HandlerFunc
+		body    string
+	}{
+		{http.MethodGet, server.handleMonitorRules, ""},
+		{http.MethodPut, server.handleMonitorUpdateRules, `[{"key":"provider_down","cooldownMinutes":10}]`},
+	} {
+		if recorder := monitorCall(t, tc.handler, tc.method, "/__monitor/rules", tc.body, nil, monitorUserID()); recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s rules as user = %d body=%s, want 403", tc.method, recorder.Code, recorder.Body.String())
+		}
+	}
+	if got := monitoring.NewConfig(server.monitoringStore).RawRules(); got != "" {
+		t.Fatalf("non-admin PUT reached the store: %s", got)
+	}
+
+	// 走完整 Handler() 链：回环即管理员，路由已注册（不是 404）。
+	server.SetAdminAuthStore(newMemoryAdminAuthStore())
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18093/__monitor/rules", nil)
+	request.RemoteAddr = "127.0.0.1:55555"
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /__monitor/rules as local admin = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// 空表不是「清空配置」的合法写法：整表替换语义下 `[]` 会把 18 条规则全部
+// 恢复默认并落库，前端一个 bug 就能静默抹掉用户的自定义。要恢复默认必须
+// 显式发 18 条默认值，所以空列表一律 400 且不落库。
+func TestMonitorRulesPutRejectsEmptyTable(t *testing.T) {
+	for _, body := range []string{"[]", "null"} {
+		server, _ := monitorTestServer(t)
+		before := monitorRulesPut(t, server, `[{"key":"provider_down","cooldownMinutes":15}]`, monitorAdminID())
+		if before.Code != http.StatusOK {
+			t.Fatalf("seed PUT = %d body=%s", before.Code, before.Body.String())
+		}
+		stored := monitoring.NewConfig(server.monitoringStore).RawRules()
+
+		recorder := monitorRulesPut(t, server, body, monitorAdminID())
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("PUT %s = %d body=%s, want 400", body, recorder.Code, recorder.Body.String())
+		}
+		if got := monitoring.NewConfig(server.monitoringStore).RawRules(); got != stored {
+			t.Fatalf("PUT %s reached the store: %s -> %s", body, stored, got)
+		}
+	}
+}

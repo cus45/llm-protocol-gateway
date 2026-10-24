@@ -376,6 +376,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /__monitor/channels/{id}/test", s.handleMonitorTestChannel)
 	mux.HandleFunc("GET /__monitor/dispatch", s.handleMonitorDispatch)
 	mux.HandleFunc("PUT /__monitor/dispatch", s.handleMonitorUpdateDispatch)
+	mux.HandleFunc("GET /__monitor/rules", s.handleMonitorRules)
+	mux.HandleFunc("PUT /__monitor/rules", s.handleMonitorUpdateRules)
 	mux.HandleFunc("PATCH /__settings/web-exposed", s.handleSetWebExposed)
 	mux.HandleFunc("PATCH /__public-access", s.handleUpdatePublicAccess)
 	mux.HandleFunc("PATCH /__endpoints/{id}", s.handleUpdateEndpoint)

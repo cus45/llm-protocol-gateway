@@ -260,7 +260,11 @@ type Config struct {
 
 func NewConfig(settings Settings) *Config { return &Config{settings: settings} }
 
-func (c *Config) Rules() []RuleConfig { return UnmarshalRules(c.settings.Setting("monitor_rules")) }
+func (c *Config) Rules() []RuleConfig { return UnmarshalRules(c.RawRules()) }
+
+// RawRules returns the stored JSON verbatim. Reads normalize away invalid values,
+// so tests that assert "a rejected PUT changed nothing" must compare this.
+func (c *Config) RawRules() string { return c.settings.Setting("monitor_rules") }
 
 func (c *Config) SaveRules(rules []RuleConfig) error {
 	if err := ValidateRules(rules); err != nil {

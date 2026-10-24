@@ -723,6 +723,154 @@ func (s *Server) handleMonitorUpdateDispatch(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, cfg.Dispatch())
 }
 
+// ── 规则 ────────────────────────────────────────────────────────────────
+
+// monitorRuleView 是规则唯一的线上形状：定义（名称、默认参数、检查间隔）与
+// 当前配置合成一行。Interval 只以分钟输出——纳秒时长既不该泄漏，前端也用不上。
+// Params 永不省略：规则页按它渲染每一行的参数格，缺省为空对象而不是 null。
+type monitorRuleView struct {
+	Key             string              `json:"key"`
+	Name            string              `json:"name"`
+	TargetType      string              `json:"targetType"`
+	Enabled         bool                `json:"enabled"`
+	Severity        monitoring.Severity `json:"severity"`
+	CooldownMinutes int                 `json:"cooldownMinutes"`
+	IntervalMinutes int                 `json:"intervalMinutes"`
+	Params          map[string]float64  `json:"params"`
+	DefaultParams   map[string]float64  `json:"defaultParams"`
+	Consecutive     bool                `json:"consecutive"`
+}
+
+func monitorRuleViews(rules []monitoring.RuleConfig) []monitorRuleView {
+	byKey := make(map[string]monitoring.RuleConfig, len(rules))
+	for _, rule := range rules {
+		byKey[rule.Key] = rule
+	}
+	out := make([]monitorRuleView, 0, len(rules))
+	for _, key := range monitoring.SortedRuleKeys(rules) {
+		def, ok := monitoring.RuleDefinition(key)
+		if !ok {
+			continue
+		}
+		rule := byKey[key]
+		params := rule.Params
+		if params == nil {
+			params = map[string]float64{}
+		}
+		defaults := make(map[string]float64, len(def.DefaultParams))
+		for k, v := range def.DefaultParams {
+			defaults[k] = v
+		}
+		out = append(out, monitorRuleView{
+			Key: key, Name: def.Name, TargetType: def.TargetType,
+			Enabled: rule.Enabled, Severity: rule.Severity, CooldownMinutes: rule.CooldownMinutes,
+			IntervalMinutes: int(def.Interval / time.Minute), Params: params, DefaultParams: defaults,
+			Consecutive: def.Consecutive,
+		})
+	}
+	return out
+}
+
+// monitorRuleRequest 是 PUT 的请求体。指针字段把「没给」和「给了零值」分开：
+// 没给的条目整条恢复默认，给了一半的条目只覆盖给了的字段。
+type monitorRuleRequest struct {
+	Key             string             `json:"key"`
+	Enabled         *bool              `json:"enabled"`
+	Severity        *string            `json:"severity"`
+	CooldownMinutes *int               `json:"cooldownMinutes"`
+	Params          map[string]float64 `json:"params"`
+}
+
+// normalizeRuleRequests 按 NormalizeRules 的「缺项=默认」语义补齐，但先做两项它
+// 不做的事：空参数取定义默认值（而不是保留旧值），未知规则 key 不吞（否则 PUT
+// 会「成功」却没生效），重复 key 报错。
+func normalizeRuleRequests(incoming []monitorRuleRequest) ([]monitoring.RuleConfig, error) {
+	normalized := monitoring.NormalizeRules(nil)
+	byKey := make(map[string]*monitoring.RuleConfig, len(normalized))
+	for i := range normalized {
+		byKey[normalized[i].Key] = &normalized[i]
+	}
+	for _, in := range incoming {
+		key := strings.TrimSpace(in.Key)
+		rule, ok := byKey[key]
+		if !ok {
+			return nil, fmt.Errorf("unknown rule %q", in.Key)
+		}
+		if in.Enabled != nil {
+			rule.Enabled = *in.Enabled
+		}
+		if in.Severity != nil {
+			rule.Severity = monitoring.Severity(strings.ToLower(strings.TrimSpace(*in.Severity)))
+		}
+		if in.CooldownMinutes != nil {
+			rule.CooldownMinutes = *in.CooldownMinutes
+		}
+		if in.Params != nil {
+			rule.Params = make(map[string]float64, len(in.Params))
+			for k, v := range in.Params {
+				rule.Params[k] = v
+			}
+		}
+	}
+	// NormalizeRules 合并重复 key 时后到者覆盖先到者，ValidateRules 因此看不到重复；
+	// 这里补一刀，免得同一规则在整表里出现两次还「成功」。
+	keys := make([]string, 0, len(incoming))
+	for _, in := range incoming {
+		keys = append(keys, strings.TrimSpace(in.Key))
+	}
+	sort.Strings(keys)
+	for i := 1; i < len(keys); i++ {
+		if keys[i] == keys[i-1] {
+			return nil, fmt.Errorf("duplicate rule %q", keys[i])
+		}
+	}
+	return normalized, nil
+}
+
+func (s *Server) handleMonitorRules(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, monitorRuleViews(monitoring.NewConfig(s.monitoringStore).Rules()))
+}
+
+// handleMonitorUpdateRules 整表替换：补齐 → 校验 → 落库。任何一步失败都 400 且
+// 不写库；服务端校验是唯一防线，前端校验只算体验。返回落库后的规范化结果，调用方
+// 据此看到哪些条目被补成了默认值。
+func (s *Server) handleMonitorUpdateRules(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.monitorGate(w, r); !ok {
+		return
+	}
+	var incoming []monitorRuleRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&incoming); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "规则配置格式不正确")
+		return
+	}
+	// [] 与 null 补齐后会变成整表默认值：前端一个 bug 就能静默清空用户全部自定义
+	// 规则。真要全恢复默认，由调用方显式发 18 条默认值。
+	if len(incoming) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "规则列表为空")
+		return
+	}
+	rules, err := normalizeRuleRequests(incoming)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := monitoring.ValidateRules(rules); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore)
+	if err := cfg.SaveRules(rules); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "规则配置保存失败")
+		return
+	}
+	// 运行中的引擎下一拍会自己读到新值（Service.reloadConfigIfChanged），这里不碰
+	// 状态机。
+	writeJSON(w, http.StatusOK, monitorRuleViews(cfg.Rules()))
+}
+
 // ---- shared pieces ---------------------------------------------------------
 
 // monitorSend delivers one notification and reports the outcome the console
