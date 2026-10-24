@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +23,7 @@ func TestStartQuickParsesURL(t *testing.T) {
 			"2026-07-04 INF +---------------------------+\n" +
 			"2026-07-04 INF |  https://happy-cat-42.trycloudflare.com  |\n" +
 			"2026-07-04 INF +---------------------------+\n"
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
+		cmd := sleepCommand(ctx)
 		if err := cmd.Start(); err != nil {
 			return nil, nil, err
 		}
@@ -77,7 +78,7 @@ func TestStartCustomWithTokenRunsNamedTunnel(t *testing.T) {
 		// cloudflared prints connection-registration lines once the named tunnel is live.
 		output := "2026-07-06 INF Starting tunnel tunnelID=abc\n" +
 			"2026-07-06 INF Registered tunnel connection connIndex=0 location=SJC\n"
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
+		cmd := sleepCommand(ctx)
 		if err := cmd.Start(); err != nil {
 			return nil, nil, err
 		}
@@ -176,7 +177,7 @@ func TestStartCustomConfigFallsBackToHTTP2OnQUICFail(t *testing.T) {
 			output = "2026-07-09 INF Initial protocol quic\n" +
 				"2026-07-09 ERR Failed to dial a quic connection error=\"failed to dial to edge with quic: timeout: no recent network activity\" connIndex=0\n"
 		}
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
+		cmd := sleepCommand(ctx)
 		if err := cmd.Start(); err != nil {
 			return nil, nil, err
 		}
@@ -237,7 +238,7 @@ func TestSnapshotReflectsRunningProcess(t *testing.T) {
 	m.lookPath = func(string) (string, error) { return "/usr/bin/true", nil }
 	m.run = func(ctx context.Context, args ...string) (*exec.Cmd, io.ReadCloser, error) {
 		output := "INF |  https://spark-lake-9.trycloudflare.com  |\n"
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
+		cmd := sleepCommand(ctx)
 		if err := cmd.Start(); err != nil {
 			return nil, nil, err
 		}
@@ -292,7 +293,7 @@ func TestHealLoopRestartsOnPublicProbeFailure(t *testing.T) {
 		starts++
 		mu.Unlock()
 		output := "2026-07-10 INF Registered tunnel connection connIndex=0 location=SJC\n"
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
+		cmd := sleepCommand(ctx)
 		if err := cmd.Start(); err != nil {
 			return nil, nil, err
 		}
@@ -332,4 +333,15 @@ func TestHealLoopRestartsOnPublicProbeFailure(t *testing.T) {
 		t.Fatalf("expected heal loop to restart tunnel, starts=%d", n)
 	}
 	m.Stop()
+}
+
+// sleepCommand is a stand-in for cloudflared: a child process that lives long
+// enough to be observed, then exits on its own. The shell differs per platform
+// — the production code never runs a shell, only the cloudflared binary, so a
+// POSIX-only stub made every one of these tests a Windows-only failure.
+func sleepCommand(ctx context.Context) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", "ping", "-n", "6", "127.0.0.1", ">NUL")
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 5")
 }

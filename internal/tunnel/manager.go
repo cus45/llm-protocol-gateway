@@ -107,6 +107,13 @@ type runnerFunc func(ctx context.Context, args ...string) (*exec.Cmd, io.ReadClo
 // Manager owns a single cloudflared process at a time.
 type Manager struct {
 	mu sync.Mutex
+	// startMu serializes whole start sequences. mu only guards the fields; two
+	// Starts that both reach stopProcess() before either records its cmd would
+	// each launch a process, and only the later one would be remembered — the
+	// other stays an orphan holding a tunnel. Three paths can race here:
+	// /__public/start vs /__public/control, the heal loop vs a manual restart,
+	// and startup restore vs a click.
+	startMu sync.Mutex
 
 	localPort int
 	setup     *CloudflareSetup
@@ -473,6 +480,8 @@ func (m *Manager) Start(settings Settings) (State, error) {
 }
 
 func (m *Manager) startWithSettings(settings Settings) (State, error) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 	mode := settings.Mode
 	if mode == "" {
 		mode = ModeQuick
