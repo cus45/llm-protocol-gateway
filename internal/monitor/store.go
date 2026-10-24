@@ -1218,6 +1218,10 @@ func (s *Store) AddApp(level string, message string, context string) {
 	if !levelEnabled(level, s.logLevel) {
 		return
 	}
+	// 上游错误、OAuth 续期失败、工具输出都可能回显凭据；在唯一的入口处抹掉，
+	// 新加的日志行不会漏。
+	message = scrubAppLogText(message)
+	context = scrubAppLogText(context)
 	s.appLogs = append([]AppLog{{Time: time.Now(), Level: level, Message: message, Context: context}}, s.appLogs...)
 	if len(s.appLogs) > 500 {
 		s.appLogs = s.appLogs[:500]
