@@ -556,6 +556,9 @@ func traeRenew(ctx context.Context, site traeSite, credential domain.TraeCredent
 	return traeLegacyExchange(ctx, site, credential)
 }
 
+// traeRenewOverride lets tests inject a renewal failure; nil in production.
+var traeRenewOverride func(context.Context, traeSite, domain.TraeCredential, string) (domain.TraeCredential, error)
+
 var traeRenewMu sync.Map // refresh token → its lock, so one token is never spent twice
 
 func traeLegacyExchange(ctx context.Context, site traeSite, credential domain.TraeCredential) (domain.TraeCredential, error) {
@@ -732,14 +735,24 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), traeCallTimeout)
 	defer cancel()
-	renewed, err := traeRenew(ctx, site, current, "")
+	renew := traeRenew
+	if traeRenewOverride != nil {
+		renew = traeRenewOverride
+	}
+	renewed, err := renew(ctx, site, current, "")
 	if err != nil {
 		s.recordRenewal(provider, "trae", time.Now(), err)
 		if traeErrorMeansSignIn(err) {
 			return provider, fmt.Errorf("Trae 登录已失效，请重新登录：%w", err)
 		}
-		// A renewal that merely failed now is not a reason to stop serving: the
-		// stored token may still be good for a while.
+		// A renewal that merely failed now is not a reason to stop serving while
+		// the stored token still works. Once it is past its expiry, though,
+		// returning nil turns into an upstream 401 the client reads as "bad key";
+		// say what actually happened instead.
+		if traeCredentialExpired(&current) {
+			s.logs.AddApp("error", "trae renewal failed and the token has expired", provider.ID+": "+err.Error())
+			return provider, fmt.Errorf("Trae 令牌已过期且续期失败：%w", err)
+		}
 		s.logs.AddApp("warn", "trae renewal failed: "+err.Error(), provider.ID)
 		return provider, nil
 	}
@@ -766,6 +779,20 @@ func traeTokenNeedsRefresh(credential *domain.TraeCredential) bool {
 		return true
 	}
 	return time.Now().Add(traeRenewLead).After(expires)
+}
+
+// traeCredentialExpired reports whether the stored token is past its expiry
+// (not merely inside the renew lead): a refresh that failed then has nothing
+// left to serve with.
+func traeCredentialExpired(credential *domain.TraeCredential) bool {
+	if credential == nil {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339, strings.TrimSpace(credential.ExpiresAt))
+	if err != nil {
+		return false
+	}
+	return time.Now().After(expires)
 }
 
 // traeJWTExpiry reads the exp claim out of the JWT. It is decoded, not
