@@ -162,22 +162,24 @@ export function OverviewTab(props: OverviewTabProps) {
             const troubled = accountScore(account, now) > 0;
             return (
               <div className="log-row" key={account.providerId}>
-                <div className="log-row-main" style={{ gridTemplateColumns: 'minmax(0,2fr) 1fr 1fr 1fr 84px' }}>
-                  <span className="single-line" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <div className="mrow mrow-account-mini">
+                  <span className="m-clip" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <span className={`dot ${troubled ? 'err' : 'ok'}`} aria-hidden />
                     <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
-                    <span className="single-line" style={{ fontWeight: 600 }}>{account.name}</span>
-                    {!account.capabilities.oauth && <span className="badge slate">{'API Key'}</span>}
+                    <span className="m-clip" style={{ fontWeight: 600 }} title={`${account.name}（${account.vendor || '未知厂商'}）`}>
+                      {account.name}
+                    </span>
+                    {/* 概览这半宽卡里名称只有百来像素，「API Key」这类静态标签留给账号页；
+                        停用是会改变处置决定的状态，必须留在这里。 */}
                     {account.disabled && <span className="badge amber">{'已停用'}</span>}
                   </span>
                   <span className="muted-text" title={`凭证到期：${account.expiresAt ?? '无'}`}>
                     {hasTime(account.expiresAt) ? `续期 ${relativeToNow(account.expiresAt, now)}` : '不过期'}
                   </span>
-                  <span title={quota.note}>{quota.primary}</span>
-                  <span className="muted-text single-line" title={account.name}>
-                    {account.modelFailures > 0 ? `模型列表连续失败 ${account.modelFailures} 次` : account.vendor || '—'}
-                  </span>
-                  <span>
+                  <span className="m-clip" title={quota.note}>{quota.primary}</span>
+                  <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    {/* 概览这半宽卡里放不下厂商列；模型列表连续失败才是这里要看的信号。 */}
+                    {account.modelFailures > 0 && <span className="badge slate">{`列表 ${account.modelFailures}×`}</span>}
                     {account.activeAlerts > 0 ? (
                       <span className="badge red">{`告警 ${account.activeAlerts}`}</span>
                     ) : account.healthStatus === 'unavailable' ? (
@@ -200,11 +202,11 @@ export function OverviewTab(props: OverviewTabProps) {
           {alerts.length === 0 && <div className="muted-text">{'没有进行中的告警。'}</div>}
           {alerts.slice(0, 5).map((alert) => (
             <div className="log-row" key={alert.id}>
-              <div className="log-row-main" style={{ gridTemplateColumns: '56px minmax(0,2fr) 1fr 64px' }}>
+              <div className="mrow mrow-alert-mini">
                 <span className={`badge ${SEVERITY_TONE[alert.severity]}`} title={SEVERITY_TEXT[alert.severity]}>
                   {alert.severity.toUpperCase()}
                 </span>
-                <span className="single-line">{`${alert.targetName} · ${alert.ruleKey}`}</span>
+                <span className="m-clip">{`${alert.targetName} · ${alert.ruleKey}`}</span>
                 <span className="muted-text">{`第 ${alert.count} 次 · ${relativeToNow(alert.lastSeen, now)}`}</span>
                 <button className="btn btn-sm" onClick={() => onOpenAlert(alert.id)}>{'处理'}</button>
               </div>
@@ -243,10 +245,10 @@ export function OverviewTab(props: OverviewTabProps) {
           const stamp = displayTime(event.time, timezone);
           return (
             <div className="log-row" key={event.id}>
-              <div className="log-row-main" style={{ gridTemplateColumns: '150px 56px minmax(0,2fr) minmax(0,2fr)' }}>
+              <div className="mrow mrow-event">
                 <span className="muted-text" title={stamp.title}>{stamp.text}</span>
                 <span className={`badge ${SEVERITY_TONE[event.severity]}`}>{event.severity.toUpperCase()}</span>
-                <span className="single-line" title={event.targetName ? `${event.title}（${event.targetName}）` : event.title}>
+                <span className="m-clip" title={event.targetName ? `${event.title}（${event.targetName}）` : event.title}>
                   {event.title}
                   {event.targetId ? (
                     <button className="status-pill-btn" style={{ marginLeft: 6 }} onClick={() => onOpenAccount(event.targetId as string)}>
@@ -255,7 +257,7 @@ export function OverviewTab(props: OverviewTabProps) {
                   ) : null}
                 </span>
                 <span
-                  className="muted-text single-line"
+                  className="muted-text m-clip"
                   title={pairs.map(([key, value]) => `${key}=${value}`).join(' · ')}
                 >
                   {pairs.length > 0

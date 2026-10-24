@@ -85,6 +85,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [settingsError, setSettingsError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
+  // 抽屉里的动作要就地给反馈：账号页在 Modal 打开时，面板顶部的错误行会被抽屉挡住。
+  const [drawerNote, setDrawerNote] = useState('');
+  const [drawerError, setDrawerError] = useState('');
 
   const generation = useRef(0);
   const timezone = dispatch?.timezone || 'Asia/Shanghai';
@@ -110,7 +113,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   }, []);
 
   const loadVisible = useCallback(async () => {
-    if (document.hidden) return;
     const mine = ++generation.current;
     setLoading(true);
     try {
@@ -155,9 +157,11 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     void loadVisible();
   }, [loadVisible]);
 
-  // 15 秒轮询；页面隐藏时不发请求，切回前台立即补一次。
+  // 15 秒轮询；只有定时任务在页面隐藏时跳过，手动/操作后的刷新必须真的取数。
   useEffect(() => {
-    const timer = window.setInterval(() => void loadVisible(), POLL_MS);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void loadVisible();
+    }, POLL_MS);
     const onVisible = () => {
       if (!document.hidden) void loadVisible();
     };
@@ -200,6 +204,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const openAccount = useCallback(
     (providerId: string) => {
       setSelectedAccount(providerId);
+      setDrawerNote('');
+      setDrawerError('');
       goTab('accounts', { account: providerId });
     },
     [goTab],
@@ -300,12 +306,25 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           error={error}
           selectedId={selectedAccount}
           onSelect={openAccount}
+          note={drawerNote}
+          actionError={drawerError}
           onCloseDrawer={() => {
             setSelectedAccount('');
+            setDrawerNote('');
+            setDrawerError('');
             goTab('accounts', {});
           }}
           onRenew={(providerId) => {
-            void run(`renew:${providerId}`, () => renewAccount(providerId), undefined, setSettingsError);
+            void run(
+              `renew:${providerId}`,
+              async () => {
+                const result = await renewAccount(providerId);
+                if (!result.ok) throw new MonitorAPIError(502, `续期失败：${result.errorKind ?? 'unknown'}`);
+                setDrawerNote(result.renewed ? '凭证已轮换' : '未到续期窗口，凭证保持不变');
+              },
+              undefined,
+              setDrawerError,
+            );
           }}
           onRefreshQuota={(providerId) => {
             void run(
@@ -313,9 +332,10 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
               async () => {
                 const result = await refreshQuota(providerId);
                 if (!result.ok) throw new MonitorAPIError(502, `额度读取失败：${result.errorKind ?? 'unknown'}`);
+                setDrawerNote('额度已刷新');
               },
               undefined,
-              setSettingsError,
+              setDrawerError,
             );
           }}
           onOpenAlerts={(providerId) => {
@@ -390,7 +410,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
                 const result = await testChannel(id);
                 if (!result.ok) throw new MonitorAPIError(502, result.error || '渠道测试失败');
               },
-              undefined,
+              '测试消息已发送，未收到请检查渠道关键词或签名',
               setSettingsError,
             );
           }}

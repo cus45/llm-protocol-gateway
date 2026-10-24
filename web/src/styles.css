@@ -6830,3 +6830,62 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 @media (max-width: 640px) {
   .upgrade-toast { top: 12px; right: 12px; left: 12px; width: auto; }
 }
+
+/* ── 监控中心 ────────────────────────────────────────────────────────────
+   只用现有 tokens；补的都是既有体系里没有的：能在窄处收成单列的两栏网格、
+   不在 .field 里的裸输入框（搜索框、重试渠道下拉），以及监控自己的行网格。
+   这段曾被 1499e18 用旧副本提交时误删，恢复时把原因留在注释里。 */
+.monitoring-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1280px) {
+  .monitoring-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.monitoring-input {
+  height: var(--control-h);
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  outline: none;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.monitoring-input:focus { border-color: var(--accent); }
+
+/* 行网格不复用 .log-row-main：全局规则在 ≤1100px 给它定了 min-width:900px，
+   而监控中心的行不在可横滚的 .log-table 容器里，会被卡片直接裁掉——手机上
+   状态列和「详情」按钮根本够不着。窄屏退回两列，首尾各占一行。 */
+.mrow { display: grid; gap: 6px 12px; align-items: center; min-width: 0; }
+.mrow > * { min-width: 0; }
+/* 单行截断。控制台里的 .single-line 是「把这一行收成两列网格」，不是省略号，
+   名字长了会被挤成一字一行，所以监控中心自己定义一个真正的截断类。 */
+.m-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow-account { grid-template-columns: minmax(0,2.2fr) 96px minmax(0,1fr) minmax(0,1.1fr) 84px 64px; }
+/* 概览的账号健康卡只有半宽，列要更少更紧：名称 / 续期 / 额度 / 状态 / 详情。 */
+.mrow-account-mini { grid-template-columns: minmax(0,1.5fr) 84px minmax(0,1fr) 112px 56px; }
+.mrow-alert { grid-template-columns: 56px minmax(0,2fr) minmax(0,1.4fr) minmax(0,1fr) 96px 64px; }
+.mrow-alert-mini { grid-template-columns: 56px minmax(0,2fr) minmax(0,1.2fr) 64px; }
+.mrow-event { grid-template-columns: 150px 56px minmax(0,2fr) minmax(0,2fr); }
+.mrow-channel { grid-template-columns: minmax(0,2fr) 90px 90px minmax(0,1.4fr) 64px 64px 64px; }
+
+@media (max-width: 1100px) {
+  .mrow { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+  .mrow > :first-child,
+  .mrow > :last-child { grid-column: 1 / -1; }
+  .mrow-alert > :first-child,
+  .mrow-alert-mini > :first-child,
+  .mrow-event > :first-child { grid-column: auto; }
+  .mrow-alert > :nth-child(2),
+  .mrow-alert-mini > :nth-child(2),
+  .mrow-event > :nth-child(3) { grid-column: 1 / -1; }
+}

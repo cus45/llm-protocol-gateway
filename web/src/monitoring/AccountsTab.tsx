@@ -17,6 +17,9 @@ export interface AccountsTabProps {
   alertCountOf: (providerId: string) => number;
   busy: string;
   error: string;
+  /** 抽屉内动作（续期/刷额度）的结果文案，就地显示。 */
+  note: string;
+  actionError: string;
   onRenew: (providerId: string) => void;
   onRefreshQuota: (providerId: string) => void;
   onOpenAlerts: (providerId: string) => void;
@@ -51,7 +54,7 @@ const CAPABILITY_LABELS: Array<{ key: keyof MonitorAccount['capabilities']; labe
 
 export function AccountsTab(props: AccountsTabProps) {
   const {
-    accounts, timezone, iconOf, alertCountOf, busy, error,
+    accounts, timezone, iconOf, alertCountOf, busy, error, note, actionError,
     onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, selectedId, onSelect, onCloseDrawer,
   } = props;
   const [search, setSearch] = useState('');
@@ -108,11 +111,11 @@ export function AccountsTab(props: AccountsTabProps) {
         const alerts = alertCountOf(account.providerId);
         return (
           <div className="log-row" key={account.providerId}>
-            <div className="log-row-main" style={{ gridTemplateColumns: 'minmax(0,2fr) 110px 1fr 1fr 84px' }}>
-              <span className="single-line" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <div className="mrow mrow-account">
+              <span className="m-clip" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span className={`dot ${alerts > 0 ? 'err' : 'ok'}`} aria-hidden />
                 <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
-                <span className="single-line" style={{ fontWeight: 600 }}>{account.name}</span>
+                <span className="m-clip" style={{ fontWeight: 600 }}>{account.name}</span>
                 {account.disabled && <span className="badge amber">{'停用'}</span>}
               </span>
               <span className="muted-text">{AUTH_LABELS[account.authType] || account.authType || 'API Key'}</span>
@@ -211,6 +214,10 @@ export function AccountsTab(props: AccountsTabProps) {
                 <button className="btn btn-sm" onClick={() => onOpenAlerts(detail.providerId)}>{'查看告警'}</button>
                 <button className="btn btn-sm" onClick={() => onOpenLogs(detail.providerId)}>{'查看请求日志'}</button>
               </div>
+              {actionError && <div className="metric-note err" style={{ marginTop: 8 }}>{actionError}</div>}
+              {note && !actionError && (
+                <div className="metric-note" style={{ marginTop: 8 }}>{note}</div>
+              )}
               <div className="metric-note" style={{ marginTop: 8 }}>
                 {'监控中心不提供停用、隔离或改配置的按钮；处置只在请求调度里做。'}
               </div>

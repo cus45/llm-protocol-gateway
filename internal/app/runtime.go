@@ -352,10 +352,9 @@ func (rt *Runtime) Start(cfg Config) error {
 		server.BackfillClaudeOAuthAccountLabels()
 		server.BackfillQoderAccountLabels()
 		server.StartCursorModelBackgroundRefresh(context.Background())
-		server.StartAlertScan(context.Background())
-		// The monitoring center replaces the legacy pushes (the scanner keeps
-		// writing its history rows, which MigrateMonitoringV1 folds into the
-		// event stream), so it starts last of the background loops.
+		// The monitoring center replaces the legacy alert scanner: multi-IP and
+		// concurrent-IP rules are evaluated by its collector, which also folds
+		// the frozen `alerts` history into the event stream on startup.
 		server.StartMonitoring(context.Background())
 		rt.startStorageMaintenance(db, retentionDays)
 	}()

@@ -335,7 +335,6 @@ export const navItems = [
   { id: 'public-access', label: '公网访问' },
   { id: 'traffic-tokens', label: 'API 日志' },
   { id: 'monitoring', label: '监控中心' },
-  { id: 'alerts', label: '告警' },
   { id: 'quota-keeper', label: '额度保活' },
   { id: 'users', label: '用户管理' },
   { id: 'self-check', label: '自检' },
@@ -350,7 +349,7 @@ export const coreNavIDs: NavItemID[] = ['input-providers', 'api-keys'];
 export const navGroups: Array<{ label: string; ids: NavItemID[] }> = [
   { label: '核心配置', ids: ['input-providers', 'api-keys', 'output-providers', 'quota-keeper'] },
   { label: '数据洞察', ids: ['models-menu', 'usage-stats', 'traffic-tokens'] },
-  { label: '系统管理', ids: ['public-access', 'monitoring', 'alerts', 'users', 'self-check', 'machine', 'settings'] },
+  { label: '系统管理', ids: ['public-access', 'monitoring', 'users', 'self-check', 'machine', 'settings'] },
 ];
 
 // 普通用户仅可访问的页面（其余仅管理员可见）。监控中心刻意不在列：它读账号矩阵、

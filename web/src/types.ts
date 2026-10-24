@@ -736,56 +736,6 @@ export type LogPage = {
   page: number;
 };
 
-export type AlertRecord = {
-  id: number;
-  time: string;
-  rule: string;
-  severity: string;
-  apiKeyId: string;
-  apiKeyName: string;
-  ips: string[];
-  ipCount: number;
-  windowMinutes: number;
-  requestCount: number;
-  /** 仅并发重叠规则有值：观测到峰值并发的那一刻。 */
-  concurrentAt?: string;
-  status: 'unread' | 'read' | 'ignored';
-  pushStatus?: string;
-  pushError?: string;
-};
-
-export type AlertCounts = {
-  all: number;
-  unread: number;
-  read: number;
-  ignored: number;
-};
-
-export type AlertPage = {
-  items: AlertRecord[];
-  total: number;
-  page: number;
-  pageSize: number;
-  counts: AlertCounts;
-};
-
-/** 后端已脱敏：只有 botTokenConfigured + 末 4 位,永远没有 botToken 本体。 */
-export type AlertSettingsView = {
-  multiIpEnabled: boolean;
-  multiIpWindowMinutes: number;
-  multiIpThreshold: number;
-  concurrentIpEnabled: boolean;
-  concurrentIpWindowMinutes: number;
-  concurrentIpThreshold: number;
-  cooldownMinutes: number;
-  telegram: {
-    enabled: boolean;
-    chatId: string;
-    botTokenConfigured: boolean;
-    botTokenPreview?: string;
-  };
-};
-
 export type APIKeyDayStats = {
   apiKeyId: string;
   apiKeyName: string;

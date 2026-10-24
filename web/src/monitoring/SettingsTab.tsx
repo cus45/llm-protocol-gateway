@@ -108,11 +108,8 @@ export function SettingsTab(props: SettingsTabProps) {
         {channels.length === 0 && <div className="muted-text">{'还没有渠道，告警只记录不推送。'}</div>}
         {channels.map((channel) => (
           <div className="log-row" key={channel.id}>
-            <div
-              className="log-row-main"
-              style={{ gridTemplateColumns: 'minmax(0,2fr) 90px 90px 1fr 64px 64px 64px' }}
-            >
-              <span className="single-line" style={{ fontWeight: 600 }}>{channel.name}</span>
+            <div className="mrow mrow-channel">
+              <span className="m-clip" style={{ fontWeight: 600 }}>{channel.name}</span>
               <span className="badge slate">{CHANNEL_TYPES.find((item) => item.value === channel.type)?.label ?? channel.type}</span>
               <span className={`badge ${channel.minSeverity === 'p0' ? 'red' : channel.minSeverity === 'p1' ? 'amber' : 'blue'}`}>
                 {`≥ ${channel.minSeverity.toUpperCase()}`}

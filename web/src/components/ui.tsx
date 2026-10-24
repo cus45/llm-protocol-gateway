@@ -267,8 +267,6 @@ export function NavIcon({ id }: { id: NavItemID }) {
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5c-2.4-2.3-3.6-5.1-3.6-8.5s1.2-6.2 3.6-8.5Z" /></svg>);
     case 'traffic-tokens':
       return (<svg viewBox="0 0 24 24" {...common}><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01" strokeWidth="2.6" /></svg>);
-    case 'alerts':
-      return (<svg viewBox="0 0 24 24" {...common}><path d="M6.2 9.5a5.8 5.8 0 0 1 11.6 0c0 4 1.7 5.6 1.7 5.6H4.5s1.7-1.6 1.7-5.6" /><path d="M10.4 19a1.8 1.8 0 0 0 3.2 0" /></svg>);
     case 'quota-keeper':
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.2V12l3.2 2" /><path d="M18.6 4.6 20.4 6.4M19.5 4.1v2.3h-2.3" /></svg>);
     case 'users':

@@ -84,7 +84,6 @@ type Server struct {
 	usageDailyStore    UsageDailyStore
 	rtkStatsStore      RTKStatsStore
 	rtk                *rtkCompressor
-	alertStore         AlertStore
 	scheduledTaskStore ScheduledTaskStore
 	checkinStore       CheckinStore
 	// checkinMu guards checkinRunning, the set of providers whose check-in is in
@@ -243,9 +242,6 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		if rss, ok := stateSaver[0].(RTKStatsStore); ok {
 			server.rtkStatsStore = rss
 		}
-		if as, ok := stateSaver[0].(AlertStore); ok {
-			server.alertStore = as
-		}
 		if auth, ok := stateSaver[0].(AdminAuthStore); ok {
 			server.adminAuth = auth
 		}
@@ -348,16 +344,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /__settings/request-log-retention", s.handleSetRequestLogRetention)
 	mux.HandleFunc("PATCH /__settings/log-2xx-bodies", s.handleSetLog2xxBodies)
 	mux.HandleFunc("PATCH /__settings/usage-batch", s.handleSetUsageBatch)
-	// Alerting (API key leak detection). Admin-only: these paths are absent from
-	// isUserAllowedPath, and each handler also calls requireAdmin.
-	mux.HandleFunc("GET /__alerts", s.handleListAlerts)
-	mux.HandleFunc("PATCH /__alerts/{id}", s.handleUpdateAlertStatus)
-	mux.HandleFunc("POST /__alerts/{id}/push", s.handleRetryAlertPush)
-	mux.HandleFunc("GET /__alerts/settings", s.handleAlertSettings)
-	mux.HandleFunc("PATCH /__alerts/settings", s.handleUpdateAlertSettings)
-	mux.HandleFunc("POST /__alerts/telegram/test", s.handleTelegramTest)
-	// Monitoring center. The legacy /__alerts routes above stay for the old
-	// console pages; these serve the unified event stream.
+	// Monitoring center: the unified event stream. The legacy /__alerts* routes
+	// and their scanner are gone; multi_ip/concurrent_ip detection now runs in
+	// the monitoring collector, and MigrateMonitoringV1 still folds the frozen
+	// `alerts` history into monitor_events on startup.
 	mux.HandleFunc("GET /__monitor/overview", s.handleMonitorOverview)
 	mux.HandleFunc("GET /__monitor/accounts", s.handleMonitorAccounts)
 	mux.HandleFunc("GET /__monitor/accounts/{providerId}", s.handleMonitorAccount)

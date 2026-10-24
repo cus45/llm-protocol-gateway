@@ -93,14 +93,11 @@ export function AlertsTab(props: AlertsTabProps) {
 
       {alerts.map((alert) => (
         <div className="log-row" key={alert.id}>
-          <div
-            className="log-row-main"
-            style={{ gridTemplateColumns: '56px minmax(0,2fr) 1fr 1fr 96px 64px' }}
-          >
+          <div className="mrow mrow-alert">
             <span className={`badge ${SEVERITY_TONE[alert.severity]}`} title={SEVERITY_TEXT[alert.severity]}>
               {alert.severity.toUpperCase()}
             </span>
-            <span className="single-line">
+            <span className="m-clip">
               <span style={{ fontWeight: 600 }}>{alert.ruleKey}</span>
               <span className="muted-text">{' · '}</span>
               <button className="status-pill-btn" onClick={() => onOpenAccount(alert.targetId)}>
