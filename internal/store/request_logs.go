@@ -235,6 +235,12 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 		where = append(where, "model = ?")
 		args = append(args, model)
 	}
+	if session := strings.TrimSpace(query.SessionID); session != "" {
+		// session_id lives inside analysis_json; json_extract keeps this a
+		// database-side filter instead of loading every row to compare.
+		where = append(where, "json_extract(analysis_json, '$.sessionId') = ?")
+		args = append(args, session)
+	}
 	if query.APIKeyIDs != nil {
 		// Per-user isolation: an empty (non-nil) set must match nothing.
 		if len(query.APIKeyIDs) == 0 {

@@ -769,6 +769,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		APIKeyName:    strings.TrimSpace(r.URL.Query().Get("apiKeyName")),
 		ProviderID:    strings.TrimSpace(r.URL.Query().Get("providerId")),
 		Model:         strings.TrimSpace(r.URL.Query().Get("model")),
+		SessionID:     strings.TrimSpace(r.URL.Query().Get("sessionId")),
 		Page:          atoiDefault(r.URL.Query().Get("page"), 1),
 		PageSize:      atoiDefault(r.URL.Query().Get("pageSize"), 100),
 		IncludeBodies: parseBoolQuery(r.URL.Query().Get("includeBodies")),

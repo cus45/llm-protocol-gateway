@@ -284,6 +284,8 @@ function App() {
   const [trafficLogRawRespView, setTrafficLogRawRespView] = useState(false);
   const [trafficLogSSEParsedView, setTrafficLogSSEParsedView] = useState(true);
   const [logsKeyword, setLogsKeyword] = useState('');
+  // 会话视图：按 sessionId 过滤请求日志（后端 json_extract 查询）。
+  const [logsSessionFilter, setLogsSessionFilter] = useState('');
   const displayedLogs = useMemo(() => {
     if (!logsKeyword.trim()) return logs;
     const kw = logsKeyword.trim().toLowerCase();
@@ -1780,6 +1782,7 @@ function App() {
     if (keyName) params.set('apiKeyName', keyName);
     if (logsUsageTarget) params.set(logsUsageTarget.type === 'model' ? 'model' : 'apiKeyId', logsUsageTarget.value);
     if (logsProviderFilter) params.set('providerId', logsProviderFilter);
+    if (logsSessionFilter) params.set('sessionId', logsSessionFilter);
     if (logsOwnerFilter) params.set('ownerUserId', logsOwnerFilter);
     // 第 1 页保持实时；第 2 页及以后带上离开第 1 页时冻结的 newest time+id。
     if (page > 1) {
@@ -6080,6 +6083,11 @@ function App() {
                     <button className="mini-btn" type="button" onClick={() => setLogsKeyword('')} style={{ marginLeft: 8 }}>
                       清空搜索词
                     </button>
+                    {logsSessionFilter ? (
+                      <button className="mini-btn" type="button" onClick={() => { setLogsSessionFilter(''); void refreshLogs(1); }} style={{ marginLeft: 8 }}>
+                        退出会话筛选
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
                   <>
@@ -6094,6 +6102,7 @@ function App() {
                       <span>
                         共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
                         {logsKeyword ? ` · 当前关键词过滤匹配 ${displayedLogs.length} 条` : ''}
+                        {logsSessionFilter ? ` · 会话 ${logsSessionFilter.slice(0, 8)}` : ''}
                         {logsPage > 1 ? ' · 当前页不自动刷新（避免新日志把翻页顶得乱跳），需要看最新请回到第 1 页' : ''}
                       </span>
                       <span style={{ display: 'flex', gap: 8 }}>
@@ -7060,6 +7069,42 @@ function App() {
               <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span>{trafficLogKeyLabel(trafficLogDetail)} · {servedLabel} · 路由: {trafficLogDetail.routeId} · 模型: {trafficLogDetail.model}</span>
                 {servingInfo ? <Badge tone="amber">{servingLabel}</Badge> : null}
+                {trafficLogDetail.analysis?.sessionId ? (
+                  // 一次对话的多轮请求共享同一个 sessionId：点一下就把日志列表
+                  // 收窄到这一会话（后端按 json_extract 过滤）。
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={`会话 ${trafficLogDetail.analysis.sessionId}（点击只看这一会话的请求）`}
+                    onClick={() => {
+                      const session = trafficLogDetail.analysis!.sessionId!;
+                      setLogsSessionFilter(session);
+                      setTrafficLogDetail(null);
+                      showToast(`已筛选会话 ${session.slice(0, 8)}`);
+                      void refreshLogs(1);
+                    }}
+                  >
+                    会话 <span className="mono">{trafficLogDetail.analysis.sessionId.slice(0, 8)}</span>
+                  </button>
+                ) : null}
+                {trafficLogDetail.analysis?.sessionId ? (
+                  // 一次对话的多轮请求共享同一个 sessionId：把它露出来，才能
+                  // 把同一会话的请求对上号（后端暂不提供按会话检索）。
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={`会话 ${trafficLogDetail.analysis.sessionId}（点击只看这一会话的请求）`}
+                    onClick={() => {
+                      const session = trafficLogDetail.analysis!.sessionId!;
+                      setLogsSessionFilter(session);
+                      setTrafficLogDetail(null);
+                      showToast(`已筛选会话 ${session.slice(0, 8)}`);
+                      void refreshLogs(1);
+                    }}
+                  >
+                    会话 <span className="mono">{trafficLogDetail.analysis.sessionId.slice(0, 8)}</span>
+                  </button>
+                ) : null}
               </span>
             </div>
 
