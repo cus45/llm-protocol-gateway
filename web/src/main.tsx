@@ -7403,8 +7403,10 @@ function App() {
               </div>
               <div className="rtk-provider-panel">
                 <div className="toggle-row">
-                  <span>首包超时</span>
-                  <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
+                  <span className="provider-knob-label">
+                    <span>首包超时</span>
+                    <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
+                  </span>
                   <div className="provider-knob-control">
                     <span className="knob-input">
                       <input
@@ -7427,8 +7429,10 @@ function App() {
               </div>
               <div className="rtk-provider-panel">
                 <div className="toggle-row">
-                  <span>并发上限</span>
-                  <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。账号：留空 = 这一行自己一份额度；填同一个名字的几行（同一个订阅的多把密钥、同一账号的不同 BaseURL）共用这一份额度，避免每行各拿一份把账号打出 429。" />
+                  <span className="provider-knob-label">
+                    <span>并发上限</span>
+                    <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。账号：留空 = 这一行自己一份额度；填同一个名字的几行（同一个订阅的多把密钥、同一账号的不同 BaseURL）共用这一份额度，避免每行各拿一份把账号打出 429。" />
+                  </span>
                   <div className="provider-knob-control">
                     <label className="provider-knob-field">
                       <span>上限</span>

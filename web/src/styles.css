@@ -6546,11 +6546,27 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   font-weight: 600;
 }
 .rtk-provider-panel .toggle-row input[type="text"]::placeholder { color: var(--subtle); font-weight: 500; }
-.provider-knob-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.provider-knob-control { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+/* 旋钮面板统一左对齐：.toggle-row 原本把「标签 + 旋钮组」横排，而下方那块是
+   「标签」和「旋钮组」各自成行，于是同一区块出现 x=501 与 x=415 两套起点。
+   这里让带旋钮组的 toggle-row 一律竖向排：标签一行、控件组从同一条左边线起。
+   标签与 InfoTip 图标必须包在同一行里，否则纵向 flex 会把图标单独挤成一行。 */
+.rtk-provider-panel .toggle-row:has(.provider-knob-control) { align-items: flex-start; flex-direction: column; gap: 8px; }
+.rtk-provider-panel .toggle-row:has(.provider-knob-control) > span:first-child,
+.rtk-provider-panel .toggle-row:has(.provider-knob-control) > span:first-child + .info-tip {
+  align-self: auto;
+}
+.rtk-provider-panel .toggle-row:has(.provider-knob-control) .provider-knob-label {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.rtk-provider-panel .toggle-row:has(.provider-knob-control) > .provider-knob-control { width: 100%; }
 .provider-knob-field { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--muted); }
+/* 高度走设计系统的行内档 --control-h-sm（28px）。原来写的是 var(--btn-h)——
+   那是在 .btn 里定义的，这里不在 .btn 作用域内，解析失败后退化成内容高度
+   （实测 21px），和旁边 30px 的按钮同行时高矮不齐。 */
 .knob-input {
   display: inline-flex; align-items: center; gap: 4px;
-  height: var(--btn-h); box-sizing: border-box;
+  height: var(--control-h-sm); box-sizing: border-box;
   padding: 0 8px 0 4px;
   border-radius: var(--r-sm); border: 1px solid var(--border);
   background: var(--surface);
