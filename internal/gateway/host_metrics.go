@@ -278,9 +278,7 @@ func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	if s.hostMetrics == nil {
-		s.hostMetrics = newHostMetricsSampler()
-	}
+	s.hostMetricsOnce.Do(func() { s.hostMetrics = newHostMetricsSampler() })
 	writeJSON(w, http.StatusOK, s.hostMetrics.Snapshot())
 }
 

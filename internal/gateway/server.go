@@ -176,7 +176,10 @@ type Server struct {
 
 	// hostMetrics samples CPU load/temp only while the admin homepage is
 	// polling /__host-metrics; the loop auto-stops when clients go idle.
-	hostMetrics *hostMetricsSampler
+	// Created once under hostMetricsOnce: two concurrent first polls used to
+	// race and leave one sampler's goroutine running unobserved.
+	hostMetrics     *hostMetricsSampler
+	hostMetricsOnce sync.Once
 
 	// Quota keeper ("额度保活", see quota_keeper.go). The three fields below are
 	// runtime-only: in-flight claims stop a task or provider from being probed
