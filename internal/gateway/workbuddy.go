@@ -704,7 +704,13 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 		return provider, nil
 	}
 	if strings.TrimSpace(credential.RefreshToken) == "" {
-		return provider, nil // nothing to refresh with; let the request try
+		// 没有可续期的令牌：未过期还能用（上面的 needsRefresh 已放行），
+		// 已过期就只剩一枚死令牌——明确报错，别让客户端去读上游的 401
+		// "invalid token"，那看起来像它自己配错了。
+		if workBuddyCredentialExpired(credential) {
+			return provider, errors.New("WorkBuddy 令牌已过期且没有可续期的凭证，请重新登录")
+		}
+		return provider, nil
 	}
 	// WorkBuddy 的 refresh token 轮换：并发续期里后到的那个会被判无效。按令牌
 	// 串行；等锁期间别人续好的直接用。
@@ -724,12 +730,31 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 	}
 	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
 	if err != nil {
-		// A refresh hiccup is not fatal: the current token may still work.
+		// 未过期时一次续期抖动不该拦请求（手上这枚或许还能用）；已过期就没有
+		// 可用的令牌了，报错（与 Trae 6626556 同口径）。
+		if workBuddyCredentialExpired(&current) {
+			s.logs.AddApp("error", "workbuddy token refresh failed and the token expired", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
+			return provider, fmt.Errorf("WorkBuddy 令牌已过期且续期失败：%w", err)
+		}
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 		return provider, nil
 	}
 	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 	return updated, nil
+}
+
+// workBuddyCredentialExpired reports whether the stored access token is past its
+// expiry (not merely inside the refresh lead): a failed renewal then has
+// nothing left to serve with.
+func workBuddyCredentialExpired(credential *domain.WorkBuddyCredential) bool {
+	if credential == nil {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339, strings.TrimSpace(credential.ExpiresAt))
+	if err != nil {
+		return false
+	}
+	return time.Now().After(expires)
 }
 
 // forceRefreshWorkBuddyToken refreshes even when the stored expiry is still in
