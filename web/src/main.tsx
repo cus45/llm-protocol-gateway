@@ -1193,6 +1193,15 @@ function App() {
     void refreshAlertSettings();
   }, [activeNav, alertStatusFilter]);
 
+  // 导航上的未读告警角标在告警页之外也要准：管理员登录后每 30 秒刷新一次
+  // 计数（用当前筛选状态拉第 1 页，counts 与列表一致）。普通用户没有告警页。
+  useEffect(() => {
+    if (!authStatus?.authenticated || authStatus.role === 'user') return;
+    void refreshAlerts(1, alertStatusFilter);
+    const timer = window.setInterval(() => { void refreshAlerts(1, alertStatusFilter); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [authStatus?.authenticated, authStatus?.role, alertStatusFilter]);
+
   // 管理员打开 API 日志页时加载用户列表，用于「用户」筛选下拉；普通用户看不到这个
   // 筛选项（后端也只对 admin 生效），不需要拉取。
   useEffect(() => {
@@ -4584,6 +4593,12 @@ function App() {
                     >
                       <span className="nav-icon"><NavIcon id={item.id} /></span>
                       <span className="nav-label">{item.label}</span>
+                      {item.id === 'alerts' && (alertPage?.counts.unread ?? 0) > 0 ? (
+                        // 未读告警在导航上留一个角标：告警页之外也要看得见。
+                        <span className="nav-badge" title={`${alertPage?.counts.unread} 条未读告警`}>
+                          {(alertPage?.counts.unread ?? 0) > 99 ? '99+' : alertPage?.counts.unread}
+                        </span>
+                      ) : null}
                       {item.id === 'public-access' ? (
                         <span
                           className={`nav-status-dot ${tunnelRunning ? 'on' : 'off'}`}
