@@ -11,6 +11,9 @@ const (
 	ProtocolOpenAIChat      Protocol = "openai_chat"
 	ProtocolOpenAIResponses Protocol = "openai_responses"
 	ProtocolClaude          Protocol = "claude"
+	// ProtocolGemini is Google's native generateContent API: a model endpoint of
+	// its own, with its own request and response shape.
+	ProtocolGemini Protocol = "gemini"
 )
 
 func (p Protocol) DisplayName() string {
@@ -21,6 +24,8 @@ func (p Protocol) DisplayName() string {
 		return "OpenAI Responses"
 	case ProtocolClaude:
 		return "Claude"
+	case ProtocolGemini:
+		return "Gemini"
 	default:
 		return string(p)
 	}

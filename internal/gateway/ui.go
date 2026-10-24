@@ -257,7 +257,10 @@ func isModelProtocolPath(path string) bool {
 		strings.HasPrefix(path, "/v1/embeddings"),
 		// Speech-to-text: the body is a multipart upload, still a model call
 		// (it is admitted, quota-checked and billed like one).
-		strings.HasPrefix(path, "/v1/audio/"):
+		strings.HasPrefix(path, "/v1/audio/"),
+		// Gemini's model endpoint puts the model in the path.
+		strings.HasPrefix(path, "/v1beta/"),
+		strings.HasPrefix(path, "/v1/models/"):
 		return true
 	case strings.HasPrefix(path, "/openai/v1"):
 		return true

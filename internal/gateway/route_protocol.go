@@ -16,6 +16,8 @@ func outputProtocolPath(protocol domain.Protocol) string {
 		return "POST /openai/v1/responses"
 	case domain.ProtocolClaude:
 		return "POST /anthropic/v1/messages"
+	case domain.ProtocolGemini:
+		return "POST /v1beta/models/{model}:generateContent"
 	default:
 		return string(protocol)
 	}

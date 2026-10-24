@@ -508,6 +508,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /openai/v1/audio/transcriptions", s.handleOpenAIAudioTranscriptions)
 	mux.HandleFunc("POST /v1/audio/translations", s.handleOpenAIAudioTranslations)
 	mux.HandleFunc("POST /openai/v1/audio/translations", s.handleOpenAIAudioTranslations)
+	// Gemini 原生协议：模型名在路径里（Google 的形状），ServeMux 无法表达
+	// "/{model}:{action}" 的尾巴，所以两条前缀都交给同一个处理器自己解析。
+	mux.HandleFunc("POST /v1beta/", s.handleGeminiGenerateContent)
+	mux.HandleFunc("POST /v1/models/", s.handleGeminiGenerateContent)
 	mux.HandleFunc("POST /v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/images/generations", s.handleOpenAIImagesGenerations)
 	mux.HandleFunc("POST /openai/v1/responses", s.handleOpenAIResponses)
@@ -6245,6 +6249,12 @@ func writeClaudeError(w http.ResponseWriter, status int, message string) {
 
 func extractConsumerAPIKey(r *http.Request) string {
 	if key := strings.TrimSpace(r.Header.Get("x-api-key")); key != "" {
+		return key
+	}
+	// Google's SDKs authenticate with x-goog-api-key (or ?key=, see
+	// extractGeminiAPIKey): a Gemini client pointed at this gateway should not
+	// have to learn a different header.
+	if key := strings.TrimSpace(r.Header.Get("x-goog-api-key")); key != "" {
 		return key
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
