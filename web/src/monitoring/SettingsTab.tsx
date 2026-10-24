@@ -232,8 +232,8 @@ export function SettingsTab(props: SettingsTabProps) {
               <span>{'聚合间隔（分钟）'}</span>
               <input
                 type="number"
-                min={1}
-                max={1440}
+                min={5}
+                max={120}
                 value={form.digestMinutes}
                 onChange={(event) => setForm({ ...form, digestMinutes: Number(event.target.value) })}
               />

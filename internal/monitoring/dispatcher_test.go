@@ -61,20 +61,33 @@ func quietDisabled() DispatchConfig {
 	return cfg
 }
 
-func TestP1ImmediateInPhaseOne(t *testing.T) {
+// 阶段 4 起 P1 不再即时单发：Dispatch 只入摘要队列，Flush 到点才发一条摘要。
+func TestP1QueuedIntoDigest(t *testing.T) {
 	now := time.Date(2026, 10, 23, 2, 0, 0, 0, time.UTC)
 	st := newFakeStore()
 	adapter := &fakeChannelAdapter{}
 	d := newDispatcherForTest(st, []Channel{testChannel(SeverityP1)}, quietDisabled(), DefaultRules())
-	d.now = func() time.Time { return now }
+	current := now
+	d.now = func() time.Time { return current }
 	d.adapters["feishu"] = adapter
 
 	tr := seedTransition(t, st, testFiringTransition(now, SeverityP1, time.Minute))
 	if err := d.Dispatch(context.Background(), tr); err != nil {
 		t.Fatal(err)
 	}
+	if adapter.calls != 0 {
+		t.Fatalf("P1 must not go out inline, calls = %d", adapter.calls)
+	}
+	if got := st.events[tr.Event.ID-1].PushStatus; got != PushPending {
+		t.Fatalf("event push status = %q", got)
+	}
+	// 窗口（默认 15 分钟）没到不发；到点的那一 tick 发一份摘要。
+	current = now.Add(15 * time.Minute)
+	if err := d.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if adapter.calls != 1 {
-		t.Fatalf("calls = %d", adapter.calls)
+		t.Fatalf("digest calls = %d", adapter.calls)
 	}
 	if len(st.pushes) != 1 || st.pushes[0].Status != PushSent || st.pushes[0].Attempts != 1 {
 		t.Fatalf("pushes = %+v", st.pushes)
@@ -83,7 +96,8 @@ func TestP1ImmediateInPhaseOne(t *testing.T) {
 		t.Fatalf("event push status = %q", got)
 	}
 	state := st.states[tr.State.Fingerprint]
-	if !state.LastNotifiedAt.Equal(now) {
+	// LastNotifiedAt 记的是摘要真正发出的时刻（窗口边界），不是入队时刻。
+	if !state.LastNotifiedAt.Equal(now.Add(15 * time.Minute)) {
 		t.Fatalf("last notified = %v", state.LastNotifiedAt)
 	}
 }
@@ -160,6 +174,7 @@ func TestQuietHoursDeferP1ButNotP0(t *testing.T) {
 	current := now
 	st := newFakeStore()
 	adapter := &fakeChannelAdapter{}
+	// 渠道收 P1：P1 进摘要队列（静默期压住），P0 按 minSeverity 也命中，仍即时。
 	d := newDispatcherForTest(st, []Channel{testChannel(SeverityP1)}, cfg, DefaultRules())
 	d.now = func() time.Time { return current }
 	d.adapters["feishu"] = adapter
@@ -168,30 +183,47 @@ func TestQuietHoursDeferP1ButNotP0(t *testing.T) {
 	if err := d.Dispatch(context.Background(), p1); err != nil {
 		t.Fatal(err)
 	}
-	if adapter.calls != 0 || len(d.deferred) != 1 {
-		t.Fatalf("P1 not deferred: calls=%d deferred=%d", adapter.calls, len(d.deferred))
+	if adapter.calls != 0 || d.digestQueued() != 1 {
+		t.Fatalf("P1 not queued: calls=%d digest=%d", adapter.calls, d.digestQueued())
+	}
+	// 静默期内 Flush 不许发出摘要。
+	if err := d.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("digest sent inside quiet hours, calls = %d", adapter.calls)
 	}
 	if got := st.events[p1.Event.ID-1].PushStatus; got != PushPending {
 		t.Fatalf("deferred event push status = %q", got)
 	}
 
-	p0 := seedTransition(t, st, testFiringTransition(now, SeverityP0, time.Minute))
+	// 换一条告警（不同指纹）并推进 10 分钟，避免撞上第一条的冷却。
+	current = now.Add(10 * time.Minute)
+	p0State := testFiringTransition(current, SeverityP0, time.Minute)
+	p0State.State.Fingerprint = "auth_invalid|provider:p0"
+	p0State.Event.Fingerprint = p0State.State.Fingerprint
+	p0 := seedTransition(t, st, p0State)
 	if err := d.Dispatch(context.Background(), p0); err != nil {
 		t.Fatal(err)
 	}
-	if adapter.calls != 1 {
-		t.Fatalf("P0 should bypass quiet hours, calls = %d", adapter.calls)
+	// P0 永远即时：静默期内也当次发出，不进 deferred（计划 §4 红线）。
+	if adapter.calls != 1 || len(d.deferred) != 0 {
+		t.Fatalf("P0 must bypass quiet hours: calls=%d deferred=%d", adapter.calls, len(d.deferred))
+	}
+	if got := st.events[p0.Event.ID-1].PushStatus; got != PushSent {
+		t.Fatalf("P0 push status in quiet hours = %q", got)
 	}
 
 	current = time.Date(2026, 10, 24, 8, 0, 0, 0, time.UTC)
 	if err := d.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if adapter.calls != 2 || len(d.deferred) != 0 {
-		t.Fatalf("flush did not send: calls=%d deferred=%d", adapter.calls, len(d.deferred))
+	// calls = P0 即时 1 次 + P1 静默结束后补发摘要 1 次。
+	if adapter.calls != 2 || d.digestQueued() != 0 {
+		t.Fatalf("flush after quiet hours: calls=%d digest=%d", adapter.calls, d.digestQueued())
 	}
 	if got := st.events[p1.Event.ID-1].PushStatus; got != PushSent {
-		t.Fatalf("flushed event push status = %q", got)
+		t.Fatalf("P1 push status after quiet hours = %q", got)
 	}
 }
 
@@ -217,10 +249,11 @@ func TestChannelMinSeverityFilter(t *testing.T) {
 
 func TestRecoveryShortLivedSkipped(t *testing.T) {
 	now := time.Date(2026, 10, 23, 2, 0, 0, 0, time.UTC)
+	current := now
 	st := newFakeStore()
 	adapter := &fakeChannelAdapter{}
 	d := newDispatcherForTest(st, []Channel{testChannel(SeverityP1)}, quietDisabled(), DefaultRules())
-	d.now = func() time.Time { return now }
+	d.now = func() time.Time { return current }
 	d.adapters["feishu"] = adapter
 
 	short := testFiringTransition(now, SeverityP1, 3*time.Minute)
@@ -245,22 +278,35 @@ func TestRecoveryShortLivedSkipped(t *testing.T) {
 	if err := d.Dispatch(context.Background(), long); err != nil {
 		t.Fatal(err)
 	}
-	if adapter.calls != 1 {
-		t.Fatalf("long-lived recovery should notify, calls = %d", adapter.calls)
+	// 恢复本身不发单条，只进摘要队列；窗口到点后以摘要形式发出。
+	if adapter.calls != 0 || d.digestQueued() != 1 {
+		t.Fatalf("long-lived recovery should ride a digest, calls = %d digest = %d", adapter.calls, d.digestQueued())
+	}
+	current = now.Add(15 * time.Minute)
+	if err := d.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.calls != 1 || d.digestQueued() != 0 {
+		t.Fatalf("recovery digest not sent: calls = %d digest = %d", adapter.calls, d.digestQueued())
 	}
 }
 
-func TestPushRetryThenFailedRecorded(t *testing.T) {
+func TestDigestRetryThenFailedRecorded(t *testing.T) {
 	now := time.Date(2026, 10, 23, 2, 0, 0, 0, time.UTC)
 	st := newFakeStore()
 	adapter := &fakeChannelAdapter{err: errors.New("send failed for supersecret")}
 	d := newDispatcherForTest(st, []Channel{testChannel(SeverityP1)}, quietDisabled(), DefaultRules())
-	d.now = func() time.Time { return now }
+	current := now
+	d.now = func() time.Time { return current }
 	d.adapters["feishu"] = adapter
 	d.retryWait = []time.Duration{time.Millisecond, time.Millisecond}
 
 	tr := seedTransition(t, st, testFiringTransition(now, SeverityP1, time.Minute))
 	if err := d.Dispatch(context.Background(), tr); err != nil {
+		t.Fatal(err)
+	}
+	current = now.Add(15 * time.Minute)
+	if err := d.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if adapter.calls != 3 {
@@ -274,5 +320,8 @@ func TestPushRetryThenFailedRecorded(t *testing.T) {
 	}
 	if got := st.events[tr.Event.ID-1].PushStatus; got != PushFailed {
 		t.Fatalf("event push status = %q", got)
+	}
+	if d.digestQueued() != 0 {
+		t.Fatalf("a failed digest must not be re-packed into the next one, digest = %d", d.digestQueued())
 	}
 }

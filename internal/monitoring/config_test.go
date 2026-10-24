@@ -1,6 +1,9 @@
 package monitoring
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDefaultRulesCoverPhaseOne(t *testing.T) {
 	rules := DefaultRules()
@@ -55,5 +58,31 @@ func TestRuleValidationRejectsWindowAndCooldown(t *testing.T) {
 	}
 	if err := ValidateRules(bad); err == nil {
 		t.Fatal("cooldown=1 must be rejected")
+	}
+}
+
+// P1 摘要间隔：5–120 合法；存量的越界值读取时夹回默认 15 分钟，不因坏值停发。
+func TestDigestIntervalBoundsAndFallback(t *testing.T) {
+	cases := []struct {
+		minutes int
+		want    time.Duration
+	}{
+		{minutes: 5, want: 5 * time.Minute},
+		{minutes: 15, want: 15 * time.Minute},
+		{minutes: 120, want: 120 * time.Minute},
+		{minutes: 0, want: 15 * time.Minute},
+		{minutes: 4, want: 15 * time.Minute},
+		{minutes: 121, want: 15 * time.Minute},
+	}
+	for _, tc := range cases {
+		cfg := DispatchConfig{DigestMinutes: tc.minutes}
+		if got := cfg.DigestInterval(); got != tc.want {
+			t.Fatalf("DigestInterval(%d) = %s, want %s", tc.minutes, got, tc.want)
+		}
+	}
+	st := newFakeStore()
+	_ = st.SetSetting("monitor_dispatch", `{"digestMinutes":9999}`)
+	if got := NewConfig(st).Dispatch().DigestMinutes; got != 15 {
+		t.Fatalf("stored out-of-range digestMinutes read back as %d, want 15", got)
 	}
 }

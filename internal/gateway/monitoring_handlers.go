@@ -674,8 +674,10 @@ func (s *Server) handleMonitorUpdateDispatch(w http.ResponseWriter, r *http.Requ
 	}
 	updated := current
 	if input.DigestMinutes != nil {
-		if *input.DigestMinutes <= 0 || *input.DigestMinutes > 24*60 {
-			writeOpenAIError(w, http.StatusBadRequest, "合并窗口需在 1 到 1440 分钟之间")
+		// P1 摘要间隔：越界直接 400，不进入 SaveDispatch，库里保持原值。
+		if !monitoring.ValidP1Digest(*input.DigestMinutes) {
+			writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("合并窗口需在 %d 到 %d 分钟之间",
+				monitoring.P1DigestMinMinutes, monitoring.P1DigestMaxMinutes))
 			return
 		}
 		updated.DigestMinutes = *input.DigestMinutes

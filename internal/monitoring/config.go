@@ -205,6 +205,27 @@ func DefaultDispatchConfig() DispatchConfig {
 	}
 }
 
+// P1DigestBounds 是摘要间隔的合法区间。越界值必须由 handler 拒绝且不落库；
+// 读取侧只负责把损坏的存量值夹回区间，两者都不静默改写用户输入。
+const (
+	P1DigestMinMinutes = 5
+	P1DigestMaxMinutes = 120
+)
+
+// ValidP1Digest reports whether minutes is an acceptable P1 digest window.
+func ValidP1Digest(minutes int) bool {
+	return minutes >= P1DigestMinMinutes && minutes <= P1DigestMaxMinutes
+}
+
+// DigestInterval is the P1 digest window as a duration; invalid stored values
+// fall back to the default so a hand-edited DB can never disable delivery.
+func (c DispatchConfig) DigestInterval() time.Duration {
+	if !ValidP1Digest(c.DigestMinutes) {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.DigestMinutes) * time.Minute
+}
+
 func (c DispatchConfig) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
 	if err != nil {
@@ -284,7 +305,7 @@ func (c *Config) Dispatch() DispatchConfig {
 			return DefaultDispatchConfig()
 		}
 	}
-	if cfg.DigestMinutes <= 0 {
+	if !ValidP1Digest(cfg.DigestMinutes) {
 		cfg.DigestMinutes = 15
 	}
 	if cfg.Timezone == "" {

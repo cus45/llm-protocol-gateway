@@ -388,6 +388,45 @@ func TestMonitorDispatchGetPut(t *testing.T) {
 	}
 }
 
+// P1 摘要间隔只接受 5–120 分钟：越界一律 400，并且库里保持原值不落库。
+func TestMonitorDispatchDigestMinutesRange(t *testing.T) {
+	cases := []struct {
+		window int
+		want   int
+	}{
+		{window: 4, want: http.StatusBadRequest},
+		{window: 0, want: http.StatusBadRequest},
+		{window: -5, want: http.StatusBadRequest},
+		{window: 121, want: http.StatusBadRequest},
+		{window: 1440, want: http.StatusBadRequest},
+		{window: 5, want: http.StatusOK},
+		{window: 120, want: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%d", tc.window), func(t *testing.T) {
+			server, db := monitorTestServer(t, monitorClaudeProvider())
+			cfg := monitoring.NewConfig(db)
+			before := db.Setting("monitor_dispatch")
+
+			rec := monitorCall(t, server.handleMonitorUpdateDispatch, http.MethodPut, "/__monitor/dispatch",
+				fmt.Sprintf(`{"digestMinutes":%d}`, tc.window), nil, monitorAdminID())
+			if rec.Code != tc.want {
+				t.Fatalf("digestMinutes=%d -> %d body=%s", tc.window, rec.Code, rec.Body.String())
+			}
+			after := db.Setting("monitor_dispatch")
+			if tc.want == http.StatusBadRequest {
+				if after != before {
+					t.Fatalf("rejected value was persisted: before=%q after=%q", before, after)
+				}
+				return
+			}
+			if cfg.Dispatch().DigestMinutes != tc.window {
+				t.Fatalf("accepted value not stored: %+v", cfg.Dispatch())
+			}
+		})
+	}
+}
+
 // 监控端点全部管理员专属：普通用户 403、无身份 401，并且每条路由都真的注册在
 // mux 上（漏注册会 404）。
 func TestMonitorEndpointsRequireAdmin(t *testing.T) {

@@ -94,8 +94,12 @@ func TestMonitoringIntegration(t *testing.T) {
 	if err := svc.TickAt(ctx, base.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	// P0 即时：触发当分钟就发出，不等摘要窗口。
 	if len(pushes) != 1 {
 		t.Fatalf("pushes after the sustained window = %d, want 1", len(pushes))
+	}
+	if !strings.Contains(pushes[0], "[P0]") {
+		t.Fatalf("P0 should go out as a single alert, got %s", pushes[0])
 	}
 	states := monitorStates(t, db)
 	if got := activeFiring(states); got != 1 {
@@ -200,9 +204,12 @@ func TestMonitoringIntegration(t *testing.T) {
 		t.Fatalf("recovery push needs ≥5m of duration, got %s", final.LastSeen.Sub(final.FirstSeen))
 	}
 
-	// 一次触发推送 + 一次恢复推送。
+	// 一次触发推送 + 一次恢复推送（P0 两条都即时，不经摘要）。
 	if len(pushes) != 2 {
 		t.Fatalf("pushes = %d, want 2 (firing + recovery)", len(pushes))
+	}
+	if !strings.Contains(pushes[1], "[P0]") {
+		t.Fatalf("P0 recovery should go out as a single alert, got %s", pushes[1])
 	}
 	events, err = db.QueryMonitorEvents(monitoring.EventQuery{Kind: monitoring.EventKindAlert})
 	if err != nil {
