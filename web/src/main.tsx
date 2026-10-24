@@ -6047,6 +6047,16 @@ function App() {
                 </div>
               ) : null}
 
+              {logsSessionFilter ? (
+                // 会话筛选一旦生效就常驻可见，否则用户在有结果时找不到退出的入口。
+                <div className="log-session-bar">
+                  <span>当前只看会话 <b className="mono">{logsSessionFilter.slice(0, 8)}</b> 的请求</span>
+                  <button className="mini-btn" type="button" onClick={() => { setLogsSessionFilter(''); void refreshLogs(1); }}>
+                    退出会话筛选
+                  </button>
+                </div>
+              ) : null}
+
               {/* 日志表格 */}
               <div className="log-table">
                 {logsLoading || !logsFetchedOnce ? (
@@ -6059,11 +6069,6 @@ function App() {
                     <button className="mini-btn" type="button" onClick={() => setLogsKeyword('')} style={{ marginLeft: 8 }}>
                       清空搜索词
                     </button>
-                    {logsSessionFilter ? (
-                      <button className="mini-btn" type="button" onClick={() => { setLogsSessionFilter(''); void refreshLogs(1); }} style={{ marginLeft: 8 }}>
-                        退出会话筛选
-                      </button>
-                    ) : null}
                   </div>
                 ) : (
                   <>
@@ -6761,24 +6766,6 @@ function App() {
                 {trafficLogDetail.analysis?.sessionId ? (
                   // 一次对话的多轮请求共享同一个 sessionId：点一下就把日志列表
                   // 收窄到这一会话（后端按 json_extract 过滤）。
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    title={`会话 ${trafficLogDetail.analysis.sessionId}（点击只看这一会话的请求）`}
-                    onClick={() => {
-                      const session = trafficLogDetail.analysis!.sessionId!;
-                      setLogsSessionFilter(session);
-                      setTrafficLogDetail(null);
-                      showToast(`已筛选会话 ${session.slice(0, 8)}`);
-                      void refreshLogs(1);
-                    }}
-                  >
-                    会话 <span className="mono">{trafficLogDetail.analysis.sessionId.slice(0, 8)}</span>
-                  </button>
-                ) : null}
-                {trafficLogDetail.analysis?.sessionId ? (
-                  // 一次对话的多轮请求共享同一个 sessionId：把它露出来，才能
-                  // 把同一会话的请求对上号（后端暂不提供按会话检索）。
                   <button
                     type="button"
                     className="mini-btn"

@@ -1270,7 +1270,7 @@ export function buildSelfRegistrationPrompt(provider: Provider, rawToken: string
     .join('\n');
   return `帮我实现一个本地服务 + 内网穿透 + 自动注册的完整方案，要求如下：
 
-【1. 本地服务 —— 三选一，选你已有代码 / 更顺手的那种，不强制】
+【1. 本地服务 —— 四选一，选你已有代码 / 更顺手的那种，不强制】
 网关支持下面三种协议格式，你的本地服务只需要实现其中任意一种（哪怕你手头已经有
 现成的某种格式的代码，直接拿来用即可，不用为了迁就我而改写）：
 ${protocolMenu}
@@ -1289,11 +1289,11 @@ ${protocolMenu}
 【3. 自动注册到网关平台 —— 必须声明你选的协议】
 - 每次拿到新的公网地址后（包括隧道意外重启），立刻调用（**protocol 字段必填，
   取值必须跟你在第 1 步实际实现的协议一致**：openai_chat / openai_responses / claude
-  三选一；网关这边不会预先假定协议，完全以这次调用声明的为准）：
+  四选一；网关这边不会预先假定协议，完全以这次调用声明的为准）：
   curl -X PATCH "${registerUrl}" \\
     -H "Authorization: Bearer ${tokenLine}" \\
     -H "Content-Type: application/json" \\
-    -d '{"baseUrl": "https://xxxx.trycloudflare.com/<你第1步实现的路径，比如 /v1/chat/completions>", "apiKeySource": "literal:<第1步里设定的 SHARED_SECRET>", "protocol": "<openai_chat|openai_responses|claude 三选一>"}'
+    -d '{"baseUrl": "https://xxxx.trycloudflare.com/<你第1步实现的路径，比如 /v1/chat/completions>", "apiKeySource": "literal:<第1步里设定的 SHARED_SECRET>", "protocol": "<openai_chat|openai_responses|claude|gemini 四选一>"}'
   （把 xxxx.trycloudflare.com 换成实际隧道打印出来的地址；这里 Bearer 后面跟的是
   第 3 步专用的"注册令牌"，跟第 1 步本地服务自己的 SHARED_SECRET 是两个不同的东西）
 - 这个注册接口只鉴权 Bearer 令牌本身，和登录账号无关；只允许改这一个 Provider 的

@@ -413,6 +413,12 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .nav-item:hover .nav-icon { color: var(--sidebar-text); }
 .nav-item.active .nav-icon { color: var(--sidebar-active-text); }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-session-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 0; padding: 8px 12px;
+  border: 1px solid var(--accent-border); border-radius: var(--r-sm);
+  background: var(--surface); font-size: 12.5px; color: var(--muted);
+}
 .decision-aggregate {
   margin: 10px 0;
   padding: 10px 12px;

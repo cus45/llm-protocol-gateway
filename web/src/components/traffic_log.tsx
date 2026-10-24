@@ -316,7 +316,9 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
                 className="num tlog-cost"
                 title={log.priced === false ? '这次请求的模型没有价格行，成本未计入' : `成本 ${formatCostMicros(log.costMicros)}`}
               >
-                {log.costMicros == null ? '—' : formatCostMicros(log.costMicros)}
+                {/* 未计价（没有价格行）不能显示成金额：那会把"没算价"读成"花了这么多"。
+                    口径见 types.ts：缺省即未计价，绝不等于 $0。 */}
+                {log.costMicros == null ? '—' : log.priced === false ? '未计价' : formatCostMicros(log.costMicros)}
               </span>
               <span className={`tlog-status ${ok ? 'ok' : 'bad'}`} title={`HTTP ${log.status}${log.errorDescription ? ` · ${log.errorDescription}` : ''}`}>
                 <i />
