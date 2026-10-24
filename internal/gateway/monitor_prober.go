@@ -139,6 +139,19 @@ func (s *Server) runLightProbe(ctx context.Context, providerID string) probeRun 
 		run.Skipped = "no_model"
 		return run
 	}
+	// 当日配额是刹车，手动入口也必须受它约束：计划 §4 要求「连点 5 次只放行
+	// maxPerDayPerAccount 次」。自动调度在 probeGate 里判，手动路径没有经过那里，
+	// 漏判就等于给排障按钮开了一个绕过刹车的口子。
+	// 没有监控库时（监控未接线）无从判断当日次数，按「不限」放行——此时也根本不
+	// 会有自动探测在消耗配额。
+	if s.monitoringStore != nil {
+		if maxPerDay := monitoring.NewConfig(s.monitoringStore).Probe().EventDriven.MaxPerDayPerAccount; maxPerDay > 0 {
+			if _, used, err := s.monitoringStore.MonitorProbeOutcome(providerID, monitorProbeDay(s, run.At)); err == nil && used >= maxPerDay {
+				run.Skipped = "quota_spent"
+				return run
+			}
+		}
+	}
 	if !s.claimQuotaProbe(providerID) {
 		run.Skipped = "in_flight"
 		return run

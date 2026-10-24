@@ -448,3 +448,46 @@ func TestRunLightProbeResponsesUpstreamGetsToolsAndOutputCap(t *testing.T) {
 		}
 	}
 }
+
+// 当日配额是刹车，手动入口不能绕过它：计划 §4 要求「连点 5 次只放行
+// maxPerDayPerAccount 次」。自动调度在 probeGate 里判，手动路径没有经过那里，
+// 漏判等于给排障按钮开了一个绕过刹车的口子。
+func TestManualLightProbeHonoursDailyQuota(t *testing.T) {
+	calls := 0
+	upstream := chatUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	db := newProberTestStore(t)
+	raw, err := json.Marshal(map[string]any{
+		"eventDriven": map[string]any{"enabled": true, "maxPerDayPerAccount": 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting("monitor_probe", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := newQuotaTestServer(t, upstream.URL)
+	server.monitoringStore = db
+
+	for round := 1; round <= 2; round++ {
+		run := server.runLightProbe(context.Background(), "p1")
+		if run.Skipped != "" || run.Failed() {
+			t.Fatalf("round %d should run: skipped=%q cases=%+v", round, run.Skipped, run.Cases)
+		}
+	}
+	// 配额 2 已用完：第三发必须是「没发出去」，而不是再打两发上游。
+	before := calls
+	run := server.runLightProbe(context.Background(), "p1")
+	if run.Skipped != "quota_spent" {
+		t.Fatalf("third probe skipped=%q, want quota_spent", run.Skipped)
+	}
+	if run.Failed() {
+		t.Fatalf("quota_spent is not a failure: %+v", run)
+	}
+	if calls != before {
+		t.Fatalf("quota_spent must not reach upstream: calls %d -> %d", before, calls)
+	}
+}

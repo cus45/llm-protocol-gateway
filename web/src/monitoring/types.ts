@@ -346,6 +346,8 @@ export const PROBE_SKIP_TEXT: Record<string, string> = {
   cli_missing: 'CLI 未安装，未判定失败',
   in_flight: '已有探测在进行中',
   no_model: '没有可用模型，未发出请求',
+  // 当日配额已经用完（手动与自动共用同一份额度），不是失败。
+  quota_spent: '今日探测次数已用完，未发出请求',
   provider_disabled: '账号已停用，未探测',
   provider_missing: '账号不存在或已删除',
   // CLI 深检的整轮上限（2 小时）到了，剩余用例没跑；not_run 是兜底原因。
