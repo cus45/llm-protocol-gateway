@@ -6,6 +6,7 @@ import {
     actionLabel,
     buildReplayHeaders,
     formatBytes,
+    formatCostMicros,
     isTrafficLogError,
     providerDisplayLabel,
     replayPlan,
@@ -263,6 +264,7 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
           <span className="num" title="命中缓存读取的 token（已含在输入里）">缓存读取</span>
           <span className="num">耗时</span>
           <span className="num">速度</span>
+          <span className="num" title="按价格行折算的成本；未计价的请求显示「未计价」而不是 $0">成本</span>
           <span>状态</span>
         </div>
         {logs.map((log) => {
@@ -310,6 +312,12 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
                 {latency.text}
               </span>
               <span className={`num tlog-speed ${speed.tone}`}>{speed.text}</span>
+              <span
+                className="num tlog-cost"
+                title={log.priced === false ? '这次请求的模型没有价格行，成本未计入' : `成本 ${formatCostMicros(log.costMicros)}`}
+              >
+                {log.costMicros == null ? '—' : formatCostMicros(log.costMicros)}
+              </span>
               <span className={`tlog-status ${ok ? 'ok' : 'bad'}`} title={`HTTP ${log.status}${log.errorDescription ? ` · ${log.errorDescription}` : ''}`}>
                 <i />
                 {ok ? '成功' : '失败'}
