@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Switch } from '../components/ui';
-import type { MonitorChannelInput, MonitorChannelView, MonitorDispatchConfig, MonitorSeverity } from './types';
+import type {
+  MonitorChannelInput,
+  MonitorChannelView,
+  MonitorDispatchConfig,
+  MonitorProbeConfig,
+  MonitorSeverity,
+} from './types';
 import { SEVERITY_TEXT } from './types';
+import { ProbeSettingsPanel } from './ProbesTab';
 
 export interface SettingsTabProps {
   channels: MonitorChannelView[];
@@ -15,6 +22,14 @@ export interface SettingsTabProps {
   onTestChannel: (id: string) => void;
   onUpdateDispatch: (patch: Partial<MonitorDispatchConfig>) => void;
   onDismissNotice: () => void;
+  /** 探测配置的唯一入口放在这里：它与「投递与静默」同属调度参数，探测页只负责看结果。 */
+  probeConfig: MonitorProbeConfig | null;
+  probeDraft: MonitorProbeConfig | null;
+  probeBusy: boolean;
+  probeError: string;
+  probeNotice: string;
+  onProbeDraft: (config: MonitorProbeConfig) => void;
+  onSaveProbeConfig: (config: MonitorProbeConfig) => void;
 }
 
 const CHANNEL_TYPES: Array<{ value: string; label: string }> = [
@@ -59,6 +74,7 @@ export function SettingsTab(props: SettingsTabProps) {
   const {
     channels, dispatch, busy, error, notice,
     onCreateChannel, onUpdateChannel, onDeleteChannel, onTestChannel, onUpdateDispatch, onDismissNotice,
+    probeConfig, probeDraft, probeBusy, probeError, probeNotice, onProbeDraft, onSaveProbeConfig,
   } = props;
   const [draft, setDraft] = useState<ChannelDraft>(emptyDraft());
   const [form, setForm] = useState<MonitorDispatchConfig | null>(dispatch);
@@ -201,7 +217,7 @@ export function SettingsTab(props: SettingsTabProps) {
         )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <button className="btn btn-sm primary" disabled={busy.startsWith('channel')} onClick={submitChannel}>
+          <button className="btn btn-sm primary" disabled={(busy ?? '').startsWith('channel')} onClick={submitChannel}>
             {editing ? '保存修改' : '创建渠道'}
           </button>
           {editing && <button className="btn btn-sm" onClick={() => setDraft(emptyDraft())}>{'取消编辑'}</button>}
@@ -253,6 +269,17 @@ export function SettingsTab(props: SettingsTabProps) {
           </div>
         </div>
       )}
+
+      <ProbeSettingsPanel
+        config={probeConfig}
+        timezone={form?.timezone || dispatch?.timezone || 'Asia/Shanghai'}
+        draft={probeDraft}
+        onChange={onProbeDraft}
+        onSubmit={() => probeDraft && onSaveProbeConfig(probeDraft)}
+        busy={probeBusy}
+        error={probeError}
+        notice={probeNotice}
+      />
     </div>
   );
 }

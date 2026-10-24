@@ -10,6 +10,9 @@ import type {
   MonitorEvent,
   MonitorOverview,
   MonitorPage,
+  MonitorProbeConfig,
+  MonitorProbePage,
+  MonitorProbeRunResult,
   MonitorQuotaResult,
   MonitorRenewalResult,
   MonitorSeverity,
@@ -192,4 +195,45 @@ export function fetchDispatch(): Promise<MonitorDispatchConfig> {
 /** 局部 PATCH：没提交的字段后端保留原值，不会抹回默认。 */
 export function updateDispatch(patch: Partial<MonitorDispatchConfig>): Promise<MonitorDispatchConfig> {
   return request<MonitorDispatchConfig>('/dispatch', { method: 'PUT', body: JSON.stringify(patch) });
+}
+
+/** 探测页：账号现状 + 最近记录 + 配置，一次拿全（三块本来就要一起看）。 */
+export function fetchProbes(providerId?: string): Promise<MonitorProbePage> {
+  return request<MonitorProbePage>(`/probes${query({ providerId: providerId || undefined })}`);
+}
+
+/** 单发轻探测的后端上限是 30 秒（lightProbeTimeout），通用 8 秒超时会把正常探测截断成网络错误。 */
+const PROBE_RUN_TIMEOUT_MS = 45_000;
+
+/**
+ * 手动跑一发轻探测。同账号已有探测在跑时后端回 409，
+ * 这个区分要留给界面（409 = 「已经在跑」，不是失败）。
+ */
+export async function runProbe(providerId: string, kind = 'light'): Promise<MonitorProbeRunResult> {
+  const response = await fetchWithTimeout(`${API_BASE}/__monitor/probes/run`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ providerId, kind }),
+  }, PROBE_RUN_TIMEOUT_MS);
+  const body = (await parse(response)) as MonitorProbeRunResult | null;
+  if (response.status === 401 || response.status === 403) {
+    throw new MonitorAPIError(response.status, guard(response.status, body as unknown as JSONBody));
+  }
+  // 404/500/502 的 body 是 {error:{message}}，不是探测结果。以前把它包成 {ok:false}
+  // 返回，界面就会说「没有返回用例结果」，真正的原因（Provider 已删除、后端异常）
+  // 永远看不到。只有 409 是「已经在跑」，那是结论，继续往下走。
+  if (!response.ok && response.status !== 409) {
+    throw new MonitorAPIError(response.status, messageOf(response.status, body as unknown as JSONBody));
+  }
+  // 后端成功/失败都会回 kind；只有链路层异常（HTML 之类）才缺，按请求值兜底。
+  return { ...(body ?? {}), ok: response.ok && body?.ok !== false, providerId, kind: body?.kind ?? kind };
+}
+
+export function fetchProbeConfig(): Promise<MonitorProbeConfig> {
+  return request<MonitorProbeConfig>('/probe-config');
+}
+
+export function saveProbeConfig(config: MonitorProbeConfig): Promise<MonitorProbeConfig> {
+  return request<MonitorProbeConfig>('/probe-config', { method: 'PUT', body: JSON.stringify(config) });
 }

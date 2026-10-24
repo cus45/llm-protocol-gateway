@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react';
 import { BrandIcon, Modal } from '../components/ui';
-import type { MonitorAccount } from './types';
+import type { MonitorAccount, MonitorProbeAccount, MonitorProbeRunResult } from './types';
 import { hasTime } from './types';
-import { displayTime, quotaText, relativeToNow, SEVERITY_TONE } from './format';
+import { displayTime, probeSummaryText, quotaText, relativeToNow, SEVERITY_TONE } from './format';
+import { probeSkipText } from './types';
+import { ProbeResultBody } from './ProbesTab';
 
 export interface AccountsTabProps {
   accounts: MonitorAccount[];
@@ -24,6 +26,12 @@ export interface AccountsTabProps {
   onRefreshQuota: (providerId: string) => void;
   onOpenAlerts: (providerId: string) => void;
   onOpenLogs: (providerId: string) => void;
+  /** 探测现状（来自 /__monitor/probes），用来显示末次结果与当日次数。 */
+  probeOf: (providerId: string) => MonitorProbeAccount | undefined;
+  /** 抽屉里的「立即探测」：结果就地显示在操作卡里，不走顶部提示条。 */
+  probeBusy: string;
+  probeResult: MonitorProbeRunResult | null;
+  onRunProbe: (providerId: string) => void;
   /** 抽屉受控：概览「详情」与深链 ?account= 都要能直接打开某个账号。 */
   selectedId: string;
   onSelect: (providerId: string) => void;
@@ -55,7 +63,8 @@ const CAPABILITY_LABELS: Array<{ key: keyof MonitorAccount['capabilities']; labe
 export function AccountsTab(props: AccountsTabProps) {
   const {
     accounts, timezone, iconOf, alertCountOf, busy, error, note, actionError,
-    onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, selectedId, onSelect, onCloseDrawer,
+    onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, probeOf, probeBusy, probeResult, onRunProbe,
+    selectedId, onSelect, onCloseDrawer,
   } = props;
   const [search, setSearch] = useState('');
   const [onlyProblems, setOnlyProblems] = useState(false);
@@ -76,6 +85,17 @@ export function AccountsTab(props: AccountsTabProps) {
   }, [accounts, search, onlyProblems, alertCountOf]);
 
   const detail = accounts.find((account) => account.providerId === selectedId) ?? null;
+  const probe = detail ? probeOf(detail.providerId) : undefined;
+  const probing = !!detail && probeBusy === `probe:${detail.providerId}`;
+  // 连续失败大于零才需要值班人动手确认。
+  // 这里**不能**再加 `probe.skipped` 条件：后端 MonitorProbeOutcome 对所有 skipped 行
+  // 直接 continue 并置空 outcome.Skipped（internal/store/monitoring.go:981-991），
+  // 这个字段在前端恒为 undefined；依赖它会让整个提示变成死代码。
+  const needsProbe = !!probe && probe.probed && probe.consecutiveFailures > 0;
+  // 能用的功能才出现：停用账号自动调度会跳过，手动探测也只会写一条 skipped，没有排障
+  // 价值，所以直接不给入口。其余账号都给——「没配模型」由后端在按下时以 skipped 结果
+  // 回给抽屉，界面如实展示那一句，不在前端猜（前端拿不到 model 字段）。
+  const canProbe = !!detail && !detail.disabled;
 
   return (
     <div className="card panel">
@@ -179,6 +199,32 @@ export function AccountsTab(props: AccountsTabProps) {
             </div>
 
             <div className="card">
+              <div className="panel-title">{'轻探测'}</div>
+              {probe ? (
+                <>
+                  <div className={`metric-value ${probe.probed && probe.consecutiveFailures > 0 ? 'err' : ''}`}>
+                    {probeSummaryText(probe)}
+                  </div>
+                  <div className="metric-note">
+                    {hasTime(probe.lastProbeAt)
+                      ? `最近一次执行 ${displayTime(probe.lastProbeAt, timezone).text}（${relativeToNow(probe.lastProbeAt, Date.now())}）`
+                      : '还没有探测记录'}
+                    {probeSkipText(probe.skipped) ? ` · ${probeSkipText(probe.skipped)}` : ''}
+                  </div>
+                  <div className="metric-note" title="当日次数 / 每日上限，按投递时区计算">
+                    {`当日次数 ${probe.maxPerDay === 0 ? `${probe.usedToday} / 不限` : `${probe.usedToday} / ${probe.maxPerDay}`} · 连续失败 ${probe.consecutiveFailures} 次`}
+                  </div>
+                  {needsProbe && (
+                    <div className="metric-note err">{'探测未跑通，已进入 probe_failed 判定'}</div>
+                  )}
+                  {detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它；手动探测也不适用。'}</div>}
+                </>
+              ) : (
+                <div className="metric-note">{'探测现状读取中'}</div>
+              )}
+            </div>
+
+            <div className="card">
               <div className="panel-title">{'健康与能力'}</div>
               <div className="metric-note">
                 {`状态 ${detail.healthStatus || '未检测'} · 模型列表连续失败 ${detail.modelFailures} 次 · 活跃告警 ${alertCountOf(detail.providerId)}`}
@@ -211,6 +257,16 @@ export function AccountsTab(props: AccountsTabProps) {
                 >
                   {'刷新额度'}
                 </button>
+                {canProbe && (
+                  <button
+                    className="btn btn-sm"
+                    disabled={probing}
+                    onClick={() => onRunProbe(detail.providerId)}
+                    title={'现在就发一发最小对话探测；同账号同时只跑一发'}
+                  >
+                    {probing ? '探测中…' : '立即探测'}
+                  </button>
+                )}
                 <button className="btn btn-sm" onClick={() => onOpenAlerts(detail.providerId)}>{'查看告警'}</button>
                 <button className="btn btn-sm" onClick={() => onOpenLogs(detail.providerId)}>{'查看请求日志'}</button>
               </div>
@@ -218,6 +274,13 @@ export function AccountsTab(props: AccountsTabProps) {
               {note && !actionError && (
                 <div className="metric-note" style={{ marginTop: 8 }}>{note}</div>
               )}
+              {probeResult && (
+                <div className="probe-result-inline">
+                  <div className="metric-label">{'最近一次手动探测'}</div>
+                  <ProbeResultBody result={probeResult} />
+                </div>
+              )}
+              {!probeResult && probing && <div className="metric-note" style={{ marginTop: 8 }}>{'正在探测，结果会显示在这里。'}</div>}
               <div className="metric-note" style={{ marginTop: 8 }}>
                 {'监控中心不提供停用、隔离或改配置的按钮；处置只在请求调度里做。'}
               </div>

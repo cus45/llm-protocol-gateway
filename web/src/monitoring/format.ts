@@ -1,4 +1,4 @@
-import type { MonitorQuota, MonitorSeverity } from './types';
+import type { MonitorProbeAccount, MonitorQuota, MonitorSeverity } from './types';
 import { hasTime, quotaAbsoluteKnown, quotaRatioKnown } from './types';
 
 /** 级别 → 现有 badge 色调（状态不能只靠颜色，文本永远同现）。 */
@@ -97,4 +97,27 @@ export function detailPairs(detail: Record<string, unknown> | undefined, limit =
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/**
+ * 账号的探测结论。probed=false 是「还没探过」，跳过（如 cli_missing）也不是失败，
+ * 三种情况必须分开写，否则零值会被读成「探测全过」。
+ *
+ * consecutiveFailures 是历史 streak（成功才归零），LastStatus 是最近一发的结果：
+ * 两者要分开讲，否则失败之后又跑通一次，会出现「通过 · 上游状态 401」这种自相矛盾的行。
+ */
+export function probeSummaryText(account: MonitorProbeAccount): string {
+  // 注意：当前后端一律不把 skipped 回填到账号行——MonitorProbeOutcome 对 skipped
+  // 行直接 continue 并置空（internal/store/monitoring.go:981-997），in_flight 也不落库。
+  // 这里保留分支是给后端补齐之后用的；不要用它判断「为什么没探」，那种判断恒为假。
+  if (!account.probed) {
+    if (account.skipped === 'cli_missing') return 'CLI 未安装，未判定失败';
+    if (account.skipped === 'no_model') return '没有可用模型，未发出请求';
+    if (account.skipped === 'in_flight') return '探测正在进行中';
+    if (account.skipped) return `未成功执行（${account.skipped}）`;
+    return '暂无数据';
+  }
+  const last = account.lastStatus ? ` · 最近状态 ${account.lastStatus}` : '';
+  if (account.consecutiveFailures > 0) return `连续失败 ${account.consecutiveFailures} 次${last}`;
+  return `通过${last}`;
 }

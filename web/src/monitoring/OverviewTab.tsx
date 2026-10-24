@@ -163,7 +163,7 @@ export function OverviewTab(props: OverviewTabProps) {
             return (
               <div className="log-row" key={account.providerId}>
                 <div className="mrow mrow-account-mini">
-                  <span className="m-clip" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <span className="m-clip" style={{ display: 'grid', gridAutoFlow: 'column', gridAutoColumns: 'max-content', alignItems: 'center', gap: 8, minWidth: 0, justifyItems: 'start' }}>
                     <span className={`dot ${troubled ? 'err' : 'ok'}`} aria-hidden />
                     <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
                     <span className="m-clip" style={{ fontWeight: 600 }} title={`${account.name}（${account.vendor || '未知厂商'}）`}>
@@ -173,10 +173,13 @@ export function OverviewTab(props: OverviewTabProps) {
                         停用是会改变处置决定的状态，必须留在这里。 */}
                     {account.disabled && <span className="badge amber">{'已停用'}</span>}
                   </span>
-                  <span className="muted-text" title={`凭证到期：${account.expiresAt ?? '无'}`}>
-                    {hasTime(account.expiresAt) ? `续期 ${relativeToNow(account.expiresAt, now)}` : '不过期'}
+                  <span className="m-row-line">
+                    <span className="muted-text" title={`凭证到期：${account.expiresAt ?? '无'}`}>
+                      {hasTime(account.expiresAt) ? `续期 ${relativeToNow(account.expiresAt, now)}` : '不过期'}
+                    </span>
+                    {/* 额度只在宽档单独成列；半宽档与本行并排（见 .mrow-account-mini 断点） */}
+                    <span className="m-clip" title={quota.note}>{quota.primary}</span>
                   </span>
-                  <span className="m-clip" title={quota.note}>{quota.primary}</span>
                   <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                     {/* 概览这半宽卡里放不下厂商列；模型列表连续失败才是这里要看的信号。 */}
                     {account.modelFailures > 0 && <span className="badge slate">{`列表 ${account.modelFailures}×`}</span>}
@@ -257,7 +260,7 @@ export function OverviewTab(props: OverviewTabProps) {
                   ) : null}
                 </span>
                 <span
-                  className="muted-text m-clip"
+                  className="text-aux"
                   title={pairs.map(([key, value]) => `${key}=${value}`).join(' · ')}
                 >
                   {pairs.length > 0

@@ -243,3 +243,128 @@ export const ERROR_KIND_TEXT: Record<MonitorErrorKind, string> = {
   network: '网络不可达',
   unknown: '未知错误',
 };
+
+// ── 探测（阶段 3）───────────────────────────────────────────────────────
+
+/** 一个账号的探测现状。probed=false 是「还没探过」，不是「探测全过」。 */
+export interface MonitorProbeAccount {
+  providerId: string;
+  name: string;
+  vendor?: string;
+  disabled: boolean;
+  probed: boolean;
+  consecutiveFailures: number;
+  lastProbeAt?: string;
+  lastStatus?: number;
+  skipped?: string;
+  usedToday: number;
+  maxPerDay: number;
+}
+
+export interface MonitorProbeRun {
+  providerId: string;
+  kind: string;
+  case: string;
+  ok: boolean;
+  status: number;
+  skipped?: string;
+  durationMs: number;
+  model?: string;
+  errorCode?: string;
+  day: string;
+  time: string;
+}
+
+export interface MonitorProbeConfig {
+  eventDriven: { enabled: boolean; idleMinutes: number; maxPerDayPerAccount: number; minIntervalMinutes: number };
+  daily: { enabled: boolean; windowStart: string; windowEnd: string };
+  weeklyCli: { enabled: boolean; weekday: number; time: string };
+  quotaStaleMinutes: number;
+}
+
+export interface MonitorProbePage {
+  accounts: MonitorProbeAccount[];
+  runs: MonitorProbeRun[];
+  config: MonitorProbeConfig;
+}
+
+/**
+ * 一轮探测返回里每个 case 的结果（后端 probeCaseResult 的 JSON 视图）。
+ * 没有 json tag（解析时大小写不敏感），实测字段名是 `Case`/`OK`/`Status`/`Duration`……，
+ * 所以这里按真实响应写；小写键是将来补了 tag 之后的形态，两种都接。
+ */
+export interface MonitorProbeCaseResult {
+  Case?: string;
+  OK?: boolean;
+  Status?: number;
+  Duration?: number;
+  Model?: string;
+  Error?: string;
+  case?: string;
+  ok?: boolean;
+  status?: number;
+  durationMs?: number;
+  model?: string;
+  error?: string;
+}
+
+/**
+ * 手动探测的结果。HTTP 409 是「同账号已有探测在跑」（`skipped:"in_flight"`），
+ * 不是失败；400 的 `errorKind:"kind_unavailable"` 是请求了未上线的 kind。
+ */
+export interface MonitorProbeRunResult {
+  ok: boolean;
+  providerId: string;
+  kind: string;
+  at?: string;
+  skipped?: string;
+  errorKind?: string;
+  cases?: MonitorProbeCaseResult[];
+}
+
+/** 把后端两种命名形态收敛成界面用的一个形状。 */
+export function normalizeProbeCase(raw: MonitorProbeCaseResult): {
+  key: string;
+  ok: boolean;
+  status: number;
+  durationMs: number;
+  model: string;
+  error: string;
+} {
+  return {
+    key: raw.case ?? raw.Case ?? '',
+    ok: raw.ok ?? raw.OK ?? false,
+    status: raw.status ?? raw.Status ?? 0,
+    durationMs: raw.durationMs ?? raw.Duration ?? 0,
+    model: raw.model ?? raw.Model ?? '',
+    error: raw.error ?? raw.Error ?? '',
+  };
+}
+
+/** 跳过原因的界面文案。没跑成不等于跑失败，尤其 cli_missing 绝不能显示成失败。 */
+export const PROBE_SKIP_TEXT: Record<string, string> = {
+  cli_missing: 'CLI 未安装，未判定失败',
+  in_flight: '已有探测在进行中',
+  no_model: '没有可用模型，未发出请求',
+  provider_disabled: '账号已停用，未探测',
+  provider_missing: '账号不存在或已删除',
+};
+
+export function probeSkipText(skipped: string | undefined): string {
+  if (!skipped) return '';
+  return PROBE_SKIP_TEXT[skipped] ?? `已跳过（${skipped}）`;
+}
+
+/** 探测 kind 文案。CLI 深检尚未上线，界面不出现该入口，只用于给历史记录兜底。 */
+export function probeKindText(kind: string): string {
+  if (kind === 'light') return '轻探测';
+  if (kind === 'cli') return 'CLI 深检';
+  return kind || '—';
+}
+
+export function probeCaseText(key: string): string {
+  if (key === 'chat') return '最小对话';
+  if (key === 'tools') return '工具调用';
+  if (key.startsWith('selfcheck:')) return `自检 ${key.slice('selfcheck:'.length)}`;
+  return key || '—';
+}
