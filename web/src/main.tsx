@@ -67,6 +67,7 @@ import {
     isTraeConnectKind,
     isTrafficLogError,
     isVisionModel,
+    aggregateScheduleAttempts,
     isWorkBuddyConnectKind,
     isZCodeConnectKind,
     loadBootSession,
@@ -149,7 +150,7 @@ import {providerIcon, ProviderLabel} from './components/provider_label';
 import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
-import {ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
+import {ReplayPanel, ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
 import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
@@ -212,6 +213,7 @@ import {
     URLRow
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
+import {CURRENT_APP_VERSION, dismissUpgrade, fetchLatestAppVersion, isNewerVersion, reloadToVersion} from './app_version';
 
 // 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
 const ALL_PROVIDERS_VALUE = '__all_providers__';
@@ -284,6 +286,8 @@ function App() {
   const [trafficLogRawRespView, setTrafficLogRawRespView] = useState(false);
   const [trafficLogSSEParsedView, setTrafficLogSSEParsedView] = useState(true);
   const [logsKeyword, setLogsKeyword] = useState('');
+  // 会话视图：按 sessionId 过滤请求日志（后端 json_extract 查询）。
+  const [logsSessionFilter, setLogsSessionFilter] = useState('');
   const displayedLogs = useMemo(() => {
     if (!logsKeyword.trim()) return logs;
     const kw = logsKeyword.trim().toLowerCase();
@@ -298,6 +302,8 @@ function App() {
       (log.providerId && log.providerId.toLowerCase().includes(kw))
     );
   }, [logs, logsKeyword]);
+  // 当前页日志里的调度尝试聚合：谁被尝试、谁真服务、谁被跳过/失败。
+  const decisionAggregate = useMemo(() => aggregateScheduleAttempts(displayedLogs), [displayedLogs]);
   const [selfcheckCaseDetail, setSelfcheckCaseDetail] = useState<SelfcheckCaseResult | null>(null);
   const [requestStats, setRequestStats] = useState<RequestStatsSnapshot | null>(null);
   const usageRequestVersion = useRef(0);
@@ -337,6 +343,37 @@ function App() {
   const [hostMetrics, setHostMetrics] = useState<HostMetrics | null>(null);
   // null = 尚未探测，避免刷新瞬间误闪「后端未连接」
   const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
+  // 后端当前版本：与本页构建版本不同即说明发布了新版本，提示升级（见 app_version.ts）。
+  const [latestAppVersion, setLatestAppVersion] = useState<string>('');
+  const [upgradeDismissed, setUpgradeDismissed] = useState<boolean>(false);
+  const upgradeAvailable = isNewerVersion(latestAppVersion, CURRENT_APP_VERSION) && !upgradeDismissed;
+  useEffect(() => {
+    if (!CURRENT_APP_VERSION) {
+      // 开发构建没有版本号：不轮询，也不提示。
+      return;
+    }
+    let cancelled = false;
+    const check = () => {
+      void (async () => {
+        try {
+          const latest = await fetchLatestAppVersion();
+          if (cancelled || !latest) return;
+          setLatestAppVersion(latest);
+        } catch {
+          // 后端暂时不可达不代表有新版本：保持上次的结论，等下一轮。
+        }
+      })();
+    };
+    check();
+    const timer = window.setInterval(check, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
+    const onVisible = () => { if (isDocumentActive()) check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
   // 连续失败计数。公网走 Cloudflare 隧道时单次 TLS 握手实测约 1.5s，偶发抖动
   // 在所难免；单次失败就翻红会让 UI 频繁误报「重连中」，故需连续失败若干次
   // 才判定断线。ref 而非 state：只用于判定、不驱动渲染。
@@ -1191,6 +1228,15 @@ function App() {
     void refreshAlertSettings();
   }, [activeNav, alertStatusFilter]);
 
+  // 导航上的未读告警角标在告警页之外也要准：管理员登录后每 30 秒刷新一次
+  // 计数（用当前筛选状态拉第 1 页，counts 与列表一致）。普通用户没有告警页。
+  useEffect(() => {
+    if (!authStatus?.authenticated || authStatus.role === 'user') return;
+    void refreshAlerts(1, alertStatusFilter);
+    const timer = window.setInterval(() => { void refreshAlerts(1, alertStatusFilter); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [authStatus?.authenticated, authStatus?.role, alertStatusFilter]);
+
   // 管理员打开 API 日志页时加载用户列表，用于「用户」筛选下拉；普通用户看不到这个
   // 筛选项（后端也只对 admin 生效），不需要拉取。
   useEffect(() => {
@@ -1780,6 +1826,7 @@ function App() {
     if (keyName) params.set('apiKeyName', keyName);
     if (logsUsageTarget) params.set(logsUsageTarget.type === 'model' ? 'model' : 'apiKeyId', logsUsageTarget.value);
     if (logsProviderFilter) params.set('providerId', logsProviderFilter);
+    if (logsSessionFilter) params.set('sessionId', logsSessionFilter);
     if (logsOwnerFilter) params.set('ownerUserId', logsOwnerFilter);
     // 第 1 页保持实时；第 2 页及以后带上离开第 1 页时冻结的 newest time+id。
     if (page > 1) {
@@ -2955,19 +3002,41 @@ function App() {
     }
   }
 
+  // Anthropic's loopback callback only works when the browser and the gateway
+  // share a machine. A console opened over a LAN or public address is finished
+  // by pasting the code back instead — otherwise the redirect lands on whatever
+  // gateway happens to answer localhost on the user's own computer.
+  function claudeOAuthCanUseLocalhostCallback() {
+    const host = window.location.hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  }
+
   async function startClaudeOAuthConnect(providerId: string = editingProviderID) {
     if (!providerId) return;
     setClaudeOAuthBusy(true);
     setClaudeOAuthError('');
+    const mode = claudeOAuthCanUseLocalhostCallback() ? 'localhost' : 'manual';
     try {
       const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerId)}/claude-oauth/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'localhost' }),
+        body: JSON.stringify({ mode }),
       });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json() as { authUrl: string; state: string; flowId?: string; mode?: string; instructions?: string };
       setClaudeOAuthState(data.state);
+      if (data.mode === 'manual') {
+        setClaudeOAuthFlowId('');
+        setClaudeOAuthCallbackHint('授权完成后，浏览器会停在 Anthropic 的回调页；把页面给出的 code（或 code#state）粘贴到下面即可。');
+        window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+        try {
+          await navigator.clipboard.writeText(data.authUrl);
+          showToast('请在授权完成后，把回调页上的 code 粘贴到下方');
+        } catch {
+          showToast('已打开 Claude 授权页面');
+        }
+        return;
+      }
       setClaudeOAuthCallbackHint(data.instructions || '');
       if (data.flowId) setClaudeOAuthFlowId(data.flowId);
       // window.open 传 noopener/noreferrer 时规范规定返回值恒为 null（无论是否
@@ -4488,6 +4557,23 @@ function App() {
 
   return (
     <>
+      {upgradeAvailable && (
+        <div className="upgrade-banner" role="status" aria-live="polite">
+          <span className="upgrade-banner-text">
+            新版本已发布（当前 {CURRENT_APP_VERSION} → 最新 {latestAppVersion}），刷新页面即可使用。
+          </span>
+          <button type="button" className="upgrade-banner-action" onClick={() => reloadToVersion(latestAppVersion)}>
+            立即升级
+          </button>
+          <button
+            type="button"
+            className="upgrade-banner-dismiss"
+            onClick={() => { dismissUpgrade(latestAppVersion); setUpgradeDismissed(true); }}
+          >
+            稍后
+          </button>
+        </div>
+      )}
       <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
         <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
           <div className="brand">
@@ -4559,6 +4645,12 @@ function App() {
                     >
                       <span className="nav-icon"><NavIcon id={item.id} /></span>
                       <span className="nav-label">{item.label}</span>
+                      {item.id === 'alerts' && (alertPage?.counts.unread ?? 0) > 0 ? (
+                        // 未读告警在导航上留一个角标：告警页之外也要看得见。
+                        <span className="nav-badge" title={`${alertPage?.counts.unread} 条未读告警`}>
+                          {(alertPage?.counts.unread ?? 0) > 99 ? '99+' : alertPage?.counts.unread}
+                        </span>
+                      ) : null}
                       {item.id === 'public-access' ? (
                         <span
                           className={`nav-status-dot ${tunnelRunning ? 'on' : 'off'}`}
@@ -6046,6 +6138,32 @@ function App() {
                 </div>
               </div>
 
+              {decisionAggregate.length > 0 ? (
+                <div className="decision-aggregate" title="当前页日志里每个账号被如何调度：尝试 / 服务 / 失败 / 未发出">
+                  <div className="decision-aggregate-title">
+                    调度决策（当前页）
+                    <span className="decision-aggregate-sub">
+                      · 统计了 {displayedLogs.filter((log) => (log.analysis?.attempts?.length ?? 0) > 0).length} 条带调度记录的请求；
+                      「失败」含限流/额度 429 与被丢弃后换号，不代表账号故障
+                    </span>
+                  </div>
+                  <div className="decision-aggregate-rows">
+                    {decisionAggregate.map((row) => (
+                      <div className="decision-aggregate-row" key={row.providerId}>
+                        <span className="decision-aggregate-provider">
+                          {providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId)}
+                        </span>
+                        <span className="num" title="被尝试的次数">尝试 {row.attempts}</span>
+                        <span className={`num${row.served ? ' ok' : ''}`} title="真正服务了请求的次数">服务 {row.served}</span>
+                        <span className={`num${row.failed ? ' bad' : ''}`} title="发出后失败或回答被丢弃的次数">失败 {row.failed}</span>
+                        <span className={`num${row.skipped ? ' muted' : ''}`} title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发 {row.skipped}</span>
+                        {row.avgServedMs != null ? <span className="num muted" title="服务成功时的平均耗时">均 {row.avgServedMs}ms</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               {/* 日志表格 */}
               <div className="log-table">
                 {logsLoading || !logsFetchedOnce ? (
@@ -6058,6 +6176,11 @@ function App() {
                     <button className="mini-btn" type="button" onClick={() => setLogsKeyword('')} style={{ marginLeft: 8 }}>
                       清空搜索词
                     </button>
+                    {logsSessionFilter ? (
+                      <button className="mini-btn" type="button" onClick={() => { setLogsSessionFilter(''); void refreshLogs(1); }} style={{ marginLeft: 8 }}>
+                        退出会话筛选
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
                   <>
@@ -6072,6 +6195,7 @@ function App() {
                       <span>
                         共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
                         {logsKeyword ? ` · 当前关键词过滤匹配 ${displayedLogs.length} 条` : ''}
+                        {logsSessionFilter ? ` · 会话 ${logsSessionFilter.slice(0, 8)}` : ''}
                         {logsPage > 1 ? ' · 当前页不自动刷新（避免新日志把翻页顶得乱跳），需要看最新请回到第 1 页' : ''}
                       </span>
                       <span style={{ display: 'flex', gap: 8 }}>
@@ -7038,6 +7162,42 @@ function App() {
               <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span>{trafficLogKeyLabel(trafficLogDetail)} · {servedLabel} · 路由: {trafficLogDetail.routeId} · 模型: {trafficLogDetail.model}</span>
                 {servingInfo ? <Badge tone="amber">{servingLabel}</Badge> : null}
+                {trafficLogDetail.analysis?.sessionId ? (
+                  // 一次对话的多轮请求共享同一个 sessionId：点一下就把日志列表
+                  // 收窄到这一会话（后端按 json_extract 过滤）。
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={`会话 ${trafficLogDetail.analysis.sessionId}（点击只看这一会话的请求）`}
+                    onClick={() => {
+                      const session = trafficLogDetail.analysis!.sessionId!;
+                      setLogsSessionFilter(session);
+                      setTrafficLogDetail(null);
+                      showToast(`已筛选会话 ${session.slice(0, 8)}`);
+                      void refreshLogs(1);
+                    }}
+                  >
+                    会话 <span className="mono">{trafficLogDetail.analysis.sessionId.slice(0, 8)}</span>
+                  </button>
+                ) : null}
+                {trafficLogDetail.analysis?.sessionId ? (
+                  // 一次对话的多轮请求共享同一个 sessionId：把它露出来，才能
+                  // 把同一会话的请求对上号（后端暂不提供按会话检索）。
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    title={`会话 ${trafficLogDetail.analysis.sessionId}（点击只看这一会话的请求）`}
+                    onClick={() => {
+                      const session = trafficLogDetail.analysis!.sessionId!;
+                      setLogsSessionFilter(session);
+                      setTrafficLogDetail(null);
+                      showToast(`已筛选会话 ${session.slice(0, 8)}`);
+                      void refreshLogs(1);
+                    }}
+                  >
+                    会话 <span className="mono">{trafficLogDetail.analysis.sessionId.slice(0, 8)}</span>
+                  </button>
+                ) : null}
               </span>
             </div>
 
@@ -7445,6 +7605,11 @@ function App() {
                 <pre className="json-preview">{curlCmd}</pre>
               </div>
             )}
+
+            {/* 重放不单独占一页：排错时看完报文下一步就是「再发一次」。 */}
+            <div className="log-body-card">
+              <ReplayPanel key={trafficLogDetail.id ?? 'noid'} log={trafficLogDetail} apiKeys={state.apiKeys || []} />
+            </div>
           </div>
           <div className="actions modal-actions">
             <button className="btn" onClick={() => setTrafficLogDetail(null)}>关闭</button>

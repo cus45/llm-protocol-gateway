@@ -17,6 +17,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -266,18 +267,38 @@ func workBuddyQuotaWindows(summary workBuddySummary, packages []workBuddyPackage
 	return plan, nil
 }
 
+// workBuddyTokenRefresher trades the provider's current credential for a new
+// one. It is how the quota reader repairs an access token WorkBuddy revoked
+// early: the recorded expiry is the refresh token's, so it never predicts this.
+type workBuddyTokenRefresher func() (domain.WorkBuddyCredential, error)
+
 // workBuddyQuotaFor reads an account's credit allowance from its resource
 // summary, and from the enterprise meter when the summary grants no packages
 // (a team account's credits only live there) — with whichever date each of the
-// two meters carries.
-func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential) workBuddyQuota {
+// two meters carries. A 401 from any of those calls triggers one refresh and a
+// retry; the credential that ended up being used is returned so the caller can
+// keep the rotated token.
+func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domain.WorkBuddyCredential, refresh workBuddyTokenRefresher) (workBuddyQuota, domain.WorkBuddyCredential) {
 	quota := workBuddyQuota{User: credential.AccountLabel, Windows: []workBuddyQuotaWin{}, FetchedAt: time.Now().UTC().Format(time.RFC3339)}
 	headers := workBuddyAccountHeaders(site, credential)
 	base := site.api()
+	call := func(path string, dst any) error {
+		err := workBuddyCall(ctx, http.MethodPost, base+path, headers, map[string]any{}, dst)
+		if err == nil || !workBuddyUnauthorized(err) || refresh == nil {
+			return err
+		}
+		updated, refreshErr := refresh()
+		if refreshErr != nil {
+			return refreshErr
+		}
+		credential = updated
+		headers = workBuddyAccountHeaders(site, credential)
+		return workBuddyCall(ctx, http.MethodPost, base+path, headers, map[string]any{}, dst)
+	}
 	var summary workBuddySummary
-	if err := workBuddyCall(ctx, http.MethodPost, base+workBuddySummaryPath, headers, map[string]any{}, &summary); err != nil {
+	if err := call(workBuddySummaryPath, &summary); err != nil {
 		quota.Error = err.Error()
-		return quota
+		return quota, credential
 	}
 	total, _, _ := summary.totals()
 	var windows []workBuddyQuotaWin
@@ -290,9 +311,32 @@ func workBuddyQuotaFor(ctx context.Context, site workBuddySite, credential domai
 		// A team account answers the summary with no packages at all; its credits
 		// only live in the enterprise meter.
 		var enterprise workBuddyEnterpriseCycle
-		_ = workBuddyCall(ctx, http.MethodPost, base+workBuddyEnterprisePath, headers, map[string]any{}, &enterprise)
+		_ = call(workBuddyEnterprisePath, &enterprise)
 		quota.Plan, windows = workBuddyQuotaWindows(summary, nil, enterprise, time.Now())
 	}
 	quota.Windows = windows
+	return quota, credential
+}
+
+// workBuddyQuota reads a provider's allowance with the token its stored
+// credential carries, and repairs that token if WorkBuddy refuses it: a refresh
+// is spent only when a 401 says the access token is dead, which WorkBuddy does
+// whenever the same account signs in elsewhere.
+func (s *Server) workBuddyQuota(ctx context.Context, provider domain.Provider) workBuddyQuota {
+	site, ok := workBuddySiteForAuthType(provider.AuthType)
+	if !ok || provider.WorkBuddy == nil {
+		return workBuddyQuota{Windows: []workBuddyQuotaWin{}, Error: "WorkBuddy 尚未登录"}
+	}
+	current := *provider.WorkBuddy
+	quota, _ := workBuddyQuotaFor(ctx, site, current, func() (domain.WorkBuddyCredential, error) {
+		updated, err := s.forceRefreshWorkBuddyToken(provider.ID)
+		if err != nil {
+			return current, err
+		}
+		if updated.WorkBuddy == nil {
+			return current, errors.New("WorkBuddy 登录已失效，请在控制台重新登录")
+		}
+		return *updated.WorkBuddy, nil
+	})
 	return quota
 }

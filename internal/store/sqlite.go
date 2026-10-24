@@ -234,6 +234,9 @@ func (s *Store) migrate() error {
 		// requests_per_minute: this provider's per-minute request budget, counted
 		// at admission (see domain.Provider.RequestsPerMinute). 0 = no limit.
 		{"requests_per_minute", "INTEGER NOT NULL DEFAULT 0"},
+		// lane_group: the account several Provider rows of one subscription share
+		// their lane with (see domain.Provider.LaneGroup). '' = own account.
+		{"lane_group", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, column := range oauthColumns {
 		if err := addColumnIfMissing(tx, "providers", column.name, column.definition); err != nil {
@@ -352,6 +355,9 @@ func (s *Store) migrate() error {
 	// 5 minutes; the accurate value lives in gateway memory).
 	if err := addColumnIfMissing(tx, "users", "last_active_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate users: %w", err)
+	}
+	if err := ensureMonitoringSchema(tx); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES ('version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprintf("%d", schemaVersion)); err != nil {
@@ -579,6 +585,11 @@ func (s *Store) Save(state domain.GatewayState) error {
 				accountLabel = provider.WorkBuddy.AccountLabel
 				userID = provider.WorkBuddy.UserID
 				authDomain = provider.WorkBuddy.Domain
+				// SignInAt has no column of its own; it rides in oauth_json, which
+				// is authoritative on load. Without it a credential that signed in
+				// with no expiry can never be aged after a restart, so it is never
+				// refreshed before the vendor refuses it.
+				authJSON = marshalProviderCredential(provider.WorkBuddy)
 			}
 		case domain.AuthTypeZCode:
 			if provider.ZCode != nil {
@@ -627,15 +638,16 @@ func (s *Store) Save(state domain.GatewayState) error {
 		if _, err := tx.Exec(`INSERT INTO providers
 			(id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint, position,
 			 auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
-			 checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute,
+			 checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute, lane_group,
 			 self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 			 coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			provider.ID, provider.Name, string(provider.Protocol), provider.BaseURL, provider.APIKeySource,
 			provider.DefaultModel, provider.DefaultThinkingDepth, provider.HealthStatus, provider.AuthHeader,
 			provider.ExtraEndpoint, pIndex,
 			provider.AuthType, accessToken, refreshToken, expiresAt, scope, accountLabel, provider.OwnerUserID, disabled, rtkCompress,
 			checkinEnabled, provider.FirstPacketTimeoutSec, provider.MaxConcurrentRequests, provider.QueueWaitSeconds, provider.RequestsPerMinute,
+			provider.LaneGroup,
 			selfRegTokenHash, selfRegTokenPreview, selfRegCreatedAt, selfRegLastSeenAt, deleted, provider.DeletedAt,
 			provider.CodingPlanProvider, provider.TeamOrganizationID, provider.TeamProjectID, userID, authDomain, authJSON); err != nil {
 			return err
@@ -751,7 +763,7 @@ func (s *Store) Save(state domain.GatewayState) error {
 func (s *Store) loadProviders() ([]domain.Provider, error) {
 	rows, err := s.reader().Query(`SELECT id, name, protocol, base_url, api_key_source, default_model, default_thinking_depth, health_status, auth_header, extra_endpoint,
 		auth_type, oauth_access_token, oauth_refresh_token, oauth_expires_at, oauth_scope, oauth_account_label, owner_user_id, disabled, rtk_compress,
-		checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute,
+		checkin_enabled, first_packet_timeout_sec, max_concurrent_requests, queue_wait_seconds, requests_per_minute, lane_group,
 		self_reg_token_hash, self_reg_token_preview, self_reg_created_at, self_reg_last_seen_at, deleted, deleted_at,
 		coding_plan_provider, team_organization_id, team_project_id, oauth_user_id, oauth_domain, oauth_json
 		FROM providers ORDER BY position, id`)
@@ -772,7 +784,7 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 		var authJSON string
 		if err := rows.Scan(&p.ID, &p.Name, &protocol, &p.BaseURL, &p.APIKeySource, &p.DefaultModel, &p.DefaultThinkingDepth, &p.HealthStatus, &p.AuthHeader, &p.ExtraEndpoint,
 			&p.AuthType, &accessToken, &refreshToken, &expiresAt, &scope, &accountLabel, &p.OwnerUserID, &disabled, &rtkCompress,
-			&checkinEnabled, &p.FirstPacketTimeoutSec, &p.MaxConcurrentRequests, &p.QueueWaitSeconds, &p.RequestsPerMinute,
+			&checkinEnabled, &p.FirstPacketTimeoutSec, &p.MaxConcurrentRequests, &p.QueueWaitSeconds, &p.RequestsPerMinute, &p.LaneGroup,
 			&selfRegTokenHash, &selfRegTokenPreview, &selfRegCreatedAt, &selfRegLastSeenAt, &deleted, &deletedAt,
 			&codingPlanProvider, &teamOrganizationID, &teamProjectID, &userID, &authDomain, &authJSON); err != nil {
 			_ = rows.Close()
@@ -841,7 +853,13 @@ func (s *Store) loadProviders() ([]domain.Provider, error) {
 				}
 			}
 		case domain.AuthTypeWorkBuddy, domain.AuthTypeWorkBuddyAI:
-			if accessToken != "" || refreshToken != "" {
+			var credential domain.WorkBuddyCredential
+			if unmarshalProviderCredential(authJSON, &credential) && (credential.AccessToken != "" || credential.RefreshToken != "") {
+				p.WorkBuddy = &credential
+			} else if accessToken != "" || refreshToken != "" {
+				// A row written before SignInAt was stored holds only the columns,
+				// so it loads with no sign-in time and is refreshed on the 401
+				// path until the next sign-in or refresh writes the JSON.
 				p.WorkBuddy = &domain.WorkBuddyCredential{
 					AccessToken:  accessToken,
 					RefreshToken: refreshToken,

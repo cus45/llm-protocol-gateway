@@ -107,6 +107,30 @@ func TestCostOfProviderDefaultRow(t *testing.T) {
 	}
 }
 
+// A global row is the shared rate card: every provider without a row of its own
+// uses it, which is how all official Claude accounts end up on one price. A
+// provider row still overrides it.
+func TestGlobalPriceFallback(t *testing.T) {
+	t.Parallel()
+	s, _, _ := pricedServer(t)
+	putPrice(t, s, domain.ModelPrice{ProviderID: "*", ModelID: "claude-sonnet-5", InputUSDPerMTok: 3, OutputUSDPerMTok: 10})
+	putPrice(t, s, domain.ModelPrice{ProviderID: "*", ModelID: "*", InputUSDPerMTok: 1, OutputUSDPerMTok: 2})
+	putPrice(t, s, domain.ModelPrice{ProviderID: "p1", ModelID: "*", InputUSDPerMTok: 9, OutputUSDPerMTok: 9})
+
+	if cost, ok := s.costOf("claude-official", "claude-sonnet-5", TokenUsage{InputTokens: 1000000, OutputTokens: 1000000}); !ok || cost != 13000000 {
+		t.Fatalf("global exact row should price another provider: %d/%v", cost, ok)
+	}
+	if cost, ok := s.costOf("claude-official", "claude-opus-5-5", TokenUsage{InputTokens: 1000000, OutputTokens: 1000000}); !ok || cost != 3000000 {
+		t.Fatalf("global default row should price an unlisted model: %d/%v", cost, ok)
+	}
+	if cost, ok := s.costOf("p1", "claude-sonnet-5", TokenUsage{InputTokens: 1000000, OutputTokens: 1000000}); !ok || cost != 18000000 {
+		t.Fatalf("a provider row must win over the global exact row: %d/%v", cost, ok)
+	}
+	if cost, ok := s.costOf("p1", "something-else", TokenUsage{InputTokens: 1000000, OutputTokens: 1000000}); !ok || cost != 18000000 {
+		t.Fatalf("the provider's own default should win: %d/%v", cost, ok)
+	}
+}
+
 // The logged model can be the historical "alias -> upstream" pair; the vendor
 // billed the upstream id, so that is what the price has to match.
 func TestUpstreamModelForPricing(t *testing.T) {
@@ -213,5 +237,44 @@ func TestPriceAPI(t *testing.T) {
 	}
 	if _, ok := s.lookupPrice("p1", "gpt-x"); ok {
 		t.Fatal("the cache must stop serving a deleted row without a restart")
+	}
+}
+
+// An all-zero global row is the one save that can hide every 未计价 signal at
+// once: global "*" is the last row lookupPrice tries, so it would mark every
+// unpriced model as "priced at $0". It must be refused explicitly, while a
+// global row with real rates and a provider-scoped zero row stay allowed.
+func TestPriceAPIRejectsAllZeroGlobalRow(t *testing.T) {
+	s, _, db := pricedServer(t)
+	post := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, asLocalAdmin(httptest.NewRequest(http.MethodPost, "/__prices", strings.NewReader(body))))
+		return rec
+	}
+	zero := `{"providerId":"*","modelId":"*","inputUsdPerMTok":0,"outputUsdPerMTok":0,"cacheReadUsdPerMTok":0,"cacheWriteUsdPerMTok":0}`
+	for _, body := range []string{
+		zero,
+		`{"providerId":"*","modelId":"claude-sonnet-5"}`,
+		`{"providerId":" * ","modelId":""}`,
+	} {
+		rec := post(body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s -> %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "global price row") {
+			t.Fatalf("the refusal must say why: %s", rec.Body.String())
+		}
+	}
+	if rows, err := db.LoadModelPrices(); err != nil || len(rows) != 0 {
+		t.Fatalf("a refused row must not reach the store: %v %+v", err, rows)
+	}
+
+	// A deliberate global row with real prices still works, as does a provider
+	// row that is zero on purpose (e.g. a model with no cache-write fee).
+	if rec := post(`{"providerId":"*","modelId":"*","inputUsdPerMTok":1,"outputUsdPerMTok":2}`); rec.Code != http.StatusOK {
+		t.Fatalf("a priced global row -> %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(`{"providerId":"p1","modelId":"free-tier","inputUsdPerMTok":0,"outputUsdPerMTok":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("a provider-scoped zero row -> %d: %s", rec.Code, rec.Body.String())
 	}
 }

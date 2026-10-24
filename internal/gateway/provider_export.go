@@ -138,7 +138,7 @@ func prepareProviderForImport(provider domain.Provider) (domain.Provider, error)
 	}
 	if provider.Protocol != "" {
 		switch provider.Protocol {
-		case domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude:
+		case domain.ProtocolOpenAIChat, domain.ProtocolOpenAIResponses, domain.ProtocolClaude, domain.ProtocolGemini:
 		default:
 			return domain.Provider{}, fmt.Errorf("unsupported protocol %q", provider.Protocol)
 		}

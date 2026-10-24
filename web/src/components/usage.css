@@ -165,6 +165,8 @@ html[data-theme="dark"] .usage-page {
 .usage-request-table tbody tr.is-error { background: color-mix(in srgb, var(--red) 5%, transparent); }
 .usage-request-model { font-weight: 600; }
 .usage-cell-caption { display: block; font-size: 10px; color: var(--muted); margin-top: 5px; }
+/* 成本列保持窄：金额右对齐，未计价小字跟着走。 */
+.usage-cost-cell .usage-cell-caption { margin-top: 3px; }
 .usage-status { display: inline-block; background: var(--surface-sunken); border-radius: 5px; padding: 4px 7px; }
 .usage-status.is-error { color: var(--red); font-weight: 600; }
 .usage-table-foot { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; padding: 14px 0; color: var(--muted); font-size: 10px; }
@@ -403,6 +405,7 @@ html[data-theme="dark"] .perf-rate.is-bad { color: #fda4af; }
   font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
 }
 .price-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.price-row .price-scope-global { color: var(--accent); font-weight: 600; }
 .price-row .num { text-align: right; font-family: var(--mono); font-size: 12px; }
 .price-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 @media (max-width: 900px) {

@@ -14,8 +14,17 @@ func TestClaudeThinkingOffOf(t *testing.T) {
 		// 4.x 与 Sonnet 5 / Haiku 5 原样接受 disabled。
 		{"claude-opus-4-6", claudeOffTaken, true},
 		{"claude-sonnet-4.5", claudeOffTaken, true},
-		// 旧版命名顺序（claude-3-7-sonnet）不在规则内，按未知模型原样透传。
-		{"claude-3-7-sonnet", claudeOffUnknown, false},
+		// 旧版命名顺序（版本写在族名前）：都是已知 Claude，原样接受 disabled。
+		// 漏认会让 thinking 被删、max_tokens 被抬高（N34-1 / H-6c）。
+		{"claude-3-7-sonnet", claudeOffTaken, true},
+		{"claude-3.5-sonnet", claudeOffTaken, true},
+		{"claude-3-5-sonnet-20241022", claudeOffTaken, true},
+		{"anthropic/claude-3.5-sonnet", claudeOffTaken, true},
+		{"claude-3-5-haiku-20241022", claudeOffTaken, true},
+		{"claude-3-5-haiku@20241022", claudeOffTaken, true},
+		{"claude-3-opus", claudeOffTaken, true},
+		{"claude-2.1", claudeOffTaken, true},
+		{"claude-instant-1.2", claudeOffTaken, true},
 		{"claude-sonnet-5", claudeOffTaken, true},
 		{"claude-haiku-5", claudeOffTaken, true},
 		// Opus 5 / Haiku 5.5 只在 effort ≤ high 时接受。
@@ -285,5 +294,52 @@ func TestNormalizeClaudeEndpointThinkingOffBody(t *testing.T) {
 	plain := []byte(`{"model":"glm-5.3","messages":[]}`)
 	if got := normalizeClaudeEndpointThinkingOffBody(plain, "glm-5.3"); string(got) != string(plain) {
 		t.Fatalf("plain body changed: %s", got)
+	}
+}
+
+// N34-1 / H-6(c)：老命名（claude-3-5-sonnet…）是已知 Claude，端点整流不能
+// 删 thinking、不能把 max_tokens 从 200 偷偷抬到 2248。
+func TestNormalizeClaudeEndpointThinkingOffLegacyModels(t *testing.T) {
+	for _, model := range []string{
+		"claude-3.5-sonnet",
+		"claude-3-5-sonnet-20241022",
+		"anthropic/claude-3.5-sonnet",
+	} {
+		t.Run(model, func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","max_tokens":200,"thinking":{"type":"disabled"}}`)
+			if got := normalizeClaudeEndpointThinkingOffBody(body, model); string(got) != string(body) {
+				t.Fatalf("%s accepts disabled, must stay byte-identical: %s", model, got)
+			}
+		})
+	}
+}
+
+// 不认识的模型即使 thinking 被删，也不能凭空抬高 max_tokens（N34-1）：
+// 预算超过模型上限会被上游 400。
+func TestNormalizeClaudeEndpointThinkingOffUnknownNeverRaisesMaxTokens(t *testing.T) {
+	body := []byte(`{"model":"mistral-large","max_tokens":200,"thinking":{"type":"disabled"}}`)
+	out := normalizeClaudeEndpointThinkingOffBody(body, "mistral-large")
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("not json: %v (%s)", err, out)
+	}
+	if _, exists := payload["thinking"]; exists {
+		t.Fatalf("thinking must be gone: %s", out)
+	}
+	if payload["max_tokens"] != float64(200) {
+		t.Fatalf("unknown model max_tokens = %#v, want 200", payload["max_tokens"])
+	}
+}
+
+// 已知「必须思考」的模型照旧补余量：收紧只针对不认识的模型。
+func TestNormalizeClaudeEndpointThinkingOffKnownModelStillPads(t *testing.T) {
+	body := []byte(`{"model":"glm-5.3","max_tokens":200,"thinking":{"type":"disabled"}}`)
+	out := normalizeClaudeEndpointThinkingOffBody(body, "glm-5.3")
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("not json: %v (%s)", err, out)
+	}
+	if payload["max_tokens"] != float64(200+classifierRoom) {
+		t.Fatalf("known thinking model max_tokens = %#v, want %d", payload["max_tokens"], 200+classifierRoom)
 	}
 }

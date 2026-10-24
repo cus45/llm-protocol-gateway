@@ -14,7 +14,7 @@ import (
 
 const (
 	claudeOAuthCCHSeed               = uint64(0x6E52736AC806831E)
-	claudeOAuthBillingVersion        = "2.1.108"
+	claudeOAuthBillingVersion        = "2.1.303"
 	claudeOAuthAgentIdentifier       = "You are Claude Code, Anthropic's official CLI for Claude."
 	claudeOAuthBillingCCHPlaceholder = "00000"
 )

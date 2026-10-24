@@ -27,6 +27,7 @@ type ScheduledTaskStore interface {
 	ScheduledTaskByID(id string) (domain.ScheduledTask, error)
 	SaveScheduledTask(task domain.ScheduledTask) error
 	UpdateScheduledTaskSchedule(id, lastRunAt, nextRunAt string) error
+	UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool, pausedBy string) error
 	DeleteScheduledTask(id string) error
 	AppendScheduledTaskRuns(runs []domain.ScheduledTaskRun) error
 	ListScheduledTaskRuns(taskID string, limit int) ([]domain.ScheduledTaskRun, error)
@@ -43,6 +44,11 @@ const (
 	// hold the task's in-flight claim (and therefore the next slot) open.
 	quotaProbeTimeout     = 3 * time.Minute
 	maxScheduledTaskTimes = 24
+	// quotaUsageSourceProbe / quotaUsageSourceTraffic name what the quiet
+	// window saw, because "our own last probe" and "the user is chatting"
+	// call for different copy in the run history.
+	quotaUsageSourceProbe   = "保活探测"
+	quotaUsageSourceTraffic = "真实流量"
 )
 
 // serverTimeZoneLabel names the zone the server itself runs in, for the console
@@ -329,6 +335,12 @@ func (s *Server) StartQuotaKeeper(ctx context.Context) {
 	}()
 }
 
+// RunScheduledTasksOnce runs one keeper pass over the stored tasks: the same
+// work the background loop does each minute, for callers that want it now.
+func (s *Server) RunScheduledTasksOnce(ctx context.Context) {
+	s.runDueScheduledTasks(ctx)
+}
+
 func (s *Server) runDueScheduledTasks(ctx context.Context) {
 	tasks, err := s.scheduledTaskStore.ListScheduledTasks()
 	if err != nil {
@@ -337,8 +349,19 @@ func (s *Server) runDueScheduledTasks(ctx context.Context) {
 	}
 	now := time.Now()
 	for _, task := range tasks {
+		// A restored provider brings its task back before the enabled check: the
+		// pause below is only meant to last as long as the delete does.
+		if s.reviveScheduledTask(&task) {
+			s.logs.AddApp("info", "quota keeper resumed task", fmt.Sprintf("task=%s Provider 已恢复", task.ID))
+		}
 		if !task.Enabled || len(task.ProviderIDs) == 0 {
 			continue
+		}
+		if dropped, empty := s.pruneDeletedScheduledProviders(&task); empty {
+			s.logs.AddApp("warn", "quota keeper paused task", fmt.Sprintf("task=%s 所有 Provider 都已删除", task.ID))
+			continue
+		} else if len(dropped) > 0 {
+			s.logs.AddApp("info", "quota keeper dropped purged providers", fmt.Sprintf("task=%s providers=%s", task.ID, strings.Join(dropped, ",")))
 		}
 		slot, ok := parseScheduleStamp(task.NextRunAt)
 		if !ok {
@@ -369,6 +392,188 @@ func (s *Server) runDueScheduledTasks(ctx context.Context) {
 		}
 		go s.runScheduledTaskBatch(ctx, task, slot, false)
 	}
+}
+
+// pruneDeletedScheduledProviders drops provider ids that were purged for good and
+// pauses the task when nothing schedulable is left, then writes that back.
+//
+// A plain delete is a soft delete and stays on the task: ProviderByID treats a
+// soft-deleted provider as gone, so the batch skips it, but removing the id
+// here would lose the membership forever — an admin restoring the provider from
+// the trash would then have to rebuild the task by hand. Only a purge (the
+// deliberate second step that actually frees the row) takes an id off the task.
+// When nothing live remains the task is paused, so the console shows a paused
+// job instead of an enabled no-op; reviveScheduledTask undoes that pause once a
+// member comes back.
+func (s *Server) pruneDeletedScheduledProviders(task *domain.ScheduledTask) (dropped []string, empty bool) {
+	live, dropped := s.liveScheduledProviderIDs(task.ProviderIDs)
+	empty = s.pauseIfNothingSchedulable(task, live)
+	return s.persistPrunedScheduledProviders(task, live, dropped), empty
+}
+
+// pauseIfNothingSchedulable disables an enabled task whose remaining members are
+// all soft-deleted, keeping the ids so a restore can bring it back. A task that
+// was already paused is left alone (its stamp and flag are the user's).
+func (s *Server) pauseIfNothingSchedulable(task *domain.ScheduledTask, live []string) bool {
+	if !task.Enabled || len(live) == 0 {
+		return false
+	}
+	for _, providerID := range live {
+		if _, err := s.router.ProviderByID(providerID); err == nil {
+			return false
+		}
+	}
+	// The pause is marked as the keeper's own: reviveScheduledTask only undoes
+	// this mark, so a pause a person asked for on a healthy task stays put.
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, false, domain.ScheduledTaskPausedByKeeper); err != nil {
+		slog.Warn("quota keeper: pause task failed", "task", task.ID, "error", err)
+		return false
+	}
+	task.ProviderIDs = live
+	task.Enabled = false
+	task.PausedBy = domain.ScheduledTaskPausedByKeeper
+	return true
+}
+
+// persistPrunedScheduledProviders writes a pruned membership back and pauses the
+// task when nothing live is left. Read-only callers that only need the pruned
+// list (the API and the batch guard) do not use this: whether a task is saved is
+// the handler's decision, not a side effect of asking.
+func (s *Server) persistPrunedScheduledProviders(task *domain.ScheduledTask, live, dropped []string) (written []string) {
+	if len(dropped) == 0 {
+		return nil
+	}
+	enabled := task.Enabled && len(live) > 0
+	pausedBy := ""
+	if !enabled {
+		// The same write carries the pause an empty list causes; mark it as the
+		// keeper's so the restore that undoes the delete can also undo the pause.
+		pausedBy = strings.TrimSpace(task.PausedBy)
+		if pausedBy == "" {
+			pausedBy = domain.ScheduledTaskPausedByKeeper
+		}
+	}
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, live, enabled, pausedBy); err != nil {
+		slog.Warn("quota keeper: prune purged providers failed", "task", task.ID, "error", err)
+	}
+	task.ProviderIDs = live
+	task.Enabled = enabled
+	if !enabled {
+		task.PausedBy = pausedBy
+	}
+	return dropped
+}
+
+// liveScheduledProviderIDs splits a task's provider list into the ids the
+// router still has (soft-deleted ones included, because they can come back) and
+// the ones that were purged (ProviderByIDIncludingDeleted counts those as gone).
+func (s *Server) liveScheduledProviderIDs(providerIDs []string) (live, missing []string) {
+	live = make([]string, 0, len(providerIDs))
+	for _, providerID := range providerIDs {
+		if _, err := s.router.ProviderByIDIncludingDeleted(providerID); err != nil {
+			missing = append(missing, providerID)
+			continue
+		}
+		live = append(live, providerID)
+	}
+	return live, missing
+}
+
+// schedulableProviderIDs returns the task's members that resolve and are not
+// soft-deleted: exactly the providers a batch may probe. Membership and
+// schedulability are different questions — a soft-deleted id stays on the task
+// but is not fired.
+func (s *Server) schedulableProviderIDs(task domain.ScheduledTask) (live []string, missing []string) {
+	live = make([]string, 0, len(task.ProviderIDs))
+	for _, providerID := range task.ProviderIDs {
+		if _, err := s.router.ProviderByID(providerID); err != nil {
+			missing = append(missing, providerID)
+			continue
+		}
+		live = append(live, providerID)
+	}
+	return live, missing
+}
+
+// reviveScheduledTask re-enables a task the keeper paused because every member
+// was soft-deleted, once at least one member resolves again (restored from the
+// trash, or re-created by a console re-import). It reports whether it wrote.
+// Only a task carrying the keeper's own pause mark qualifies: "disabled with at
+// least one live provider" also describes a task the operator switched off by
+// hand, and reviving that every minute would undo their decision.
+func (s *Server) reviveScheduledTask(task *domain.ScheduledTask) bool {
+	if task.Enabled || len(task.ProviderIDs) == 0 {
+		return false
+	}
+	// A legacy row (paused before the column existed) carries no mark, but it is
+	// only revivable while every member is still gone, and that is exactly the
+	// keeper's own pause: a user's pause needs a live member to be worth pausing,
+	// and pausing all-deleted tasks was never the user's to do.
+	pausedBy := strings.TrimSpace(task.PausedBy)
+	if pausedBy != "" && pausedBy != domain.ScheduledTaskPausedByKeeper {
+		return false
+	}
+	if live, _ := s.schedulableProviderIDs(*task); len(live) == 0 {
+		return false
+	}
+	// UpdateScheduledTaskProviders only touches the enabled flag, so the next slot
+	// goes with it: an enabled task left without a stamp would be read as "first
+	// sight" and wait a whole extra cycle before its first fire.
+	nextRunAt := quotaNextStamp(*task, time.Now())
+	if err := s.scheduledTaskStore.UpdateScheduledTaskProviders(task.ID, task.ProviderIDs, true, ""); err != nil {
+		slog.Warn("quota keeper: resume task failed", "task", task.ID, "error", err)
+		return false
+	}
+	task.Enabled = true
+	task.PausedBy = ""
+	if nextRunAt != "" && nextRunAt != task.NextRunAt {
+		if err := s.scheduledTaskStore.UpdateScheduledTaskSchedule(task.ID, task.LastRunAt, nextRunAt); err != nil {
+			slog.Warn("quota keeper: resume task schedule failed", "task", task.ID, "error", err)
+		}
+		task.NextRunAt = nextRunAt
+	}
+	return true
+}
+
+// resumeTasksForProvider runs when a provider leaves the trash: it re-enables
+// every paused task that names it, so undoing the delete also undoes the pause
+// it caused on the next tick instead of waiting for the operator to notice.
+func (s *Server) resumeTasksForProvider(providerID string) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || !s.scheduledTaskStoreReady() {
+		return
+	}
+	tasks, err := s.scheduledTaskStore.ListScheduledTasks()
+	if err != nil {
+		slog.Warn("quota keeper: list tasks failed", "error", err)
+		return
+	}
+	for _, task := range tasks {
+		if !quotaTaskNamesProvider(task, providerID) {
+			continue
+		}
+		if s.reviveScheduledTask(&task) {
+			s.logs.AddApp("info", "quota keeper resumed task", fmt.Sprintf("task=%s Provider %s 已恢复", task.ID, providerID))
+		}
+	}
+}
+
+// scheduledTaskPauseMark is the paused_by value for a task saved as the user
+// left it: none when it is enabled, the user's mark when it is switched off.
+func scheduledTaskPauseMark(enabled bool) string {
+	if enabled {
+		return ""
+	}
+	return domain.ScheduledTaskPausedByUser
+}
+
+func quotaTaskNamesProvider(task domain.ScheduledTask, providerID string) bool {
+	for _, id := range task.ProviderIDs {
+		if id == providerID {
+			return true
+		}
+	}
+	return false
 }
 
 // advanceScheduledTask stores the next slot (and an unchanged last-run stamp)
@@ -409,6 +614,19 @@ func (s *Server) releaseScheduledTaskRun(taskID string) {
 // scheduler itself never forces.
 func (s *Server) runScheduledTaskBatch(ctx context.Context, task domain.ScheduledTask, slot time.Time, force bool) {
 	defer s.releaseScheduledTaskRun(task.ID)
+	// 调度 tick 或手动执行前已经裁过一次；这里再查一遍，挡住"拿到任务快照后
+	// Provider 才被删除"的窗口：清除的 id 剪掉，软删除的留在成员里但不探测，
+	// 避免又写一条不存在的失败记录。只改这一轮的本地副本，不写库。
+	if live, purged := s.liveScheduledProviderIDs(task.ProviderIDs); len(purged) > 0 {
+		if len(live) == 0 {
+			return
+		}
+		task.ProviderIDs = live
+	}
+	task.ProviderIDs, _ = s.schedulableProviderIDs(task)
+	if len(task.ProviderIDs) == 0 {
+		return
+	}
 	batchID := randomHex(8)
 	started := time.Now()
 	var fired, skipped, failed int
@@ -484,9 +702,20 @@ func (s *Server) probeProviderForQuota(ctx context.Context, task domain.Schedule
 	window, quietEnabled := quotaQuietWindow(task)
 	if quietEnabled && !force {
 		if usedAt, source, busy := s.providerRecentlyUsed(providerID, window); busy {
-			run.Outcome = domain.QuotaRunSkipped
-			run.Reason = fmt.Sprintf("%d 分钟内已有%s（%s）", int(window.Minutes()), source, usedAt.In(time.Local).Format("15:04:05"))
-			return run
+			// 每天定点任务的目的是把窗口钉在用户挑的时刻。真实流量若刚发生，
+			// 窗口本来就在计时，这一发不是必需；但跳过它要等下一个定点（往往
+			// 几小时后）才有下一次机会，用户看到的就是"卡点经常跳过、额度不再
+			// 激活"。所以定点任务只为"刚探测过"让路，滚动模式才同时避让真实
+			// 流量。
+			if source == quotaUsageSourceProbe || task.Mode != domain.ScheduleDailyTimes {
+				run.Outcome = domain.QuotaRunSkipped
+				if source == quotaUsageSourceProbe {
+					run.Reason = fmt.Sprintf("%d 分钟内已有一发保活探测（%s）", int(window.Minutes()), usedAt.In(time.Local).Format("15:04:05"))
+				} else {
+					run.Reason = fmt.Sprintf("%d 分钟内已有成功请求（%s），额度窗口已在使用", int(window.Minutes()), usedAt.In(time.Local).Format("15:04:05"))
+				}
+				return run
+			}
 		}
 	}
 
@@ -510,7 +739,6 @@ func (s *Server) probeProviderForQuota(ctx context.Context, task domain.Schedule
 	}
 	started := time.Now()
 	result, _ := s.testProviderChat(req, providerID, providerChatTestRequest{Model: model, UserPrompt: prompt, Message: prompt}, started)
-	s.recordQuotaProbe(providerID, started)
 
 	run.Model = mapStringValue(result, "model")
 	if run.Model == "" {
@@ -520,6 +748,9 @@ func (s *Server) probeProviderForQuota(ctx context.Context, task domain.Schedule
 	run.LatencyMs = mapInt64Value(result, "latencyMs")
 	success, _ := result["success"].(bool)
 	if success {
+		// 只有成功的一发才算"碰过额度"。失败的上游请求没有启动窗口，若也记进
+		// 最近探测，下一格会被自己的失败挡住，正好错过重新激活的机会。
+		s.recordQuotaProbe(providerID, started)
 		run.Outcome = domain.QuotaRunFired
 		return run
 	}
@@ -604,9 +835,16 @@ func (s *Server) recordQuotaProbe(providerID string, at time.Time) {
 
 // providerRecentlyUsed answers whether anything touched this provider inside
 // the window, and what that was. Console chat tests never reach request_logs,
-// so the table holds real traffic only; the probes this loop sent are tracked
-// in memory instead. Naming the source matters in the run history: "上一发探测
-// 才 40 秒" and "用户正在用这个 Provider" are different reasons to stand down.
+// so the table holds forwarded traffic only; the probes this loop sent are
+// tracked in memory instead, and only successful ones count — a failed probe
+// did not touch the meter, so the next slot must still be allowed to try.
+// Naming the source matters in the run history: "上一发探测才 40 秒" and "用户
+// 正在用这个 Provider" are different reasons to stand down.
+//
+// The log query is restricted to 2xx on purpose: the table also records 401s,
+// 429s and 5xx, and none of those prove the subscription window was started.
+// Counting them made the keeper stand down exactly when the quota still needed
+// activating (an expired credential retrying every minute was enough).
 func (s *Server) providerRecentlyUsed(providerID string, window time.Duration) (time.Time, string, bool) {
 	if window <= 0 {
 		return time.Time{}, "", false
@@ -616,7 +854,7 @@ func (s *Server) providerRecentlyUsed(providerID string, window time.Duration) (
 	probeAt := s.quotaLastProbeAt[providerID]
 	s.quotaKeeperMu.Unlock()
 	if !probeAt.IsZero() && probeAt.After(cutoff) {
-		return probeAt, "保活探测", true
+		return probeAt, quotaUsageSourceProbe, true
 	}
 	if s.requestLogStore == nil {
 		return time.Time{}, "", false
@@ -624,6 +862,7 @@ func (s *Server) providerRecentlyUsed(providerID string, window time.Duration) (
 	page, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{
 		ProviderID: providerID,
 		From:       cutoff,
+		Status:     "2xx",
 		Page:       1,
 		PageSize:   1,
 	})
@@ -634,7 +873,7 @@ func (s *Server) providerRecentlyUsed(providerID string, window time.Duration) (
 	if len(page.Items) == 0 {
 		return time.Time{}, "", false
 	}
-	return page.Items[0].Time, "真实流量", true
+	return page.Items[0].Time, quotaUsageSourceTraffic, true
 }
 
 func (s *Server) pruneScheduledTaskRunsOnceADay() {

@@ -516,7 +516,7 @@ func TestSendWorkBuddyChatAnswersAfterTools(t *testing.T) {
 	defer upstream.Close()
 
 	server := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
-	send := func(body []byte) (*http.Response, error) {
+	send := func(_ domain.Provider, body []byte) (*http.Response, error) {
 		request, err := http.NewRequest(http.MethodPost, upstream.URL, bytes.NewReader(body))
 		if err != nil {
 			return nil, err

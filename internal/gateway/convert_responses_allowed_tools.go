@@ -50,6 +50,18 @@ func responsesAllowedToolsChoice(choice any) (approved map[string]any, mode stri
 		if params != nil {
 			entry["input_schema"] = params
 		}
+		// The approved list is read by compatible upstreams as Responses'
+		// shape ({"type":"function"|"custom","name":…[,"namespace":…]}), and by
+		// Claude as {name: {input_schema}}. Keep both halves: an entry without
+		// its type/name is a tool no one can identify.
+		switch toolType := stringValue(tool["type"]); toolType {
+		case "function", "custom":
+			entry["type"] = toolType
+			entry["name"] = stringValue(tool["name"])
+			if namespace := stringValue(tool["namespace"]); namespace != "" {
+				entry["namespace"] = namespace
+			}
+		}
 		approved[name] = entry
 	}
 	if len(approved) == 0 {

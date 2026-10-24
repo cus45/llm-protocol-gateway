@@ -226,6 +226,8 @@ func TestProviderLaneKey(t *testing.T) {
 		{domain.Provider{ID: "p1"}, "p1"},
 		{domain.Provider{ID: "p1", LaneGroup: "  acct "}, "group:acct"},
 		{domain.Provider{ID: "p1", LaneGroup: "   "}, "p1"},
+		{domain.Provider{ID: "p1", LaneGroup: "Acme"}, "group:acme"},
+		{domain.Provider{ID: "p1", LaneGroup: " ACME "}, "group:acme"},
 	}
 	for _, tc := range cases {
 		if got := providerLaneKey(tc.provider); got != tc.want {
@@ -315,5 +317,269 @@ func TestFailoverRetryAfterReadsTheAccountLane(t *testing.T) {
 	wait, convErr := strconv.Atoi(got)
 	if convErr != nil || wait <= providerRetryAfterSeconds {
 		t.Fatalf("Retry-After = %q, want the ACCOUNT's rate window, not the %ds constant", got, providerRetryAfterSeconds)
+	}
+}
+
+// 同组各行写着不同的上限时，账号的预算不能跟着"最后到的那一行"来回跳：
+// 无论哪一行先请求、按什么顺序来，账号的额度都是确定的。
+// (D29-3)
+func TestProviderLaneGroupLimitsStableAcrossRows(t *testing.T) {
+	t.Parallel()
+	providers := []domain.Provider{
+		{ID: "a", Name: "a", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", MaxConcurrentRequests: 1, RequestsPerMinute: 2},
+		{ID: "b", Name: "b", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", MaxConcurrentRequests: 3, RequestsPerMinute: 7},
+	}
+	for _, order := range [][]string{{"a", "b"}, {"b", "a"}} {
+		lanes := newProviderLanes()
+		for _, id := range order {
+			provider := providers[0]
+			if id == "b" {
+				provider = providers[1]
+			}
+			lanes.laneForProvider(provider, providers)
+		}
+		key := providerLaneKey(providers[0])
+		lanes.mu.Lock()
+		lane := lanes.lanes[key]
+		lanes.mu.Unlock()
+		if lane == nil {
+			t.Fatalf("order %v: the account has no lane", order)
+		}
+		lane.mu.Lock()
+		max, rpm := lane.max, lane.rpm
+		lane.mu.Unlock()
+		// The account's budget is the tightest limit any member declares: row a
+		// asks for 1 concurrent and 2/min, so the account carries 1 and 2
+		// whoever arrives last. A generous row must not talk the account up.
+		if max != 1 || rpm != 2 {
+			t.Fatalf("order %v: account lane sized %d concurrent, %d/min; want 1, 2 (smallest declared, not the last row's)", order, max, rpm)
+		}
+	}
+}
+
+// 组里有一行 0/0 时，它不能借"没有上限"绕过账号的预算：这条请求仍要
+// 扣账号的并发和每分钟额度。(D29-4)
+func TestProviderLaneGroupMemberWithoutLimitsIsBoundedByTheAccount(t *testing.T) {
+	t.Parallel()
+	server := laneGroupServer(t,
+		domain.Provider{ID: "a", LaneGroup: "acct", MaxConcurrentRequests: 1, RequestsPerMinute: 1, QueueWaitSeconds: 0},
+		domain.Provider{ID: "free", LaneGroup: "acct", MaxConcurrentRequests: 0, RequestsPerMinute: 0, QueueWaitSeconds: 0})
+	limited, err := server.router.ProviderByID("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	free, err := server.router.ProviderByID("free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := server.acquireProviderSlot(context.Background(), limited)
+	if err != nil {
+		t.Fatalf("the account's one slot should admit: %v", err)
+	}
+	if _, err := server.acquireProviderSlot(context.Background(), free); !errors.Is(err, errProviderSaturated) {
+		t.Fatalf("a 0/0 member must still be bounded by the account, got %v", err)
+	}
+	release()
+	// The concurrency slot is free again, but the minute budget is spent.
+	if _, err := server.acquireProviderSlot(context.Background(), free); !errors.Is(err, errProviderSaturated) {
+		t.Fatalf("a 0/0 member must spend the account's rate budget, got %v", err)
+	}
+}
+
+// 同一行也不能因为单行 0/0 而把账号的 0/0 行拉成无限：组里有一行限了，
+// 0/0 那行请求时也要走 lane。
+func TestProviderLaneGroupMemberWithoutLimitsCountsInFlight(t *testing.T) {
+	t.Parallel()
+	server := laneGroupServer(t,
+		domain.Provider{ID: "a", LaneGroup: "acct", MaxConcurrentRequests: 2, QueueWaitSeconds: 0},
+		domain.Provider{ID: "free", LaneGroup: "acct", MaxConcurrentRequests: 0, QueueWaitSeconds: 0})
+	free, err := server.router.ProviderByID("free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := server.acquireProviderSlot(context.Background(), free)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := server.providerInFlight(free); got != 1 {
+		t.Fatalf("a grouped row's in-flight should read back from the account lane, got %d", got)
+	}
+	release()
+	if got := server.providerInFlight(free); got != 0 {
+		t.Fatalf("release should return the slot, got %d in flight", got)
+	}
+}
+
+// 分组后的行在调度器"最少在用"里必须看到账号的真实在飞数，而不是永远 0。
+// (D29-6)
+func TestProviderInFlightReadsGroupedLane(t *testing.T) {
+	t.Parallel()
+	server := laneGroupServer(t,
+		domain.Provider{ID: "a", LaneGroup: "acct", MaxConcurrentRequests: 4, QueueWaitSeconds: 0},
+		domain.Provider{ID: "b", LaneGroup: "acct", MaxConcurrentRequests: 4, QueueWaitSeconds: 0},
+		domain.Provider{ID: "solo", MaxConcurrentRequests: 4, QueueWaitSeconds: 0})
+	a, err := server.router.ProviderByID("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := server.router.ProviderByID("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := server.acquireProviderSlot(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseSolo, err := server.acquireProviderSlot(context.Background(), mustProvider(t, server, "solo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range []domain.Provider{a, b} {
+		if got := server.providerInFlight(provider); got != 1 {
+			t.Fatalf("row %s shares the account's one request in flight, got %d", provider.ID, got)
+		}
+	}
+	if got := server.providerInFlight(mustProvider(t, server, "solo")); got != 1 {
+		t.Fatalf("an ungrouped row reads its own lane, got %d", got)
+	}
+	release()
+	releaseSolo()
+	if got := server.providerInFlight(b); got != 0 {
+		t.Fatalf("after release the account should have nothing in flight, got %d", got)
+	}
+}
+
+// 控制台改一行时，账号的预算按组里最紧的那条声明走：把 b 调到更宽不放大
+// 账号，调到更窄才收窄，改回 0/0 则回到 a 的额度——不会因为任何一行
+// "最后到达"而清零。
+func TestSetProviderConcurrencyResizesTheAccountLane(t *testing.T) {
+	t.Parallel()
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{ID: "a", Name: "a", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", MaxConcurrentRequests: 2},
+		{ID: "b", Name: "b", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", MaxConcurrentRequests: 0},
+	}})
+	server := &Server{router: router, providerLanes: newProviderLanes()}
+	call := func(body string) {
+		request := httptest.NewRequest(http.MethodPost, "/__providers/b/concurrency", strings.NewReader(body))
+		request.SetPathValue("id", "b")
+		request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, adminIdentity()))
+		recorder := httptest.NewRecorder()
+		server.handleSetProviderConcurrency(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	accountMax := func() int {
+		provider, err := router.ProviderByID("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lane, _ := server.providerLanes.laneForProvider(provider, router.State().Providers)
+		lane.mu.Lock()
+		defer lane.mu.Unlock()
+		return lane.max
+	}
+	if got := accountMax(); got != 2 {
+		t.Fatalf("account max = %d, want 2", got)
+	}
+	call(`{"maxConcurrentRequests":5}`)
+	if got := accountMax(); got != 2 {
+		t.Fatalf("a looser row must not widen the account: got %d, want 2", got)
+	}
+	call(`{"maxConcurrentRequests":1}`)
+	if got := accountMax(); got != 1 {
+		t.Fatalf("a tighter row must tighten the account: got %d, want 1", got)
+	}
+	call(`{"maxConcurrentRequests":0}`)
+	if got := accountMax(); got != 2 {
+		t.Fatalf("clearing row b must fall back to row a's 2, got %d", got)
+	}
+}
+
+// 混组的规则：A 声明 5/min，B 没有声明（0/0），账号就是 5/min，B 也在 5 次
+// 上被限住；这条混合只能记一次 warn，让运维看得到 B 为什么被限。
+func TestProviderLaneGroupMixedMembersUseTheSmallestDeclaredLimit(t *testing.T) {
+	t.Parallel()
+	logs := monitor.NewStore()
+	router := NewRouter(domain.GatewayState{Providers: []domain.Provider{
+		{ID: "a", Name: "a", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", RequestsPerMinute: 5, QueueWaitSeconds: 1},
+		{ID: "b", Name: "b", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://example.com/v1", LaneGroup: "acct", QueueWaitSeconds: 1},
+	}})
+	server := &Server{router: router, providerLanes: newProviderLanes(), logs: logs}
+	a := mustProvider(t, server, "a")
+	b := mustProvider(t, server, "b")
+	// A short wait keeps the refusal below: a rate-full lane is otherwise given
+	// the rest of its minute, which would make this a minute-long test.
+	for i := 0; i < 5; i++ {
+		release, err := server.acquireProviderSlot(context.Background(), a)
+		if err != nil {
+			t.Fatalf("request %d on a should be admitted, got %v", i+1, err)
+		}
+		release()
+	}
+	if _, err := server.acquireProviderSlot(context.Background(), b); !errors.Is(err, errProviderSaturated) {
+		t.Fatalf("the group's 5/min is spent by row a, so row b must be refused, got %v", err)
+	}
+	warnings := 0
+	for _, entry := range logs.ListApp(0) {
+		if entry.Level == "warn" && entry.Message == "lane group mixes limited and unlimited providers" {
+			warnings++
+			if !strings.Contains(entry.Context, `"acct"`) || !strings.Contains(entry.Context, "5/min") {
+				t.Fatalf("the warning must name the group and the applied limit, got %q", entry.Context)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("the mixed-group warning should be written once, got %d", warnings)
+	}
+}
+
+// 全部成员都是 0/0：账号不限，走原来的免费路径，也不会报混合。
+func TestProviderLaneGroupAllMembersUnlimitedStayFree(t *testing.T) {
+	t.Parallel()
+	server := laneGroupServer(t,
+		domain.Provider{ID: "a", LaneGroup: "acct"},
+		domain.Provider{ID: "b", LaneGroup: "acct"})
+	for _, id := range []string{"a", "b"} {
+		provider := mustProvider(t, server, id)
+		for i := 0; i < 3; i++ {
+			release, err := server.acquireProviderSlot(context.Background(), provider)
+			if err != nil {
+				t.Fatalf("%s should be free, got %v", id, err)
+			}
+			release()
+		}
+	}
+}
+
+func mustProvider(t *testing.T, server *Server, id string) domain.Provider {
+	t.Helper()
+	provider, err := server.router.ProviderByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider
+}
+
+// 组内排队：额度按最紧的成员算，但"能等多久"取组内最大——否则同一账号的
+// 另一行写了排队 5 秒，请求走到这一行仍然刚到就拒。
+func TestProviderLaneGroupQueueWaitTakesTheLongest(t *testing.T) {
+	t.Parallel()
+	impatient := domain.Provider{ID: "a", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "acct", MaxConcurrentRequests: 1, QueueWaitSeconds: 0}
+	patientRow := domain.Provider{ID: "b", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "acct", MaxConcurrentRequests: 1, QueueWaitSeconds: 5}
+	other := domain.Provider{ID: "c", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "other", MaxConcurrentRequests: 1, QueueWaitSeconds: 9}
+	ungrouped := domain.Provider{ID: "d", Protocol: domain.ProtocolOpenAIChat, MaxConcurrentRequests: 1, QueueWaitSeconds: 0}
+	members := []domain.Provider{impatient, patientRow, other, ungrouped}
+
+	if got := providerLaneQueueWait(impatient, members); got != 5*time.Second {
+		t.Fatalf("a grouped row inherited %v, want the group's longest 5s", got)
+	}
+	// 别的组不参与：other 组是 9 秒，不能串到 acct。
+	if got := providerLaneQueueWait(patientRow, members); got != 5*time.Second {
+		t.Fatalf("a sibling's wait = %v, want its own 5s", got)
+	}
+	// 未分组的行仍只看自己。
+	if got := providerLaneQueueWait(ungrouped, members); got != 0 {
+		t.Fatalf("an ungrouped row inherited %v, want its own 0", got)
 	}
 }

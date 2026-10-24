@@ -29,6 +29,8 @@ func TestStreamClaudeToOpenAIPreservesToolArgumentSpaces(t *testing.T) {
 		``,
 		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":5,"output_tokens":7}}`,
 		``,
+		`data: {"type":"message_stop"}`,
+		``,
 	}, "\n")
 
 	recorder := httptest.NewRecorder()
@@ -140,6 +142,8 @@ func TestStreamClaudeToOpenAIUsageMergesAcrossDeltas(t *testing.T) {
 		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":12}}`,
 		``,
 		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":20}}`,
+		``,
+		`data: {"type":"message_stop"}`,
 		``,
 	}, "\n")
 

@@ -27,7 +27,11 @@ type ClaudeOAuthUsageReport struct {
 	SevenDay       *ClaudeOAuthUsageBucket `json:"seven_day,omitempty"`
 	SevenDayOpus   *ClaudeOAuthUsageBucket `json:"seven_day_opus,omitempty"`
 	SevenDaySonnet *ClaudeOAuthUsageBucket `json:"seven_day_sonnet,omitempty"`
-	ExtraUsage     map[string]any          `json:"extra_usage,omitempty"`
+	// SevenDayOverageIncluded is the "extra usage over the plan" window. It is
+	// the one that actually turns requests away once the plan is spent, so a
+	// report that leaves it out hides the limit an operator is looking for.
+	SevenDayOverageIncluded *ClaudeOAuthUsageBucket `json:"seven_day_overage_included,omitempty"`
+	ExtraUsage              map[string]any          `json:"extra_usage,omitempty"`
 }
 
 func parseClaudeOAuthUsageBucket(raw any) *ClaudeOAuthUsageBucket {
@@ -58,12 +62,12 @@ func fetchClaudeOAuthUsage(ctx context.Context, accessToken string) (ClaudeOAuth
 	}
 	request.Header.Set("Accept", "application/json, text/plain, */*")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "claude-code/2.0.32")
+	request.Header.Set("User-Agent", "claude-code/"+claudeOAuthBillingVersion)
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("anthropic-beta", claudeOAuthBetaHeader)
 
 	client := &http.Client{Timeout: 20 * time.Second}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		return ClaudeOAuthUsageReport{}, err
 	}
@@ -90,11 +94,13 @@ func fetchClaudeOAuthUsage(ctx context.Context, accessToken string) (ClaudeOAuth
 		SevenDay:       parseClaudeOAuthUsageBucket(payload["seven_day"]),
 		SevenDayOpus:   parseClaudeOAuthUsageBucket(payload["seven_day_opus"]),
 		SevenDaySonnet: parseClaudeOAuthUsageBucket(payload["seven_day_sonnet"]),
+
+		SevenDayOverageIncluded: parseClaudeOAuthUsageBucket(payload["seven_day_overage_included"]),
 	}
 	if extraUsage, ok := payload["extra_usage"].(map[string]any); ok && len(extraUsage) > 0 {
 		report.ExtraUsage = extraUsage
 	}
-	if report.FiveHour == nil && report.SevenDay == nil && report.SevenDayOpus == nil && report.SevenDaySonnet == nil {
+	if report.FiveHour == nil && report.SevenDay == nil && report.SevenDayOpus == nil && report.SevenDaySonnet == nil && report.SevenDayOverageIncluded == nil {
 		report.Available = false
 		report.Error = "usage response did not include known buckets"
 	}

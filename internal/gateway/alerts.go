@@ -282,6 +282,15 @@ func (s *Server) raiseConcurrentIPAlert(hit monitor.ConcurrentIPHit, settings do
 // row. Delivery is never retried automatically: a bad token would otherwise
 // hammer the API every scan. The console offers a manual retry instead.
 func (s *Server) pushAlert(alert monitor.Alert, telegram domain.TelegramSettings) {
+	if s.monitoring != nil {
+		// The monitoring center now pushes the same detections through the
+		// configured channels; the legacy row stays as history and is imported
+		// into the event stream by the next start.
+		if err := s.alertStore.UpdateAlertPush(alert.ID, domain.AlertPushDisabled, ""); err != nil {
+			slog.Warn("record alert push state failed", "error", err)
+		}
+		return
+	}
 	if !telegram.Enabled || telegram.BotToken == "" || telegram.ChatID == "" {
 		if err := s.alertStore.UpdateAlertPush(alert.ID, domain.AlertPushDisabled, ""); err != nil {
 			slog.Warn("record alert push state failed", "error", err)
@@ -379,7 +388,7 @@ func sendTelegramMessage(cfg domain.TelegramSettings, text string) error {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: telegramTimeout}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		// url.Error wraps the tokenized URL, so report only the cause.
 		return fmt.Errorf("telegram request failed: %s", scrubTelegramToken(err.Error(), token))

@@ -110,6 +110,49 @@ func TestWorkBuddyQuotaWindowsCarryTheirOwnDate(t *testing.T) {
 	}
 }
 
+// WorkBuddy revokes an access token when the same account signs in elsewhere,
+// and the stored expiry — the refresh token's month — never shows it. The quota
+// reader has to answer that 401 with one refresh and retry, keeping the token.
+func TestWorkBuddyQuotaRefreshesARevokedToken(t *testing.T) {
+	summaryCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case workBuddySummaryPath:
+			summaryCalls++
+			if strings.Contains(r.Header.Get("Authorization"), "stale") {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("<html>gateway</html>"))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"IsPaidUser":true,"Packages":[{"PackageCode":"tc-x","CycleTotalCapacity":"100","CycleUsedCapacity":"40"}]}}`))
+		case workBuddyPaidPackagesPath, workBuddyFreePackagesPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Accounts":[]}}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
+	site.endpoint = func() string { return server.URL }
+
+	refreshes := 0
+	quota, credential := workBuddyQuotaFor(context.Background(), site,
+		domain.WorkBuddyCredential{AccessToken: "stale", UserID: "u-revoked"}, func() (domain.WorkBuddyCredential, error) {
+			refreshes++
+			return domain.WorkBuddyCredential{AccessToken: "fresh", UserID: "u-revoked"}, nil
+		})
+	if refreshes != 1 || summaryCalls != 2 {
+		t.Fatalf("refreshes=%d summaryCalls=%d, want exactly one refresh and a retry", refreshes, summaryCalls)
+	}
+	if credential.AccessToken != "fresh" {
+		t.Fatalf("credential = %+v, want the rotated token", credential)
+	}
+	if quota.Error != "" || quota.Plan != "Pro" {
+		t.Fatalf("quota = %+v", quota)
+	}
+}
+
 // The package door is only opened for an account whose credits come in batches,
 // and only with the codes WorkBuddy's client names — a detail read without them
 // answers 10001.
@@ -150,7 +193,7 @@ func TestWorkBuddyQuotaAsksThePackageDoorOnlyWhenItCounts(t *testing.T) {
 			defer server.Close()
 			site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
 			site.endpoint = func() string { return server.URL }
-			quota := workBuddyQuotaFor(context.Background(), site, domain.WorkBuddyCredential{AccessToken: "t", UserID: "u"})
+			quota, _ := workBuddyQuotaFor(context.Background(), site, domain.WorkBuddyCredential{AccessToken: "t", UserID: "u"}, nil)
 			if quota.Error != "" {
 				t.Fatalf("quota error: %s", quota.Error)
 			}

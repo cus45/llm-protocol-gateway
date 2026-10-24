@@ -122,6 +122,45 @@ func TestResponsesAllowedToolsToClaude(t *testing.T) {
 	}
 }
 
+// 白名单条目同时带 Responses 的 type/name 与 Claude 的 input_schema：有些兼容
+// 上游按 Responses 的形状读它，条目里没有 type/name 就没有工具能对上号。
+func TestResponsesAllowedToolsKeepsTypeAndName(t *testing.T) {
+	var req map[string]any
+	if err := json.Unmarshal([]byte(`{
+		"model":"claude-sonnet-4.5",
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[
+			{"type":"function","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},
+			{"type":"function","name":"write","parameters":{"type":"object"}}
+		],
+		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[
+			{"type":"function","name":"read","parameters":{"type":"object"}}
+		]}
+	}`), &req); err != nil {
+		t.Fatalf("request is not json: %v", err)
+	}
+	claudeReq, _, err := responsesToClaudeRequestDirect(req, "claude-sonnet-4.5", 0)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	choice, _ := claudeReq["tool_choice"].(map[string]any)
+	allowed, _ := choice["allowed_tools"].(map[string]any)
+	tools, _ := allowed["tools"].(map[string]any)
+	entry, ok := tools["read"].(map[string]any)
+	if !ok {
+		t.Fatalf("allowed_tools entry missing: %#v", tools)
+	}
+	if got := stringValue(entry["type"]); got != "function" {
+		t.Fatalf("entry type = %q, want function", got)
+	}
+	if got := stringValue(entry["name"]); got != "read" {
+		t.Fatalf("entry name = %q, want read", got)
+	}
+	if _, has := entry["input_schema"]; !has {
+		t.Fatalf("entry lost the Claude half (input_schema): %#v", entry)
+	}
+}
+
 // 线上验证用的形状（GLM 的 Anthropic 端点接受的）要能被 JSON 原样发出去：
 // Chat→Claude 的工具约束要走真实转换路径：any + disable_parallel_tool_use
 // 同时在场，且客户端没有 tools 时不得凭空出现 tool_choice。

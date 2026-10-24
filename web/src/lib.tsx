@@ -793,6 +793,74 @@ export function buildCurlCommand(log: LogEntry, host = window.location.origin): 
   return `curl -X POST '${url}' \\\n  ${headers.join(' \\\n  ')}`;
 }
 
+function protocolForPath(path: string): ReplayPlan['protocol'] {
+  if (path.includes('/messages')) return 'Claude';
+  if (path.includes('/responses')) return 'OpenAI Responses';
+  if (path.includes('/chat/completions') || path.includes('/completions')) return 'OpenAI Chat';
+  return '';
+}
+
+/** 重放计划：把一条历史日志还原成「客户端当时会发的那个请求」。 */
+export type ReplayPlan = {
+  /** 请求路径（取自日志的 path，去掉查询串）。 */
+  path: string;
+  /** 客户端协议，决定鉴权头与版本头怎么写。 */
+  protocol: 'Claude' | 'OpenAI Chat' | 'OpenAI Responses' | '';
+  /** 需要告知用户的额外说明（例如 Responses 重放会新存一条），没有则为空。 */
+  note: string;
+};
+
+/**
+ * 一条日志能不能重放、往哪儿重放。
+ *
+ * 日志的 `path` 就是网关当时收到的客户端路径，直接回放它保证走同一条协议入口
+ * 与路由；只有旧日志缺 path 时才按协议流向推一个默认入口。流向记的是
+ * 「上游 Provider 协议 -> 路由输出协议」，客户端说的是输出那一侧。
+ */
+export function replayPlan(log: LogEntry): ReplayPlan | null {
+  if (!log.requestBody?.trim()) return null;
+  const flow = log.protocolFlow || '';
+  const index = flow.lastIndexOf('->');
+  const output = (index >= 0 ? flow.slice(index + 2) : flow).trim();
+  // action 为 compact 的日志是客户端调 /responses/compact 触发的，回放要回同一个入口。
+  if (log.action === 'compact') return { path: '/v1/responses/compact', protocol: 'OpenAI Responses', note: '' };
+  const path = (log.path || '').split('?')[0].trim();
+  if (path) return { path, protocol: protocolForPath(path) || (output as ReplayPlan['protocol']) || '', note: '' };
+  if (output === 'Claude') return { path: '/v1/messages', protocol: 'Claude', note: '' };
+  if (output === 'OpenAI Responses') return { path: '/v1/responses', protocol: 'OpenAI Responses', note: '' };
+  if (output === 'OpenAI Chat') return { path: '/v1/chat/completions', protocol: 'OpenAI Chat', note: '' };
+  return null;
+}
+
+/** 重放请求头。密钥只进 Authorization，调用方负责不把它写进任何展示文本。 */
+export function buildReplayHeaders(plan: ReplayPlan, key: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
+  if (plan.protocol === 'Claude') headers['anthropic-version'] = '2023-06-01';
+  return headers;
+}
+
+/**
+ * 把重放收到的 SSE / 普通响应收成一段可读文本：优先取回复正文，
+ * 解析不出正文时退回原始报文，避免面板空白。
+ */
+export function summarizeReplayBody(raw: string, streamed: boolean): string {
+  if (!raw) return '';
+  if (!streamed) {
+    try {
+      const parsed = JSON.parse(raw) as { choices?: Array<{ message?: { content?: string } }>; output_text?: string; content?: Array<{ text?: string }>; error?: { message?: string } };
+      const text = parsed.output_text
+        || parsed.choices?.[0]?.message?.content
+        || parsed.content?.map(part => part.text || '').join('')
+        || parsed.error?.message;
+      if (text) return text;
+    } catch {
+      // 非 JSON（例如纯文本错误）就原样返回。
+    }
+    return raw;
+  }
+  return parseSSEStreamContent(raw) || raw;
+}
+
 export function formatTrafficLogJSON(log: LogEntry, providers: Provider[] = []): string {
   const provider = providers.find((p) => p.id === log.providerId);
   const data = {
@@ -1100,6 +1168,7 @@ export function protocolLabel(protocol: Protocol) {
     case 'openai_chat': return 'OpenAI Chat';
     case 'openai_responses': return 'OpenAI Responses';
     case 'claude': return 'Claude';
+    case 'gemini': return 'Gemini';
   }
 }
 
@@ -1107,6 +1176,7 @@ export function protocolFromLabel(label: string): Protocol {
   const normalized = label.trim().toLowerCase();
   if (normalized === 'openai responses' || label === 'OpenAI 响应') return 'openai_responses';
   if (normalized === 'claude' || label === 'Claude 消息') return 'claude';
+  if (normalized === 'gemini' || label === 'Gemini 原生') return 'gemini';
   if (normalized === 'openai chat' || label === 'OpenAI 对话') return 'openai_chat';
   return 'openai_chat';
 }
@@ -1116,6 +1186,7 @@ export function protocolIcon(label: string): string {
   const protocol = protocolFromLabel(label);
   if (protocol === 'claude') return 'claude-color';
   if (protocol === 'openai_responses') return 'codex-color';
+  if (protocol === 'gemini') return 'google-color';
   return 'openai';
 }
 
@@ -1166,6 +1237,12 @@ export function selfRegistrationEndpointSpec(protocol: Protocol): { path: string
         label: 'OpenAI Responses',
         hint: '请求体含 model/input（items 数组，每项有 role+content 或 type=function_call 等）；stream=true 时按 SSE 发送 response.created / response.output_text.delta / response.completed 等事件；非流式返回 { output: [...], status: "completed" }。',
       };
+    case 'gemini':
+      return {
+        path: '/v1beta/models/{model}:generateContent',
+        label: 'Gemini generateContent',
+        hint: '模型名在路径里，请求体含 contents（role user/model + parts）与 generationConfig；streamGenerateContent 以 `data: {...}` 分块返回 candidates。',
+      };
     case 'claude':
       return {
         path: '/v1/messages',
@@ -1183,10 +1260,10 @@ export function buildSelfRegistrationPrompt(provider: Provider, rawToken: string
   const registerUrl = `${originBase}/__providers/${provider.id}/self-register`;
   const tokenLine = rawToken || '<在控制台点击"生成注册令牌"后粘贴到这里>';
   // 三种协议逐条列出，供本地已有代码对号入座，不预设/不强制其中任何一种。
-  const protocolMenu = (['openai_chat', 'openai_responses', 'claude'] as Protocol[])
+  const protocolMenu = (['openai_chat', 'openai_responses', 'claude', 'gemini'] as Protocol[])
     .map((protocol) => {
       const spec = selfRegistrationEndpointSpec(protocol);
-      const header = protocol === 'claude' ? 'x-api-key: <SHARED_SECRET>' : 'Authorization: Bearer <SHARED_SECRET>';
+      const header = protocol === 'claude' ? 'x-api-key: <SHARED_SECRET>' : protocol === 'gemini' ? 'x-goog-api-key: <SHARED_SECRET>' : 'Authorization: Bearer <SHARED_SECRET>';
       return `  \u00b7 protocol="${protocol}"：POST ${spec.path}（${spec.label} 协议格式），鉴权头默认 ${header}\n    ${spec.hint}`;
     })
     .join('\n');
@@ -1524,6 +1601,59 @@ export function providerDisplayLabel(provider: Provider | undefined, missing = '
  * 拿日志的 routeId 反查路由首选、再对照密钥的备选顺序，就能在纯前端算出
  * "首选没服务、这条走了备选 N"，不用加库字段。
  */
+export type DecisionAggregate = {
+  providerId: string;
+  /** 出现在候选里/被尝试的次数 */
+  attempts: number;
+  /** 真正服务了这条请求的次数 */
+  served: number;
+  /** 发出去但失败（回答被丢弃或报错）的次数 */
+  failed: number;
+  /** 根本没发出去（未授权 / 未锁定模型 / 已禁用）的次数 */
+  skipped: number;
+  /** 平均到服务成功的耗时（毫秒），只看 served 的尝试 */
+  avgServedMs?: number;
+};
+
+/**
+ * 把请求日志里的调度尝试聚合成"每个账号被怎么对待"的一张表：多选一次就换号、
+ * AI 网关最常见的排障问题（谁老被跳过、谁老失败）用不着逐条翻详情。
+ * 只统计带 attempts 的日志（调度路径），其余日志不进这张表。
+ */
+export function aggregateScheduleAttempts(logs: LogEntry[]): DecisionAggregate[] {
+  const byProvider = new Map<string, DecisionAggregate & { servedMsTotal: number }>();
+  for (const log of logs) {
+    const attempts = log.analysis?.attempts;
+    if (!attempts || attempts.length === 0) continue;
+    for (const attempt of attempts) {
+      const providerId = attempt.providerId?.trim();
+      if (!providerId) continue;
+      const row = byProvider.get(providerId) ?? { providerId, attempts: 0, served: 0, failed: 0, skipped: 0, servedMsTotal: 0 };
+      row.attempts += 1;
+      // 判定看这一次尝试本身的结果，不能只看 deferred/skipped：唯一被尝试、
+      // 但上游回了 401/429 的那一次既不是"跳过"也不是"被丢弃"，按旧口径会被
+      // 记成"服务"，把失败藏起来。
+      const status = attempt.status;
+      const failedStatus = typeof status === 'number' && (status < 200 || status >= 300);
+      if (attempt.skipped) {
+        row.skipped += 1;
+      } else if (attempt.deferred || failedStatus) {
+        row.failed += 1;
+      } else {
+        row.served += 1;
+        if (typeof attempt.ms === 'number') row.servedMsTotal += attempt.ms;
+      }
+      byProvider.set(providerId, row);
+    }
+  }
+  return Array.from(byProvider.values())
+    .map(({ servedMsTotal, ...row }) => ({
+      ...row,
+      avgServedMs: row.served > 0 ? Math.round(servedMsTotal / row.served) : undefined,
+    }))
+    .sort((a, b) => b.attempts - a.attempts || a.providerId.localeCompare(b.providerId));
+}
+
 export function trafficLogServing(log: LogEntry, providers: Provider[], routes: Route[], apiKeys: APIKey[]) {
   const route = routes.find((item) => item.id === log.routeId);
   const primaryId = route?.providerId || '';
@@ -1874,6 +2004,7 @@ export function routeGatewayURL(route: Route, endpoints: OutputEndpoint[], base:
   if (route.outputProtocol === 'openai_responses') return `${root}/responses`;
   // Claude BasePath is /anthropic; clients append /v1/messages themselves.
   if (route.outputProtocol === 'claude') return `${root}/v1/messages`;
+  if (route.outputProtocol === 'gemini') return `${root}/models/{model}:generateContent`;
   return root;
 }
 
@@ -1887,6 +2018,7 @@ export function apiKeyClientBaseURL(route: Route, endpoints: OutputEndpoint[], p
 export function apiKeyClientAuthHint(route: Route) {
   if (route.outputProtocol === 'claude') return 'Claude Code：Base URL 填到 /anthropic（不要带 /v1）+ x-api-key';
   if (route.outputProtocol === 'openai_responses') return 'OpenAI Responses 客户端：Base URL + Bearer Key';
+  if (route.outputProtocol === 'gemini') return 'Gemini SDK：Base URL 填到 /v1beta（Google 会拼 /models/{model}:generateContent）+ x-goog-api-key';
   return 'OpenAI 客户端：Base URL（如 /v1）+ Bearer Key';
 }
 
@@ -1916,6 +2048,10 @@ export function buildApiKeyOpenCodeConfig(key: APIKey, route: Route | undefined,
   } else if (protocol === 'openai_responses') {
     npm = '@ai-sdk/openai';
     baseURL = `${root}/openai/v1`;
+  } else if (protocol === 'gemini') {
+    // Google 的 SDK 自己拼 /models/{model}:generateContent。
+    npm = '@ai-sdk/google';
+    baseURL = `${root}/v1beta`;
   }
   const aliases = key.modelAliases || {};
   const models: Record<string, { name: string; limit: { context: number; output: number } }> = {
@@ -2635,6 +2771,7 @@ export function protocolTone(protocol: Protocol): BadgeTone {
     case 'openai_chat': return 'blue';
     case 'openai_responses': return 'amber';
     case 'claude': return 'purple';
+    case 'gemini': return 'green';
   }
 }
 

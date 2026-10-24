@@ -328,6 +328,7 @@ func (p workBuddyCredentialPayload) toCredential(account domain.WorkBuddyCredent
 	if domainName := strings.TrimSpace(p.Domain); domainName != "" {
 		out.Domain = domainName
 	}
+	out.SignInAt = now.UTC().Format(time.RFC3339)
 	switch {
 	case p.ExpiresAt > 0:
 		out.ExpiresAt = time.UnixMilli(p.ExpiresAt).UTC().Format(time.RFC3339)
@@ -372,10 +373,14 @@ func workBuddyAllDigits(value string) bool {
 // ---- the plan's JSON API ---------------------------------------------------
 
 // workBuddyError is a WorkBuddy business error. Its code lets the sign-in
-// poll tell a "not ready yet, ask again" answer from a real failure.
+// poll tell a "not ready yet, ask again" answer from a real failure; status is
+// the HTTP status when the gateway page refused the request outright, which is
+// how a dead access token shows up (401, often as an HTML page rather than an
+// envelope).
 type workBuddyError struct {
-	code int
-	msg  string
+	code   int
+	status int
+	msg    string
 }
 
 func (e *workBuddyError) Error() string {
@@ -426,12 +431,13 @@ func workBuddyCall(ctx context.Context, method, endpoint string, headers map[str
 	code, _ := envelope.Code.Int64()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if code != 0 {
-			return &workBuddyError{code: int(code), msg: envelope.Msg}
+			return &workBuddyError{code: int(code), status: response.StatusCode, msg: envelope.Msg}
 		}
 		if envelope.Msg != "" {
-			return &workBuddyError{code: response.StatusCode, msg: envelope.Msg}
+			return &workBuddyError{code: response.StatusCode, status: response.StatusCode, msg: envelope.Msg}
 		}
-		return fmt.Errorf("WorkBuddy 返回 HTTP %d", response.StatusCode)
+		return &workBuddyError{code: response.StatusCode, status: response.StatusCode,
+			msg: fmt.Sprintf("WorkBuddy 返回 HTTP %d", response.StatusCode)}
 	}
 	if code != 0 {
 		return &workBuddyError{code: int(code), msg: envelope.Msg}
@@ -604,13 +610,28 @@ func (s *Server) pollWorkBuddyJSON(
 
 // ---- token refresh ---------------------------------------------------------
 
+// workBuddyAccessTokenLifetime is how long the credential is assumed to stay
+// valid when WorkBuddy signed it in without saying. Its access tokens last
+// hours, not the month its recorded expiry — the refresh token's — suggests,
+// and a token treated as never-expiring is only ever replaced after a 401 has
+// already cost one request.
+const workBuddyAccessTokenLifetime = 30 * time.Minute
+
 func workBuddyTokenNeedsRefresh(credential *domain.WorkBuddyCredential) bool {
 	if credential == nil {
 		return true
 	}
 	expiresAt := strings.TrimSpace(credential.ExpiresAt)
 	if expiresAt == "" {
-		return false // WorkBuddy didn't say; trust the token until it refuses
+		// WorkBuddy signed the account in without an expiry. Trusting it
+		// forever means never refreshing before the vendor refuses it, so age
+		// it from the last sign-in instead; with nothing to go on either, the
+		// 401 path below is what replaces it.
+		signIn, err := time.Parse(time.RFC3339, strings.TrimSpace(credential.SignInAt))
+		if err != nil {
+			return false
+		}
+		return time.Now().After(signIn.Add(workBuddyAccessTokenLifetime))
 	}
 	parsed, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
@@ -640,6 +661,31 @@ func refreshWorkBuddyCredential(ctx context.Context, site workBuddySite, credent
 		return credential, errors.New("WorkBuddy 没有返回刷新后的令牌")
 	}
 	return got.toCredential(credential), nil
+}
+
+// refreshWorkBuddyTokenLocked trades current for a fresh credential and
+// persists it. The caller holds the renew lock keyed by current.RefreshToken,
+// which is what keeps two concurrent refreshes from spending the same rotating
+// refresh token.
+func (s *Server) refreshWorkBuddyTokenLocked(provider domain.Provider, site workBuddySite, current domain.WorkBuddyCredential) (domain.Provider, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	refreshed, err := refreshWorkBuddyCredential(ctx, site, current)
+	if err != nil {
+		s.recordRenewal(provider, "workbuddy", time.Now(), err)
+		return provider, err
+	}
+	updated, err := s.router.SetProviderWorkBuddy(provider.ID, site.authType, refreshed)
+	if err != nil {
+		return provider, err
+	}
+	s.recordRenewal(updated, "workbuddy", time.Now(), nil)
+	if err := s.persistProviderOAuth(updated); err != nil {
+		s.logs.AddApp("warn", "failed to persist workbuddy token refresh", err.Error())
+	}
+	markTimingFlag(context.Background(), timingFlagOAuthRefresh)
+	markTimingFlag(context.Background(), timingFlagSaveState)
+	return updated, nil
 }
 
 // ensureFreshWorkBuddyToken guarantees the provider holds a usable access
@@ -676,24 +722,56 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 			return provider, nil
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	refreshed, err := refreshWorkBuddyCredential(ctx, site, current)
+	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
 	if err != nil {
 		// A refresh hiccup is not fatal: the current token may still work.
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 		return provider, nil
 	}
-	updated, err := s.router.SetProviderWorkBuddy(provider.ID, site.authType, refreshed)
+	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
+	return updated, nil
+}
+
+// forceRefreshWorkBuddyToken refreshes even when the stored expiry is still in
+// the future, because that expiry is the refresh-token lifetime (about a
+// month), not proof the access token is still accepted. WorkBuddy answers a
+// revoked token with a bare 401, and signing the same account in elsewhere is
+// enough to revoke it; without this path the account stays dead until someone
+// signs in again by hand.
+func (s *Server) forceRefreshWorkBuddyToken(providerID string) (domain.Provider, error) {
+	provider, err := s.router.ProviderByID(providerID)
 	if err != nil {
 		return domain.Provider{}, err
 	}
-	if err := s.persistProviderOAuth(updated); err != nil {
-		s.logs.AddApp("warn", "failed to persist workbuddy token refresh", err.Error())
+	site, ok := workBuddySiteForAuthType(provider.AuthType)
+	if !ok {
+		return provider, nil
+	}
+	credential := provider.WorkBuddy
+	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		return domain.Provider{}, errors.New("WorkBuddy 尚未登录，请在控制台完成登录")
+	}
+	if strings.TrimSpace(credential.RefreshToken) == "" {
+		return domain.Provider{}, errors.New("WorkBuddy 登录已失效（没有 refresh token），请在控制台重新登录")
+	}
+	renewLock := oauthRenewLock(provider.ID, credential.RefreshToken)
+	renewLock.Lock()
+	defer renewLock.Unlock()
+
+	// Another goroutine may have refreshed while this one waited for the lock.
+	current := *credential
+	if latest, latestErr := s.router.ProviderByID(provider.ID); latestErr == nil && latest.WorkBuddy != nil {
+		current = *latest.WorkBuddy
+		if current.AccessToken != credential.AccessToken {
+			return latest, nil
+		}
+	}
+	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
+	if err != nil {
+		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
+		return provider, fmt.Errorf("%w（WorkBuddy 登录可能已失效，请在控制台重新登录）", err)
 	}
 	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
-	markTimingFlag(context.Background(), timingFlagOAuthRefresh)
-	markTimingFlag(context.Background(), timingFlagSaveState)
 	return updated, nil
 }
 
@@ -750,12 +828,22 @@ func unflagWorkBuddyText(text string) string {
 	return text
 }
 
-// unflagWorkBuddyMessages clears workBuddyFlagged's words out of the system
-// turns, whether their content is a text or a list of parts, and drops one left
-// with nothing once its billing header went. What a user says goes upstream as
-// it was written: measured on the CN build, a system turn carrying a flagged
-// line draws 11128 from any position in the conversation, and the same line in
-// a user turn answers 200.
+// unflagWorkBuddyMessages clears workBuddyFlagged's words out of the system and
+// assistant turns, whether their content is a text or a list of parts, and
+// drops one left with nothing once its billing header went. What a user says
+// goes upstream as it was written: measured on the CN build, a system turn
+// carrying a flagged line draws 11128 from any position in the conversation,
+// and the same line in a user turn answers 200.
+//
+// The assistant turns are read for the same words because the model quotes
+// them back: a chat where it answers "You are Claude Code, Anthropic's
+// official CLI for Claude", or repeats the billing header, is refused on that
+// turn and on every turn after it — the history keeps the line, so the
+// conversation can never continue. Rewriting only the system turn (as this did
+// until 2026-10-23) left those chats refused for good, which is how a Claude
+// Desktop conversation died while a fresh Claude Code one still worked.
+// Measured the same day against copilot.tencent.com: the line in an assistant
+// turn answers 11128, and answers 200 once reworded here.
 func unflagWorkBuddyMessages(messages []any) ([]any, bool) {
 	changed := false
 	out := make([]any, 0, len(messages))
@@ -765,7 +853,8 @@ func unflagWorkBuddyMessages(messages []any) ([]any, bool) {
 			out = append(out, item)
 			continue
 		}
-		if role, _ := message["role"].(string); role != "system" {
+		role, _ := message["role"].(string)
+		if role != "system" && role != "assistant" {
 			out = append(out, message)
 			continue
 		}
@@ -787,9 +876,18 @@ func unflagWorkBuddyMessages(messages []any) ([]any, bool) {
 			}
 			changed = true
 			if len(parts) == 0 {
-				continue
+				// A tool call carries the turn on even with no text left; a
+				// text-only turn that said nothing but a flagged line is
+				// dropped whole. WorkBuddy takes the two user turns that
+				// leaves side by side (measured: answers 200).
+				if _, hasCalls := message["tool_calls"]; hasCalls {
+					message["content"] = parts
+				} else {
+					continue
+				}
+			} else {
+				message["content"] = parts
 			}
-			message["content"] = parts
 		}
 		out = append(out, message)
 	}
@@ -872,6 +970,14 @@ func shapeWorkBuddyChatBody(body []byte) ([]byte, map[string]string, bool) {
 			continue
 		}
 		if role, _ := message["role"].(string); role == "developer" {
+			// A developer turn itself draws 11128 on the CN build
+			// (measured 2026-10-23 against copilot.tencent.com: a clean
+			// "You are a helpful assistant." in a developer turn is
+			// refused, the same text in a system turn answers 200), so it
+			// goes out as system. magpie's plugin made the opposite move
+			// in its 0.1.15 ("a system prompt sent as a developer message
+			// passes the channel check"); that no longer holds, and
+			// copying it here would refuse every Codex client.
 			message["role"] = "system"
 			changed = true
 		}
@@ -925,8 +1031,10 @@ func shapeWorkBuddyChatBody(body []byte) ([]byte, map[string]string, bool) {
 
 // ---- one send path for a WorkBuddy chat --------------------------------------
 
-// workBuddySender posts a shaped chat body and returns the upstream response.
-type workBuddySender func(body []byte) (*http.Response, error)
+// workBuddySender posts a shaped chat body with the given provider's current
+// credentials and returns the upstream response. The provider is a parameter
+// rather than captured state so a send can be retried after a token refresh.
+type workBuddySender func(provider domain.Provider, body []byte) (*http.Response, error)
 
 // sendWorkBuddyChat sends a shaped WorkBuddy chat and adds magpie's two
 // repairs around the send. A chat that ends with tool results and then the
@@ -934,6 +1042,11 @@ type workBuddySender func(body []byte) (*http.Response, error)
 // again with an empty assistant reply between them, and the model is
 // remembered for the rest of the run so its next chats carry that reply up
 // front. A successful answer's tool calls are named back with aliases.
+//
+// A 401 is WorkBuddy revoking the access token, which its recorded expiry (the
+// refresh token's, about a month away) never predicts, so one forced refresh
+// and a single re-send happen here. The refresh also persists the rotated
+// token, so the next request starts from the new one.
 func (s *Server) sendWorkBuddyChat(provider domain.Provider, model string, body []byte, aliases map[string]string, send workBuddySender) (*http.Response, error) {
 	key := provider.ID + "\x00" + strings.ToLower(strings.TrimSpace(model))
 	if _, remembered := s.workBuddyAfterTools.Load(key); remembered {
@@ -941,9 +1054,22 @@ func (s *Server) sendWorkBuddyChat(provider domain.Provider, model string, body 
 			body = quiet
 		}
 	}
-	response, err := send(body)
+	response, err := send(provider, body)
 	if err != nil || response == nil {
 		return response, err
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
+		_ = response.Body.Close()
+		refreshed, refreshErr := s.forceRefreshWorkBuddyToken(provider.ID)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		provider = refreshed
+		response, err = send(provider, body)
+		if err != nil || response == nil {
+			return response, err
+		}
 	}
 	if response.StatusCode == http.StatusBadRequest {
 		original, readErr := io.ReadAll(response.Body)
@@ -953,23 +1079,129 @@ func (s *Server) sendWorkBuddyChat(provider domain.Provider, model string, body 
 			response.ContentLength = int64(len(original))
 			return response, nil
 		}
-		if readErr != nil || !workBuddyAfterToolsRefused(original) {
+		switch {
+		case readErr != nil:
+			return restore()
+		case workBuddyAfterToolsRefused(original):
+			quiet := replyAfterWorkBuddyTools(body)
+			if quiet == nil {
+				return restore()
+			}
+			s.workBuddyAfterTools.Store(key, true)
+			retried, retryErr := send(provider, quiet)
+			if retryErr != nil || retried == nil {
+				// Surface the upstream's own refusal, not a transport error.
+				return restore()
+			}
+			response = retried
+		case workBuddyPromptRefused(response.StatusCode, original):
+			// The rewrites above cover the words measured so far; a prompt with
+			// one they don't cover is turned away whole. WorkBuddy reads only
+			// the system turn for this check, so the client's instructions are
+			// sent once more as the first user turn's, with WorkBuddy's own
+			// system prompt in their place — a chat that would otherwise never
+			// run. As magpie does (its 0.1.29).
+			softened := workBuddySystemPromptAsInstructions(body)
+			if softened == nil {
+				return restore()
+			}
+			retried, retryErr := send(provider, softened)
+			if retryErr != nil || retried == nil {
+				return restore()
+			}
+			response = retried
+		default:
+			// Not one of the refusals above: the 400 is the upstream's answer to
+			// the request itself (bad parameters, context too long, unknown
+			// model, a quota message). Its body was read to match it and is put
+			// back as the original bytes, so the client reads the vendor's own
+			// message and the failover classifier sees the same text.
 			return restore()
 		}
-		quiet := replyAfterWorkBuddyTools(body)
-		if quiet == nil {
-			return restore()
-		}
-		s.workBuddyAfterTools.Store(key, true)
-		retried, retryErr := send(quiet)
-		if retryErr != nil || retried == nil {
-			// Surface the upstream's own refusal, not a transport error.
-			return restore()
-		}
-		response = retried
 	}
 	restoreWorkBuddyToolNames(response, aliases)
 	return response, nil
+}
+
+// workBuddySystemPromptAsInstructions is the last repair for a refusal that
+// outlasts workBuddyFlagged: the request with the client's system prompt moved
+// into the first user turn as instructions, and workBuddySystemPrompt in its
+// place. WorkBuddy's channel check reads the system turn, not the user's, so a
+// prompt it refuses passes once it is no longer the system turn — at the cost of
+// the client's instructions arriving as the user's words, which is why this is
+// only ever sent after the request was already refused. nil when there is no
+// system text to move, and nothing is changed.
+func workBuddySystemPromptAsInstructions(body []byte) []byte {
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if decoder.Decode(&payload) != nil || payload == nil {
+		return nil
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		return nil
+	}
+	systemIndex := -1
+	instructions := ""
+	for index, item := range messages {
+		message, isMessage := item.(map[string]any)
+		if !isMessage || stringValue(message["role"]) != "system" {
+			continue
+		}
+		systemIndex = index
+		instructions = workBuddyMessageText(message["content"])
+		break
+	}
+	if systemIndex < 0 || strings.TrimSpace(instructions) == "" || strings.TrimSpace(instructions) == workBuddySystemPrompt {
+		return nil
+	}
+	userIndex := -1
+	for index := systemIndex + 1; index < len(messages); index++ {
+		message, isMessage := messages[index].(map[string]any)
+		if isMessage && stringValue(message["role"]) == "user" {
+			userIndex = index
+			break
+		}
+	}
+	if userIndex < 0 {
+		return nil
+	}
+	system, _ := messages[systemIndex].(map[string]any)
+	user, _ := messages[userIndex].(map[string]any)
+	system["content"] = workBuddySystemPrompt
+	prefix := "The instructions below were sent as the system prompt; follow them.\n\n" + instructions
+	switch content := user["content"].(type) {
+	case string:
+		user["content"] = prefix + "\n\n" + content
+	case []any:
+		user["content"] = append([]any{map[string]any{"type": "text", "text": prefix}}, content...)
+	default:
+		user["content"] = prefix
+	}
+	return encodeJSONWithoutEscaping(payload)
+}
+
+// workBuddyMessageText reads one turn's text, whether it is a string or parts.
+func workBuddyMessageText(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return typed
+	case []any:
+		texts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			part, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, isText := part["text"].(string); isText && text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n\n")
+	default:
+		return ""
+	}
 }
 
 // workBuddyUnansweredResult is what an unanswered call is given, so the exchange

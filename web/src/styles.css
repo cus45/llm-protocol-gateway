@@ -413,6 +413,38 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .nav-item:hover .nav-icon { color: var(--sidebar-text); }
 .nav-item.active .nav-icon { color: var(--sidebar-active-text); }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decision-aggregate {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.decision-aggregate-title { font-weight: 600; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.decision-aggregate-sub { font-weight: 500; color: var(--subtle); margin-left: 4px; }
+.decision-aggregate-rows { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.decision-aggregate-row { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.decision-aggregate-provider { font-weight: 600; }
+.decision-aggregate-row .num.ok { color: var(--green, #2f9e44); }
+.decision-aggregate-row .num.bad { color: var(--red, #e5484d); }
+.decision-aggregate-row .num.muted { color: var(--muted); }
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--danger, #e5484d);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 .nav-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-left: auto; }
 .nav-status-dot.on { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
 .nav-status-dot.off { background: #f87171; box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18); }
@@ -5402,6 +5434,28 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 .schedule-trace-model { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schedule-trace-ms { color: var(--muted); margin-left: auto; }
 .schedule-trace-error { font-size: 11px; color: var(--red); flex-basis: 100%; overflow-wrap: anywhere; }
+/* 一键重放：控件一行、说明一行，结果按调度轨迹的行样式摊开。 */
+.replay-panel { display: flex; flex-direction: column; gap: 8px; }
+.replay-panel-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.replay-panel-controls label { color: var(--muted); }
+.replay-panel-controls select { height: var(--control-h-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; max-width: 220px; }
+.replay-panel-target { color: var(--subtle); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.replay-panel-controls .mini-btn { margin-left: auto; }
+.replay-panel-note { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.replay-attempt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  font-size: 12px;
+}
+.replay-attempt.error { border-left: 2px solid var(--red); }
+.replay-rank { color: var(--muted); font-family: var(--mono); min-width: 22px; }
+.replay-note { color: var(--muted); margin-left: auto; font-size: 11.5px; }
+.replay-text { flex-basis: 100%; margin: 4px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--text); }
 
 .log-status-banner-title {
   display: flex;
@@ -6231,16 +6285,23 @@ button.quota-clock-chip.removable:hover { border-color: var(--accent-border); ba
 .quota-chip-x { color: var(--subtle); font-size: 13px; line-height: 1; }
 .quota-clock-note { color: var(--subtle); font-size: 11.5px; }
 
-/* 下次触发是这一屏唯一的重要数字：字号与等宽都拉高，其它行退回说明文字。 */
+/* 下次触发是这一屏唯一的重要数字：字号与等宽都拉高，其它行退回说明文字。
+   卡片最窄只有 360px，"下次触发 + 今天 20:13 + 1 小时 56 分后 + 窗口预计
+   01:13 重置"一行放不下；让窗口预计固定占第二行并禁止自身折行，避免出现
+   半句掉到下一行的碎行。 */
 .quota-next {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+  column-gap: 8px; row-gap: 3px;
   padding: 9px 11px; border-radius: var(--r-md);
   background: var(--surface-sunken); border: 1px solid var(--border);
 }
 .quota-next-label { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
 .quota-next-value { color: var(--text-strong); font-family: var(--mono); font-size: 13px; font-weight: 700; }
 .quota-next-countdown { color: var(--accent); font-size: 12px; font-weight: 600; font-feature-settings: "tnum" 1; }
-.quota-next-reset { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.quota-next-reset {
+  grid-column: 1 / -1; justify-self: end; white-space: nowrap;
+  color: var(--muted); font-size: 11.5px; font-family: var(--mono); font-feature-settings: "tnum" 1;
+}
 
 .quota-providers { display: flex; flex-wrap: wrap; gap: 6px; }
 .quota-provider {
@@ -6351,6 +6412,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
     66px 66px 76px 76px
     76px
     98px
+    72px
     56px;
 }
 .tlog-head {
@@ -6657,3 +6719,48 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   background: var(--surface); color: var(--text); font-family: var(--mono); font-size: 12px;
 }
 .key-quota-none, .key-quota-note { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 6px; }
+
+/* ----------------------------------------------------------------
+   升级提示横幅：后端发布新版本后，提醒已打开的控制台刷新
+   ---------------------------------------------------------------- */
+.upgrade-banner {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  width: min(1600px, calc(100% - 32px));
+  margin: 12px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text, #1f2937);
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+.upgrade-banner-text { flex: 1 1 auto; min-width: 0; }
+.upgrade-banner-action,
+.upgrade-banner-dismiss {
+  flex: 0 0 auto;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--accent-border);
+  background: transparent;
+  color: var(--accent-strong, #4338ca);
+}
+.upgrade-banner-action {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: #fff;
+}
+.upgrade-banner-action:hover { filter: brightness(1.06); }
+.upgrade-banner-dismiss:hover { background: rgba(79, 70, 229, 0.12); }
+@media (max-width: 640px) {
+  .upgrade-banner { flex-wrap: wrap; }
+  .upgrade-banner-text { flex-basis: 100%; }
+}

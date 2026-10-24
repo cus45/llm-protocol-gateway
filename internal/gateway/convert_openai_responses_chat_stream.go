@@ -573,12 +573,14 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	interrupted := isUpstreamStreamInterruptedReader(r)
 	// Some upstreams (Qoder) signal failures as an `event: error` frame whose
 	// data payload is a bare error object with no "error" wrapper key. Track the
 	// current event name so that payload is recognized instead of being skipped
 	// as an ordinary chunk, which would surface as "stream ended without any
 	// chunks" and hide the real message.
+	// The Chat body says it finished with [DONE]; without it the answer stops
+	// wherever the socket closed, however clean that close was.
+	closed := false
 	eventName := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -594,7 +596,11 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			closed = true
 			continue
 		}
 
@@ -662,7 +668,13 @@ func streamOpenAIChatToResponsesEventsWithOptions(w http.ResponseWriter, reader 
 	if err := scanner.Err(); err != nil {
 		return state.usage, newUpstreamStreamInterruption(err, r.n)
 	}
-	if interrupted {
+	// Decided from what the reads actually saw: before the loop nothing has
+	// been read, a normal end of body is io.EOF, and a body that ends without
+	// [DONE] was cut however cleanly the socket closed.
+	if isUpstreamStreamInterruptedReader(r) {
+		return state.usage, closeInterruptedChatToResponsesStream(state, r.n)
+	}
+	if cleanEOFInterruption(r, closed) {
 		return state.usage, closeInterruptedChatToResponsesStream(state, r.n)
 	}
 	if !state.hasOutput() {
@@ -689,6 +701,10 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 	toolIndexByItemID := map[string]int{}
 	argsSeenByIndex := map[int]bool{}
 	nextToolIndex := 0
+	// The Responses body says it finished with one of its terminal events;
+	// without one the answer stops wherever the socket closed, however clean
+	// that close was.
+	closed := false
 
 	emitChunk := func(delta map[string]any, finish string) error {
 		sawAny = true
@@ -812,7 +828,6 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	interrupted := isUpstreamStreamInterruptedReader(r)
 	eventName := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -834,7 +849,11 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 		} else {
 			continue
 		}
-		if payload == "" || payload == "[DONE]" {
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			closed = true
 			continue
 		}
 
@@ -952,6 +971,7 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 				finishReason = "tool_calls"
 			}
 		case "response.completed", "response.incomplete", "response.failed":
+			closed = true
 			if response, ok := chunk["response"].(map[string]any); ok {
 				// The terminal event carries the real status; a turn cut by
 				// max_output_tokens must reach the client as "length".
@@ -1011,7 +1031,9 @@ func streamResponsesToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, 
 	if err := scanner.Err(); err != nil {
 		return usage, newUpstreamStreamInterruption(err, r.n)
 	}
-	if interrupted {
+	// Decided from what the reads actually saw: before the loop nothing has
+	// been read, and a normal end of body is io.EOF, not an interruption.
+	if isUpstreamStreamInterruptedReader(r) || cleanEOFInterruption(r, closed) {
 		return usage, closeInterruptedResponsesToChatStream(w, chunkID, resolvedModel, usage, &sawAny, &textSeen, &roleSent, int64(len(toolIndexByCallID)) > 0, r.n)
 	}
 	if !sawAny {

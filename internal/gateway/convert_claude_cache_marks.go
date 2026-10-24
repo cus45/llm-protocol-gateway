@@ -89,16 +89,19 @@ func markClaudeMessageTail(last map[string]any) bool {
 	return false
 }
 
-// claudeCacheableBlock 判断这个内容块能不能当缓存断点。
+// claudeCacheableBlock 判断这个内容块能不能当缓存断点。用黑名单而不是白名单：
+// 排在对话末尾的往往是 tool_result / tool_use（agent 续跑那一轮），按白名单
+// 会整段漏标。magpie 同样只排除 thinking（anthropic.go:921-928：只有
+// thinking / redacted_thinking 不能打点）；空文本块也跳过，断点落在它上面无意义。
 func claudeCacheableBlock(block map[string]any) bool {
 	switch block["type"] {
+	case "thinking", "redacted_thinking", "":
+		return false
 	case "text":
 		text, _ := block["text"].(string)
 		return strings.TrimSpace(text) != ""
-	case "image", "document":
-		return true
 	}
-	return false
+	return true
 }
 
 // applyClaudeCacheMarks 给从其他协议转来的 Messages 请求补上缓存断点：

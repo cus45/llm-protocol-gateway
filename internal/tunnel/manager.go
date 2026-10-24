@@ -299,7 +299,7 @@ func (m *Manager) defaultRun(ctx context.Context, args ...string) (*exec.Cmd, io
 	// alternative is inferring purely from Cloudflare's generic HTML error page.
 	if logFile := openCloudflaredLogFile(); logFile != nil {
 		fmt.Fprintf(logFile, "\n=== cloudflared started %s (pid %d): %s %s ===\n",
-			time.Now().Format(time.RFC3339), cmd.Process.Pid, bin, strings.Join(args, " "))
+			time.Now().Format(time.RFC3339), cmd.Process.Pid, bin, redactCloudflaredArgs(args))
 		merged = io.TeeReader(merged, logFile)
 		closer = teeCloser{Closer: stderr, extra: logFile}
 	}
@@ -307,6 +307,36 @@ func (m *Manager) defaultRun(ctx context.Context, args ...string) (*exec.Cmd, io
 		io.Reader
 		io.Closer
 	}{merged, closer}, nil
+}
+
+// redactCloudflaredArgs renders an argv for the persisted log with every
+// secret-bearing flag value masked. cloudflared takes the tunnel token as
+// `--token <value>` on the command line, and that log sits in the user's config
+// directory, so the raw argv must never be written there.
+func redactCloudflaredArgs(args []string) string {
+	const masked = "<redacted>"
+	out := make([]string, 0, len(args))
+	hideNext := false
+	for _, arg := range args {
+		if hideNext {
+			out = append(out, masked)
+			hideNext = false
+			continue
+		}
+		name, _, hasValue := strings.Cut(arg, "=")
+		switch strings.ToLower(strings.TrimLeft(name, "-")) {
+		case "token", "tunnel-token", "api-token", "secret":
+			if hasValue {
+				out = append(out, name+"="+masked)
+			} else {
+				out = append(out, arg)
+				hideNext = true
+			}
+			continue
+		}
+		out = append(out, arg)
+	}
+	return strings.Join(out, " ")
 }
 
 // cloudflaredLogMaxBytes caps the persisted cloudflared output file so it can
@@ -340,8 +370,15 @@ func openCloudflaredLogFile() *os.File {
 	if info, err := os.Stat(path); err == nil && info.Size() > cloudflaredLogMaxBytes {
 		_ = os.Rename(path, path+".1")
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil
+	}
+	// 0600 only applies when the file is created. Files written by older builds
+	// are 0644 and may hold a token from before arguments were redacted, so
+	// tighten them on every open.
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return nil
 	}
 	return file

@@ -4,7 +4,27 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
+
+// The sweep rotates tokens earlier than the request path does: a quiet account
+// must not leave its refresh token idle long enough for Anthropic to retire it.
+func TestClaudeTokenRefreshLead(t *testing.T) {
+	at := func(d time.Duration) *domain.ClaudeOAuthCredential {
+		return &domain.ClaudeOAuthCredential{AccessToken: "at", ExpiresAt: time.Now().Add(d).UTC().Format(time.RFC3339)}
+	}
+	if !claudeTokenNeedsRefreshWithin(at(20*time.Minute), claudeTokenProactiveRefreshLead) {
+		t.Fatal("a token 20 minutes out is due under the sweep's lead")
+	}
+	if claudeTokenNeedsRefresh(at(20 * time.Minute)) {
+		t.Fatal("the request path must leave a token 20 minutes out alone")
+	}
+	if claudeTokenNeedsRefreshWithin(at(2*time.Hour), claudeTokenProactiveRefreshLead) {
+		t.Fatal("a token two hours out is not due")
+	}
+}
 
 func TestBuildClaudeLocalAuthorizeURLUsesCAIEndpoint(t *testing.T) {
 	authURL := buildClaudeLocalAuthorizeURL("http://localhost:18093/callback", "challenge-value", "state-value")

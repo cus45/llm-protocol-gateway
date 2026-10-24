@@ -1,6 +1,10 @@
 package gateway
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestParseClaudeUsageFromSSE(t *testing.T) {
 	body := []byte(`event: message_start
@@ -97,5 +101,205 @@ func TestNormalizeInclusiveInputTokens(t *testing.T) {
 	}
 	if got := normalizeInclusiveInputTokens(678, 9218, 0, 0); got != 678+9218 {
 		t.Fatalf("expected exclusive prompt+cache, got %d", got)
+	}
+}
+
+// A long stream (past the 256KB log cap) must still report the usage it
+// carries at the end: the figures come from every forwarded chunk, not from
+// the capped copy kept for logs.
+func TestStreamUsageReaderReportsUsageBeyondLogCap(t *testing.T) {
+	prime := []byte(`event: message_start` + "\n" +
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":90}}}` + "\n\n")
+	delta := []byte(`event: message_delta` + "\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":42}}` + "\n\n")
+	chunk := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n")
+	reader := newStreamUsageReader(usageStreamClaude)
+	if _, err := reader.Write(prime); err != nil {
+		t.Fatal(err)
+	}
+	reader.Write(bytes.Repeat(chunk, passThroughLogBufferMax/len(chunk)+16))
+	reader.Write(delta)
+	usage := reader.final(ParseClaudeUsage, []byte("truncated"))
+	if usage.InputTokens != 100 || usage.CacheTokens != 90 || usage.OutputTokens != 42 {
+		t.Fatalf("usage beyond the log cap lost: %+v", usage)
+	}
+}
+
+// The same guarantee for an OpenAI stream whose usage chunk follows a long
+// content run.
+func TestStreamUsageReaderOpenAILateUsage(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+	reader.Write(bytes.Repeat(chunk, passThroughLogBufferMax/len(chunk)+16))
+	reader.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_cache_hit_tokens\":3}}\n\n"))
+	reader.Write([]byte("data: [DONE]\n\n"))
+	usage := reader.final(ParseOpenAIUsage, nil)
+	if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.CacheTokens != 3 {
+		t.Fatalf("late usage chunk lost: %+v", usage)
+	}
+}
+
+// The reader rides on the copy, so the figures must not depend on how the
+// stream happened to be chunked by the transport.
+func TestStreamUsageReaderIgnoresChunkBoundaries(t *testing.T) {
+	ops := []byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":7}}}` + "\n\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":9}}` + "\n\n")
+	want := newStreamUsageReader(usageStreamClaude)
+	want.Write(ops)
+	split := newStreamUsageReader(usageStreamClaude)
+	for _, b := range ops {
+		split.Write([]byte{b})
+	}
+	if got, expected := split.final(ParseClaudeUsage, nil), want.final(ParseClaudeUsage, nil); got != expected || expected.InputTokens != 12 || expected.OutputTokens != 9 {
+		t.Fatalf("split write changed usage: got %+v want %+v", got, expected)
+	}
+}
+
+// An error body is not a stream, even though it may quote a usage object: an
+// exhausted-quota message does, and billing it as spent tokens would be wrong.
+func TestStreamUsageReaderIgnoresWholeJSONBody(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	body := []byte(`{"error":{"message":"quota"},"usage":{"prompt_tokens":99,"completion_tokens":99}}`)
+	reader.Write(body)
+	if usage := reader.final(ParseOpenAIUsage, body); usage.OutputTokens == 99 {
+		t.Fatalf("error body counted as usage: %+v", usage)
+	}
+}
+
+// A data frame the upstream cut before its newline is all the client got, so
+// the usage it reports is folded like any other: the cut itself is what the
+// interruption is for, not a reason to drop the figures.
+func TestStreamUsageReaderFoldsTrailingFrameWithoutNewline(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	reader.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6}}"))
+	if got := reader.final(ParseOpenAIUsage, nil); got.InputTokens != 4 || got.OutputTokens != 6 {
+		t.Fatalf("trailing frame lost: %+v", got)
+	}
+}
+
+// An unfoldable stream never reads its usage back from the capped log copy: a
+// body shorter than what the reader saw is a truncated prefix, and parsing it
+// would under-count without saying so.
+func TestStreamUsageReaderUnfoldableDoesNotParseTruncatedPrefix(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamUnfoldable)
+	full := []byte(`{"usage":{"input_tokens":4,"output_tokens":6}}`)
+	prefix := append(append([]byte(nil), full...), bytes.Repeat([]byte(" "), 64)...)
+	reader.Write(prefix)
+	if got := reader.final(ParseResponsesUsage, full); got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Fatalf("truncated prefix counted as usage: %+v", got)
+	}
+	// A body as long as the stream (the non-stream path) still parses.
+	whole := newStreamUsageReader(usageStreamUnfoldable)
+	whole.Write(full)
+	if got := whole.final(ParseResponsesUsage, full); got.InputTokens != 4 || got.OutputTokens != 6 {
+		t.Fatalf("whole body not parsed: %+v", got)
+	}
+}
+
+// An unfoldable stream with no whole body to parse reports nothing; its
+// caller estimates instead.
+func TestStreamUsageReaderUnfoldableWithoutParser(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamUnfoldable)
+	reader.Write([]byte("some forwarded bytes"))
+	if got := reader.final(nil, nil); got != (TokenUsage{}) {
+		t.Fatalf("no parser must report nothing, got %+v", got)
+	}
+}
+
+// A long stream's remaining bytes must stop piling up in the line buffer: the
+// buffer only ever holds the unfinished tail.
+func TestStreamUsageReaderPendingStaysSmall(t *testing.T) {
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+	for index := 0; index < 4000; index++ {
+		reader.Write(chunk)
+	}
+	if len(reader.pending) != 0 {
+		t.Fatalf("completed lines must leave no residue, held %d bytes", len(reader.pending))
+	}
+	reader.Write([]byte("data: {\"partial\":"))
+	if len(reader.pending) != len("data: {\"partial\":") {
+		t.Fatalf("only the unfinished tail should be held, got %d", len(reader.pending))
+	}
+}
+
+// Each protocol's closing frame is recognised from the streamed bytes alone.
+func TestStreamEndReaderSeesClosingFrames(t *testing.T) {
+	cases := []struct {
+		name  string
+		want  bool
+		parts []string
+	}{
+		{name: "chat done", want: true, parts: []string{"data: {\"choices\":[]}\n\n", "data: [DONE]\n\n"}},
+		{name: "chat done split", want: true, parts: []string{"data: [DO", "NE]\n\n"}},
+		{name: "chat cut", want: false, parts: []string{"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"}},
+		{name: "chat cut mid frame", want: false, parts: []string{"data: {\"choices\":[]}\n\n", "data: {\"choi"}},
+		{name: "chat quoting done", want: false, parts: []string{"data: {\"choices\":[],\"text\":\"[DONE]\",\"pad\":\"" + strings.Repeat("p", 400) + "\"}\n\n"}},
+		{name: "responses completed", want: true, parts: []string{"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"}},
+		{name: "claude stop", want: true, parts: []string{"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"}},
+	}
+	for _, testCase := range cases {
+		reader := &streamEndReader{}
+		for _, part := range testCase.parts {
+			reader.Write([]byte(part))
+		}
+		if got := reader.closed(); got != testCase.want {
+			t.Fatalf("%s: closed()=%v, want %v", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+// The Claude cut turn is folded per line, across chunk boundaries, so a stream
+// closed from its own bytes stops exactly the blocks it left open.
+func TestStreamEndReaderFoldsClaudeBlocksAcrossChunks(t *testing.T) {
+	stream := "event: message_start\ndata: {\"type\":\"message_start\"}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2}\n\n"
+	reader := &streamEndReader{}
+	for _, b := range []byte(stream) {
+		reader.Write([]byte{b})
+	}
+	cut := reader.cut(TokenUsage{}, int64(len(stream)), nil)
+	if !cut.messageStarted {
+		t.Fatal("message_start was not seen")
+	}
+	if len(cut.openBlocks) != 1 || cut.openBlocks[0] != 2 {
+		t.Fatalf("open blocks %v, want [2]", cut.openBlocks)
+	}
+}
+
+// N23-5：可折叠的流里折叠一无所获时，final 退回整段解析，而不是一手空账
+// 让上层按 len/4 估一笔假账。
+func TestStreamUsageReaderFoldableFallsBackToBody(t *testing.T) {
+	foldedBody := []byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")
+	reader := newStreamUsageReader(usageStreamOpenAI)
+	reader.Write(foldedBody)
+	if got := reader.final(ParseOpenAIUsage, foldedBody); got.InputTokens != 12 || got.OutputTokens != 3 {
+		t.Fatalf("folded usage lost: %+v", got)
+	}
+
+	silent := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+	reader = newStreamUsageReader(usageStreamOpenAI)
+	reader.Write(silent)
+	if got := reader.final(ParseOpenAIUsage, silent); got != (TokenUsage{}) {
+		t.Fatalf("silent stream usage = %+v, want zero", got)
+	}
+
+	// 折叠什么都没捡到、但整段 body 解析得出 usage：必须用真实数字。
+	counted := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\n\n")
+	reader = newStreamUsageReader(usageStreamClaude)
+	reader.Write(counted)
+	reader.claude = claudeUsageTotals{}
+	if got := reader.final(ParseClaudeUsage, counted); got.InputTokens != 7 || got.OutputTokens != 1 {
+		t.Fatalf("body fallback usage = %+v, want the body's figures", got)
+	}
+
+	// 截断的前缀（body 比流短）不回退解析：数字会偏小且无处说明。
+	reader = newStreamUsageReader(usageStreamClaude)
+	reader.Write(append(append([]byte(nil), counted...), []byte("                              ")...))
+	reader.claude = claudeUsageTotals{}
+	if got := reader.final(ParseClaudeUsage, counted); got != (TokenUsage{}) {
+		t.Fatalf("truncated prefix counted as usage: %+v", got)
 	}
 }

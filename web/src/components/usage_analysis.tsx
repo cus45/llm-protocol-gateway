@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type {LogEntry, Provider, StatusBucketStats, UsageAnalysisResponse} from '../types';
-import {API_BASE, formatBytes, formatTokenCount, localDateToRFC3339, providerUsageLabel} from '../lib';
+import {API_BASE, formatBytes, formatCostMicros, formatTokenCount, localDateToRFC3339, providerUsageLabel} from '../lib';
 import {downloadCSV, UsageDonutChart, UsageStatusChart} from './charts';
 import {ProviderRefLabel} from './provider_label';
 
@@ -85,6 +85,17 @@ function Pager({page, count, onChange}: {page: number; count: number; onChange: 
   return <div className="usage-table-foot"><span>{count.toLocaleString()} 项</span><div><button className="mini-btn" disabled={!page} onClick={() => onChange(page - 1)}>上一页</button><span>{count ? page + 1 : 0} / {Math.ceil(count / 20)}</span><button className="mini-btn" disabled={(page + 1) * 20 >= count} onClick={() => onChange(page + 1)}>下一页</button></div></div>;
 }
 function csv(value: string | number) { const text = String(value); return `"${(/^[=+@\-\t\r]/.test(text) ? "'" : '') + text.replace(/"/g, '""')}"`; }
+
+/**
+ * 单条请求的成本格。未计价画「—」，下面跟一行「未计价」小字：
+ * 空白会被读成「免费」，而这个功能上线前的日志本来就没有价格行。
+ */
+function CostCell({log}: {log: LogEntry}) {
+  return <td className="usage-cost-cell" title={log.priced ? '按请求结束时价格表算出，之后改价不回算' : '这条请求没有价格行（或早于成本功能）：是「未计价」，不是免费'}>
+    {log.priced ? formatCostMicros(log.costMicros) : '—'}
+    {log.priced ? null : <small className="usage-cell-caption">未计价</small>}
+  </td>;
+}
 
 function statusBuckets(rows: LogEntry[]): StatusBucketStats[] {
   const counts = new Map<string, number>();
@@ -276,7 +287,7 @@ export function ContextAnalysisPanel({rows, providers}: {rows: LogEntry[]; provi
     </div>}
     <section className="usage-block">
       <div className="usage-block-head"><div><h3>大上下文请求</h3><p>按输入 Token 排序，识别重复历史与工具定义的开销。窗口上限未知时不展示占用率。</p></div><span className="usage-note-inline">Top {heavy.length}</span></div>
-      <div className="usage-table-wrap"><table className="usage-data-table"><thead><tr>{['模型 / 时间', 'Provider', '输入 Token', '缓存读 / 写', ...(captured.length > 0 ? ['消息', '工具定义', '工具结果'] : [])].map(h => <th key={h}>{h}</th>)}</tr></thead><tbody>{heavy.slice(currentPage * 10, currentPage * 10 + 10).map((r, i) => <tr key={r.id || i}><td>{r.model}<small className="usage-cell-caption">{new Date(r.time).toLocaleString()}</small></td><td><ProviderRefLabel providerId={r.providerId} providers={providers} size={14} /></td><td>{formatTokenCount(r.inputTokens)}</td><td>{formatTokenCount(r.cacheTokens || 0)} / {formatTokenCount(r.cacheWriteTokens || 0)}</td>{captured.length > 0 && <><td>{r.analysis?.captured ? r.analysis.messages : '—'}</td><td>{r.analysis?.captured ? `${r.analysis.tools} · ${formatBytes(r.analysis.toolBytes)}` : '—'}</td><td>{r.analysis?.captured ? r.analysis.toolResults : '—'}</td></>}</tr>)}{!heavy.length && <tr><td colSpan={captured.length > 0 ? 7 : 4} className="usage-empty">当前区间暂无上下文记录</td></tr>}</tbody></table></div>
+      <div className="usage-table-wrap"><table className="usage-data-table"><thead><tr>{['模型 / 时间', 'Provider', '输入 Token', '缓存读 / 写', '成本', ...(captured.length > 0 ? ['消息', '工具定义', '工具结果'] : [])].map(h => <th key={h}>{h}</th>)}</tr></thead><tbody>{heavy.slice(currentPage * 10, currentPage * 10 + 10).map((r, i) => <tr key={r.id || i}><td>{r.model}<small className="usage-cell-caption">{new Date(r.time).toLocaleString()}</small></td><td><ProviderRefLabel providerId={r.providerId} providers={providers} size={14} /></td><td>{formatTokenCount(r.inputTokens)}</td><td>{formatTokenCount(r.cacheTokens || 0)} / {formatTokenCount(r.cacheWriteTokens || 0)}</td><CostCell log={r} />{captured.length > 0 && <><td>{r.analysis?.captured ? r.analysis.messages : '—'}</td><td>{r.analysis?.captured ? `${r.analysis.tools} · ${formatBytes(r.analysis.toolBytes)}` : '—'}</td><td>{r.analysis?.captured ? r.analysis.toolResults : '—'}</td></>}</tr>)}{!heavy.length && <tr><td colSpan={captured.length > 0 ? 8 : 5} className="usage-empty">当前区间暂无上下文记录</td></tr>}</tbody></table></div>
       {heavy.length > 10 && <Pager page={currentPage} count={heavy.length} onChange={setPage} />}
     </section>
   </>;

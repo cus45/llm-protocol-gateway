@@ -350,3 +350,44 @@ func TestStreamClaudeToOpenAIChatWithToolUseIsNotRetryable(t *testing.T) {
 		t.Fatalf("expected DONE marker, got %q", body)
 	}
 }
+
+// D32-3：密钥级 max_tokens 覆盖小于 effort 默认预算时，budget_tokens 必须压到
+// max_tokens-1024 之下，否则上游 400（budget 必须小于 max_tokens）。
+func TestOpenAIChatToClaudeRequestClampsThinkingBudgetToMaxTokens(t *testing.T) {
+	openAIReq := map[string]any{
+		"model":            "claude-haiku-4-5-20251001",
+		"messages":         []any{map[string]any{"role": "user", "content": "hello"}},
+		"reasoning_effort": "high",
+	}
+	claudeReq, err := openAIChatToClaudeRequest(openAIReq, "claude-haiku-4-5-20251001", 8000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if claudeReq["max_tokens"] != 8000 {
+		t.Fatalf("max_tokens = %#v, want the override 8000", claudeReq["max_tokens"])
+	}
+	thinking, _ := claudeReq["thinking"].(map[string]any)
+	if thinking["budget_tokens"] != 8000-1024 {
+		t.Fatalf("budget_tokens = %#v, want %d", thinking["budget_tokens"], 8000-1024)
+	}
+
+	// 默认预算本就放得下时不改。
+	claudeReq, err = openAIChatToClaudeRequest(openAIReq, "claude-haiku-4-5-20251001", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if thinking, _ := claudeReq["thinking"].(map[string]any); thinking["budget_tokens"] != reasoningEffortBudgetTokens("high") {
+		t.Fatalf("budget_tokens = %#v, want the effort's default", thinking["budget_tokens"])
+	}
+
+	// 显式 thinking.budget_tokens 同样收紧。
+	openAIReq["thinking"] = map[string]any{"type": "enabled", "budget_tokens": 32000}
+	claudeReq, err = openAIChatToClaudeRequest(openAIReq, "claude-haiku-4-5-20251001", 2000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	thinking, _ = claudeReq["thinking"].(map[string]any)
+	if thinking["budget_tokens"] != thinkingBudgetFloor {
+		t.Fatalf("explicit budget_tokens = %#v, want the floor %d", thinking["budget_tokens"], thinkingBudgetFloor)
+	}
+}

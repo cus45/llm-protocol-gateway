@@ -144,7 +144,23 @@ func (s *Server) doOpenAIProviderRequest(ctx context.Context, r *http.Request, p
 		return doHTTPWithTiming(ctx, &http.Client{Timeout: 0}, request)
 	}
 	if isWorkBuddyProvider(provider) {
-		return s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, send)
+		// Each retry carries the provider it was decided for.
+		return s.sendWorkBuddyChat(provider, model, body, workBuddyAliases, func(sendProvider domain.Provider, requestBody []byte) (*http.Response, error) {
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(requestBody))
+			if err != nil {
+				return nil, err
+			}
+			request.Header.Set("Content-Type", "application/json")
+			if accept != "" {
+				request.Header.Set("Accept", accept)
+			} else {
+				request.Header.Set("Accept", "application/json")
+			}
+			applyProviderAuth(request, sendProvider, incomingAuth)
+			applyOpenCodeZenHeaders(request, sendProvider, requestBody)
+			applyRequestAdapterHeaders(request, sendProvider, model)
+			return doHTTPWithTiming(ctx, &http.Client{Timeout: 0}, request)
+		})
 	}
 	return send(body)
 }
@@ -169,7 +185,7 @@ func (s *Server) proxyOpenAIResponses(w http.ResponseWriter, r *http.Request, pr
 	// so this never triggers there and reasoning continuity is preserved.
 	response = s.retryResponsesWithoutReasoningIfNeeded(r.Context(), r, provider, upstreamURL, body, r.Header.Get("Accept"), skipIncomingAuth, response)
 	defer response.Body.Close()
-	return writePassThroughResponse(w, response, clientStream, ParseResponsesUsage, responsesStreamInterrupter{})
+	return writePassThroughResponse(w, response, clientStream, usageStreamResponses, ParseResponsesUsage, responsesStreamInterrupter{})
 }
 
 // retryResponsesWithoutReasoningIfNeeded implements Strategy 3 for the Responses
@@ -584,11 +600,76 @@ type streamRetryRecorder interface {
 // short of its announced Content-Length into an interruption. A converter has
 // no way to see that on its own: reading a truncated body is just EOF.
 func runStreamConverter(w http.ResponseWriter, response *http.Response, model string, streamConvert streamConverter) (TokenUsage, error) {
-	usage, err := streamConvert(w, response.Body, model)
-	if err == nil && response.ContentLength > 0 {
-		err = newUpstreamStreamInterruption(fmt.Errorf("body shorter than its Content-Length %d", response.ContentLength), int(response.ContentLength))
+	// One verdict on the body's end, for every leg (magpie judges it in one place
+	// too, gateway.go:4909): a body that carried bytes and did not end with its
+	// protocol's closing frame was cut, whichever converter read it. A body with
+	// no bytes at all is not a turned-away answer but an account that answered
+	// nothing, and the empty-stream retry above owns that case.
+	//
+	// Each leg still reports the cut it noticed first, in its own protocol's
+	// terms; a leg that accepted a body it should not have is caught here.
+	reader := newUpstreamStreamReader(response.Body)
+	counting := &wroteTrackingWriter{ResponseWriter: w, written: &reader.wrote}
+	usage, err := streamConvert(counting, reader, model)
+	if err != nil {
+		return usage, err
 	}
-	return usage, err
+	if cut := reader.cut(); cut != nil && !reader.wrote {
+		// Nothing of a turn reached the client: the account answered nothing, and
+		// the empty-stream retry above owns that case.
+		return usage, cut
+	}
+	return usage, nil
+}
+
+// upstreamStreamReader is the body a converter reads, remembered up to the cap,
+// so the verdict on how it ended is taken from the bytes.
+type upstreamStreamReader struct {
+	body io.Reader
+	seen bytes.Buffer
+	over bool // more bytes came than the cap holds
+	// wrote says the converter produced output: the attempt became a turn.
+	wrote bool
+}
+
+func newUpstreamStreamReader(body io.Reader) *upstreamStreamReader {
+	return &upstreamStreamReader{body: body}
+}
+
+func (r *upstreamStreamReader) Read(p []byte) (int, error) {
+	n, err := r.body.Read(p)
+	if n > 0 {
+		room := closingBodyMax - r.seen.Len()
+		if room <= 0 {
+			r.over = true
+		} else {
+			if n < room {
+				room = n
+			}
+			_, _ = r.seen.Write(p[:room])
+			if n > room {
+				r.over = true
+			}
+		}
+	}
+	return n, err
+}
+
+// cut reports the body as cut when it carried bytes, is an event stream, and
+// ended without its protocol's closing frame. A body longer than the cap is not
+// judged: what was dropped is the part that would have said.
+func (r *upstreamStreamReader) cut() error {
+	if r.over {
+		return nil
+	}
+	body := r.seen.Bytes()
+	if len(body) == 0 || !bytes.Contains(body, sseDataPrefixMark) {
+		return nil
+	}
+	if closesUpstreamStream(body) {
+		return nil
+	}
+	return newUpstreamStreamInterruption(io.ErrUnexpectedEOF, len(body))
 }
 
 func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Response, model string, stream bool, convert responseConverter, streamConvert streamConverter) (int, TokenUsage, []byte, error, bool) {
@@ -619,26 +700,20 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 		// event as it likes. On the last attempt there is nowhere to go, so a
 		// half answer the converter did not close is sent as it stands.
 		if fw, ok := w.(*failoverResponseWriter); ok {
-			intercepted := newInterceptingStreamWriter()
-			usage, streamErr := runStreamConverter(intercepted, response, model, streamConvert)
-			streamBody := intercepted.body()
-			if !isUpstreamStreamInterruption(streamErr) {
-				// Complete: nothing to retry, only to send.
-				intercepted.replay(fw)
+			streamed := newConverterStreamWriter(fw)
+			usage, streamErr := runStreamConverter(streamed, response, model, streamConvert)
+			streamBody := streamed.Finish()
+			if streamed.Committed() {
 				fw.FlushError()
 				return response.StatusCode, usage, streamBody, streamErr, false
 			}
-			if fw.canDefer {
-				// The loop retries here or hands the turn to the next account;
-				// nothing of this attempt has reached the client.
+			if isUpstreamStreamInterruption(streamErr) {
+				// Nothing of this attempt reached the client.
 				return response.StatusCode, usage, nil, streamErr, true
 			}
-			// Last attempt: whatever the converter wrote is the answer, so it is
-			// replayed into a deferred writer and committed like any stream.
-			rw := intercepted.replay(w)
-			rw.commit(response.StatusCode)
-			rw.flushBuffered()
-			return response.StatusCode, usage, streamBody, streamErr, true
+			fw.WriteHeader(response.StatusCode)
+			fw.FlushError()
+			return response.StatusCode, usage, nil, streamErr, false
 		}
 		// Keep the downstream SSE path warm during long upstream thinking /
 		// quiet gaps so Cloudflare (and similar proxies) do not idle-cut the
@@ -766,7 +841,7 @@ func (s *Server) executeProtocolFlow(
 	if admissionErr != nil {
 		// Tell the client how long this lane thinks it is busy, not a constant:
 		// a rate refusal knows when its minute window restarts.
-		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSeconds(provider.ID, time.Now())))
+		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSecondsFor(provider, time.Now())))
 		if errors.Is(admissionErr, errProviderSaturated) {
 			return http.StatusTooManyRequests, TokenUsage{}, nil, admissionErr
 		}
@@ -805,6 +880,15 @@ func (s *Server) executeProtocolFlow(
 	}
 
 	switch clientProtocol {
+	case domain.ProtocolGemini:
+		switch decision.InputProtocol {
+		case domain.ProtocolOpenAIChat:
+			return s.proxyGeminiToOpenAIChat(w, r, provider, model, req, skipIncomingAuth)
+		case domain.ProtocolClaude:
+			return s.proxyGeminiToClaudeMessages(w, r, provider, model, req, skipIncomingAuth)
+		case domain.ProtocolOpenAIResponses:
+			return s.proxyGeminiToOpenAIResponses(w, r, provider, model, req, skipIncomingAuth)
+		}
 	case domain.ProtocolOpenAIChat:
 		switch decision.InputProtocol {
 		case domain.ProtocolClaude:
@@ -828,4 +912,23 @@ func (s *Server) executeProtocolFlow(
 		}
 	}
 	return 0, TokenUsage{}, nil, fmt.Errorf("protocol conversion is not implemented: %s", decision.ConversionLabel)
+}
+
+// wroteTrackingWriter notes that the converter produced output.
+type wroteTrackingWriter struct {
+	http.ResponseWriter
+	written *bool
+}
+
+func (c *wroteTrackingWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		*c.written = true
+	}
+	return c.ResponseWriter.Write(p)
+}
+
+func (c *wroteTrackingWriter) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

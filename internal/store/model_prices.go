@@ -104,6 +104,12 @@ func pruneModelPrices(tx *sql.Tx, providers []domain.Provider) error {
 			_ = rows.Close()
 			return err
 		}
+		// The global scope is not a provider id, so it would always look stale.
+		// Deleting it here silently dropped every shared rate card on the next
+		// state save (a token refresh is enough to trigger one).
+		if providerID == PriceWildcard {
+			continue
+		}
 		if _, ok := keep[providerID]; !ok {
 			stale = append(stale, providerID)
 		}

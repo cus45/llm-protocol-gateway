@@ -86,6 +86,11 @@ func TestSavePrunesPricesOfRemovedProviders(t *testing.T) {
 	if err := db.SaveModelPrice(domain.ModelPrice{ProviderID: "gone", ModelID: "x", InputUSDPerMTok: 9}); err != nil {
 		t.Fatal(err)
 	}
+	// The global rate card has no provider row to match it; a save must not
+	// mistake that for a deleted provider.
+	if err := db.SaveModelPrice(domain.ModelPrice{ProviderID: PriceWildcard, ModelID: "claude-sonnet-4-5", InputUSDPerMTok: 3, OutputUSDPerMTok: 15}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Save(domain.GatewayState{Providers: []domain.Provider{
 		{ID: "keep", Name: "keep", Protocol: domain.ProtocolOpenAIChat, BaseURL: "https://a/v1"},
 	}}); err != nil {
@@ -95,8 +100,13 @@ func TestSavePrunesPricesOfRemovedProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 1 || remaining[0].ProviderID != "keep" {
-		t.Fatalf("expected only the surviving provider's price, got %#v", remaining)
+	if len(remaining) != 2 {
+		t.Fatalf("expected the surviving provider's price and the global row, got %#v", remaining)
+	}
+	for _, price := range remaining {
+		if price.ProviderID != "keep" && price.ProviderID != PriceWildcard {
+			t.Fatalf("unexpected row after prune: %#v", price)
+		}
 	}
 }
 

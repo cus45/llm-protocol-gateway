@@ -484,7 +484,7 @@ func (s *Server) executeProviderProtocolHTTP(r *http.Request, provider domain.Pr
 	}
 
 	client := &http.Client{Timeout: conformanceHTTPTimeout}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		return providerChatHTTPResult{
 			Error:       err.Error(),

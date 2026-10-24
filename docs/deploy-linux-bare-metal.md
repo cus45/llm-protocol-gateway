@@ -118,6 +118,36 @@ file bin/gateway    # 应显示 "statically linked"
 > 两个产物缺一不可：网关只对外提供 API 时 `web/dist` 也建议构建——
 > 管理控制台（登录、Provider 管理）就在里面。
 
+### 4.3 构建溯源：线上二进制必须能对应到一个 commit
+
+`go build` 会把当前 commit 写进二进制（`vcs.revision` / `vcs.modified`）。**只有从干净工作区
+构建的产物才允许上服务器**：带着未提交改动（`vcs.modified=true`）或 revision 落后于 `HEAD`
+的包，事后没人能证明线上跑的是哪份代码，也无法按 commit 回滚。
+
+```bash
+git status --porcelain --untracked-files=no   # 必须是空；有输出就先提交
+go version -m bin/gateway | grep vcs
+#   build	vcs=git
+#   build	vcs.revision=<完整 commit>
+#   build	vcs.modified=false
+
+./scripts/verify-build-provenance.sh bin/gateway HEAD   # 一条命令做完上面两步，失败即非零退出
+```
+
+`scripts/verify-build-provenance.sh` 可对任意 Go 二进制运行（包括交叉编译的 linux 产物，只需
+`go version -m`，不需要能执行它），也可用于检查已部署的文件：
+
+```bash
+ssh root@<服务器> 'go version -m /opt/llm-protocol-gateway/bin/gateway | grep vcs'  # 服务器上有 go 时
+sudo ./scripts/verify-build-provenance.sh /path/to/gateway <期望的 commit>           # 或把文件拿回本地查
+```
+
+> **构建目录有讲究**：不要在 git 仓库之外的临时目录（如 `/tmp`）里编译——`go build` 找不到
+> 仓库时会静默跳过 VCS 标记，二进制里根本没有 `vcs.*`，校验脚本会直接拒绝。
+> 用 `deploy/deploy-linux.sh` 部署时以上检查已内置：默认拒绝脏工作区，构建后校验
+> `vcs.modified=false` 且 `vcs.revision == git rev-parse HEAD`，任一不满足就不上传；
+> 仅应急可用 `ALLOW_UNVERIFIED_BUILD=1` 放行（会打印醒目警告）。
+
 ---
 
 ## 5. 创建服务账号与数据目录

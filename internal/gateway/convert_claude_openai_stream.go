@@ -81,10 +81,10 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	}
 
 	var promptTokens, outputTokens, cacheRead, cacheWrite int64
+	closed := false
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	interrupted := isUpstreamStreamInterruptedReader(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -137,7 +137,7 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 			case "tool_use", "server_tool_use", "mcp_tool_use":
 				openAIToolIndex++
 				currentToolOpenAIIndex = openAIToolIndex
-				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), resolveOpenAIToolNameFromClaude(stringValue(block["name"]), clientToolNames), ""); err != nil {
+				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), restoreDeclaredToolName(stringValue(block["name"]), clientToolNames), ""); err != nil {
 					return usage, err
 				}
 			case "thinking", "redacted_thinking":
@@ -194,6 +194,8 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 			}
 		case "content_block_stop":
 			currentToolOpenAIIndex = -1
+		case "message_stop":
+			closed = true
 		case "message_delta":
 			if delta, ok := event["delta"].(map[string]any); ok {
 				if reason := strings.TrimSpace(stringValue(delta["stop_reason"])); reason != "" {
@@ -208,7 +210,10 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	if err := scanner.Err(); err != nil {
 		return usage, newUpstreamStreamInterruption(err, r.n)
 	}
-	if interrupted {
+	// Decided from what the reads actually saw: before the loop nothing has
+	// been read, a normal end of body is io.EOF, and a body that ends without
+	// message_stop was cut however cleanly the socket closed.
+	if isUpstreamStreamInterruptedReader(r) || cleanEOFInterruption(r, closed) {
 		return usage, closeInterruptedChatStream(w, chunkID, resolvedModel, usage, &sawVisibleOutput, &sawAnyEvent, &claudeStopReason, &sentRole, false, r.n)
 	}
 

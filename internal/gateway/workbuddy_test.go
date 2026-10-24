@@ -155,6 +155,53 @@ func TestPrepareWorkBuddyChatBody(t *testing.T) {
 			},
 		},
 		{
+			name: "模型把身份行引回 assistant 轮：同样改写（否则整段会话永久 11128）",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"},{"role":"assistant","content":"You are Claude Code, Anthropic's official CLI for Claude."},{"role":"user","content":"再试一次"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				got := messageContent(t, payload, 2)
+				if strings.Contains(got, "official CLI for Claude") {
+					t.Fatalf("the flagged wording survived in an assistant turn: %q", got)
+				}
+				if got != "You are Claude Code, Anthropic's CLI for Claude." {
+					t.Fatalf("assistant turn = %q", got)
+				}
+			},
+		},
+		{
+			name: "assistant 轮只剩计费头又没有工具调用：整条丢掉",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"},{"role":"assistant","content":"x-anthropic-billing-header: cc_version=2.1.280;"},{"role":"user","content":"继续"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				for _, item := range messages {
+					message, _ := item.(map[string]any)
+					if message["role"] == "assistant" {
+						t.Fatalf("emptied assistant turn survived: %+v", message)
+					}
+				}
+			},
+		},
+		{
+			name: "assistant 轮只剩计费头但带 tool_calls：调用留下来",
+			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.280;"}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`,
+			check: func(t *testing.T, payload map[string]any) {
+				messages, _ := payload["messages"].([]any)
+				found := false
+				for _, item := range messages {
+					message, _ := item.(map[string]any)
+					if message["role"] != "assistant" {
+						continue
+					}
+					found = true
+					if calls, _ := message["tool_calls"].([]any); len(calls) != 1 {
+						t.Fatalf("tool_calls = %v, want the one call kept", message["tool_calls"])
+					}
+				}
+				if !found {
+					t.Fatal("an assistant turn carrying a tool call was dropped")
+				}
+			},
+		},
+		{
 			name: "Codex 的 developer 轮按 system 发",
 			body: `{"model":"glm-5.3","stream":true,"messages":[{"role":"developer","content":"You are a helpful assistant."},{"role":"user","content":"hi"}]}`,
 			check: func(t *testing.T, payload map[string]any) {
@@ -1205,7 +1252,7 @@ func TestWorkBuddyQuotaReadsCreditPackages(t *testing.T) {
 	pointWorkBuddyAt(t, server.URL, server.URL)
 
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	quota := workBuddyQuotaFor(t.Context(), site, domain.WorkBuddyCredential{AccessToken: "at", UserID: "uid", AccountLabel: "郭庆"})
+	quota, _ := workBuddyQuotaFor(t.Context(), site, domain.WorkBuddyCredential{AccessToken: "at", UserID: "uid", AccountLabel: "郭庆"}, nil)
 	if quota.Error != "" {
 		t.Fatalf("quota error: %s", quota.Error)
 	}
@@ -1245,5 +1292,27 @@ func TestWorkBuddyAccountLabelMasksThePhoneItFallsBackTo(t *testing.T) {
 			t.Errorf("workBuddyAccountLabel(%q, %q, %q) = %q, want %q",
 				item.nickname, item.phone, item.uid, got, item.want)
 		}
+	}
+}
+
+// WorkBuddy can sign in without an expiry — 工作台/WorkBuddy AI 的两种 site 里
+// 国际站就不给 expiresAt。把它当作永不过期，就只能等厂商先拒一次 401 才换令牌；
+// 改为按取得令牌的时间推算：过了假定寿命就主动续。
+func TestWorkBuddyTokenRefreshWithoutExpiry(t *testing.T) {
+	old := &domain.WorkBuddyCredential{AccessToken: "at", SignInAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)}
+	if !workBuddyTokenNeedsRefresh(old) {
+		t.Fatal("a credential with no expiry but an old sign-in must be refreshed")
+	}
+	fresh := &domain.WorkBuddyCredential{AccessToken: "at", SignInAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)}
+	if workBuddyTokenNeedsRefresh(fresh) {
+		t.Fatal("a credential signed in a minute ago must not be refreshed")
+	}
+	unknown := &domain.WorkBuddyCredential{AccessToken: "at"}
+	if workBuddyTokenNeedsRefresh(unknown) {
+		t.Fatal("with neither an expiry nor a sign-in time there is nothing to act on")
+	}
+	minted := workBuddyCredentialPayload{AccessToken: "new"}.toCredential(domain.WorkBuddyCredential{})
+	if strings.TrimSpace(minted.SignInAt) == "" {
+		t.Fatal("a freshly minted credential must record when it was obtained")
 	}
 }

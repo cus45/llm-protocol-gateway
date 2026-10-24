@@ -120,3 +120,21 @@ func TestRequestLogScrubsResponseCredentials(t *testing.T) {
 		t.Fatalf("scrubbing ate the error message: %q", entry.ResponseBody)
 	}
 }
+
+// ErrorDescription 是落库的错误摘要，管理界面直接展示：上游回显的 key 也不能原样进去。
+func TestRequestLogScrubsErrorDescription(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	entry := recordAndFetch(t, server, 401, `{"model":"m"}`,
+		`{"error":{"message":"Incorrect API key provided: sk-abcdefghijklmnopqrstuvwx","type":"invalid_request_error"}}`)
+	if strings.Contains(entry.ErrorDescription, "sk-abcdefghijklmnopqrstuvwx") {
+		t.Fatalf("ErrorDescription leaks the key: %q", entry.ErrorDescription)
+	}
+	if !strings.Contains(entry.ErrorDescription, "Incorrect API key") || !strings.Contains(entry.ErrorDescription, "[redacted]") {
+		t.Fatalf("ErrorDescription lost its shape: %q", entry.ErrorDescription)
+	}
+	// 错在正文不是 JSON 时走 summarizeUpstreamHTTPError 的兜底摘要，同样要抹。
+	plain := recordAndFetch(t, server, 500, `{"model":"m"}`, "upstream said: bad key ghp_abcdefghijklmnopqrstuvwxyz0123")
+	if strings.Contains(plain.ErrorDescription, "ghp_abcdefghijklmnopqrstuvwxyz0123") {
+		t.Fatalf("fallback ErrorDescription leaks the token: %q", plain.ErrorDescription)
+	}
+}

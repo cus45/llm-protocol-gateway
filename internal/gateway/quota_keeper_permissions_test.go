@@ -190,3 +190,27 @@ func TestScheduledTaskVisibilityAndProviderGrants(t *testing.T) {
 		}
 	})
 }
+
+func TestPausedTaskSerializesProviderIDsAsAnArray(t *testing.T) {
+	server, store := newQuotaTestServer(t, "http://127.0.0.1:1")
+	// The keeper pauses a task once every provider was deleted and stores an
+	// empty list; a nil slice would serialize as null and the console maps the
+	// field directly, blanking the whole page.
+	store.SaveScheduledTask(domain.ScheduledTask{ID: "t-paused", Name: "已暂停", OwnerUserID: legacyAdminUserID, Enabled: false})
+	rec := httptest.NewRecorder()
+	server.handleListScheduledTasks(rec, quotaRequest(http.MethodGet, "/__quota-tasks", "", "", legacyAdminUserID, domain.UserRoleAdmin))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Tasks []struct {
+			ProviderIDs json.RawMessage `json:"providerIds"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Tasks) != 1 || string(payload.Tasks[0].ProviderIDs) != "[]" {
+		t.Fatalf("providerIds = %s, want []", payload.Tasks[0].ProviderIDs)
+	}
+}

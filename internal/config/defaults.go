@@ -28,5 +28,8 @@ func DefaultEndpoints() []domain.OutputEndpoint {
 		{ID: "openai-responses-output", Name: "OpenAI Responses Output", Protocol: domain.ProtocolOpenAIResponses, BasePath: "/openai/v1", ListenHost: "127.0.0.1", ListenPort: 18093, StreamEnabled: true},
 		// BasePath is the client Base URL prefix (Claude Code appends /v1/messages itself).
 		{ID: "claude-output", Name: "Claude Output", Protocol: domain.ProtocolClaude, BasePath: "/anthropic", ListenHost: "127.0.0.1", ListenPort: 18093, StreamEnabled: true},
+		// Gemini's model name rides in the path (…/models/{model}:generateContent),
+		// so its BasePath is the version prefix alone.
+		{ID: "gemini-output", Name: "Gemini Output", Protocol: domain.ProtocolGemini, BasePath: "/v1beta", ListenHost: "127.0.0.1", ListenPort: 18093, StreamEnabled: true},
 	}
 }

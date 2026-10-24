@@ -205,7 +205,8 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
       const response = await fetch(`${API_BASE}/__quota-tasks`);
       if (!response.ok) throw new Error(await readError(response));
       const payload = (await response.json()) as { tasks?: ScheduledTask[]; recentRuns?: ScheduledTaskRun[]; ownerNames?: Record<string, string>; serverTimeZone?: string };
-      setTasks(payload.tasks || []);
+      // 被保活暂停的任务没有 Provider 了；这里统一成数组，卡片直接按数组用。
+      setTasks((payload.tasks || []).map((task) => ({ ...task, providerIds: task.providerIds || [] })));
       setRecentRuns(payload.recentRuns || []);
       setOwnerNames(payload.ownerNames || {});
       setServerZone(payload.serverTimeZone || '');
@@ -415,7 +416,7 @@ function QuotaTaskCard({ task, providers, runs, busy, expanded, onToggleExpansio
           const provider = providers.find((item) => item.id === id);
           const model = task.modelOverrides?.[id];
           if (!provider) {
-            return <span className="quota-provider missing" key={id} title="该 Provider 已删除"><ProviderRefLabel providerId={id} providers={providers} size={15} /></span>;
+            return <span className="quota-provider missing" key={id} title="该 Provider 已删除，下次调度前会自动移出任务"><ProviderRefLabel providerId={id} providers={providers} size={15} /></span>;
           }
           return (
             <span className="quota-provider" key={id} title={model ? `固定模型 ${model}` : `使用默认模型 ${provider.defaultModel || '（未设置）'}`}>
@@ -687,7 +688,7 @@ function ScheduledTaskEditor({ draft, providers, serverZone, onClose, onSubmit }
               {task.providerIds.map((id) => {
                 const provider = providers.find((item) => item.id === id);
                 if (!provider) {
-                  return <div className="quota-provider-row" key={id}><ProviderRefLabel providerId={id} providers={providers} size={15} /><span className="quota-clock-note">已删除，执行时会记为失败</span></div>;
+                  return <div className="quota-provider-row" key={id}><ProviderRefLabel providerId={id} providers={providers} size={15} /><span className="quota-clock-note">已删除，保存后自动移除</span></div>;
                 }
                 const value = task.modelOverrides?.[id] || '';
                 // 模型清单可能还没拉过，或固定的是一个不在清单里的模型；这种
@@ -731,7 +732,8 @@ function ScheduledTaskEditor({ draft, providers, serverZone, onClose, onSubmit }
             <Field label="探测消息" value={task.probePrompt || ''} onChange={(value) => patch({ probePrompt: value })} placeholder="ping" fullWidth />
           </div>
           <p className="quota-hint">
-            窗口内该 Provider 若已有真实流量，本轮自动跳过——那时再发只会把重置时间推得更晚，适得其反。
+            窗口内同一 Provider 已有保活探测时本轮跳过。每天定点任务到点必发，真实流量不会拦截它；
+            滚动模式遇到窗口内的成功请求会跳过，避免把上游重置时间推后。
           </p>
         </div>
 

@@ -126,6 +126,9 @@ type RequestLogQuery struct {
 	// ProviderID filters to the exact input provider id (empty means no filter).
 	ProviderID string
 	Model      string // exact model match
+	// SessionID filters to the requests of one conversation: the scheduler
+	// stamps it into the log's analysis as session_id.
+	SessionID string
 	// APIKeyIDs restricts results to logs whose api_key_id is in this set.
 	// Used for per-user data isolation, and for the admin-only "owner user"
 	// log filter; nil means no restriction.
@@ -451,6 +454,9 @@ func (s *Store) Query(query RequestLogQuery) RequestLogPage {
 			continue
 		}
 		if model := strings.TrimSpace(query.Model); model != "" && item.Model != model {
+			continue
+		}
+		if session := strings.TrimSpace(query.SessionID); session != "" && item.Analysis.SessionID != session {
 			continue
 		}
 		if keyIDSet != nil {
@@ -1218,6 +1224,10 @@ func (s *Store) AddApp(level string, message string, context string) {
 	if !levelEnabled(level, s.logLevel) {
 		return
 	}
+	// 上游错误、OAuth 续期失败、工具输出都可能回显凭据；在唯一的入口处抹掉，
+	// 新加的日志行不会漏。
+	message = scrubAppLogText(message)
+	context = scrubAppLogText(context)
 	s.appLogs = append([]AppLog{{Time: time.Now(), Level: level, Message: message, Context: context}}, s.appLogs...)
 	if len(s.appLogs) > 500 {
 		s.appLogs = s.appLogs[:500]

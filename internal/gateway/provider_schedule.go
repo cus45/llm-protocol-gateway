@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
 
 // Scheduling modes a key can choose. An empty mode is today's behavior, so a
@@ -141,7 +143,13 @@ func (s *Server) leastUsedChain(chain []string) []string {
 	}
 	loads := make(map[string]load, len(ordered))
 	for _, providerID := range ordered {
-		loads[providerID] = load{inflight: s.providerInFlight(providerID), work: s.providerWorkload(providerID)}
+		// A grouped row's lane lives under its account, so in-flight is read
+		// through the provider itself; the recent window stays per row.
+		provider := domain.Provider{ID: providerID}
+		if stored, err := s.router.ProviderByID(providerID); err == nil {
+			provider = stored
+		}
+		loads[providerID] = load{inflight: s.providerInFlight(provider), work: s.providerWorkload(providerID)}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		left, right := loads[ordered[i]], loads[ordered[j]]

@@ -61,3 +61,10 @@ desktop/frontend/.history/
 .codegraph/
 .zcode/
 .ui-audit/
+# Agent 草稿/计划目录：只留在本地，不进库
+.superpowers/
+docs/superpowers/
+
+# 构建产物
+*.exe
+bin/

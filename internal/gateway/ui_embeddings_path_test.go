@@ -12,6 +12,8 @@ func TestIsModelProtocolPathEmbeddings(t *testing.T) {
 		want bool
 	}{
 		{"/v1/embeddings", true},
+		{"/v1/audio/transcriptions", true},
+		{"/v1/audio/translations", true},
 		{"/v1/embeddings?x=1", true},
 		{"/openai/v1/embeddings", true},
 		{"/v1/chat/completions", true},
@@ -47,20 +49,24 @@ func TestHostSeparatedServingRoutesEmbeddings(t *testing.T) {
 	}
 	handler := withHostSeparatedServing(api, t.TempDir(), roleForHost)
 
-	for _, tc := range []struct {
-		host      string
-		wantToAPI bool
-	}{
-		{"api.example.com", true},
-		{"ui.example.com", false},
-	} {
-		before := hits
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+"/v1/embeddings", nil)
-		handler.ServeHTTP(rec, req)
-		reached := hits > before
-		if reached != tc.wantToAPI {
-			t.Fatalf("host %s: reached api = %v, want %v (status %d)", tc.host, reached, tc.wantToAPI, rec.Code)
+	// Every OpenAI-compatible passthrough endpoint is a model call: the API
+	// hostname must reach the gateway, the UI hostname must not.
+	for _, path := range []string{"/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/translations"} {
+		for _, tc := range []struct {
+			host      string
+			wantToAPI bool
+		}{
+			{"api.example.com", true},
+			{"ui.example.com", false},
+		} {
+			before := hits
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+path, nil)
+			handler.ServeHTTP(rec, req)
+			reached := hits > before
+			if reached != tc.wantToAPI {
+				t.Fatalf("%s on host %s: reached api = %v, want %v (status %d)", path, tc.host, reached, tc.wantToAPI, rec.Code)
+			}
 		}
 	}
 }

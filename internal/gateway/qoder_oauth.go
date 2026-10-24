@@ -626,6 +626,9 @@ func (s *Server) ensureFreshQoderToken(provider domain.Provider) (domain.Provide
 	defer cancel()
 	renewed, err := renewQoderCredential(ctx, site, credential)
 	if err != nil {
+		// Recorded before the failure is swallowed below, so a silent renewal
+		// failure still reaches the monitoring rules.
+		s.recordRenewal(provider, "qoder", time.Now(), err)
 		if qoderErrorMeansSignIn(err) {
 			return provider, err
 		}
@@ -638,6 +641,7 @@ func (s *Server) ensureFreshQoderToken(provider domain.Provider) (domain.Provide
 	if err != nil {
 		return provider, err
 	}
+	s.recordRenewal(updated, "qoder", time.Now(), nil)
 	if err := s.persistProviderOAuth(updated); err != nil {
 		return updated, err
 	}

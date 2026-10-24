@@ -79,15 +79,47 @@ type providerLane struct {
 	// clock jump could skip or double.
 	rpm    int
 	admits []int64
+	// lastSeen is the latest clock reading this lane has admitted at. A clock
+	// that jumps backwards must not stretch the minute: without it, an
+	// admission stamped in the future never ages out and the account stays
+	// refused for as long as the clock is wrong.
+	lastSeen int64
 }
 
 type providerLanes struct {
 	mu    sync.Mutex
 	lanes map[string]*providerLane
+	// mixedWarned remembers the groups already reported as mixing a row that
+	// declares no limit with rows that do, so the warning is written once per
+	// group instead of once per request.
+	mixedWarned map[string]bool
 }
 
 func newProviderLanes() *providerLanes {
-	return &providerLanes{lanes: map[string]*providerLane{}}
+	return &providerLanes{lanes: map[string]*providerLane{}, mixedWarned: map[string]bool{}}
+}
+
+// warnMixedLaneGroup logs, once per group, that a row without limits of its own
+// is being admitted under the limits its siblings declare, and what those are.
+func (s *Server) warnMixedLaneGroup(provider domain.Provider, max, rate int) {
+	if s.logs == nil || s.providerLanes == nil {
+		return
+	}
+	group := providerLaneGroup(provider)
+	s.providerLanes.mu.Lock()
+	warned := s.providerLanes.mixedWarned[group]
+	if !warned {
+		if s.providerLanes.mixedWarned == nil {
+			s.providerLanes.mixedWarned = map[string]bool{}
+		}
+		s.providerLanes.mixedWarned[group] = true
+	}
+	s.providerLanes.mu.Unlock()
+	if warned {
+		return
+	}
+	s.logs.AddApp("warn", "lane group mixes limited and unlimited providers",
+		fmt.Sprintf("account %q: %s has no limit of its own and is bounded by the group's %d concurrent, %d/min", group, provider.ID, max, rate))
 }
 
 // retryAfterSeconds is what the proxy tells a client refused at admission for
@@ -107,22 +139,77 @@ func (l *providerLanes) retryAfterSeconds(providerID string, now time.Time) int 
 }
 
 // retryAfterSecondsFor is retryAfterSeconds for call sites that hold the
-// provider itself: a grouped provider is told how long its account's lane will
-// take, not how long a lane of its own (which does not exist) would.
+// provider itself: the lookup goes through providerLaneKey, the same key the
+// lane was stored under, so a grouped provider is told how long its account's
+// lane will take and a row of its own reads back its own.
 func (l *providerLanes) retryAfterSecondsFor(provider domain.Provider, now time.Time) int {
-	if !providerGrouped(provider) {
-		// A row of its own stores its lane under its ID; reading it back
-		// through providerLaneKey keeps the two callers in step.
-		return l.retryAfterSeconds(provider.ID, now)
-	}
 	return l.retryAfterSeconds(providerLaneKey(provider), now)
 }
 
-// laneFor returns the provider's lane, sized to the current configuration. A
+// laneFor returns the provider's lane, sized to the given configuration. A
 // provider with no limit has no lane at all.
 func (l *providerLanes) laneFor(providerID string, max, rpm int) *providerLane {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.laneLocked(providerID, max, rpm)
+}
+
+// laneForProvider is laneFor from the provider's own row: the lane size comes
+// from the whole account, not from this row. Rows of one LaneGroup share one
+// key but each carries its own limits — a console edit of one row does not
+// rewrite its siblings — so taking whichever row arrived last would make the
+// account's budget ping-pong. A grouped account's size is therefore derived from
+// all its live members at once, independent of arrival order:
+//
+//   - each limit is the SMALLEST non-zero value any member declares. The
+//     budget protects the account from being over-spent, so the tightest
+//     declaration is the safe one: a member set to 10/min exists because that
+//     account allows 10/min, and no sibling should talk it up to 50.
+//   - a member declaring 0 (no limit) does not vote, but it is still bounded by
+//     the limit the declaring members set — a 0/0 row must never buy the
+//     account an unbounded lane (D29-4).
+//   - when every member is 0/0 the group has no limit and keeps the free path.
+func (l *providerLanes) laneForProvider(provider domain.Provider, providers []domain.Provider) (lane *providerLane, mixed bool) {
+	max := providerConcurrentCap(provider)
+	rate := providerRequestsPerMinute(provider)
+	group := providerLaneGroup(provider)
+	if group == "" {
+		return l.laneFor(provider.ID, max, rate), false
+	}
+	seenMax, seenRate := false, false
+	for _, member := range providers {
+		if member.Deleted || !strings.EqualFold(providerLaneGroup(member), group) {
+			continue
+		}
+		if memberMax := providerConcurrentCap(member); memberMax > 0 {
+			if !seenMax {
+				max = memberMax
+				seenMax = true
+			} else if memberMax < max {
+				max = memberMax
+			}
+		}
+		if memberRate := providerRequestsPerMinute(member); memberRate > 0 {
+			if !seenRate {
+				rate = memberRate
+				seenRate = true
+			} else if memberRate < rate {
+				rate = memberRate
+			}
+		}
+	}
+	if !seenMax {
+		max = 0
+	}
+	if !seenRate {
+		rate = 0
+	}
+	mixed = (seenMax || seenRate) && providerConcurrentCap(provider) == 0 && providerRequestsPerMinute(provider) == 0
+	return l.laneFor(providerLaneKey(provider), max, rate), mixed
+}
+
+// laneLocked is laneFor with the lanes lock already held.
+func (l *providerLanes) laneLocked(providerID string, max, rpm int) *providerLane {
 	lane, ok := l.lanes[providerID]
 	if !ok {
 		lane = &providerLane{max: max, rpm: rpm, queueCap: providerQueueCapacity(max, rpm), wake: make(chan struct{})}
@@ -159,14 +246,21 @@ func providerQueueCapacity(max, rpm int) int {
 	return capacity
 }
 
-// acquire takes a slot, waiting up to wait for one to free. A zero wait refuses
-// immediately, which is the default: a queued request is a request whose client
-// is already staring at a spinner.
+// acquire takes a slot, waiting up to wait for one to free. A zero wait is the
+// default: a queued request is a request whose client is already staring at a
+// spinner.
 func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func(), error) {
 	// A rate-full lane is not a hung one: waiting on the vendor's own minute
 	// is meaningful even when the operator set no queue wait, so a rate-only
 	// refusal is given until the oldest admission frees a slot (bounded anyway).
+	// The wait refunds itself: a converted stream opens with its upstream
+	// response, so a request parked here for the rest of a minute has committed
+	// nothing if that response is an error, and the failover loop can still
+	// hand the turn to a backup.
 	budget := wait
+	lane.mu.Lock()
+	overWindow := lane.rpm > 0 && lane.admittedLocked() >= lane.rpm
+	lane.mu.Unlock()
 	if budget <= 0 && lane.max <= 0 {
 		lane.mu.Lock()
 		now := time.Now()
@@ -183,7 +277,25 @@ func (lane *providerLane) acquire(ctx context.Context, wait time.Duration) (func
 	if err != nil {
 		return nil, err
 	}
+	if wait <= 0 && overWindow {
+		return func() { lane.refundAdmission(time.Now()) }, nil
+	}
 	return release, nil
+}
+
+// refundAdmission withdraws the count this request added, for one that waited
+// out a full rate window and whose turn then never reached its upstream. The
+// wait already paid the vendor's rate: keeping the count too would spend the
+// account's budget on an attempt nobody made.
+func (lane *providerLane) refundAdmission(now time.Time) {
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if len(lane.admits) == 0 {
+		return
+	}
+	lane.admits = lane.admits[:len(lane.admits)-1]
+	lane.trimLocked(now)
+	lane.wakeLocked()
 }
 
 // acquireSlot is acquire with the clock injected, so the per-minute budget can
@@ -343,6 +455,21 @@ func (lane *providerLane) uncountLocked(now time.Time, at int64) {
 // trimLocked drops admissions that fell out of the last minute and compacts the
 // ring so the slice cannot grow without bound.
 func (lane *providerLane) trimLocked(now time.Time) {
+	stamp := now.UnixNano()
+	if stamp > lane.lastSeen {
+		lane.lastSeen = stamp
+	} else if lane.lastSeen-stamp > int64(time.Minute) {
+		// The clock went back by more than the window: everything counted in
+		// the old window belongs to a past that the clock now says is far away.
+		// Drop it rather than keep the account refused until the clock recovers.
+		lane.admits = nil
+	}
+	// The window is measured from the latest reading, never from an earlier
+	// one: a small backwards jump keeps the minute it already served.
+	if lane.lastSeen > stamp {
+		stamp = lane.lastSeen
+	}
+	now = time.Unix(0, stamp)
 	cutoff := now.Add(-time.Minute).UnixNano()
 	drop := 0
 	for drop < len(lane.admits) && lane.admits[drop] <= cutoff {
@@ -473,13 +600,7 @@ func (lane *providerLane) waiterCount() int {
 // providerConcurrencyConfig reads the two knobs off a provider with their
 // guards applied.
 func providerConcurrencyConfig(provider domain.Provider) (max int, wait time.Duration) {
-	max = provider.MaxConcurrentRequests
-	if max < 0 {
-		max = 0
-	}
-	if max > providerConcurrencyCap {
-		max = providerConcurrencyCap
-	}
+	max = providerConcurrentCap(provider)
 	seconds := provider.QueueWaitSeconds
 	if seconds < 0 {
 		seconds = 0
@@ -488,6 +609,18 @@ func providerConcurrencyConfig(provider domain.Provider) (max int, wait time.Dur
 		seconds = int(providerQueueWaitCap / time.Second)
 	}
 	return max, time.Duration(seconds) * time.Second
+}
+
+// providerConcurrentCap is the concurrency knob alone, guards applied.
+func providerConcurrentCap(provider domain.Provider) int {
+	max := provider.MaxConcurrentRequests
+	if max < 0 {
+		return 0
+	}
+	if max > providerConcurrencyCap {
+		return providerConcurrencyCap
+	}
+	return max
 }
 
 // providerRequestsPerMinute reads the per-minute request budget with the same
@@ -514,35 +647,88 @@ const providerLaneGroupMaxLen = 120
 // LaneGroup and share one lane: without it each row would get the full
 // concurrency and per-minute budget, which is how a 5-request-a-minute account
 // ends up answering 429 on its own quota.
+//
+// The group name is matched case-insensitively: "Acme" and "acme" in the admin
+// UI mean the same subscription, so they must land on the same lane.
 func providerLaneKey(provider domain.Provider) string {
-	if group := strings.TrimSpace(provider.LaneGroup); group != "" {
-		return "group:" + group
+	if group := providerLaneGroup(provider); group != "" {
+		return "group:" + strings.ToLower(group)
 	}
 	return provider.ID
 }
 
+// providerLaneGroup is the account name the provider shares, or "" for a row
+// with a budget of its own.
+func providerLaneGroup(provider domain.Provider) string {
+	return strings.TrimSpace(provider.LaneGroup)
+}
+
 func providerGrouped(provider domain.Provider) bool {
-	return strings.TrimSpace(provider.LaneGroup) != ""
+	return providerLaneGroup(provider) != ""
 }
 
 // acquireProviderSlot reserves one upstream slot for the whole exchange. The
 // release is safe to call more than once per request path because it is only
 // ever called by the deferred closure the caller got back.
+//
+// The account is resolved before the "no limit" shortcut: a row with 0/0 in a
+// group that does have a budget must still spend the group's, otherwise the
+// cheapest row to add silently buys every client an unbounded lane.
 func (s *Server) acquireProviderSlot(ctx context.Context, provider domain.Provider) (func(), error) {
-	max, wait := providerConcurrencyConfig(provider)
-	rpm := providerRequestsPerMinute(provider)
-	if (max <= 0 && rpm <= 0) || s.providerLanes == nil {
+	if s.providerLanes == nil {
 		return func() {}, nil
 	}
-	return s.providerLanes.laneFor(providerLaneKey(provider), max, rpm).acquire(ctx, wait)
+	// Without a router there is no account list to size a group from; the row's
+	// own limits are all there is (tests build such a Server).
+	var providers []domain.Provider
+	if s.router != nil {
+		providers = s.router.State().Providers
+	}
+	lane, mixed := s.providerLanes.laneForProvider(provider, providers)
+	lane.mu.Lock()
+	max, rate := lane.max, lane.rpm
+	lane.mu.Unlock()
+	if max <= 0 && rate <= 0 {
+		return func() {}, nil
+	}
+	if mixed {
+		// A row that declares no limit of its own spends one its siblings set.
+		// It is throttled on purpose (D29-4), but the operator has to be able
+		// to see why, so say it the first time this row is admitted.
+		s.warnMixedLaneGroup(provider, max, rate)
+	}
+	return lane.acquire(ctx, providerLaneQueueWait(provider, providers))
 }
 
-func (s *Server) providerInFlight(providerID string) int {
+// providerLaneQueueWait is how long a request on this row may wait for a slot.
+// 额度按最紧的成员算，但等待不是额度：按本行的值会让"同一账号的另一行写了
+// 等 5 秒"失效，请求刚到就被拒。等多久都不会让账号超支，所以取组内最大。
+func providerLaneQueueWait(provider domain.Provider, providers []domain.Provider) time.Duration {
+	_, wait := providerConcurrencyConfig(provider)
+	group := providerLaneGroup(provider)
+	if group == "" {
+		return wait
+	}
+	for _, member := range providers {
+		if member.Deleted || !strings.EqualFold(providerLaneGroup(member), group) {
+			continue
+		}
+		if _, memberWait := providerConcurrencyConfig(member); memberWait > wait {
+			wait = memberWait
+		}
+	}
+	return wait
+}
+
+// providerInFlight is how many requests are in flight for the provider's
+// account. The lane is stored under providerLaneKey, so a grouped row has to be
+// read back through the same key — its own ID names no lane at all.
+func (s *Server) providerInFlight(provider domain.Provider) int {
 	if s == nil || s.providerLanes == nil {
 		return 0
 	}
 	s.providerLanes.mu.Lock()
-	lane, ok := s.providerLanes.lanes[providerID]
+	lane, ok := s.providerLanes.lanes[providerLaneKey(provider)]
 	s.providerLanes.mu.Unlock()
 	if !ok {
 		return 0

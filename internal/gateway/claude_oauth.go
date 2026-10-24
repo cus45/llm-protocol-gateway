@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"log/slog"
 	"net"
@@ -50,7 +51,7 @@ const (
 	// claudeBillingHeaderMarker is injected into the system prompt for
 	// claude_oauth providers; required for OAuth-authenticated Sonnet/Opus
 	// billing to work correctly against the subscription.
-	claudeBillingHeaderMarker = "x-anthropic-billing-header: cc_version=2.1.77; cc_entrypoint=cli; cch=00000;"
+	claudeBillingHeaderMarker = "x-anthropic-billing-header: cc_version=" + claudeOAuthBillingVersion + "; cc_entrypoint=cli; cch=00000;"
 	// claudeTokenExpirySkew is subtracted from the token's expiry before
 	// deciding whether a refresh is needed, so requests don't race an
 	// about-to-expire access token.
@@ -327,7 +328,9 @@ func parseClaudeOAuthInput(raw string) (code string, state string) {
 	if raw == "" {
 		return "", ""
 	}
-	if strings.Contains(raw, "://") {
+	// The unclaimed-callback page hands out a path like /callback?code=…, so a
+	// pasted address may be relative to the gateway rather than absolute.
+	if strings.Contains(raw, "?") {
 		if parsed, err := url.Parse(raw); err == nil {
 			query := parsed.Query()
 			code = strings.TrimSpace(query.Get("code"))
@@ -381,7 +384,7 @@ func fetchClaudeOAuthProfileLabel(accessToken string) (string, error) {
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	client := &http.Client{Timeout: 15 * time.Second}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		return "", err
 	}
@@ -445,6 +448,13 @@ func refreshClaudeOAuthToken(refreshToken string) (domain.ClaudeOAuthCredential,
 	return postClaudeOAuthToken(payload)
 }
 
+// claudeOAuthRefreshRequiresRelogin says whether a failed refresh is the one
+// failure no retry can fix: the refresh token itself was retired or revoked, so
+// only signing in again revives the account.
+func claudeOAuthRefreshRequiresRelogin(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "invalid_grant")
+}
+
 func postClaudeOAuthToken(payload map[string]any) (domain.ClaudeOAuthCredential, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -459,7 +469,7 @@ func postClaudeOAuthToken(payload map[string]any) (domain.ClaudeOAuthCredential,
 	request.Header.Set("User-Agent", "axios/1.13.6")
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		return domain.ClaudeOAuthCredential{}, err
 	}
@@ -493,6 +503,13 @@ func postClaudeOAuthToken(payload map[string]any) (domain.ClaudeOAuthCredential,
 // claudeTokenNeedsRefresh reports whether the credential is missing, expired,
 // or within the expiry skew buffer of expiring.
 func claudeTokenNeedsRefresh(credential *domain.ClaudeOAuthCredential) bool {
+	return claudeTokenNeedsRefreshWithin(credential, claudeTokenExpirySkew)
+}
+
+// claudeTokenNeedsRefreshWithin is the same question with a chosen lead, so the
+// background sweep can rotate a token half an hour before it dies rather than
+// five minutes before a request would.
+func claudeTokenNeedsRefreshWithin(credential *domain.ClaudeOAuthCredential, lead time.Duration) bool {
 	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return true
 	}
@@ -501,20 +518,24 @@ func claudeTokenNeedsRefresh(credential *domain.ClaudeOAuthCredential) bool {
 		// Unknown/unparseable expiry: be conservative and refresh.
 		return true
 	}
-	return time.Now().UTC().Add(claudeTokenExpirySkew).After(expiresAt)
+	return time.Now().UTC().Add(lead).After(expiresAt)
 }
 
 // ensureFreshClaudeToken returns a provider with a valid (non-expired) Claude
 // OAuth access token, refreshing and persisting it first if necessary. It is
 // a no-op for providers that are not in claude_oauth auth mode.
 func (s *Server) ensureFreshClaudeToken(provider domain.Provider) (domain.Provider, error) {
+	return s.ensureFreshClaudeTokenWithin(provider, claudeTokenExpirySkew)
+}
+
+func (s *Server) ensureFreshClaudeTokenWithin(provider domain.Provider, lead time.Duration) (domain.Provider, error) {
 	if provider.AuthType != domain.AuthTypeClaudeOAuth {
 		return provider, nil
 	}
 	if provider.ClaudeOAuth == nil || strings.TrimSpace(provider.ClaudeOAuth.RefreshToken) == "" {
 		return provider, fmt.Errorf("provider %q has no Claude OAuth connection; connect it first", provider.ID)
 	}
-	if !claudeTokenNeedsRefresh(provider.ClaudeOAuth) {
+	if !claudeTokenNeedsRefreshWithin(provider.ClaudeOAuth, lead) {
 		return provider, nil
 	}
 
@@ -531,12 +552,13 @@ func (s *Server) ensureFreshClaudeToken(provider domain.Provider) (domain.Provid
 	if current.ClaudeOAuth == nil || strings.TrimSpace(current.ClaudeOAuth.RefreshToken) == "" {
 		return current, fmt.Errorf("provider %q has no Claude OAuth connection; connect it first", provider.ID)
 	}
-	if !claudeTokenNeedsRefresh(current.ClaudeOAuth) {
+	if !claudeTokenNeedsRefreshWithin(current.ClaudeOAuth, lead) {
 		return current, nil
 	}
 
 	refreshed, err := refreshClaudeOAuthToken(current.ClaudeOAuth.RefreshToken)
 	if err != nil {
+		s.recordRenewal(current, "claude", time.Now(), err)
 		return current, fmt.Errorf("failed to refresh claude oauth token: %w", err)
 	}
 	// The refresh endpoint may omit refresh_token when it doesn't rotate it;
@@ -648,6 +670,92 @@ func (s *Server) claudeOAuthCallbackURL() string {
 	// Always advertise localhost (not 127.0.0.1 / 0.0.0.0): the shared Claude Code
 	// client_id allowlists loopback as http://localhost:<port>/callback.
 	return fmt.Sprintf("http://localhost:%s/callback", port)
+}
+
+// requestHostIsLoopback says whether the console reached this gateway over a
+// loopback address. Only then can the browser follow Anthropic's redirect back
+// to this gateway's own localhost callback: a console opened over a LAN or
+// public address has its loopback pointed at the user's own machine, where a
+// different gateway may well be listening on the same port.
+func requestHostIsLoopback(hostport string) bool {
+	host := strings.TrimSpace(hostport)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	switch strings.ToLower(strings.Trim(host, "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+func claudeOAuthDefaultMode(hostport string) string {
+	if requestHostIsLoopback(hostport) {
+		return "localhost"
+	}
+	return "manual"
+}
+
+// claudeOAuthUnclaimedHTML is what a callback this gateway has no pending flow
+// for comes to. The usual cause is a remote console whose browser followed the
+// loopback redirect to another gateway on the user's machine; the address shown
+// is the one that console can finish the login with.
+const claudeOAuthUnclaimedHTML = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude 授权回调未被认领</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:720px;margin:48px auto;padding:0 20px;color:#1f2328;line-height:1.65}
+h2{margin:0 0 12px;font-size:20px}
+p{margin:8px 0;color:#57606a}
+code{display:block;word-break:break-all;background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;margin:12px 0;font-size:13px;color:#1f2328}
+button{font:inherit;padding:6px 14px;border:1px solid #d0d7de;border-radius:6px;background:#f6f8fa;cursor:pointer}
+button:active{background:#eaeef2}
+.note{border-left:3px solid #d0d7de;padding-left:12px;margin-top:20px}
+</style></head><body>
+<h2>这次回调没有被当前网关认领</h2>
+<p>常见原因有两个：授权流程已超过 15 分钟有效期；或者你是在远程控制台发起的授权，浏览器按 <b>localhost</b> 打开了本机上的另一个网关，而不是发起授权的那一台。</p>
+<code id="callback">__CALLBACK__</code>
+<button id="copy" type="button">复制这条回调地址</button>
+<div class="note">
+<p>如果是在远程控制台授权的：回到那个控制台，把上面这条完整地址粘贴到「完成连接」输入框即可收尾，不需要重新授权。</p>
+<p>如果授权确实已经过期：回到控制台重新点一次「连接 Claude 账号」。</p>
+</div>
+<script>
+document.getElementById('copy').addEventListener('click', function () {
+  var text = document.getElementById('callback').textContent;
+  var done = function () { this.textContent = '已复制'; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done.bind(this), function () {});
+  } else {
+    var range = document.createRange();
+    range.selectNodeContents(document.getElementById('callback'));
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand('copy');
+    done.call(this);
+  }
+});
+</script>
+</body></html>`
+
+// writeClaudeOAuthUnclaimedPage answers a callback whose state this gateway does
+// not know with the explanation above and the address the user can paste into
+// the console that started the flow.
+func writeClaudeOAuthUnclaimedPage(w http.ResponseWriter, r *http.Request) {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	} else if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = forwarded
+	}
+	callback := scheme + "://" + r.Host + r.URL.Path
+	if r.URL.RawQuery != "" {
+		callback += "?" + r.URL.RawQuery
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(strings.ReplaceAll(claudeOAuthUnclaimedHTML, "__CALLBACK__", stdhtml.EscapeString(callback))))
 }
 
 func (s *Server) startClaudeOAuthLocalFlow(providerID, challenge string, pending claudeOAuthPending) (string, string, error) {
@@ -828,7 +936,7 @@ func (s *Server) sendClaudeOAuthMessagesRequest(ctx context.Context, provider do
 	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
-	response, err := client.Do(request)
+	response, err := guardUpstreamIdleClient(client, request)
 	if err != nil {
 		return claudeOAuthHTTPResult{Error: err.Error(), TargetURL: claudeMessagesURL, RequestBody: string(sentBody), LatencyMs: time.Since(started).Milliseconds()}
 	}

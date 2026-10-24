@@ -35,10 +35,28 @@ const (
 const (
 	// Soft failures must repeat within this window before the provider is
 	// marked unavailable (avoids single 429/529/5xx blips painting "异常").
-	providerSoftFailureWindow    = 60 * time.Second
+	//
+	// The window has to outlast the shortest rest the count buys, or the ladder
+	// could never climb: the third 429 rests a minute, and a window shorter
+	// than that forgets the other two before the rest ends. Ten minutes covers
+	// the climb (30s, 1m, 2m, 4m, 8m) up to the point where the doubling itself
+	// is longer than the memory, after which the rest cap takes over anyway.
+	providerSoftFailureWindow    = 10 * time.Minute
 	providerSoftFailureThreshold = 3
 	providerSoftUnavailableTTL   = 1 * time.Minute
 	claudeUsageHardThresholdPct  = 95.0
+
+	// providerRateRestBase is where a rate-limit rest starts, and each further
+	// consecutive failure doubles it up to providerRateRestCap. Separate from
+	// the quota ladder on purpose: a 429 that says "try again in 5s" and a
+	// plan that is spent until next Tuesday are different problems, and only
+	// the second one justifies a multi-hour rest.
+	providerRateRestBase = 30 * time.Second
+	providerRateRestCap  = 30 * time.Minute
+	// providerQuotaRestFloor is the shortest rest for a confirmed quota
+	// exhaustion: probing sooner only burns a request on a vendor that already
+	// said no.
+	providerQuotaRestFloor = 15 * time.Minute
 )
 
 // hardQuotaHints are narrow subscription/billing exhaustion signals. Broad
@@ -118,6 +136,13 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 	if transportErr != nil {
 		if isRequestContextCanceled(transportErr) {
 			return failoverNone, "client_canceled"
+		}
+		// A refusal at the account's own lane is this gateway's admission
+		// control, not the vendor failing: nothing was sent. Counting it as a
+		// transport failure cooled a healthy account down for minutes after
+		// three busy requests, which is the opposite of what the lane is for.
+		if errors.Is(transportErr, errProviderSaturated) {
+			return failoverNone, "lane_saturated"
 		}
 		return failoverSoft, "transport: " + truncateReason(transportErr.Error())
 	}
@@ -200,13 +225,37 @@ type failoverResponseWriter struct {
 	passthrough bool
 	discarded   bool
 	wroteHeader bool
-	// body is the whole turn this attempt produced: the bytes before its commit
-	// followed by everything written after it. delivered is how much of that
-	// turn the client already has — a commit hands over its bytes, a write after
-	// the commit goes straight out — and is all a cut turn may be closed on top
-	// of without sending anything twice.
+	// body is the turn this attempt produced while it was still its own to
+	// buffer: the bytes of a held commit followed by those written to it. A
+	// stream through a failover writer goes to the client as it comes, so only
+	// the opening of that stream is kept — the part a cut turn is closed on top
+	// of, kept up to the log cap for one that never wrote it (a bare writer, or
+	// the failover writer with no client behind it). delivered is how much of
+	// body the client already has, and is all a cut turn may be closed on top of
+	// without sending anything twice.
 	body      bytes.Buffer
 	delivered int
+	// held is how much of body was held back, never sent. Those bytes open the
+	// turn once the loop settles on this attempt (commitHeaders), or go out
+	// whole for a stream through deliver. Everything else in body is a prefix
+	// the client already has.
+	held int
+	// spoke says the attempt wrote part of its turn, sent or held back: a
+	// commit after it carries that part, so a cut turn closes on top of it.
+	spoke bool
+	// abandoned says the client left and took the attempt's turn with it: what
+	// it was closing on is no longer there, so nothing more is kept or closed.
+	abandoned bool
+}
+
+// abandon drops the turn an attempt committed to a client that has gone: the
+// bytes it reached are a prefix of a stream nobody will read, so a cut turn
+// must not be closed on top of them.
+func (w *failoverResponseWriter) abandon() {
+	w.abandoned = true
+	w.body.Reset()
+	w.delivered = 0
+	w.held = 0
 }
 
 func newFailoverResponseWriter(base http.ResponseWriter, canDefer bool) *failoverResponseWriter {
@@ -232,6 +281,33 @@ func (w *failoverResponseWriter) deferring() bool {
 	return !w.passthrough && !w.discarded
 }
 
+// forward sends part of a stream the attempt did not buffer in buf straight to
+// the client, and flushes it so it leaves now: these are not bytes for the loop
+// to decide on, they are the bytes the client is waiting for.
+func (w *failoverResponseWriter) forward(p []byte) {
+	if _, err := w.base.Write(p); err != nil {
+		return
+	}
+	if f, ok := w.base.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// startStream opens a streamed response: a success by definition, committed
+// before its first byte so the bytes below it flush as they come.
+func (w *failoverResponseWriter) startStream(statusCode int) {
+	if !w.discarded && !w.passthrough {
+		w.commitHeaders(statusCode)
+	}
+}
+
+// streamOpened reports that the attempt committed its headers as the start of
+// a stream: a converted request opens its turn with the upstream response, so
+// an error response reaches here as a committed turn that carries nothing yet.
+func (w *failoverResponseWriter) streamOpened() bool {
+	return !w.passthrough && !w.discarded && w.wroteHeader && w.delivered == 0
+}
+
 // failoverUnavailable reports that this attempt is the last one: the loop has
 // no backup left, so whatever the attempt wrote is the client's answer.
 func (w *failoverResponseWriter) failoverUnavailable() bool {
@@ -249,7 +325,7 @@ func (w *failoverResponseWriter) streamClosed() bool {
 // headers: the start of its turn. A cut turn is completed on top of it, since
 // the stream after it never arrived. Empty when the commit carried no body.
 func (w *failoverResponseWriter) Prefix() []byte {
-	if w.delivered == 0 {
+	if !w.spoke {
 		return nil
 	}
 	return append([]byte(nil), w.body.Bytes()[:w.delivered]...)
@@ -257,23 +333,24 @@ func (w *failoverResponseWriter) Prefix() []byte {
 
 // stream is the stream this attempt took, prefix excluded.
 func (w *failoverResponseWriter) stream() []byte {
-	if w.delivered > w.body.Len() {
+	longest := max(w.delivered, w.held)
+	if longest > w.body.Len() {
 		return nil
 	}
-	return w.body.Bytes()[w.delivered:]
+	return w.body.Bytes()[longest:]
 }
 
 // StreamLen is the size of the stream the attempt took, prefix excluded.
 func (w *failoverResponseWriter) StreamLen() int {
-	return w.body.Len() - w.delivered
+	return max(0, w.body.Len()-max(w.delivered, w.held))
 }
 
-// streamStart is how much of the turn body the client already has, i.e. how
-// much of a replayed copy of the body is already sent. A commit that carried
-// bytes wrote all of them, so the whole prefix counts; a commit that carried
-// nothing sent none of them, so the body starts over.
-func (w *failoverResponseWriter) streamStart() int {
-	return w.delivered
+// heldStart is how much of the turn body the client already has, i.e. how much
+// of a replayed copy of the body is already sent. A commit that carried bytes
+// wrote all of them, so the whole prefix counts; a commit that carried nothing
+// sent none of them, so the body starts over.
+func (w *failoverResponseWriter) heldStart() int {
+	return max(w.delivered, w.held)
 }
 
 // deliver sends the rest of a cut turn — the stream that was read but, because
@@ -282,7 +359,7 @@ func (w *failoverResponseWriter) streamStart() int {
 func (w *failoverResponseWriter) deliver(streamBody []byte, statusCode int) *failoverResponseWriter {
 	hw := newSSEHeartbeatResponseWriter(w)
 	hw.WriteHeader(statusCode)
-	start := w.streamStart()
+	start := w.heldStart()
 	if start > len(streamBody) {
 		// The commit delivered more than this body holds; nothing is left over.
 		start = len(streamBody)
@@ -320,23 +397,35 @@ func (w *failoverResponseWriter) WriteHeader(statusCode int) {
 }
 
 func (w *failoverResponseWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		// A write is the turn saying something: from then on its commit carries
+		// a prefix of it, which a cut turn is closed on top of.
+		w.spoke = true
+	}
 	if w.discarded {
 		return len(p), nil
 	}
 	if w.passthrough {
 		// Committed already: everything from here on goes straight to the
-		// client, and is kept so a cut turn can be reported as delivered.
+		// client, so only the turn's opening — what a stream through this writer
+		// writes before its first forward — is kept; the rest is a prefix after
+		// it that no cut turn reads back.
 		// A partial write is not a write: the bytes the client did not take are
 		// reported as unwritten so the caller stops copying and the client-gone
 		// path is reached instead of the stream looking fully delivered.
+		if w.abandoned {
+			return len(p), nil
+		}
 		n, err := w.base.Write(p)
-		w.body.Write(p[:n])
-		w.delivered = w.body.Len()
+		if !w.discarded && w.held < w.delivered && w.body.Len() < passThroughLogBufferMax {
+			keep := min(n, passThroughLogBufferMax-w.body.Len())
+			_, _ = w.body.Write(p[:keep])
+		}
 		return n, err
 	}
 	// A deferred attempt keeps its stream to itself until the loop settles on
-	// it: a Write here must not commit the headers (writeBufferedStream calls
-	// FlushError for that), or a discarded attempt would already be on the wire.
+	// it: a Write here must not commit the headers (FlushError does that), or a
+	// discarded attempt would already be on the wire.
 	return w.buf.Write(p)
 }
 
@@ -372,12 +461,19 @@ func (w *failoverResponseWriter) commitHeaders(statusCode int) {
 	w.wroteHeader = true
 	w.passthrough = true
 	if w.buf.Len() > 0 {
+		held := w.buf.Bytes()
 		// These bytes leave with the headers, ahead of anything streamed after
-		// them; the attempt keeps them as the start of its recorded turn, so a
-		// cut turn is completed on top of what the client already has.
-		_, _ = w.base.Write(w.buf.Bytes())
-		_, _ = w.body.Write(w.buf.Bytes())
-		w.delivered = w.body.Len()
+		// them. A prefix written before the commit answers what the client
+		// already has and is not kept again; a turn that only had them held back
+		// (no commit before them) keeps them as its opening, which a cut turn
+		// closes on top of.
+		_, _ = w.base.Write(held)
+		if w.held < w.delivered {
+			// The held bytes are the turn's opening, not a prefix of it; its
+			// stream, read after them, is the rest of the turn.
+			_, _ = w.body.Write(held)
+			w.held = w.delivered
+		}
 		w.buf.Reset()
 	}
 }
@@ -398,6 +494,9 @@ func (w *failoverResponseWriter) Discard() {
 	w.buf.Reset()
 	w.body.Reset()
 	w.delivered = 0
+	w.held = 0
+	w.spoke = false
+	w.abandoned = false
 	w.header = make(http.Header)
 	w.status = 0
 	w.wroteHeader = false
@@ -502,7 +601,8 @@ func (s *Server) cachedClaudeFiveHourUtilization(providerID string) (float64, bo
 	if s == nil || s.oauthUsageCache == nil {
 		return 0, false
 	}
-	cached, ok := s.oauthUsageCache.getAllowStale("claude:" + providerID)
+	cacheKey := s.oauthUsageCacheKeyFor("claude", providerID)
+	cached, ok := s.oauthUsageCache.getAllowStale(cacheKey)
 	if !ok {
 		return 0, false
 	}
@@ -544,6 +644,37 @@ func (h providerCooldownHint) ok() bool {
 	return h.retryAfter > 0 || !h.resetsAt.IsZero()
 }
 
+// usageBucket is what an exhausted-window scan needs from one usage bucket.
+type usageBucket interface{ resetAt() (time.Time, bool) }
+
+func (b *ClaudeOAuthUsageBucket) resetAt() (time.Time, bool)  { return parseResetsAt(b.ResetsAt) }
+func (b *ChatGPTOAuthUsageBucket) resetAt() (time.Time, bool) { return parseResetsAt(b.ResetsAt) }
+
+// exhaustedReset picks the reset moment of the window that is actually spent.
+// The soonest reopening is not the answer: a weekly plan window at 100% with a
+// 5h window at 5% told the account reopens in nine minutes when in fact the
+// next request would be refused for days. When nothing is spent the soonest
+// window is the best guess left.
+func exhaustedReset[T usageBucket](current time.Time, spent, idle []T, now time.Time) time.Time {
+	for _, bucket := range spent {
+		at, ok := bucket.resetAt()
+		if !ok || !at.After(now) {
+			continue
+		}
+		if current.IsZero() || at.After(current) {
+			current = at
+		}
+	}
+	if current.IsZero() {
+		for _, bucket := range idle {
+			if at, ok := bucket.resetAt(); ok && at.After(now) && (current.IsZero() || at.Before(current)) {
+				current = at
+			}
+		}
+	}
+	return current
+}
+
 // cooldownHint reads the upstream's own retry timing: the Retry-After header,
 // plus what the vendor already told the usage panel — Claude's unified 5h/7d
 // window and ChatGPT's primary/secondary rate-limit window both carry the exact
@@ -553,25 +684,36 @@ func (s *Server) cooldownHint(providerID, retryAfter string, body []byte, now ti
 	if s == nil || s.oauthUsageCache == nil {
 		return hint
 	}
-	if cached, ok := s.oauthUsageCache.getAllowStale("claude:" + providerID); ok {
+	claudeKey := s.oauthUsageCacheKeyFor("claude", providerID)
+	chatgptKey := s.oauthUsageCacheKeyFor("chatgpt", providerID)
+	if cached, ok := s.oauthUsageCache.getAllowStale(claudeKey); ok {
 		if report, ok := cached.(ClaudeOAuthUsageReport); ok && report.Available {
-			for _, bucket := range []*ClaudeOAuthUsageBucket{report.FiveHour, report.SevenDay} {
+			var spent, idle []*ClaudeOAuthUsageBucket
+			for _, bucket := range []*ClaudeOAuthUsageBucket{report.FiveHour, report.SevenDay, report.SevenDayOverageIncluded} {
 				if bucket == nil {
 					continue
 				}
-				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
-					hint.resetsAt = at
+				if bucket.Utilization >= claudeUsageHardThresholdPct {
+					spent = append(spent, bucket)
+				} else {
+					idle = append(idle, bucket)
 				}
 			}
+			hint.resetsAt = exhaustedReset(hint.resetsAt, spent, idle, now)
 		}
 	}
-	if cached, ok := s.oauthUsageCache.getAllowStale("chatgpt:" + providerID); ok {
+	if cached, ok := s.oauthUsageCache.getAllowStale(chatgptKey); ok {
 		if report, ok := cached.(ChatGPTOAuthUsageReport); ok && report.Available {
-			for _, bucket := range report.Buckets {
-				if at, ok := parseResetsAt(bucket.ResetsAt); ok && at.After(now) && at.After(hint.resetsAt) {
-					hint.resetsAt = at
+			var spent, idle []*ChatGPTOAuthUsageBucket
+			for index := range report.Buckets {
+				bucket := &report.Buckets[index]
+				if bucket.Utilization >= claudeUsageHardThresholdPct {
+					spent = append(spent, bucket)
+				} else {
+					idle = append(idle, bucket)
 				}
 			}
+			hint.resetsAt = exhaustedReset(hint.resetsAt, spent, idle, now)
 		}
 	}
 	return hint
@@ -581,35 +723,89 @@ func (s *Server) cooldownHint(providerID, retryAfter string, body []byte, now ti
 // names a time, the class default otherwise. Only "how long" comes from the
 // upstream — whether the mark shows as hard still comes from the classifier,
 // so a vendor phrase alone never paints an account 异常.
+//
+// The two ladders are deliberately apart (see providerRateRestBase):
+//
+//   - hard quota: at least providerQuotaRestFloor, then the vendor's reset time
+//     when it names one, bounded by providerCooldownCap.
+//   - soft / rate limit: providerRateRestBase doubling per consecutive failure
+//     up to providerRateRestCap. A vendor's reset time only *extends* it when
+//     the reset falls inside providerRateRestCap; a "resets in 6 days" carried
+//     by a plain 429 is a plan window, not a request throttle, and letting it
+//     through here is what used to park a healthy account for an hour.
 func (s *Server) cooldownTTL(providerID, retryAfter string, body []byte, hard bool, now time.Time) time.Duration {
-	ttl := providerFailoverRecoveryInterval
-	if !hard {
-		ttl = providerSoftUnavailableTTL
-	}
 	hint := s.cooldownHint(providerID, retryAfter, body, now)
-	want := hint.retryAfter
-	if !hint.resetsAt.IsZero() {
-		if until := hint.resetsAt.Sub(now); until > want {
-			want = until
+	if hard {
+		// The window the vendor names is the real answer — the floor only fills
+		// in when it names nothing, so a "reopens in 9m" is not rounded up to a
+		// guess while a terse refusal still rests long enough to be worth it.
+		ttl := providerQuotaRestFloor
+		switch {
+		case !hint.resetsAt.IsZero():
+			// The account reopens exactly then; the floor would only make the
+			// gateway wait longer than the vendor said.
+			if until := hint.resetsAt.Sub(now); until > 0 {
+				ttl = until
+			}
+		case hint.retryAfter > ttl:
+			ttl = hint.retryAfter
 		}
-	}
-	if !hint.ok() || want <= 0 {
+		if ttl > providerCooldownCap {
+			ttl = providerCooldownCap
+		}
 		return ttl
 	}
-	if hard {
-		// Spent until the vendor says otherwise: between the soft default and a
-		// quarter hour there is no reason to probe a dead quota.
-		if ttl < providerCooldownFloor*3 {
-			ttl = providerCooldownFloor * 3
+	ttl := providerRateRestBase << min(s.softFailureCount(providerID), 6)
+	if ttl > providerRateRestCap {
+		ttl = providerRateRestCap
+	}
+	if ttl < providerSoftUnavailableTTL {
+		ttl = providerSoftUnavailableTTL
+	}
+	// The vendor's own Retry-After replaces the ladder when it strays from it:
+	// shorter means "the throttle really clears that soon" and shorter is the
+	// honest answer; longer means the account would be refused anyway. Either
+	// way the rate cap still bounds it.
+	if d := hint.retryAfter; d > 0 && d != ttl {
+		ttl = d
+		if ttl > providerRateRestCap {
+			ttl = providerRateRestCap
 		}
 	}
-	if want < ttl {
-		want = ttl
+	if !hint.resetsAt.IsZero() {
+		if until := hint.resetsAt.Sub(now); until > ttl && until <= providerRateRestCap {
+			ttl = until
+		}
 	}
-	if want > providerCooldownCap {
-		want = providerCooldownCap
+	return ttl
+}
+
+// softFailureCount is how many soft failures providerID has in the current
+// window, without counting a new one.
+func (s *Server) softFailureCount(providerID string) int {
+	s.providerAvailabilityMu.Lock()
+	defer s.providerAvailabilityMu.Unlock()
+	st, ok := s.providerSoftFailures[providerID]
+	if !ok || time.Since(st.windowStart) > providerSoftFailureWindow {
+		return 0
 	}
-	return want
+	return st.count
+}
+
+// resetConsumed reports whether a cooldown wanted to last up to the vendor's
+// own reset minute, in which case the failure that set it was the window
+// closing, not the request being throttled: the old reset must not be handed
+// to the next failure as well.
+func (s *Server) resetConsumed(providerID, retryAfter string, body []byte, hard bool, ttl time.Duration, now time.Time) bool {
+	if ttl <= 0 || ttl == providerSoftUnavailableTTL {
+		// An un-hinted rate rest: nothing was spent.
+		return false
+	}
+	hint := s.cooldownHint(providerID, retryAfter, body, now)
+	if hint.resetsAt.IsZero() {
+		return false
+	}
+	return hint.resetsAt.Sub(now) <= ttl
 }
 
 // parseProviderCooldownHint extracts the upstream's retry timing from a
@@ -787,6 +983,12 @@ func (s *Server) setProviderUnavailable(providerID string, hard bool, reason, re
 		reason:    reason,
 	}
 	s.providerAvailabilityMu.Unlock()
+	if s.resetConsumed(providerID, retryAfter, body, hard, ttl, now) {
+		// The rest ran until the window the vendor named: that reset is spent,
+		// and the next failure starts a fresh countdown instead of inheriting
+		// the one that just ended.
+		s.clearSoftFailures(providerID)
+	}
 	if !logMark {
 		return
 	}
@@ -966,14 +1168,27 @@ func (s *Server) executeProtocolFlowWithFailover(
 	// 不能只依赖创建 Key 时的校验（否则撤销授权后旧 Key 会一直可用）。
 	// 先过滤整条链再排尝试顺序，这样即使 ActiveProviderID 指向已被撤销的 Provider，
 	// 也不会跳过链上仍被授权的首选 Provider。
-	if allowedChain := s.allowedProviderChainForKey(matchedKey, chain); len(allowedChain) != len(chain) {
+	if allowedChain := s.allowedProviderChainForKey(matchedKey, chain); allowedChain != nil && len(allowedChain) != len(chain) {
+		kept := make(map[string]bool, len(allowedChain))
+		for _, providerID := range allowedChain {
+			kept[providerID] = true
+		}
 		for _, providerID := range chain {
+			if kept[providerID] {
+				continue
+			}
 			if !s.providerAllowedForKeyOwner(matchedKey, providerID) {
 				s.logs.AddApp("warn", "provider not assigned to key owner, skipped", fmt.Sprintf("key=%s owner=%s provider=%s", matchedKey.ID, matchedKey.OwnerUserID, providerID))
 			}
 		}
 		chain = allowedChain
 		if len(chain) == 0 {
+			// 管理员 Key 没有授权表，整条链只剩禁用/已删除的 Provider 时，这是
+			// 上游不可用，不是权限问题。
+			if strings.TrimSpace(matchedKey.OwnerUserID) == "" {
+				return http.StatusServiceUnavailable, TokenUsage{}, nil, decision, model,
+					fmt.Errorf("no enabled provider on the key's provider chain")
+			}
 			return http.StatusForbidden, TokenUsage{}, nil, decision, model,
 				fmt.Errorf("%w: provider %q is not assigned to your account", errProviderNotAssigned, strings.TrimSpace(route.ProviderID))
 		}
@@ -999,18 +1214,14 @@ func (s *Server) executeProtocolFlowWithFailover(
 	var lastDecision domain.RouteDecision = decision
 	lastModel := model
 	requestModel, _ := req["model"].(string)
-	// 普通用户的 Key（有归属用户）不能使用被管理员禁用的 Provider；
-	// 管理员自己的 Key（无归属）不受限制。
-	ownerRestricted := strings.TrimSpace(matchedKey.OwnerUserID) != ""
-
 	for i, providerID := range attempts {
-		if ownerRestricted {
-			if provider, err := s.router.ProviderByID(providerID); err == nil && provider.Disabled {
-				lastErr = fmt.Errorf("provider %q is disabled by administrator", providerID)
-				s.logs.AddApp("warn", "provider disabled, skipped for user key", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, providerID))
-				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Reason: attemptReasonDisabled, Skipped: true})
-				continue
-			}
+		// 被管理员停用的 Provider 对所有 Key 都不可用，管理员自己的 Key 也一样：
+		// 停用是“这个账号先别发了”，不是按用户授权。
+		if provider, err := s.router.ProviderByID(providerID); err == nil && provider.Disabled {
+			lastErr = fmt.Errorf("provider %q is disabled by administrator", providerID)
+			s.logs.AddApp("warn", "provider disabled, skipped", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, providerID))
+			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Reason: attemptReasonDisabled, Skipped: true})
+			continue
 		}
 		attemptDecision, err := s.router.DecideForProvider(route.ID, providerID)
 		if err != nil {
@@ -1052,16 +1263,40 @@ func (s *Server) executeProtocolFlowWithFailover(
 		elapsed := timer.millis()
 		if execErr != nil {
 			lastStatus, lastUsage, lastBody, lastErr, lastModel = status, usage, nil, execErr, attemptModel
+			opened := writer.streamOpened()
 			// Client already gone: never advance the chain (backup would reuse the
 			// same canceled context and surface a fake GLM/fallback cancel).
 			if isRequestContextCanceled(execErr) || (r.Context() != nil && r.Context().Err() != nil) {
-				if !writer.passthrough && writer.buf.Len() == 0 && writer.status == 0 {
-					writer.Discard()
-				} else {
-					writer.FlushError()
-				}
+				// Settling the attempt (its headers and held turn, if still
+				// deferred) but dropping what it wrote after that: the bytes a
+				// client that left had reached are a prefix a cut turn must not
+				// be closed on top of.
+				writer.FlushError()
+				writer.abandon()
 				noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonClientGone, Error: truncateReason(execErr.Error())})
 				return status, usage, body, attemptDecision, attemptModel, execErr
+			}
+			// A stream was opened with its upstream response: an error response
+			// that arrives there is the upstream's answer, not a cut turn, and the
+			// account never got the request — so the next one may still have it.
+			// A converted turn holds its opening until the answer itself begins
+			// (converterStreamWriter), so an attempt that reached the upstream and
+			// failed before any content is still deferrable: nothing of it has
+			// reached the client, and the next account can answer the turn
+			// (magpie mayAskAgain, fallback.go:2345).
+			if opened && writer.canDefer {
+				writer.Discard()
+				markTimingFlag(r.Context(), timingFlagFailoverRetry)
+				if t := requestTimingFrom(r.Context()); t != nil {
+					t.resetUpstreamMarks()
+				}
+				s.logs.AddApp("warn", "provider failover after error response", fmt.Sprintf("key=%s from=%s status=%d", matchedKey.ID, providerID, status))
+				// The hop spent whatever the stream reported before it failed:
+				// an answer nobody sees still costs the account (magpie records
+				// every try's usage, gateway.go:3004).
+				s.noteProviderUsage(providerID, usage)
+				s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
+				continue
 			}
 			// Busy, not broken: an admission refusal moves to the next account
 			// and must never be counted as a provider failure, or a busy but
@@ -1094,6 +1329,8 @@ func (s *Server) executeProtocolFlowWithFailover(
 			// a streamed request, or a deferred attempt whose turn was
 			// committed — the client's time-to-first-token has been paid, so a
 			// cut is the answer: it stays with the account that started it.
+			// Worth another account while nothing of this turn has reached the
+			// client; the writer knows whether that is still so.
 			if !writer.deferring() {
 				transportFailoverWorthy = false
 			}
@@ -1109,6 +1346,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 					t.resetUpstreamMarks()
 				}
 				s.logs.AddApp("warn", "provider failover after transport error", fmt.Sprintf("key=%s from=%s err=%s", matchedKey.ID, providerID, execErr.Error()))
+				s.noteProviderUsage(providerID, usage)
 				s.releaseSessionPin(sessionKey, pinnedProviderID, providerID)
 				continue
 			}

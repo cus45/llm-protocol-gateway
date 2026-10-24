@@ -58,13 +58,19 @@ func workBuddyCheckinTestCredential() domain.WorkBuddyCredential {
 	return domain.WorkBuddyCredential{AccessToken: "tok", UserID: "u-1", AccountLabel: "tester"}
 }
 
+func runWorkBuddyCheckin(t *testing.T, site workBuddySite) checkinResult {
+	t.Helper()
+	result, _ := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential(), nil)
+	return result
+}
+
 func TestWorkBuddyCheckinClaimsWhenTheEventIsOpen(t *testing.T) {
 	workBuddyCheckinAnswers(t, map[string]string{
 		workBuddyCheckinStatusPath: `{"code":0,"data":{"active":true,"today_checked_in":false,"streak_days":14,"daily_credit":100}}`,
 		workBuddyCheckinClaimPath:  `{"code":0,"data":{"credit":"100","streak_days":"15","message":"签到成功"}}`,
 	})
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+	result := runWorkBuddyCheckin(t, site)
 	if result.Outcome != domain.CheckinClaimed {
 		t.Fatalf("outcome = %q (%s)", result.Outcome, result.Message)
 	}
@@ -83,7 +89,7 @@ func TestWorkBuddyCheckinReportsWhatTheAppAlreadyPressed(t *testing.T) {
 		workBuddyCheckinStatusPath: `{"code":0,"data":{"active":true,"today_checked_in":true,"streak_days":9,"today_credit":"60"}}`,
 	})
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+	result := runWorkBuddyCheckin(t, site)
 	if result.Outcome != domain.CheckinDone || result.Credit != 60 || result.Streak != 9 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -107,7 +113,7 @@ func TestWorkBuddyCheckinAnswers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			workBuddyCheckinAnswers(t, tc.answers)
 			site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-			result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+			result := runWorkBuddyCheckin(t, site)
 			if result.Outcome != tc.want {
 				t.Fatalf("outcome = %q, want %q (%s)", result.Outcome, tc.want, result.Message)
 			}
@@ -123,7 +129,7 @@ func TestWorkBuddyCheckinKeepsTheClaimStreak(t *testing.T) {
 		workBuddyCheckinClaimPath:  `{"code":1001,"msg":"今日已签到"}`,
 	})
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+	result := runWorkBuddyCheckin(t, site)
 	if result.Outcome != domain.CheckinDone || result.Streak != 14 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -138,7 +144,7 @@ func TestWorkBuddyCheckin401IsTheAppWhenCreditsRead(t *testing.T) {
 		workBuddyResourceSummaryPath: `{"code":0,"data":{"IsPaidUser":true,"Packages":[]}}`,
 	})
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+	result := runWorkBuddyCheckin(t, site)
 	if result.Outcome != domain.CheckinOwnApp {
 		t.Fatalf("outcome = %q, want %q (%s)", result.Outcome, domain.CheckinOwnApp, result.Message)
 	}
@@ -155,7 +161,7 @@ func TestWorkBuddyCheckin401IsASignInWhenCreditsFail(t *testing.T) {
 		workBuddyResourceSummaryPath: "status:401",
 	})
 	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
-	result := workBuddyCheckin(context.Background(), site, workBuddyCheckinTestCredential())
+	result := runWorkBuddyCheckin(t, site)
 	if result.Outcome != domain.CheckinFailed {
 		t.Fatalf("outcome = %q", result.Outcome)
 	}
@@ -168,6 +174,9 @@ func TestWorkBuddyCheckinUnauthorizedReadsBothShapes(t *testing.T) {
 	if !workBuddyUnauthorized(&workBuddyError{code: http.StatusUnauthorized}) {
 		t.Fatal("an envelope 401 must be recognised")
 	}
+	if !workBuddyUnauthorized(&workBuddyError{code: 11153, status: http.StatusUnauthorized, msg: "refused"}) {
+		t.Fatal("a 401 carrying a business code is still a 401")
+	}
 	if !workBuddyUnauthorized(errors.New("WorkBuddy 返回 HTTP 401")) {
 		t.Fatal("a bare status line must be recognised too")
 	}
@@ -176,5 +185,56 @@ func TestWorkBuddyCheckinUnauthorizedReadsBothShapes(t *testing.T) {
 	}
 	if workBuddyUnauthorized(nil) {
 		t.Fatal("no error is not a 401")
+	}
+}
+
+// A token WorkBuddy revoked early shows up as a 401 on the check-in and on the
+// credits probe alike. That one is repairable: refresh once, then press the
+// day's check-in with the new token instead of writing off the account.
+func TestWorkBuddyCheckinRefreshesARevokedToken(t *testing.T) {
+	statusCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, workBuddyCheckinStatusPath):
+			statusCalls++
+			if strings.Contains(r.Header.Get("Authorization"), "stale") {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("<html>gateway</html>"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{"active":false}}`))
+		case strings.HasSuffix(r.URL.Path, workBuddyResourceSummaryPath):
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("<html>gateway</html>"))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	old := workBuddyCNEndpoint
+	workBuddyCNEndpoint = server.URL
+	defer func() { workBuddyCNEndpoint = old }()
+
+	site, _ := workBuddySiteForAuthType(domain.AuthTypeWorkBuddy)
+	refreshes := 0
+	result, updated := workBuddyCheckin(context.Background(), site,
+		domain.WorkBuddyCredential{AccessToken: "stale", UserID: "u-1"},
+		func() (domain.WorkBuddyCredential, error) {
+			refreshes++
+			return domain.WorkBuddyCredential{AccessToken: "fresh", UserID: "u-1"}, nil
+		})
+	if refreshes != 1 {
+		t.Fatalf("refreshes = %d, want exactly one", refreshes)
+	}
+	if updated.AccessToken != "fresh" {
+		t.Fatalf("credential = %+v, want the rotated one", updated)
+	}
+	if statusCalls != 2 {
+		t.Fatalf("status calls = %d, want the refusal and the retry", statusCalls)
+	}
+	if result.Outcome != domain.CheckinInactive {
+		t.Fatalf("outcome = %q (%s)", result.Outcome, result.Message)
 	}
 }

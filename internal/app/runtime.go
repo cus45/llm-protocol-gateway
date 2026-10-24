@@ -70,6 +70,9 @@ type Config struct {
 	WebExposedSet bool
 	// PreferEnvAddr when true (headless CLI) lets GATEWAY_ADDR override bind host.
 	PreferEnvAddr bool
+	// Version is the build version this runtime serves; the console polls it to
+	// learn that a newer release is live. Empty for a development build.
+	Version string
 }
 
 // Runtime owns the gateway HTTP server lifecycle so both the headless CLI and
@@ -186,6 +189,15 @@ func (rt *Runtime) Start(cfg Config) error {
 		slog.Info("legacy config migrated to sqlite", "json", jsonPath, "db", db.Path())
 	}
 
+	// The monitoring center reads history the console used to own (check-ins,
+	// Telegram settings, alert rows). Importing before the state load means the
+	// first monitoring tick already sees the pre-existing incidents, and a
+	// failure here must never block startup: the gateway still runs with the
+	// legacy alert scanner.
+	if err := db.MigrateMonitoringV1(); err != nil {
+		slog.Warn("monitoring migration failed", "error", err)
+	}
+
 	state, err := db.Load(config.DefaultState())
 	if err != nil {
 		_ = db.Close()
@@ -249,6 +261,9 @@ func (rt *Runtime) Start(cfg Config) error {
 
 	state.WebExposed = rt.webExposed
 	router := gateway.NewRouter(state)
+	// The console compares its own build version against this one to offer the
+	// upgrade prompt, so it must be set before the first request is served.
+	gateway.SetBuildVersion(cfg.Version)
 	server := gateway.NewServer(router, logs, db)
 	// 上次自检若被 kill/重启打断，selfcheck-* 密钥会残留；启动时扫一遍。
 	server.SweepSelfcheckLeftovers()
@@ -310,6 +325,9 @@ func (rt *Runtime) Start(cfg Config) error {
 		if err := db.PruneRequestLogs(retentionDays); err != nil {
 			slog.Warn("request log prune failed", "error", err)
 		}
+		if err := db.PruneMonitoringData(time.Now()); err != nil {
+			slog.Warn("monitoring data prune failed", "error", err)
+		}
 		// Reclaim disk space that pruning frees (legacy DBs convert to
 		// incremental auto_vacuum on first run; may be slow once, hence async).
 		if err := db.MaintainStorage(); err != nil {
@@ -326,6 +344,7 @@ func (rt *Runtime) Start(cfg Config) error {
 		server.RebuildUsageStats()
 		server.StartOAuthUsageBackgroundRefresh(context.Background())
 		server.StartChatGPTTokenBackgroundRefresh(context.Background())
+		server.StartClaudeTokenBackgroundRefresh(context.Background())
 		server.StartProviderFailoverRecovery(context.Background())
 		server.StartUserActivityFlush(context.Background())
 		server.StartQuotaKeeper(context.Background())
@@ -334,6 +353,10 @@ func (rt *Runtime) Start(cfg Config) error {
 		server.BackfillQoderAccountLabels()
 		server.StartCursorModelBackgroundRefresh(context.Background())
 		server.StartAlertScan(context.Background())
+		// The monitoring center replaces the legacy pushes (the scanner keeps
+		// writing its history rows, which MigrateMonitoringV1 folds into the
+		// event stream), so it starts last of the background loops.
+		server.StartMonitoring(context.Background())
 		rt.startStorageMaintenance(db, retentionDays)
 	}()
 
@@ -369,6 +392,9 @@ func (rt *Runtime) startStorageMaintenance(db *store.Store, retentionDays int) {
 			case <-ticker.C:
 				if err := db.PruneRequestLogs(retentionDays); err != nil {
 					slog.Warn("periodic request log prune failed", "error", err)
+				}
+				if err := db.PruneMonitoringData(time.Now()); err != nil {
+					slog.Warn("periodic monitoring prune failed", "error", err)
 				}
 				if err := db.MaintainStorage(); err != nil {
 					slog.Warn("periodic storage maintenance failed", "error", err)

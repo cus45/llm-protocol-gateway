@@ -117,20 +117,53 @@ func (s *Server) providerAllowedForKeyOwner(key domain.APIKey, providerID string
 }
 
 // allowedProviderChainForKey filters a failover chain down to the providers the
-// key's owner is still granted, preserving priority order. Admin-owned keys pass
-// through untouched.
+// key's owner is still granted, preserving priority order. Admin-owned keys have
+// no grant table, but a disabled or deleted provider is dropped for them too: a
+// paused account must not keep taking traffic just because the key belongs to
+// the administrator. An id the router cannot resolve at all is kept — the
+// failover loop records it as an undecidable candidate, which is what answers
+// "why wasn't it used?", instead of silently dropping a configured entry. A nil
+// return means "the chain was not filtered" — the router is not reachable, so
+// nothing could be validated and routing falls back to its own checks rather
+// than trusting an empty list.
 func (s *Server) allowedProviderChainForKey(key domain.APIKey, chain []string) []string {
-	if strings.TrimSpace(key.OwnerUserID) == "" {
-		return chain
+	if s == nil || s.router == nil {
+		return nil
 	}
-	allowed := s.allowedProviderIDsForUser(strings.TrimSpace(key.OwnerUserID))
+	ownerID := strings.TrimSpace(key.OwnerUserID)
+	var allowed map[string]bool
+	if ownerID != "" {
+		allowed = s.allowedProviderIDsForUser(ownerID)
+	}
 	out := make([]string, 0, len(chain))
 	for _, id := range chain {
-		if allowed[strings.TrimSpace(id)] {
-			out = append(out, id)
+		providerID := strings.TrimSpace(id)
+		if allowed != nil && !allowed[providerID] {
+			continue
 		}
+		provider, err := s.router.ProviderByID(providerID)
+		if s.isDisabledOrDeletedProvider(providerID, err, provider) {
+			continue
+		}
+		out = append(out, id)
+	}
+	if out == nil {
+		out = []string{}
 	}
 	return out
+}
+
+// isDisabledOrDeletedProvider reports whether a provider lookup found one that
+// may not take traffic: disabled, or soft-deleted. ProviderByID reports a
+// deleted provider the same "not found" error as a purged one; the difference is
+// the trash listing, so a deleted row is recognised through the including-deleted
+// lookup and a truly missing id is not.
+func (s *Server) isDisabledOrDeletedProvider(providerID string, err error, provider domain.Provider) bool {
+	if err != nil {
+		deleted, deletedErr := s.router.ProviderByIDIncludingDeleted(providerID)
+		return deletedErr == nil && deleted.Deleted
+	}
+	return provider.Disabled || provider.Deleted
 }
 
 // ownedKeyIDs returns the IDs of API keys owned by the given user.
@@ -378,29 +411,48 @@ func publicAccessForUser(src domain.PublicAccessSettings) domain.PublicAccessSet
 // imagesEffectiveProvider picks the provider an OpenAIImages request is billed
 // to. Images has no failover pass of its own — one route, one upstream — so the
 // key's chain is resolved here instead: the route's provider followed by the
-// key's fallbacks, preferring the scheduled active provider. It returns "" when
-// the key's owner was granted none of them, which the handler must treat as a
-// refusal: sending the image to the route default anyway is exactly the
-// revocation the chat path already refuses.
+// key's fallbacks, at the position the scheduler left the key on. It returns ""
+// when nothing is left to send to, which the handler must treat as a refusal:
+// sending the image to the route default anyway is exactly the revocation the
+// chat path already refuses.
 func (s *Server) imagesEffectiveProvider(key domain.APIKey, route domain.Route) string {
 	routeProvider := strings.TrimSpace(route.ProviderID)
-	chain := apiKeyProviderChain(routeProvider, key.FallbackProviderIDs)
-	if strings.TrimSpace(key.OwnerUserID) != "" {
-		// Admin-owned (or legacy) keys are unrestricted; user keys only reach
-		// what their owner is still granted.
-		chain = s.allowedProviderChainForKey(key, chain)
-		if len(chain) == 0 {
-			return ""
+	// The chain as configured, then the same chain minus what is disabled,
+	// deleted or no longer granted (grant only binds normal users). Dropping
+	// entries shifts positions, so the first allowed provider at or after the
+	// active one is taken — the sticky position means "don't go back to the
+	// providers before this one", not the provider id itself.
+	configured := apiKeyProviderChain(routeProvider, key.FallbackProviderIDs)
+	chain := s.allowedProviderChainForKey(key, configured)
+	if len(chain) == 0 {
+		return ""
+	}
+	start := len(chain)
+	for index, providerID := range configured {
+		if !containsProviderID(chain, providerID) {
+			continue
+		}
+		if index >= apiKeyEffectiveProviderIndex(key.ActiveProviderID, configured) {
+			start = index
+			break
 		}
 	}
-	// Like rotateChainAt, an active provider outside the chain is not a switch
-	// this route can make: it belongs to another route's chain.
-	if active := strings.TrimSpace(key.ActiveProviderID); active != "" {
-		for _, providerID := range chain {
-			if providerID == active {
-				return active
-			}
+	// The sticky provider is the last allowed one: there is nowhere left to go,
+	// and falling back to the top would undo the switch the scheduler made.
+	for index := start; index < len(configured); index++ {
+		if containsProviderID(chain, configured[index]) {
+			return configured[index]
 		}
 	}
-	return chain[0]
+	return ""
+}
+
+// containsProviderID reports whether id is one of ids.
+func containsProviderID(ids []string, id string) bool {
+	for _, candidate := range ids {
+		if strings.TrimSpace(candidate) == id {
+			return true
+		}
+	}
+	return false
 }

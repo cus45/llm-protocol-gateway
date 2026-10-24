@@ -1,0 +1,28 @@
+# 源码统一 LF：Windows 上 checkout 成 CRLF 会让 gofmt -l 报假阳性，
+# 门禁就分不清"真的没格式化"和"只是换行符不同"。
+* text=auto eol=lf
+
+*.go     text eol=lf
+*.sh     text eol=lf
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.js     text eol=lf
+*.css    text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.html   text eol=lf
+go.mod   text eol=lf
+go.sum   text eol=lf
+
+# Windows 脚本保持 CRLF，否则 cmd.exe 解析会出错
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.ico    binary
+*.icns   binary

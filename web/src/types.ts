@@ -3,7 +3,7 @@ import {navItems} from './lib';
 
 export type BadgeTone = 'green' | 'blue' | 'cyan' | 'amber' | 'red' | 'purple' | 'slate';
 
-export type Protocol = 'openai_chat' | 'openai_responses' | 'claude';
+export type Protocol = 'openai_chat' | 'openai_responses' | 'claude' | 'gemini';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -610,8 +610,9 @@ export type Model = {
  * 积分倍率」是两回事：这里是我们给请求记账用的单价。
  * inputUsdPerMTok 只算未命中缓存的那部分 prompt——cacheTokens/cacheWriteTokens
  * 已经含在 inputTokens 里，重复按全价计会翻倍。
- * modelId "*" 是该 Provider 的默认行；没有行的 Provider/模型一律「未计价」，
- * 不是 $0。订阅制（按积分计费）的 Provider 应当留空。
+ * modelId "*" 是该范围的默认行；providerId "*" 是全局范围，所有没有自己价格行的
+ * Provider 都共用它（官方 Claude 各账号因此只需维护一套价）。没有行的 Provider/模型
+ * 一律「未计价」，不是 $0。订阅制（按积分计费）的 Provider 应当留空。
  */
 export type ModelUSDPrice = {
   providerId: string;

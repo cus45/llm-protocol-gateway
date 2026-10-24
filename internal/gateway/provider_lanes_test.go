@@ -413,7 +413,7 @@ func TestAdmissionDisabledByDefault(t *testing.T) {
 			t.Fatalf("second concurrent request got %d", got)
 		}
 	}
-	if f.server.providerInFlight(f.primaryID) != 0 {
+	if f.server.providerInFlight(domain.Provider{ID: f.primaryID}) != 0 {
 		t.Fatal("requests must release their slot when they finish")
 	}
 }

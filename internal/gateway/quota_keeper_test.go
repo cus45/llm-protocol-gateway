@@ -306,6 +306,23 @@ func (f *fakeScheduledTaskStore) UpdateScheduledTaskSchedule(id, lastRunAt, next
 	return nil
 }
 
+func (f *fakeScheduledTaskStore) UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool, pausedBy string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	task, ok := f.tasks[id]
+	if !ok {
+		return nil
+	}
+	task.ProviderIDs = append([]string{}, providerIDs...)
+	task.Enabled = enabled
+	if enabled {
+		pausedBy = ""
+	}
+	task.PausedBy = pausedBy
+	f.tasks[id] = task
+	return nil
+}
+
 func (f *fakeScheduledTaskStore) DeleteScheduledTask(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -472,7 +489,7 @@ func TestProbeProviderForQuotaQuietWindowSkips(t *testing.T) {
 	task := domain.ScheduledTask{ID: "task-1", QuietMinutes: 60}
 
 	run := server.probeProviderForQuota(context.Background(), task, "p1", false)
-	if run.Outcome != domain.QuotaRunSkipped || !strings.Contains(run.Reason, "已有真实流量") {
+	if run.Outcome != domain.QuotaRunSkipped || !strings.Contains(run.Reason, "已有成功请求") {
 		t.Fatalf("quiet run = %+v", run)
 	}
 	if calls != 0 {
@@ -487,6 +504,70 @@ func TestProbeProviderForQuotaQuietWindowSkips(t *testing.T) {
 	noGuard := server.probeProviderForQuota(context.Background(), domain.ScheduledTask{ID: "task-2", QuietMinutes: -1}, "p1", false)
 	if noGuard.Outcome != domain.QuotaRunFired {
 		t.Fatalf("guard off run = %+v", noGuard)
+	}
+}
+
+func TestDailyClockIsNotSuppressedByRealTraffic(t *testing.T) {
+	// 用户反馈的现场：卡点 20:13，19:58 有一笔真实请求，20:13 被静默窗口跳过，
+	// 于是下一次激活要等到第二天 05:10。定点任务的意义就是把窗口钉在 20:13，
+	// 真实流量不应该让它整格消失。
+	calls := 0
+	upstream := chatUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","content":[],"model":"m","usage":{}}`)
+	})
+	server, _ := newQuotaTestServer(t, upstream.URL)
+	server.requestLogStore = &quotaStubLogStore{recent: true}
+
+	daily := server.probeProviderForQuota(context.Background(), domain.ScheduledTask{
+		ID: "task-daily", Mode: domain.ScheduleDailyTimes, QuietMinutes: 60,
+	}, "p1", false)
+	if daily.Outcome != domain.QuotaRunFired || calls != 1 {
+		t.Fatalf("daily clock must still fire after real traffic: %+v calls=%d", daily, calls)
+	}
+
+	// 但自己刚刚探测过时仍要跳过：定点列表排得密时，没必要同一分钟打两发。
+	server.recordQuotaProbe("p1", time.Now())
+	again := server.probeProviderForQuota(context.Background(), domain.ScheduledTask{
+		ID: "task-daily-2", Mode: domain.ScheduleDailyTimes, QuietMinutes: 60,
+	}, "p1", false)
+	if again.Outcome != domain.QuotaRunSkipped || !strings.Contains(again.Reason, "保活探测") {
+		t.Fatalf("a recent probe must still defer the next clock: %+v", again)
+	}
+	if calls != 1 {
+		t.Fatalf("skipped probe sent traffic: calls=%d", calls)
+	}
+}
+
+func TestFailedProbeDoesNotBlockTheNextSlot(t *testing.T) {
+	upstream := chatUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error":{"message":"upstream down"}}`)
+	})
+	server, _ := newQuotaTestServer(t, upstream.URL)
+	run := server.probeProviderForQuota(context.Background(), domain.ScheduledTask{
+		ID: "task-1", Mode: domain.ScheduleEveryHours, QuietMinutes: 60,
+	}, "p1", false)
+	if run.Outcome != domain.QuotaRunFailed {
+		t.Fatalf("run = %+v", run)
+	}
+	// 失败没有启动窗口，不能让它挡住下一格。
+	if _, _, busy := server.providerRecentlyUsed("p1", time.Hour); busy {
+		t.Fatal("a failed probe must not count as a recent use")
+	}
+}
+
+func TestQuietWindowOnlyCountsSuccessfulTraffic(t *testing.T) {
+	server, _ := newQuotaTestServer(t, "http://127.0.0.1:1")
+	var got monitor.RequestLogQuery
+	server.requestLogStore = &quotaStubLogStore{query: func(query monitor.RequestLogQuery) (monitor.RequestLogPage, error) {
+		got = query
+		return monitor.RequestLogPage{}, nil
+	}}
+	server.providerRecentlyUsed("p1", time.Hour)
+	if got.Status != "2xx" {
+		t.Fatalf("quiet window must only count successful traffic, got status=%q", got.Status)
 	}
 }
 
@@ -532,8 +613,8 @@ func TestRunScheduledTaskBatchWritesOneRowPerProviderAndAdvances(t *testing.T) {
 	server.runScheduledTaskBatch(context.Background(), task, slot, false)
 
 	runs := store.snapshotRuns()
-	if len(runs) != 4 {
-		t.Fatalf("want one row per provider, got %d", len(runs))
+	if len(runs) != 3 {
+		t.Fatalf("want one row per live provider (the deleted one must not be pinged), got %d: %+v", len(runs), runs)
 	}
 	batchIDs := map[string]struct{}{}
 	for _, run := range runs {
@@ -555,10 +636,16 @@ func TestRunScheduledTaskBatchWritesOneRowPerProviderAndAdvances(t *testing.T) {
 	if byProvider["p3"].Outcome != domain.QuotaRunSkipped {
 		t.Fatalf("disabled provider: %+v", byProvider["p3"])
 	}
-	if byProvider["missing"].Outcome != domain.QuotaRunFailed {
-		t.Fatalf("deleted provider: %+v", byProvider["missing"])
+	if _, ok := byProvider["missing"]; ok {
+		t.Fatalf("a deleted provider must not produce a run row: %+v", byProvider["missing"])
 	}
+	// A batch never rewrites membership: an id that did not resolve is skipped
+	// for this round only, and the next keeper tick decides whether it was a soft
+	// delete (keep the id, pause if nothing is left) or a purge (drop it).
 	stored := store.task("task-1")
+	if got := strings.Join(stored.ProviderIDs, ","); got != "p1,p2,p3,missing" {
+		t.Fatalf("a batch must leave membership alone: %q", got)
+	}
 	if stored.NextRunAt == "" {
 		t.Fatal("next slot not stored")
 	}
@@ -576,6 +663,145 @@ func TestRunScheduledTaskBatchWritesOneRowPerProviderAndAdvances(t *testing.T) {
 		t.Fatal("batch must release its claim when it finishes")
 	}
 	server.releaseScheduledTaskRun(task.ID)
+}
+
+func testClaudeProvider(id, name, upstreamURL string) domain.Provider {
+	return domain.Provider{
+		ID: id, Name: name, Protocol: domain.ProtocolClaude,
+		AuthType: domain.AuthTypeAPIKey, BaseURL: upstreamURL + "/v1",
+		APIKeySource: "literal:sk-test", AuthHeader: "x-api-key",
+		DefaultModel: "claude-sonnet-4-5",
+	}
+}
+
+func TestRunDueScheduledTasksPrunesPurgedProviders(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL)
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-1", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1", "gone"}, NextRunAt: formatScheduleStamp(time.Now().Add(2 * time.Hour)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	stored := store.task("task-1")
+	if got := strings.Join(stored.ProviderIDs, ","); got != "p1" {
+		t.Fatalf("purged provider not pruned: %q", got)
+	}
+	if !stored.Enabled {
+		t.Fatal("a task with one live provider must stay enabled")
+	}
+	if runs := store.snapshotRuns(); len(runs) != 0 {
+		t.Fatalf("a future slot must not fire: %+v", runs)
+	}
+}
+
+// A provider delete is a soft delete that an admin can undo from the trash. The
+// keeper must pause the task without losing the membership, and a restore must
+// bring the task back — otherwise an accidental delete silently rewrites a
+// schedule that has nothing to do with it.
+func TestSoftDeletedProviderKeepsTaskMembershipAndRestoreRevivesIt(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL,
+		testClaudeProvider("p1", "Claude 1", upstream.URL),
+		testClaudeProvider("p2", "Claude 2", upstream.URL))
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-1", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1", "p2"}, NextRunAt: formatScheduleStamp(time.Now().Add(2 * time.Hour)),
+	})
+	if err := server.router.DeleteProvider("p2"); err != nil {
+		t.Fatal(err)
+	}
+	server.runDueScheduledTasks(context.Background())
+	stored := store.task("task-1")
+	if got := strings.Join(stored.ProviderIDs, ","); got != "p1,p2" {
+		t.Fatalf("soft-deleted provider must stay on the task, providers = %q", got)
+	}
+	if !stored.Enabled {
+		t.Fatal("one live member is enough to keep the task enabled")
+	}
+
+	// Every member soft-deleted: the task pauses but keeps its list, so a restore
+	// has something to bring back.
+	if err := server.router.DeleteProvider("p1"); err != nil {
+		t.Fatal(err)
+	}
+	server.runDueScheduledTasks(context.Background())
+	stored = store.task("task-1")
+	if stored.Enabled {
+		t.Fatal("a task with no schedulable member must be paused")
+	}
+	if got := strings.Join(stored.ProviderIDs, ","); got != "p1,p2" {
+		t.Fatalf("pausing must preserve the ids, providers = %q", got)
+	}
+	server.runDueScheduledTasks(context.Background())
+	if runs := store.snapshotRuns(); len(runs) != 0 {
+		t.Fatalf("a paused task must not fire: %+v", runs)
+	}
+
+	// Undoing one delete revives the task on its own schedule, not immediately.
+	if _, err := server.router.RestoreProvider("p1"); err != nil {
+		t.Fatal(err)
+	}
+	server.runDueScheduledTasks(context.Background())
+	stored = store.task("task-1")
+	if !stored.Enabled {
+		t.Fatal("restoring a member must re-enable the task")
+	}
+	if stored.NextRunAt == "" {
+		t.Fatal("a revived task needs a fresh next slot")
+	}
+	if got := strings.Join(stored.ProviderIDs, ","); got != "p1,p2" {
+		t.Fatalf("revive must keep the membership, providers = %q", got)
+	}
+}
+
+func TestResumeTasksForProviderRevivesOnlyMatchingPausedTasks(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL)
+	slot := formatScheduleStamp(localClock(t, "2026-10-16", "09:00"))
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "paused-p1", Enabled: false, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1", "p2"},
+	})
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "paused-elsewhere", Enabled: false, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"px"}, PausedBy: domain.ScheduledTaskPausedByKeeper,
+	})
+	server.resumeTasksForProvider("p1")
+	if !store.task("paused-p1").Enabled {
+		t.Fatal("a paused task naming the restored provider must be re-enabled")
+	}
+	if store.task("paused-elsewhere").Enabled {
+		t.Fatal("a task naming another provider must stay paused")
+	}
+	// A task that is already enabled is never rewritten by a restore.
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "running", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1"}, NextRunAt: slot,
+	})
+	server.resumeTasksForProvider("p1")
+	if store.task("running").NextRunAt != slot {
+		t.Fatal("an enabled task must keep its slot")
+	}
+}
+
+func TestRunDueScheduledTasksPausesWhenEveryProviderWasDeleted(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL)
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-1", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"gone"}, NextRunAt: formatScheduleStamp(time.Now().Add(-time.Minute)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	stored := store.task("task-1")
+	if stored.Enabled {
+		t.Fatal("a task with no live provider must be paused instead of firing a no-op forever")
+	}
+	if len(stored.ProviderIDs) != 0 {
+		t.Fatalf("providers = %v, want empty", stored.ProviderIDs)
+	}
+	if runs := store.snapshotRuns(); len(runs) != 0 {
+		t.Fatalf("a fully deleted task must not write failure rows: %+v", runs)
+	}
 }
 
 func TestManualBatchKeepsTheScheduleItWasNotDueFor(t *testing.T) {
@@ -802,4 +1028,46 @@ func TestRunDueScheduledTasksFiresAndRespectsGrace(t *testing.T) {
 			t.Fatalf("disabled task's schedule rewritten: %q", got)
 		}
 	})
+}
+
+// D31-1: "disabled, with at least one live provider" used to read as "the keeper
+// auto-paused this after a delete", so a task the operator switched off by hand
+// was revived on the very next tick. Only the keeper's own pause may be undone.
+func TestUserPausedTaskIsNotRevivedByKeeper(t *testing.T) {
+	upstream := chatUpstream(t, nil)
+	server, store := newQuotaTestServer(t, upstream.URL,
+		testClaudeProvider("p1", "Claude 1", upstream.URL))
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-1", Enabled: false, PausedBy: domain.ScheduledTaskPausedByUser,
+		Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1"}, NextRunAt: formatScheduleStamp(time.Now().Add(-time.Minute)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-1"); stored.Enabled {
+		t.Fatal("a task the user paused must stay paused while its provider is alive")
+	}
+	server.resumeTasksForProvider("p1")
+	if stored := store.task("task-1"); stored.Enabled {
+		t.Fatal("restoring a provider must not undo the user's own pause")
+	}
+
+	// The keeper's own pause is still revived when a member comes back.
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-2", Enabled: false, PausedBy: domain.ScheduledTaskPausedByKeeper,
+		Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"p1"},
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-2"); !stored.Enabled || stored.PausedBy != "" {
+		t.Fatalf("keeper-paused task must be revived and lose its mark, got enabled=%v pausedBy=%q", stored.Enabled, stored.PausedBy)
+	}
+	// Auto-pause stamps the keeper mark, so a later restore can undo it.
+	store.SaveScheduledTask(domain.ScheduledTask{
+		ID: "task-3", Enabled: true, Mode: domain.ScheduleDailyTimes, Times: []string{"09:00"},
+		ProviderIDs: []string{"gone"}, NextRunAt: formatScheduleStamp(time.Now().Add(-time.Minute)),
+	})
+	server.runDueScheduledTasks(context.Background())
+	if stored := store.task("task-3"); stored.Enabled || stored.PausedBy != domain.ScheduledTaskPausedByKeeper {
+		t.Fatalf("auto-pause must be marked as the keeper's: enabled=%v pausedBy=%q", stored.Enabled, stored.PausedBy)
+	}
 }

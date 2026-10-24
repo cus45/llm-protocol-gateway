@@ -120,10 +120,10 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 		return nil
 	}
 
+	closed := false
 	r := countingReader{r: reader}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	interrupted := isUpstreamStreamInterruptedReader(r)
 	// Some upstreams (Qoder) report failures as an `event: error` frame whose data
 	// payload is a bare error object with no "error" wrapper key. Track the event
 	// name so it is recognized rather than skipped as an ordinary chunk.
@@ -142,7 +142,11 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			closed = true
 			continue
 		}
 
@@ -287,7 +291,10 @@ func streamOpenAIChatToClaudeEvents(w http.ResponseWriter, reader io.Reader, mod
 	if err := scanner.Err(); err != nil {
 		return usage, newUpstreamStreamInterruption(err, r.n)
 	}
-	if interrupted {
+	// Decided from what the reads actually saw: before the loop nothing has
+	// been read, a normal end of body is io.EOF, and a body that ends without
+	// [DONE] was cut however cleanly the socket closed.
+	if isUpstreamStreamInterruptedReader(r) || cleanEOFInterruption(r, closed) {
 		openToolBlocks := make(map[int]int, len(toolBlocks))
 		for callIndex, open := range toolBlocks {
 			if open {

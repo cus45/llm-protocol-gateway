@@ -37,10 +37,17 @@ func ensureQuotaKeeperTables(tx *sql.Tx) error {
 	)`); err != nil {
 		return err
 	}
-	// time_zone arrived after the first release, and installs that already have
-	// the table never see the CREATE above, so it goes through ALTER.
-	if err := addColumnIfMissing(tx, "scheduled_tasks", "time_zone", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	// time_zone and paused_by arrived after the first release, and installs that
+	// already have the table never see the CREATE above, so they go through
+	// ALTER. paused_by is '' on legacy rows: a pause made before the column
+	// existed has no keeper mark, so the keeper leaves it alone.
+	for _, column := range []struct{ name, ddl string }{
+		{"time_zone", "TEXT NOT NULL DEFAULT ''"},
+		{"paused_by", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(tx, "scheduled_tasks", column.name, column.ddl); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS scheduled_task_runs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +70,7 @@ func ensureQuotaKeeperTables(tx *sql.Tx) error {
 	return err
 }
 
-const scheduledTaskSelectColumns = `id, name, enabled, owner_user_id, mode, times, interval, anchor_at, provider_ids, model_overrides, quiet_minutes, probe_prompt, last_run_at, next_run_at, created_at, time_zone`
+const scheduledTaskSelectColumns = `id, name, enabled, owner_user_id, mode, times, interval, anchor_at, provider_ids, model_overrides, quiet_minutes, probe_prompt, last_run_at, next_run_at, created_at, time_zone, paused_by`
 
 func scanScheduledTask(rows *sql.Rows) (domain.ScheduledTask, error) {
 	var task domain.ScheduledTask
@@ -71,10 +78,14 @@ func scanScheduledTask(rows *sql.Rows) (domain.ScheduledTask, error) {
 	var mode, times, providerIDs, overrides string
 	if err := rows.Scan(&task.ID, &task.Name, &enabled, &task.OwnerUserID, &mode, &times, &task.Interval,
 		&task.AnchorAt, &providerIDs, &overrides, &task.QuietMinutes, &task.ProbePrompt,
-		&task.LastRunAt, &task.NextRunAt, &task.CreatedAt, &task.TimeZone); err != nil {
+		&task.LastRunAt, &task.NextRunAt, &task.CreatedAt, &task.TimeZone, &task.PausedBy); err != nil {
 		return domain.ScheduledTask{}, err
 	}
 	task.Enabled = enabled != 0
+	if task.Enabled {
+		// A live task has no pause to attribute.
+		task.PausedBy = ""
+	}
 	task.Mode = domain.ScheduleMode(strings.TrimSpace(mode))
 	if task.Mode == "" {
 		task.Mode = domain.ScheduleDailyTimes
@@ -134,8 +145,8 @@ func (s *Store) SaveScheduledTask(task domain.ScheduledTask) error {
 	}
 	_, err := s.db.Exec(`INSERT INTO scheduled_tasks
 		(id, name, enabled, owner_user_id, mode, times, interval, anchor_at, provider_ids, model_overrides,
-		 quiet_minutes, probe_prompt, last_run_at, next_run_at, created_at, time_zone)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 quiet_minutes, probe_prompt, last_run_at, next_run_at, created_at, time_zone, paused_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name, enabled = excluded.enabled, owner_user_id = excluded.owner_user_id,
 			mode = excluded.mode, times = excluded.times, interval = excluded.interval,
@@ -143,13 +154,23 @@ func (s *Store) SaveScheduledTask(task domain.ScheduledTask) error {
 			model_overrides = excluded.model_overrides, quiet_minutes = excluded.quiet_minutes,
 			probe_prompt = excluded.probe_prompt, last_run_at = excluded.last_run_at,
 			next_run_at = excluded.next_run_at, created_at = excluded.created_at,
-			time_zone = excluded.time_zone`,
+			time_zone = excluded.time_zone, paused_by = excluded.paused_by`,
 		task.ID, strings.TrimSpace(task.Name), enabled, strings.TrimSpace(task.OwnerUserID), mode,
 		encodeProviderIDList(task.Times), task.Interval, strings.TrimSpace(task.AnchorAt),
 		encodeProviderIDList(task.ProviderIDs), encodeFallbackModelOverrides(task.ModelOverrides),
 		task.QuietMinutes, strings.TrimSpace(task.ProbePrompt),
-		task.LastRunAt, task.NextRunAt, task.CreatedAt, strings.TrimSpace(task.TimeZone))
+		task.LastRunAt, task.NextRunAt, task.CreatedAt, strings.TrimSpace(task.TimeZone),
+		scheduledTaskPausedBy(task))
 	return err
+}
+
+// scheduledTaskPausedBy is the pause mark to store: an enabled task stores
+// none, a paused one keeps its mark.
+func scheduledTaskPausedBy(task domain.ScheduledTask) string {
+	if task.Enabled {
+		return ""
+	}
+	return strings.TrimSpace(task.PausedBy)
 }
 
 // UpdateScheduledTaskSchedule writes only the two bookkeeping timestamps. The
@@ -159,6 +180,22 @@ func (s *Store) SaveScheduledTask(task domain.ScheduledTask) error {
 func (s *Store) UpdateScheduledTaskSchedule(id, lastRunAt, nextRunAt string) error {
 	_, err := s.db.Exec(`UPDATE scheduled_tasks SET last_run_at = ?, next_run_at = ? WHERE id = ?`,
 		lastRunAt, nextRunAt, strings.TrimSpace(id))
+	return err
+}
+
+// UpdateScheduledTaskProviders writes the pruned provider list together with
+// the enabled flag and, when the task is paused, who paused it. The keeper calls
+// it when a provider was deleted, possibly while a batch is writing back
+// timestamps, so it touches only these columns instead of replacing the whole
+// row.
+func (s *Store) UpdateScheduledTaskProviders(id string, providerIDs []string, enabled bool, pausedBy string) error {
+	enabledValue := 0
+	if enabled {
+		enabledValue = 1
+		pausedBy = ""
+	}
+	_, err := s.db.Exec(`UPDATE scheduled_tasks SET provider_ids = ?, enabled = ?, paused_by = ? WHERE id = ?`,
+		encodeProviderIDList(providerIDs), enabledValue, strings.TrimSpace(pausedBy), strings.TrimSpace(id))
 	return err
 }
 

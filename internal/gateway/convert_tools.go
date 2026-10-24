@@ -1269,6 +1269,9 @@ func chatDeclaredToolNames(payload map[string]any) map[string]struct{} {
 // tool names from the original OpenAI request. Cursor sends TitleCase names like
 // "Read"; blindly reverse-remapping OAuth names would turn them into "read" and
 // break client-side tool dispatch even when the upstream call succeeded.
+// A model that changes the case of a declared name is answered by
+// restoreDeclaredToolName (D32-2): the reply paths compose the two, so a tool
+// declared as "Bash" and called as "bash" reaches the client as declared.
 func resolveOpenAIToolNameFromClaude(claudeName string, clientToolNames map[string]struct{}) string {
 	claudeName = strings.TrimSpace(claudeName)
 	if claudeName == "" {
@@ -1378,7 +1381,7 @@ func claudeToolUseBlocksToOpenAIToolCalls(blocks []any, clientToolNames map[stri
 			"id":   sanitizeAnthropicToolUseID(stringValue(block["id"])),
 			"type": "function",
 			"function": map[string]any{
-				"name":      resolveOpenAIToolNameFromClaude(stringValue(block["name"]), clientToolNames),
+				"name":      restoreDeclaredToolName(resolveOpenAIToolNameFromClaude(stringValue(block["name"]), clientToolNames), clientToolNames),
 				"arguments": stringifyToolArguments(block["input"]),
 			},
 		})

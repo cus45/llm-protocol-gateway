@@ -11,6 +11,9 @@ const (
 	ProtocolOpenAIChat      Protocol = "openai_chat"
 	ProtocolOpenAIResponses Protocol = "openai_responses"
 	ProtocolClaude          Protocol = "claude"
+	// ProtocolGemini is Google's native generateContent API: a model endpoint of
+	// its own, with its own request and response shape.
+	ProtocolGemini Protocol = "gemini"
 )
 
 func (p Protocol) DisplayName() string {
@@ -21,6 +24,8 @@ func (p Protocol) DisplayName() string {
 		return "OpenAI Responses"
 	case ProtocolClaude:
 		return "Claude"
+	case ProtocolGemini:
+		return "Gemini"
 	default:
 		return string(p)
 	}
@@ -505,7 +510,11 @@ type WorkBuddyCredential struct {
 	UserID string `json:"userId,omitempty"`
 	// Domain is the account's auth domain, sent as X-Domain; empty means
 	// derive it from the endpoint host.
-	Domain    string `json:"domain,omitempty"`
+	Domain string `json:"domain,omitempty"`
+	// SignInAt records when these tokens were obtained. WorkBuddy sometimes
+	// signs in without an expiry, and the access token's real lifetime is
+	// hours, not the month ExpiresAt (the refresh token's) implies.
+	SignInAt  string `json:"signInAt,omitempty"`
 	Connected bool   `json:"connected,omitempty"`
 }
 
@@ -656,11 +665,12 @@ type Model struct {
 // All four rates are US dollars per million tokens, and the tiers are mutually
 // exclusive — InputUSDPerMTok is the *uncached* part of the prompt, because our
 // InputTokens total already contains the cache reads and the cache writes and
-// billing them again would double-count. ModelID "*" is the provider default,
-// used for any model of that provider without its own row; a provider or model
-// with no row at all is not priced, and the console says 未计价 rather than
-// showing a cost of zero. Subscription providers that bill in credits rather
-// than dollars should stay unpriced for the same reason.
+// billing them again would double-count. ModelID "*" is the default for the
+// row's scope, used for any model without its own row; ProviderID "*" is the
+// global scope shared by every provider that has no row of its own. A provider
+// or model with no row at all is not priced, and the console says 未计价 rather
+// than showing a cost of zero. Subscription providers that bill in credits
+// rather than dollars should stay unpriced for the same reason.
 type ModelPrice struct {
 	ProviderID           string  `json:"providerId"`
 	ModelID              string  `json:"modelId"`
@@ -954,7 +964,19 @@ type ScheduledTask struct {
 	LastRunAt string `json:"lastRunAt,omitempty"`
 	NextRunAt string `json:"nextRunAt,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
+	// PausedBy records who turned the task off. Only ScheduledTaskPausedByKeeper
+	// tasks are resumed automatically: the keeper pauses a task whose providers
+	// were all deleted and revives it once one comes back, but a pause a person
+	// asked for must stay until a person lifts it.
+	PausedBy string `json:"pausedBy,omitempty"`
 }
+
+const (
+	// ScheduledTaskPausedByKeeper marks a pause the quota keeper made itself.
+	ScheduledTaskPausedByKeeper = "keeper"
+	// ScheduledTaskPausedByUser marks a pause an operator asked for.
+	ScheduledTaskPausedByUser = "user"
+)
 
 // ScheduledTaskRun is one provider's outcome inside one firing of a task. A
 // firing writes one row per provider, so the console can show "3 家成功、1 家跳过"
