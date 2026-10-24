@@ -258,7 +258,9 @@ func (s *Store) QueryRequestLogs(query monitor.RequestLogQuery) (monitor.Request
 	if !query.BeforeTime.IsZero() && query.BeforeID > 0 {
 		// Stable freeze matching ORDER BY time DESC, id DESC: keep the snapshot
 		// frontier (newest page-1 row) and everything older.
-		where = append(where, "(time < ? OR (time = ? AND id <= ?))")
+		// 游标是"已读到的最旧一条"：它本身已经返回过，下一页必须从它之后
+		// 继续，用严格小于，否则每翻一页都会重复那一行。
+		where = append(where, "(time < ? OR (time = ? AND id < ?))")
 		ts := query.BeforeTime.UTC().Format(time.RFC3339Nano)
 		args = append(args, ts, ts, query.BeforeID)
 	} else if !query.BeforeTime.IsZero() {

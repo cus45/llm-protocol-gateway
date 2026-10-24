@@ -108,7 +108,12 @@ func (s *Server) handleUsageAnalysis(w http.ResponseWriter, r *http.Request) {
 	s.FlushRequestLogs()
 	items := make([]monitor.RequestLog, 0)
 	total := 0
-	for query.Page = 1; ; query.Page++ {
+	// 用游标翻页：第 1 页结束后把 BeforeID/BeforeTime 设成已读到的最旧一条，
+	// 后续每页都从游标之后继续。不能同时递增 Page——SQL 会先按游标过滤再
+	// OFFSET，两者叠加会跳过整页数据，总量还对得上，于是静默少算。
+	query.Page = 1
+	firstPage := true
+	for {
 		var page monitor.RequestLogPage
 		if s.requestLogStore != nil {
 			page, err = s.requestLogStore.QueryRequestLogs(query)
@@ -119,10 +124,17 @@ func (s *Server) handleUsageAnalysis(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, 500, "failed to read usage analysis")
 			return
 		}
-		total = page.Total
-		if query.Page == 1 && len(page.Items) > 0 {
-			query.BeforeID = page.Items[0].ID
-			query.BeforeTime = page.Items[0].Time
+		// 第 1 页的 Total 是区间内的真实总数；之后每页都被游标收窄，
+		// page.Total 是"还剩多少"，不能覆盖总量，否则循环会在还有数据时提前退出。
+		if firstPage {
+			total = page.Total
+			firstPage = false
+		}
+		// 游标推进到本页最后一条（按 time DESC, id DESC 排序，即最旧的一条）。
+		if len(page.Items) > 0 {
+			oldest := page.Items[len(page.Items)-1]
+			query.BeforeID = oldest.ID
+			query.BeforeTime = oldest.Time
 		}
 		for _, entry := range page.Items {
 			entry.RequestBody = ""
