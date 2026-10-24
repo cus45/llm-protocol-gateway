@@ -335,6 +335,12 @@ func (s *Server) StartQuotaKeeper(ctx context.Context) {
 	}()
 }
 
+// RunScheduledTasksOnce runs one keeper pass over the stored tasks: the same
+// work the background loop does each minute, for callers that want it now.
+func (s *Server) RunScheduledTasksOnce(ctx context.Context) {
+	s.runDueScheduledTasks(ctx)
+}
+
 func (s *Server) runDueScheduledTasks(ctx context.Context) {
 	tasks, err := s.scheduledTaskStore.ListScheduledTasks()
 	if err != nil {
