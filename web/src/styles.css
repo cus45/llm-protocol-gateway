@@ -6721,77 +6721,112 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .key-quota-none, .key-quota-note { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 6px; }
 
 /* ----------------------------------------------------------------
-   升级提示横幅：后端发布新版本后，提醒已打开的控制台刷新
+   升级提示：右上角浮层卡片，不参与页面布局
    ---------------------------------------------------------------- */
-.upgrade-banner {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  width: min(1600px, calc(100% - 32px));
-  margin: 12px auto 0;
+.upgrade-toast {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 60;
+  width: min(360px, calc(100vw - 36px));
+  padding: 14px 14px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  animation: upgrade-toast-in 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes upgrade-toast-in {
+  from { opacity: 0; transform: translate3d(12px, -8px, 0) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upgrade-toast { animation: none; }
+}
+.upgrade-toast-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--text, #1f2937);
-  font-size: 13px;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  gap: 10px;
+  margin-bottom: 10px;
 }
-.upgrade-banner-text { flex: 1 1 auto; min-width: 0; }
-.upgrade-banner-action,
-.upgrade-banner-dismiss {
+.upgrade-toast-icon {
   flex: 0 0 auto;
-  border-radius: 8px;
-  padding: 5px 12px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--accent-grad);
+  color: #fff;
+  box-shadow: 0 4px 12px -4px var(--accent);
+}
+.upgrade-toast-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+  letter-spacing: 0.1px;
+}
+.upgrade-toast-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.upgrade-toast-close:hover { background: var(--surface-sunken); color: var(--text); }
+.upgrade-toast-versions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
   font-size: 12px;
+  color: var(--muted);
+}
+.upgrade-toast-version {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+.upgrade-toast-version.is-latest {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.upgrade-toast-arrow { color: var(--subtle); }
+.upgrade-toast-actions { display: flex; gap: 8px; }
+.upgrade-toast-actions button {
+  flex: 1 1 0;
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  border: 1px solid var(--accent-border);
-  background: transparent;
-  color: var(--accent-strong, #4338ca);
+  transition: filter 0.15s ease, background 0.15s ease;
 }
-.upgrade-banner-action {
+.upgrade-toast-primary {
+  border: none;
   background: var(--accent-grad);
-  border-color: transparent;
   color: #fff;
 }
-.upgrade-banner-action:hover { filter: brightness(1.06); }
-.upgrade-banner-dismiss:hover { background: rgba(79, 70, 229, 0.12); }
-@media (max-width: 640px) {
-  .upgrade-banner { flex-wrap: wrap; }
-  .upgrade-banner-text { flex-basis: 100%; }
-}
-
-/* ── 监控中心 ────────────────────────────────────────────────────────────
-   只用现有 tokens；这里补的两件事都是既有体系里没有的：一个能在 1280 以下
-   收成单列的两栏网格，一个不在 .field 里的裸输入框（搜索框、重试渠道下拉），
-   外观必须与 .field 内的控件完全一致，否则同一行里会看到两种输入框。 */
-.monitoring-cols {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 1280px) {
-  .monitoring-cols { grid-template-columns: minmax(0, 1fr); }
-}
-
-.monitoring-input {
-  height: var(--control-h);
-  padding: 0 12px;
-  box-sizing: border-box;
-  border-radius: var(--r-md);
+.upgrade-toast-primary:hover { filter: brightness(1.07); }
+.upgrade-toast-secondary {
   border: 1px solid var(--border);
-  color: var(--text);
-  background: var(--surface);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.2;
-  outline: none;
-  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+  background: transparent;
+  color: var(--muted);
 }
-
-.monitoring-input:focus { border-color: var(--accent); }
+.upgrade-toast-secondary:hover { background: var(--surface-sunken); color: var(--text); }
+@media (max-width: 640px) {
+  .upgrade-toast { top: 12px; right: 12px; left: 12px; width: auto; }
+}

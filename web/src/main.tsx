@@ -4559,20 +4559,44 @@ function App() {
   return (
     <>
       {upgradeAvailable && (
-        <div className="upgrade-banner" role="status" aria-live="polite">
-          <span className="upgrade-banner-text">
-            新版本已发布（当前 {CURRENT_APP_VERSION} → 最新 {latestAppVersion}），刷新页面即可使用。
-          </span>
-          <button type="button" className="upgrade-banner-action" onClick={() => reloadToVersion(latestAppVersion)}>
-            立即升级
-          </button>
-          <button
-            type="button"
-            className="upgrade-banner-dismiss"
-            onClick={() => { dismissUpgrade(latestAppVersion); setUpgradeDismissed(true); }}
-          >
-            稍后
-          </button>
+        <div className="upgrade-toast" role="status" aria-live="polite">
+          <div className="upgrade-toast-head">
+            <span className="upgrade-toast-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v12" />
+                <path d="M7 10l5 5 5-5" />
+                <path d="M4 19h16" />
+              </svg>
+            </span>
+            <span className="upgrade-toast-title">发现新版本</span>
+            <button
+              type="button"
+              className="upgrade-toast-close"
+              aria-label="暂时不升级"
+              title="暂时不升级"
+              onClick={() => { dismissUpgrade(latestAppVersion); setUpgradeDismissed(true); }}
+            >
+              {"\u00d7"}
+            </button>
+          </div>
+          <div className="upgrade-toast-versions">
+            <span className="upgrade-toast-version">{CURRENT_APP_VERSION}</span>
+            <span className="upgrade-toast-arrow" aria-hidden="true">{"\u2192"}</span>
+            <span className="upgrade-toast-version is-latest">{latestAppVersion}</span>
+            <span className="upgrade-toast-hint">重新载入即可使用</span>
+          </div>
+          <div className="upgrade-toast-actions">
+            <button type="button" className="upgrade-toast-primary" onClick={() => reloadToVersion(latestAppVersion)}>
+              立即升级
+            </button>
+            <button
+              type="button"
+              className="upgrade-toast-secondary"
+              onClick={() => { dismissUpgrade(latestAppVersion); setUpgradeDismissed(true); }}
+            >
+              稍后
+            </button>
+          </div>
         </div>
       )}
       <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
