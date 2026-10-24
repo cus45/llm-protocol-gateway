@@ -517,7 +517,10 @@ func (s *Server) Handler() http.Handler {
 	api := withCORS(mux)
 	// 任何 POST 正文都有上限：限制在读取处（ReadAll 之前），超限时各协议自己回 413。
 	api = withBodyLimit(api)
-	return s.withAdminAuth(withHostSeparatedServing(api, findWebDistDir(), s.publicHostRole))
+	// 宿主分离必须在鉴权外层：API 域名上的控制台接口应当"不存在"（404），
+	// 而不是先被鉴权回 401——那等于告诉外面"这里有个管理接口，只是你没登录"。
+	// UI 域名上的模型协议同理，不该先走一遍管理鉴权。
+	return withHostSeparatedServing(s.withAdminAuth(api), findWebDistDir(), s.publicHostRole)
 }
 
 // publicHostRole returns "api" / "ui" when the request Host matches the
