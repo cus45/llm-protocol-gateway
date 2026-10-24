@@ -5765,7 +5765,26 @@ func (s *Server) fetchCursorBridgeImages(r *http.Request, provider domain.Provid
 // proxyOpenAIImagesUpstream relays one JSON or form body to an OpenAI-compatible
 // upstream and hands the answer back as it came. The name is historical: images,
 // embeddings and audio all go through it.
+// imageGenerationTimeout bounds one image generation. A render sends nothing for
+// minutes, so an idle guard would kill it early (hence Timeout: 0 below); with
+// no bound at all a stuck vendor holds the request — and its account slot —
+// until the client gives up, which is what this caps.
+const imageGenerationTimeout = 10 * time.Minute
+
+// isImagesUpstreamURL reports whether the endpoint is a render: it must wait
+// for a deferred answer, unlike embeddings or audio's fast round trip.
+func isImagesUpstreamURL(upstreamURL string) bool {
+	return strings.Contains(strings.ToLower(upstreamURL), "/images/")
+}
+
 func (s *Server) proxyOpenAIImagesUpstream(w http.ResponseWriter, ctx context.Context, upstreamURL string, authValue string, contentType string, body []byte) (int, TokenUsage, []byte, error) {
+	// Only a request that is a render (an /images/... endpoint) gets the bound;
+	// embeddings and audio keep the caller's context as it is.
+	if isImagesUpstreamURL(upstreamURL) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, imageGenerationTimeout)
+		defer cancel()
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, TokenUsage{}, nil, err
