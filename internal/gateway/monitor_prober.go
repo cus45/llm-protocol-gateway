@@ -2,12 +2,14 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
@@ -155,14 +157,17 @@ func (s *Server) probeChatCase(ctx context.Context, providerID, model string) pr
 
 // monitorProbeDay 按投递时区给出探测所属的自然日。当日次数上限与每日窗口都以它
 // 为准——按 UTC 算的话，+08:00 的部署要到早上 8 点才"新的一天"，配额会白白少给一天。
-func monitorProbeDay(s *Server, now time.Time) string {
-	location := time.UTC
+func monitorProbeLocation(s *Server) *time.Location {
 	if s != nil && s.monitoringStore != nil {
 		if configured := monitoring.NewConfig(s.monitoringStore).Dispatch().Location(); configured != nil {
-			location = configured
+			return configured
 		}
 	}
-	return now.In(location).Format("2006-01-02")
+	return time.UTC
+}
+
+func monitorProbeDay(s *Server, now time.Time) string {
+	return now.In(monitorProbeLocation(s)).Format("2006-01-02")
 }
 
 // persistProbeRun 把每一发探测落库。库里存的是「跑成了什么」，规则与调度都只读库，
@@ -230,5 +235,192 @@ func (s *Server) recordProbeRun(run probeRun) {
 	}); err != nil {
 		// 探测记录失败不影响探测本身，也不能把账号判成不可用。
 		slog.Warn("monitoring probe event failed", "provider", run.ProviderID, "error", err)
+	}
+}
+
+const (
+	// probeTickInterval 每分钟看一次探测决策；真正发出去的节奏由下面的间隔与
+	// 当日配额封顶，tick 密不等于探测密。
+	probeTickInterval = time.Minute
+	// probeFailureRetryWindow 是「账号被判不可用后补一发」的最小间隔。可用性标记
+	// 会被重探循环反复命中，不限流就会对同一个坏账号连环打。
+	probeFailureRetryWindow = 10 * time.Minute
+	// probeDailyBatchPerTick 限制每日窗口内一个 tick 最多补几发：20 个账号一次串完
+	// 会把这个 tick 拖好几分钟。分批就自然顺延到窗口结束，也不会跨日堆积。
+	probeDailyBatchPerTick = 2
+	// probeDailyLookback 是「这个账号到底有没有人在用」的观察窗。
+	probeDailyLookback = 24 * time.Hour
+)
+
+// probeGate 是「这一发该不该打」的输入。做成纯函数好测：调度竞态与策略分开，
+// 竞态（同账号已有探测在飞）由 claimQuotaProbe 在真正发之前守住。
+type probeGate struct {
+	Enabled           bool
+	Now               time.Time
+	Day               string
+	UsedToday         int
+	MaxPerDay         int
+	LastProbeAt       time.Time
+	MinInterval       time.Duration
+	LastRealSuccess   time.Time
+	Idle              time.Duration
+	MarkedUnavailable bool
+}
+
+func (g probeGate) budgetSpent() bool {
+	return g.MaxPerDay > 0 && g.UsedToday >= g.MaxPerDay
+}
+
+// allowEventDriven 判规格 §9.2 的六个条件。没人在用的账号不催：探测的目的是
+// 「他明天要用时别是坏的」，不是替一个闲置账号刷存在感。
+func (g probeGate) allowEventDriven() bool {
+	if !g.Enabled || g.budgetSpent() {
+		return false
+	}
+	if g.MarkedUnavailable {
+		// 连续失败要立刻补一发：它必须排在常规最小间隔之前，否则 6 小时的
+		// 节流会把「失败后马上确认一下」这条永远挡死。当日配额照旧生效。
+		return g.LastProbeAt.IsZero() || g.Now.Sub(g.LastProbeAt) >= probeFailureRetryWindow
+	}
+	if !g.LastProbeAt.IsZero() && g.Now.Sub(g.LastProbeAt) < g.MinInterval {
+		return false
+	}
+	if g.LastRealSuccess.IsZero() {
+		return false
+	}
+	return g.Now.Sub(g.LastRealSuccess) >= g.Idle
+}
+
+// allowDaily 判每日轮：今天还没跑成才补。它和事件驱动共用同一个当日计数，
+// 所以一个账号早上被事件驱动催过，晚上那一轮就不会再花一次额度。
+func (g probeGate) allowDaily() bool {
+	return g.Enabled && !g.budgetSpent() && g.UsedToday == 0
+}
+
+// withinClockWindow 判 now 是否落在 [start, end) 的时钟窗口里；start > end 视为
+// 跨零点。解析失败一律判不在窗口内——配置写错时宁可少跑，不要全天候发探测。
+func withinClockWindow(start, end string, now time.Time) bool {
+	from, errFrom := clockMinutes(start)
+	to, errTo := clockMinutes(end)
+	if errFrom != nil || errTo != nil {
+		return false
+	}
+	minutes := now.Hour()*60 + now.Minute()
+	if from <= to {
+		return minutes >= from && minutes < to
+	}
+	return minutes >= from || minutes < to
+}
+
+// clockMinutes 把 "HH:MM" 换成当天第几分钟。parseHourMinute 不校验范围，
+// 而 "25:00" 这种坏值一旦放过就会把窗口撑成全天——配置写错时宁可一次都不跑。
+func clockMinutes(value string) (int, error) {
+	hour, minute, err := parseHourMinute(value)
+	if err != nil {
+		return 0, err
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, fmt.Errorf("clock out of range: %q", value)
+	}
+	return hour*60 + minute, nil
+}
+
+func (s *Server) liveProbeTargets() []domain.Provider {
+	state := s.router.State()
+	out := make([]domain.Provider, 0, len(state.Providers))
+	for _, provider := range state.Providers {
+		if provider.Deleted || provider.Disabled {
+			continue
+		}
+		if lightProbeModel(provider) == "" {
+			continue
+		}
+		out = append(out, provider)
+	}
+	return out
+}
+
+// lastRealSuccessAt 返回该账号最近一次真实成功请求的时间。轻探测走 chat-test
+// 不写请求日志，所以查到的天然是真实流量；CLI 深检的行带 monitor_probe 标记，
+// 万一被查到这里也只会让账号显得「刚用过」而少发一发，方向是保守的。
+func (s *Server) lastRealSuccessAt(providerID string) time.Time {
+	if s.requestLogStore == nil {
+		return time.Time{}
+	}
+	page, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{
+		ProviderID: providerID,
+		From:       time.Now().Add(-probeDailyLookback),
+		Status:     "2xx",
+		Page:       1,
+		PageSize:   1,
+	})
+	if err != nil || len(page.Items) == 0 {
+		return time.Time{}
+	}
+	return page.Items[0].Time
+}
+
+// startMonitorProber 是探测的调度心跳。它刻意独立于监控引擎的 tick：引擎只读快照，
+// 而这里是会对外发请求的一方，出问题时要把两者分开看。
+func (s *Server) startMonitorProber(ctx context.Context) {
+	ticker := time.NewTicker(probeTickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runProbeTick(ctx, time.Now().UTC())
+		}
+	}
+}
+
+func (s *Server) runProbeTick(ctx context.Context, now time.Time) {
+	if s.monitoringStore == nil {
+		return
+	}
+	cfg := monitoring.NewConfig(s.monitoringStore).Probe()
+	if !cfg.EventDriven.Enabled && !cfg.Daily.Enabled {
+		return
+	}
+	targets := s.liveProbeTargets()
+	if len(targets) == 0 {
+		return
+	}
+	day := monitorProbeDay(s, now)
+	idle := time.Duration(cfg.EventDriven.IdleMinutes) * time.Minute
+	minInterval := time.Duration(cfg.EventDriven.MinIntervalMinutes) * time.Minute
+	unavailable := map[string]bool{}
+	for _, id := range s.providerUnavailableIDs() {
+		unavailable[id] = true
+	}
+	dailyOpen := cfg.Daily.Enabled && withinClockWindow(cfg.Daily.WindowStart, cfg.Daily.WindowEnd, now.In(monitorProbeLocation(s)))
+	dailyBudget := probeDailyBatchPerTick
+
+	for _, provider := range targets {
+		outcome, used, err := s.monitoringStore.MonitorProbeOutcome(provider.ID, day)
+		if err != nil {
+			continue
+		}
+		gate := probeGate{
+			Now: now, Day: day, UsedToday: used, MaxPerDay: cfg.EventDriven.MaxPerDayPerAccount,
+			LastProbeAt: outcome.LastAt, MinInterval: minInterval, Idle: idle,
+			LastRealSuccess:   s.lastRealSuccessAt(provider.ID),
+			MarkedUnavailable: unavailable[provider.ID],
+		}
+		gate.Enabled = cfg.EventDriven.Enabled
+		if gate.allowEventDriven() {
+			s.runLightProbe(ctx, provider.ID)
+			continue
+		}
+		if dailyOpen && dailyBudget > 0 {
+			dailyGate := gate
+			dailyGate.Enabled = true
+			dailyGate.MaxPerDay = cfg.EventDriven.MaxPerDayPerAccount
+			if dailyGate.allowDaily() {
+				s.runLightProbe(ctx, provider.ID)
+				dailyBudget--
+			}
+		}
 	}
 }

@@ -40,6 +40,7 @@ func (s *Server) StartMonitoring(ctx context.Context) {
 	}
 	go svc.Run(ctx)
 	go s.startModelMonitor(ctx)
+	go s.startMonitorProber(ctx)
 }
 
 // buildMonitoringService wires collector → engine → dispatcher behind one
