@@ -79,6 +79,11 @@ type providerLane struct {
 	// clock jump could skip or double.
 	rpm    int
 	admits []int64
+	// lastSeen is the latest clock reading this lane has admitted at. A clock
+	// that jumps backwards must not stretch the minute: without it, an
+	// admission stamped in the future never ages out and the account stays
+	// refused for as long as the clock is wrong.
+	lastSeen int64
 }
 
 type providerLanes struct {
@@ -450,6 +455,21 @@ func (lane *providerLane) uncountLocked(now time.Time, at int64) {
 // trimLocked drops admissions that fell out of the last minute and compacts the
 // ring so the slice cannot grow without bound.
 func (lane *providerLane) trimLocked(now time.Time) {
+	stamp := now.UnixNano()
+	if stamp > lane.lastSeen {
+		lane.lastSeen = stamp
+	} else if lane.lastSeen-stamp > int64(time.Minute) {
+		// The clock went back by more than the window: everything counted in
+		// the old window belongs to a past that the clock now says is far away.
+		// Drop it rather than keep the account refused until the clock recovers.
+		lane.admits = nil
+	}
+	// The window is measured from the latest reading, never from an earlier
+	// one: a small backwards jump keeps the minute it already served.
+	if lane.lastSeen > stamp {
+		stamp = lane.lastSeen
+	}
+	now = time.Unix(0, stamp)
 	cutoff := now.Add(-time.Minute).UnixNano()
 	drop := 0
 	for drop < len(lane.admits) && lane.admits[drop] <= cutoff {

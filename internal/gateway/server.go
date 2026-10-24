@@ -5678,6 +5678,18 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 // endpoint even when its provider happens to speak OpenAI Chat — the answer
 // would come back in a shape the client cannot read.
 func (s *Server) proxyOpenAIImages(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, routeProtocol domain.Protocol) (int, TokenUsage, []byte, error) {
+	// Image generation spends the same account budget as chat: a render is the
+	// most expensive request there is, and skipping the lane let a burst of
+	// images blow through the per-minute budget the operator set.
+	releaseSlot, admissionErr := s.acquireProviderSlot(r.Context(), provider)
+	if admissionErr != nil {
+		w.Header().Set("Retry-After", strconv.Itoa(s.providerLanes.retryAfterSecondsFor(provider, time.Now())))
+		if errors.Is(admissionErr, errProviderSaturated) {
+			return http.StatusTooManyRequests, TokenUsage{}, nil, admissionErr
+		}
+		return 0, TokenUsage{}, nil, admissionErr
+	}
+	defer releaseSlot()
 	if routeProtocol != domain.ProtocolOpenAIChat {
 		return 0, TokenUsage{}, nil, fmt.Errorf("route speaks %s, which has no images/generations endpoint", routeProtocol.DisplayName())
 	}
