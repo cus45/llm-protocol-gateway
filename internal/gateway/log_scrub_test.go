@@ -138,3 +138,15 @@ func TestRequestLogScrubsErrorDescription(t *testing.T) {
 		t.Fatalf("fallback ErrorDescription leaks the token: %q", plain.ErrorDescription)
 	}
 }
+
+// 头部名常见大小写混写（Proxy-Authorization / API_KEY / X-Api-Key）：归一化
+// 必须小写，否则键表对不上，凭据原样落进日志。
+func TestScrubMatchesHeaderCaseVariants(t *testing.T) {
+	for _, key := range []string{"Proxy-Authorization", "API_KEY", "X-Api-Key", "Authorization", "proxy_authorization"} {
+		body := []byte(`{"headers":{"` + key + `":"Bearer proxy-secret-value-123"}}`)
+		scrubbed := string(scrubSensitiveRequestBody(body))
+		if strings.Contains(scrubbed, "proxy-secret-value-123") {
+			t.Fatalf("key %q leaked its value: %s", key, scrubbed)
+		}
+	}
+}

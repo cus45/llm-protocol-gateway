@@ -21,7 +21,7 @@ var sensitiveRequestKeys = map[string]struct{}{
 	"api-key":               {},
 	"x-api-key":             {},
 	"authorization":         {},
-	"proxy-authorization":   {},
+	"proxy_authorization":   {},
 	"access_token":          {},
 	"refresh_token":         {},
 	"id_token":              {},
@@ -46,9 +46,12 @@ var sensitiveKeyHints = []string{"secretkey", "secret_key", "accesskey", "access
 
 // sensitiveKeyMatches reports whether key (any case, -/_ alike) names a secret.
 func sensitiveKeyMatches(key string) bool {
-	// 先按原大小写拆驼峰（refreshToken → refresh_token），再统一小写与分隔符。
+	// 先按原大小写拆驼峰（refreshToken → refresh_token），再统一分隔符，最后
+	// 小写。漏了小写这一步，"Proxy-Authorization" / "API_KEY" 这类头部写法就
+	// 对不上表，凭据原样落进日志。
 	normalized := camelToSnake(strings.TrimSpace(key))
 	normalized = strings.NewReplacer("-", "_", ".", "_").Replace(normalized)
+	normalized = strings.ToLower(normalized)
 	if _, ok := sensitiveRequestKeys[normalized]; ok {
 		return true
 	}
