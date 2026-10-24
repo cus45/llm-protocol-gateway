@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -1079,6 +1080,37 @@ func (s *Store) ReplaceMonitorProbeRun(providerID, runningCase string, records [
 	return nil
 }
 
+// LastMonitorProbeRunAt 返回该账号最近一行探测记录的时间（含 round:running:*
+// 占位行）。周检的「本周已跑」用它：占位行意味着本轮已经在跑（或上一进程崩在
+// 跑的途中），也算本周跑过。
+func (s *Store) LastMonitorProbeRunAt(providerID string) (time.Time, bool, error) {
+	return s.lastMonitorProbeRunAt("WHERE provider_id = ? AND kind = ?", providerID, "cli")
+}
+
+// LastCLIProbeRunAt 返回全部账号里最近一行 CLI 深检记录的时间（含占位行）。
+// 周检的「本周已跑」是全局口径：只要本周跑过，就不该因为某个账号恰好没有行
+// 而被判成没跑。
+func (s *Store) LastCLIProbeRunAt() (time.Time, bool, error) {
+	return s.lastMonitorProbeRunAt("WHERE kind = ?", "cli")
+}
+
+func (s *Store) lastMonitorProbeRunAt(where string, args ...any) (time.Time, bool, error) {
+	var stamp string
+	err := s.reader().QueryRow(`SELECT time FROM monitor_probe_runs `+where+`
+		ORDER BY time DESC, id DESC LIMIT 1`, args...).Scan(&stamp)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("read last probe run: %w", err)
+	}
+	at := parseMonitorTime(stamp)
+	if at.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return at, true, nil
+}
+
 // LatestMonitorProbeRuns returns the most recent probe rows for one provider,
 // newest first, for the probe page.
 //
@@ -1099,7 +1131,10 @@ func (s *Store) LatestMonitorProbeRunsOfKind(kind, providerID string, limit int)
 	// 用拼接而不是 (? = '' OR x = ?)：参数按位置绑定，同一个值填两个占位
 	// 会让其中一个条件恒不成立（见 LatestMonitorProbeRuns 的说明）。kind /
 	// providerID 只是加不加 WHERE 子句的选择。
-	where := "1=1"
+	// 占位行（round:running:*，CLI 深检起跑时写入、收尾时删除）不是探测结果，
+	// 对外接口一律不返回：同一行数据不能一边被调度器当作「本轮已跑」，一边在
+	// 探测页被当作一次探测。调度侧用 LastMonitorProbeRunAt 单独读它。
+	where := "case_key NOT LIKE '" + MonitorProbeRunningCasePrefix + "%'"
 	args := make([]any, 0, 3)
 	if providerID != "" {
 		where += " AND provider_id = ?"

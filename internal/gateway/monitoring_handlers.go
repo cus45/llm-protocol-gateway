@@ -1214,11 +1214,18 @@ func probeRunsBody(providerID, kind string, runs []probeRun) map[string]any {
 	body := map[string]any{"ok": true, "providerId": providerID, "kind": kind}
 	var cases []probeCaseResult
 	skipped := ""
+	failed := false
 	for _, run := range runs {
 		cases = append(cases, run.Cases...)
 		skipped = firstNonEmpty(skipped, run.Skipped)
 		body["at"] = run.At
+		if run.Failed() {
+			failed = true
+		}
 	}
+	// ok 必须反映真实结论：任何一条用例失败，整轮就是没通过。skipped 行不算
+	// 失败（probeRun.Failed 已经排除了 skipped 轮）。
+	body["ok"] = !failed
 	body["cases"] = cases
 	body["skipped"] = skipped
 	return body

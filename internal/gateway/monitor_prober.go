@@ -294,14 +294,25 @@ func (s *Server) recordProbeEvent(run probeRun) {
 	if name == "" {
 		name = run.ProviderID
 	}
-	title := name + " 轻探测通过"
-	if run.Failed() {
-		title = name + " 轻探测失败"
-	}
-	if _, err := s.monitoringStore.InsertMonitorEvent(probeEventOf(run, name, title)); err != nil {
+	if _, err := s.monitoringStore.InsertMonitorEvent(probeEventOf(run, name, probeEventTitle(run, name))); err != nil {
 		// 探测记录失败不影响探测本身，也不能把账号判成不可用。
 		slog.Warn("monitoring probe event failed", "provider", run.ProviderID, "error", err)
 	}
+}
+
+// probeEventTitle 按探测类型给事件标题：CLI 深检不能写「轻探测」，否则事件流
+// 与告警列表会把两类探测混成一件。深检没通过也只是 info——它不进 probe_failed。
+func probeEventTitle(run probeRun, name string) string {
+	if run.Kind == probeKindCLI {
+		if run.Failed() {
+			return name + " CLI 深检未通过"
+		}
+		return name + " CLI 深检通过"
+	}
+	if run.Failed() {
+		return name + " 轻探测失败"
+	}
+	return name + " 轻探测通过"
 }
 
 // probeEventOf 构造探测器的那一条 info 事件。
@@ -578,6 +589,8 @@ const (
 	// probeCLISkipRunning 是本轮「已在跑」的占位行。它让周检的「本周已跑」在
 	// 执行器返回之前就成立，从而在进程重启后不会对同一账号重起一轮。
 	probeCLISkipRunning = "running"
+	// probeCLISkipNotRun 是「整轮结束时还有用例没跑」的兜底原因。
+	probeCLISkipNotRun = "not_run"
 	// probeCLIRoundMaxAccounts 限制一轮最多串几个账号。深检每条用例都要起一个
 	// 真实 CLI，账号多了单轮自然超出 2 小时上限；排在后面的账号本轮不跑，
 	// 不发任何行，下一个 tick 按库里记录接着判，直到本周全部跑完。
@@ -618,19 +631,17 @@ func (s *Server) probeClock() time.Time {
 	return time.Now()
 }
 
-// lastCLIRunAt 读 monitor_probe_runs 里最近一轮深检的时间。深检每周至多几轮，
-// 最近的 200 行足以覆盖。
+// lastCLIRunAt 读 monitor_probe_runs 里最近一轮深检的时间。含 round:running:*
+// 占位行：占位存在 = 本轮已在跑，同样算「本周已跑」（重启后不再重起一轮）。
 func (s *Server) lastCLIRunAt() (time.Time, error) {
-	runs, err := s.monitoringStore.LatestMonitorProbeRunsOfKind(probeKindCLI, "", 200)
+	at, ok, err := s.monitoringStore.LastCLIProbeRunAt()
 	if err != nil {
 		return time.Time{}, err
 	}
-	for _, run := range runs {
-		if run.Kind == probeKindCLI {
-			return run.Time, nil
-		}
+	if ok == false {
+		return time.Time{}, nil
 	}
-	return time.Time{}, nil
+	return at, nil
 }
 
 // missingSelfcheckCLIs 返回必需 CLI 里缺了的那几个 id。
@@ -928,12 +939,12 @@ func (s *Server) persistDeepCheck(runs []probeRun) {
 // buildCLIDeepCheck 把执行器的用例结论转成探测行。没出现在结果里的用例补记
 // skipped：它们不进失败计数，但占住「本周已跑」，避免每个 tick 反复起一轮。
 // 返回的顺序是按 case 的，落库时才落；测试也直接调它，不经后台。
-func (s *Server) buildCLIDeepCheck(provider domain.Provider, results []selfcheckCaseResult, roundAt time.Time, cancelled bool) []probeRun {
+func (s *Server) buildCLIDeepCheck(provider domain.Provider, results []selfcheckCaseResult, roundAt time.Time, roundBudget bool) []probeRun {
 	// 每轮组装都是独立的小函数（cliSingleSkippedRun / cliDeepCheckRun），这里
 	// 只用返回值拼一张表；跳过原因经无循环的 cliSkipReason 传递。在同一函数里
 	// 带循环组装再写库时，标志会在落库前被读成零值（Go 1.26 Windows，见
 	// memory go126-windows-slice-compare-miscompile）。
-	reason := cliSkipReason(cancelled)
+	reason := cliSkipReason(roundBudget)
 	out := make([]probeRun, 0, 1+selfcheckCasesPerProvider)
 	for _, caseID := range cliMissingCaseIDs(provider.ID, results) {
 		out = append(out, cliSingleSkippedRun(provider, caseID, reason, roundAt))
@@ -953,11 +964,15 @@ func probeRoundEnd(now, startedAt time.Time) time.Time {
 }
 
 // cliSkipReason 给整轮没跑到的用例一个跳过原因。刻意没有循环、没有跨调用状态。
-func cliSkipReason(cancelled bool) string {
-	if cancelled {
-		return "cancelled"
+//
+// 目前唯一的来源是「整轮 2 小时上限已过」（round_budget）。原先还有一个
+// cancelled（网关停时中止），它没有任何产生路径，已删除，避免界面上出现一条
+// 永远走不到的文案。
+func cliSkipReason(roundBudget bool) string {
+	if roundBudget {
+		return "round_budget"
 	}
-	return "round_budget"
+	return probeCLISkipNotRun
 }
 
 // cliSingleSkippedRun 构造「一条没跑到的用例」落在哪一轮。

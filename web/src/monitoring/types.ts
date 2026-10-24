@@ -348,10 +348,10 @@ export const PROBE_SKIP_TEXT: Record<string, string> = {
   no_model: '没有可用模型，未发出请求',
   provider_disabled: '账号已停用，未探测',
   provider_missing: '账号不存在或已删除',
-  // CLI 深检的整轮上限（2 小时）到了，剩余用例没跑；取消是网关停止时中止的轮次。
+  // CLI 深检的整轮上限（2 小时）到了，剩余用例没跑；not_run 是兜底原因。
   // 两者都不是失败，只是「没跑完」。
   round_budget: '整轮超过 2 小时上限，剩余用例未跑',
-  cancelled: '网关停止，本轮中止',
+  not_run: '整轮结束时仍未跑',
   running: '深检正在进行中',
 };
 
