@@ -1699,6 +1699,12 @@ func (s *Server) handleUpdatePublicAccess(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusBadRequest, "invalid public access json: "+err.Error())
 		return
 	}
+	// 请求的"角色"完全由 Host 决定，所以绑定的域名必须是干净的裸主机名：
+	// 带路径/端口/通配符会让判定含糊，两个角色用同一个名字则根本分不开。
+	if msg := PublicHostError(settings.CustomDomain, settings.UIDomain); msg != "" {
+		writeOpenAIError(w, http.StatusBadRequest, msg)
+		return
+	}
 	updated := s.router.UpdatePublicAccess(settings)
 	if err := s.saveState(); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "failed to save configuration: "+err.Error())

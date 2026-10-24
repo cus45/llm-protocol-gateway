@@ -271,6 +271,54 @@ func cleanPublicHost(value string) string {
 	return strings.TrimRight(value, "/")
 }
 
+// validPublicHost reports whether value is a bare DNS hostname the operator may
+// bind to this gateway. The role of a request is decided purely by its Host, so
+// anything that is not a plain hostname — a path, a port, a wildcard, an IP or
+// a scheme-in-disguise — would make that decision ambiguous.
+func validPublicHost(value string) bool {
+	if value == "" {
+		return true // not bound
+	}
+	if len(value) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			default:
+				return false
+			}
+		}
+	}
+	// 至少两级：单标签主机名（localhost 之类）没有可绑定的公网域名语义。
+	return strings.Contains(value, ".")
+}
+
+// PublicHostError reports why a public-access hostname cannot be bound, or ""
+// when both are acceptable. The two hosts must also differ: one hostname cannot
+// play both the API and the UI role.
+func PublicHostError(apiHost, uiHost string) string {
+	apiHost = cleanPublicHost(strings.ToLower(apiHost))
+	uiHost = cleanPublicHost(strings.ToLower(uiHost))
+	if !validPublicHost(apiHost) {
+		return fmt.Sprintf("API 域名 %q 不是合法的主机名（不能带协议、路径、端口或通配符）", apiHost)
+	}
+	if !validPublicHost(uiHost) {
+		return fmt.Sprintf("UI 域名 %q 不是合法的主机名（不能带协议、路径、端口或通配符）", uiHost)
+	}
+	if apiHost != "" && apiHost == uiHost {
+		return "API 域名与 UI 域名不能相同：同一个主机名无法同时扮演两个角色"
+	}
+	return ""
+}
+
 func publicExposeMatches(expose string, protocol domain.Protocol) bool {
 	switch expose {
 	case "openai_chat":
