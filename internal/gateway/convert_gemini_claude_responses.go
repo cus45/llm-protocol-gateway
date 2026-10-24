@@ -21,7 +21,13 @@ func (s *Server) proxyGeminiToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	if stream, _ := geminiReq["stream"].(bool); stream {
 		chatReq["stream"] = true
 	}
-	return s.proxyConvertedThroughClaude(w, r, provider, model, chatReq, skipIncomingAuth,
+	// The Claude proxy takes a Claude body: run the Chat→Claude hop here, exactly
+	// as proxyOpenAIToClaudeMessages does for a Chat client.
+	claudeReq, err := openAIChatToClaudeRequest(chatReq, applyProviderModelMapping(provider, model), maxOutputTokensOverrideFrom(r.Context()))
+	if err != nil {
+		return 0, TokenUsage{}, nil, err
+	}
+	return s.proxyConvertedThroughClaude(w, r, provider, model, claudeReq, skipIncomingAuth,
 		func(claudeBody []byte, model string) ([]byte, TokenUsage, error) {
 			// Claude → Chat → Gemini, each hop spelled by the converter that
 			// already owns that pair.
