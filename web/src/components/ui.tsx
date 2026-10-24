@@ -279,6 +279,9 @@ export function NavIcon({ id }: { id: NavItemID }) {
       return (<svg viewBox="0 0 24 24" {...common}><rect x="6" y="6" width="12" height="12" rx="2" /><rect x="10" y="10" width="4" height="4" rx="1" /><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" /></svg>);
     case 'settings':
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="3" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7" /></svg>);
+    case 'monitoring':
+      // 监控中心：示波器式的健康曲线 + 一个告警点。
+      return (<svg viewBox="0 0 24 24" {...common}><path d="M3 13.5h3.4l2-5.5 3 10 2.2-6.5 1.4 2H21" /><circle cx="18.4" cy="6.2" r="1.6" /></svg>);
     default:
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="8.5" /></svg>);
   }

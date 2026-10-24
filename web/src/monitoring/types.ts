@@ -1,0 +1,245 @@
+/**
+ * 监控中心类型。字段以 VPS 上 `/__monitor/*` 的真实响应为准（2026-10-24 抓取核对），
+ * 不是凭设计文档推测——尤其注意：
+ *
+ * - 时间一律是字符串（Go 侧 RFC3339），零值会以 `0001-01-01T00:00:00Z` 出现，
+ *   必须当「没有」处理，不能显示公元 1 年。
+ * - 额度只有比率被持久化（provider_metric_samples 只有 quota_ratio/credits 两列），
+ *   `remaining`/`limit` 在列表里恒为 0，属「不知道」而不是「剩 0」，渲染前必须判。
+ * - `ratio < 0` 表示额度读数不可用（含上游失败），同样不是 0。
+ */
+
+export type MonitorSeverity = 'p0' | 'p1' | 'p2' | 'info';
+
+export type MonitorEventKind = 'alert' | 'renewal' | 'probe' | 'checkin' | 'quota' | 'system';
+
+export type MonitorAlertStatus = 'firing' | 'resolved' | 'info';
+export type MonitorDisposition = 'open' | 'acknowledged' | 'ignored';
+export type MonitorPushStatus = 'sent' | 'failed' | 'partial' | 'pending' | 'skipped' | 'suppressed';
+
+/** 后端只回分类，绝不回上游原文（原文可能带 token）。 */
+export type MonitorErrorKind = 'auth_failed' | 'rate_limited' | 'network' | 'unknown';
+
+export interface MonitorCapabilities {
+  quota: boolean;
+  checkin: boolean;
+  models: boolean;
+  oauth: boolean;
+}
+
+export interface MonitorQuota {
+  source: string;
+  remaining: number;
+  limit: number;
+  /** 剩余比例 0..1；<0 表示不可用。 */
+  ratio: number;
+  expiresAt: string;
+  observedAt: string;
+  stale: boolean;
+  error?: MonitorErrorKind;
+}
+
+export interface MonitorRenewalOutcome {
+  known: boolean;
+  lastAt: string;
+  lastOK: boolean;
+  consecutive: number;
+  lastError?: string;
+}
+
+export interface MonitorAccount {
+  providerId: string;
+  name: string;
+  vendor: string;
+  authType: string;
+  disabled: boolean;
+  healthStatus: string;
+  capabilities: MonitorCapabilities;
+  expiresAt?: string;
+  quota?: MonitorQuota | null;
+  renewal?: MonitorRenewalOutcome | null;
+  modelFailures: number;
+  activeAlerts: number;
+}
+
+/** 时间线里的一次人工处置（后端把它挂在最新事件的 detail.timeline 上）。 */
+export interface MonitorTimelineEntry {
+  action: string;
+  time: string;
+  actor?: string;
+}
+
+export interface MonitorEvent {
+  id: number;
+  time: string;
+  kind: MonitorEventKind;
+  severity: MonitorSeverity;
+  ruleKey?: string;
+  targetType: string;
+  targetId?: string;
+  targetName?: string;
+  title: string;
+  detail: Record<string, unknown>;
+  fingerprint?: string;
+  status: MonitorAlertStatus;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  resolvedAt?: string;
+  resolutionReason?: string;
+  pushStatus?: MonitorPushStatus;
+  pushError?: string;
+}
+
+export interface MonitorAlert {
+  id: number;
+  fingerprint: string;
+  ruleKey: string;
+  severity: MonitorSeverity;
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  status: MonitorAlertStatus;
+  disposition: MonitorDisposition;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  lastNotifiedAt: string;
+  acknowledgedAt: string;
+  ignoredAt: string;
+  suppressedUntil: string;
+  unavailableSince: string;
+  resolutionReason?: string;
+  detail: Record<string, unknown>;
+  latestEventId: number;
+  pushStatus?: MonitorPushStatus;
+  pushError?: string;
+  relatedEventIds: number[];
+}
+
+/** 告警详情：后端把最新事件一并带回，时间线在 latestEvent.detail.timeline 里。 */
+export interface MonitorAlertDetail {
+  alert: MonitorAlert;
+  latestEvent: MonitorEvent | null;
+}
+
+export interface MonitorOverview {
+  generatedAt: string;
+  windowHours: number;
+  requests: {
+    total: number;
+    success: number;
+    successRate: number;
+    p95LatencyMs: number;
+    costMicros: number;
+    /**
+     * 有价格行的请求数。costMicros==0 且 priced==0 是「没计价」，不是「免费」——
+     * 与用量页同一条硬规则：未计价绝不显示成 $0.00。
+     */
+    priced: number;
+  };
+  accounts: { total: number; subscribed: number; unavailable: number; disabled: number };
+  firing: { total: number; p0: number; p1: number; p2: number };
+  channels: { total: number; enabled: number };
+  collectorLastSuccess: string;
+  recentEvents: MonitorEvent[];
+}
+
+export interface MonitorPage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * 渠道在链路上永远只有 *Set 布尔：后端不回 webhook/secret/botToken 明文，
+ * 表单留空即「保留原值」（与后端 PUT 语义一致）。
+ */
+export interface MonitorChannelView {
+  id: string;
+  type: string;
+  name: string;
+  minSeverity: MonitorSeverity;
+  enabled: boolean;
+  webhookSet?: boolean;
+  secretSet?: boolean;
+  tokenSet?: boolean;
+  chatId?: string;
+}
+
+export interface MonitorChannelInput {
+  type: string;
+  name: string;
+  minSeverity: MonitorSeverity;
+  enabled: boolean;
+  webhook?: string;
+  secret?: string;
+  botToken?: string;
+  chatId?: string;
+}
+
+export interface MonitorDispatchConfig {
+  digestMinutes: number;
+  quietEnabled: boolean;
+  quietStart: string;
+  quietEnd: string;
+  recoveryNotify: boolean;
+  timezone: string;
+  baseUrl: string;
+}
+
+export interface MonitorRenewalResult {
+  ok: boolean;
+  providerId: string;
+  vendor: string;
+  /** 未到续期窗口时 false——这不是失败，文案要分开。 */
+  renewed: boolean;
+  expiresAt?: string;
+  errorKind?: MonitorErrorKind;
+}
+
+export interface MonitorQuotaResult {
+  ok: boolean;
+  quota?: MonitorQuota;
+  errorKind?: MonitorErrorKind;
+}
+
+export interface MonitorChannelTestResult {
+  ok: boolean;
+  channelId: string;
+  status: MonitorPushStatus;
+  latencyMs: number;
+  error?: string;
+  pushStatus?: MonitorPushStatus;
+}
+
+/** Go 零值时间会以字符串出现，必须当成「无」。 */
+export function hasTime(raw?: string | null): boolean {
+  if (!raw) return false;
+  return !raw.startsWith('0001-01-01');
+}
+
+/** 额度绝对值没有被采样保存，limit=0 是「不知道」而不是「用完了」。 */
+export function quotaAbsoluteKnown(quota?: MonitorQuota | null): boolean {
+  return !!quota && quota.limit > 0;
+}
+
+/** ratio<0 表示额度读数不可用（含上游失败）。 */
+export function quotaRatioKnown(quota?: MonitorQuota | null): boolean {
+  return !!quota && quota.ratio >= 0;
+}
+
+export const SEVERITY_TEXT: Record<MonitorSeverity, string> = {
+  p0: 'P0 严重',
+  p1: 'P1 重要',
+  p2: 'P2 提醒',
+  info: '信息',
+};
+
+export const ERROR_KIND_TEXT: Record<MonitorErrorKind, string> = {
+  auth_failed: '登录凭证已失效，需重新授权',
+  rate_limited: '上游限流',
+  network: '网络不可达',
+  unknown: '未知错误',
+};

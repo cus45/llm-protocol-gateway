@@ -129,6 +129,10 @@ type RequestSummary struct {
 	Success      int   `json:"success"`
 	P95LatencyMs int64 `json:"p95LatencyMs"`
 	CostMicros   int64 `json:"costMicros"`
+	// Priced counts the rows that had a price row behind them. CostMicros==0
+	// with Priced==0 means "not priced", not "free" — the console must not show
+	// $0.00 for it (same rule as the usage pages).
+	Priced int `json:"priced"`
 }
 
 type EventPush struct {

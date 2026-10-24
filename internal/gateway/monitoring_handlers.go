@@ -91,6 +91,7 @@ type monitorOverviewView struct {
 		SuccessRate  float64 `json:"successRate"`
 		P95LatencyMs int64   `json:"p95LatencyMs"`
 		CostMicros   int64   `json:"costMicros"`
+		Priced       int     `json:"priced"`
 	} `json:"requests"`
 	Accounts struct {
 		Total       int `json:"total"`
@@ -142,6 +143,7 @@ func (s *Server) handleMonitorOverview(w http.ResponseWriter, r *http.Request) {
 	view.Requests.Success = summary.Success
 	view.Requests.P95LatencyMs = summary.P95LatencyMs
 	view.Requests.CostMicros = summary.CostMicros
+	view.Requests.Priced = summary.Priced
 	if summary.Total > 0 {
 		view.Requests.SuccessRate = roundRatio(float64(summary.Success) / float64(summary.Total))
 	}

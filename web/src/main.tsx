@@ -147,6 +147,7 @@ import {
 } from './components/panels';
 import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
+import {MonitoringPage} from './monitoring/MonitoringPage';
 import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
@@ -6207,6 +6208,21 @@ function App() {
                 )}
               </div>
             </div>
+          </section>
+          )}
+
+          {activeNav === 'monitoring' && !isNormalUser && (
+          <section className="section-full">
+            <MonitoringPage
+              iconOf={(providerID) => {
+                const provider = state.providers.find((item) => item.id === providerID);
+                return provider ? providerIcon(provider) : undefined;
+              }}
+              onOpenAccountLogs={(providerID) => {
+                setLogsProviderFilter(providerID);
+                setActiveNav('traffic-tokens');
+              }}
+            />
           </section>
           )}
 

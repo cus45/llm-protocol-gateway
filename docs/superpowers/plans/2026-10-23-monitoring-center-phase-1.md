@@ -2650,7 +2650,7 @@ if ms, ok := stateSaver[0].(MonitoringStore); ok {
 
 **部署检查点：**
 
-- [ ] 本地 `go build ./... && go test ./...`
+- [x] 本地 `go build ./... && go test ./...`
 - [ ] 部署：`bash deploy/deploy-linux.sh --skip-web`
 - [ ] VPS 验证：
   - `journalctl -u llm-protocol-gateway -n 100 | grep -i monitor`，确认采集器启动、无 panic。
@@ -2866,15 +2866,15 @@ type channelView struct {
 
 **部署检查点：**
 
-- [ ] 本地 `go build ./... && go test ./...`
-- [ ] 部署 `bash deploy/deploy-linux.sh --skip-web`
-- [ ] VPS 用管理员会话（不打印 cookie/token）逐项 curl：
+- [x] 本地 `go build ./... && go test ./...`
+- [x] 部署 `bash deploy/deploy-linux.sh --skip-web`
+- [x] VPS 用管理员会话（不打印 cookie/token）逐项 curl：
   - `GET /__monitor/overview` 200。
   - `GET /__monitor/accounts` 200，返回账号矩阵。
   - `GET /__monitor/channels` 200，无明文 secret。
   - `GET /__monitor/events?range=24h` 200。
   - 未登录访问返回 401/403。
-- [ ] `journalctl` 无敏感信息。
+- [x] `journalctl` 无敏感信息。
 
 ---
 
@@ -2936,7 +2936,7 @@ Expected: PASS（除既有的、与本计划无关的失败；如有，记录并
 
 **Files:** 无代码改动。
 
-- [ ] **Step 1: 本地构建**
+- [x] **Step 1: 本地构建**
 
 Run:
 ```bash
@@ -2945,12 +2945,12 @@ go build ./...
 go test ./...
 ```
 
-- [ ] **Step 2: 部署**
+- [x] **Step 2: 部署**
 
 Run: `bash deploy/deploy-linux.sh --skip-web`
 （阶段 1 没有前端改动；若工作区混有用户未提交的前端改动，按「整包一起发」处理，不要只发后端。）
 
-- [ ] **Step 3: VPS 健康与表结构**
+- [x] **Step 3: VPS 健康与表结构**
 
 > **2026-10-24 实测环境事实**：VPS 上没有 `sqlite3` CLI，只有 `/usr/bin/python3`（自带 `sqlite3`
 > 模块，SQLite 3.45.1）。查库一律走 python3 且用 `file:...?mode=ro` 只读 URI 连接，不给生产写者添锁。
@@ -2975,7 +2975,7 @@ PY'
 
 Expected：4 张 `monitor_*` 表（`monitor_events`、`monitor_alert_states`、`monitor_event_pushes`、`monitor_baselines`）+ `provider_metric_samples` + `checkin_history`，共 6 张；`monitor_migration_v1` 存在；`monitor_events` 有一条 `kind=system` 的“监控中心已启动”事件；`settings` 出现 `monitor_migration_v1`、`monitor_collector_last_success`；`checkin_history` 有 17 条历史。
 
-- [ ] **Step 4: 采集器心跳与规则状态**
+- [x] **Step 4: 采集器心跳与规则状态**
 
 ```bash
 ssh root@173.249.207.202 'python3 - <<PY
@@ -2992,7 +2992,7 @@ PY'
 
 Expected：心跳设置在一分多钟内被推进（证明 tick 循环真的在跑，而不是只有启动事件）；`monitor_events` 有 `kind=system` 启动事件；至少 `collector_stale` 没有 firing；真实账号若有到期/额度/鉴权问题，应出现对应状态。只读，不改任何账号。
 
-- [ ] **Step 5: 渠道验收（mock webhook）**
+- [x] **Step 5: 渠道验收（mock webhook）**
 
 在 VPS 起一个临时接收器（仅监听 127.0.0.1，验完即删）：
 
@@ -3016,7 +3016,7 @@ nohup python3 /tmp/mockhook.py >/dev/null 2>&1 & echo $!'
 - 无 secret 时不带 `sign`；配置 secret 后 `sign` 可复算。
 - 测试完成后删除临时渠道、kill 接收器、删除日志。
 
-- [ ] **Step 6: 推送与恢复演练（auth_invalid）**
+- [x] **Step 6: 推送与恢复演练（auth_invalid）**
 
 > **2026-10-24 改法（重要）**：原计划用外部 `sqlite3` 直接往生产库 `request_logs` 插合成行，并把
 > `provider_id` 挂到 `select id from providers ... limit 1` 那个真实账号上。这会污染真实账号的指标
@@ -3079,7 +3079,7 @@ curl -s -X POST http://127.0.0.1:18093/__apikeys -H 'content-type: application/j
 kill 两个 mock 进程、删 `/tmp/mockhook*`、`/tmp/mock401*`。演练 provider 留下的 `request_logs` 行属于
 已删除账号，会随保留期自然淘汰——**不要**为了"干净"去 DELETE 生产表。
 
-- [ ] **Step 7: 安全回归**
+- [x] **Step 7: 安全回归**
 
 ```bash
 ssh root@173.249.207.202 'journalctl -u llm-protocol-gateway --since "10 min ago" | grep -Ei "token|secret|webhook|sk-|refresh" || true'
@@ -3099,11 +3099,11 @@ Expected：无明文；仅有脱敏后的错误。
 - [ ] 不可用语义：无额度能力、额度接口失败、基线缺失都不产生误报。
 - [x] 冷却、P1→P0 升级、抖动抑制、确认/忽略都有测试。
 - [x] 四渠道签名与 payload 有 golden 测试；错误不泄露 secret。
-- [ ] 旧 alerts/checkins/Telegram 迁移幂等；旧告警不会变成活跃状态。
+- [x] 旧 alerts/checkins/Telegram 迁移幂等；旧告警不会变成活跃状态。
 - [x] 采集器 panic 不影响网关主流程（`TestServiceTickPanicIsContained`：panic 只损失当次 tick、心跳不前进、恢复后继续记录）；SQLite 读失败不阻塞请求。
 - [x] 所有 `/__monitor/*` 仅管理员可用。
 - [x] 本机从未调用真实 Claude 凭证。
-- [ ] VPS 部署后心跳、事件、推送、恢复、安全五项验收通过。
+- [x] VPS 部署后心跳、事件、推送、恢复、安全五项验收通过。
 
 ---
 
@@ -3157,3 +3157,35 @@ Expected：无明文；仅有脱敏后的错误。
 | 角色边界（非回环 192.168.10.59:18098） | 19/19 通过：匿名 401；普通用户 8 条端点（含 POST/PUT 写操作）全部 403「permission denied」；管理员 200；建渠道/列表响应不含 webhook 明文 token；响应不回显口令 |
 
 **未决**：VPS 发布与 Step 3-7 线上验收（表结构、心跳、mock 渠道、事故演练、journalctl 无明文）。
+
+### 2026-10-24 · Task 12-14 VPS 发布与线上验收（通过）
+
+**发布**：`bash deploy/deploy-linux.sh --skip-web`，溯源 `vcs.revision=f51e17e7…` / `vcs.modified=false`，
+`HEALTH_OK`，公网 302 正常。发布时另一会话的流式改动已测完并全绿（用户选择等它测完再发），工作区在
+发布时完全干净——本轮监控代码已在 `fix/round26-followup` 分支的提交里。
+
+**门禁**：`go build ./...` OK、`go vet ./...` 无输出、`go test ./...` 除 `internal/tunnel`
+（Windows 无 `/bin/sh`，Linux 目标机上不存在此问题）外全绿。
+
+| 验收项 | 结果 |
+| --- | --- |
+| Step 3 表结构与迁移 | 6 张表齐；`settings` 出现 `monitor_migration_v1`、`monitor_collector_last_success`；`checkin_history` 导入 20 条历史；旧 `alerts` 0 行 → 未产生任何 legacy 告警事件；`alerts` 设置项无 Telegram 配置 → 未建 legacy 渠道。与发布前只读侦察的预测完全一致 |
+| Step 4 心跳与状态 | 启动即写 `kind=system`「监控中心已启动」；`collectorLastSuccess` 与请求窗口同分钟推进；`provider_metric_samples` 写入真实比率（cursor 0.434、workbuddy 0.635/0.928、qoder-cn 0.0…） |
+| Step 5 渠道 | 建渠道响应仅 `webhookSet/secretSet`，`VPS-WEBHOOK-SECRET`/`VPS-SIGN-SECRET` 在 create/list 响应里都不出现；渠道测试 2ms `ok:true`；收到的卡片 `msg_type=interactive` + `[INFO]`；**签名用飞书算法（key=hmac_sha256(timestamp+"\n"+secret)，空 message）在验收脚本里独立复算并逐字节一致**；验完删渠道、杀接收端、删日志 |
+| Step 6 事故演练 | 演练 provider 指向 VPS 本机 127.0.0.1 mock（恒 401），12 条真实消费请求全部由网关写出 401 日志 → 200 秒后 `auth_invalid` firing（P0，`authCount=12，authRatio=1，total=12`），推送 `[P0] monitor-selftest 凭证失效`；补 14 条维持窗口；切 200 上游再打 30 条成功 → **恰好在 firstSeen→lastSeen = 5 分钟门槛**上 `resolved / reason=recovered`，恢复卡片 `[P0] 凭证失效 已恢复` 带的是 `authCount=14，authRatio=0.318，total=44`（本轮修的「恢复详情沿用旧计数」缺陷在线复核生效，不再是全零）；全程只收到 2 条推送（minSeverity=p0 正确挡住 P1/P2）；真实账号无牵连（仅原有的 `quota_low`/`credit_expiring`）；密钥/route/provider/渠道按 API 全部删除，账号数回到 20 |
+| Step 7 安全 | `journalctl` 自发布以来扫描 `selftest-secret`/`sk-monitor`/`webhook`/`Bearer`/`oauth_token`/`refresh_token`/`sk-ant` 全部为空；无任何 monitoring 错误或告警日志；从公网 IP 与公网域名未登录访问 6 条读端点全部 401（本机 127.0.0.1 为 200 属本地管理员旁路，符合既有设计） |
+
+**线上真实发现（监控中心第一次跑就抓到的）**：
+
+- `quota_low` **P1**：`Qoder CN 账号` 额度比 0.0 —— 积分已用尽，之前没有任何机制会告这个警。
+- `credit_expiring` **P2**：`WorkBuddy 订阅-lxw` 两批积分将在 72 小时内到期。
+- 24h 汇总：11728 条请求、成功率 99.36%、P95 首包 12.2s、成本 $153.24。
+
+**遗留**：`monitor_events` 里有 12 条「监控中心已启动」——发布窗口内另一会话连续重启服务所致，
+每次进程启动一条属预期行为，不是重复告警（system 类不推送）。前端「监控中心」壳属阶段 2。
+
+**发布后稳定性（spec §17.2「采集器稳定运行 30 分钟」一项）**：进程 01:39:09Z 起（发布后另一会话于该时点
+又发了一次带它自己提交的重启）连续运行 34 分钟以上；`monitor_collector_last_success` 每分钟推进
+（01:58:10 → 02:01:10 → 02:11:10 → 02:12:10）；`journalctl` 自重启起扫描 `database is locked` /
+`SQLITE_BUSY` / `monitoring * failed` / `panic` 命中 0；24h 请求 11836 条、成功率 99.28%（发布前 99.06%
+同量级，未见请求路径受影响）；`firing` 稳定为 3 条真实告警（quota_low P1 + credit_expiring P2 ×2）。

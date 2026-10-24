@@ -326,6 +326,9 @@ func (s *Server) SaveState() error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__health", s.handleHealth)
+	// The running build's version: every console tab polls it to learn that a
+	// release is live (see app_version.go).
+	mux.HandleFunc("GET /__app/version", s.handleAppVersion)
 	mux.HandleFunc("GET /__host-metrics", s.handleHostMetrics)
 	mux.HandleFunc("GET /__auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /__auth/setup", s.handleAuthSetup)
@@ -339,7 +342,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__usage-analysis", s.handleUsageAnalysis)
 	mux.HandleFunc("GET /__rtk/stats", s.handleRTKStats)
 	mux.HandleFunc("GET /__app/logs", s.handleAppLogs)
-	mux.HandleFunc("GET /__app/version", s.handleAppVersion)
 	// UI 诊断日志：浏览器端关键事件上报（见 ui_log.go 的背景说明）。
 	mux.HandleFunc("POST /__ui-log", s.handleUILog)
 	mux.HandleFunc("PATCH /__app/log-level", s.handleSetLogLevel)

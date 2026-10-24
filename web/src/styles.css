@@ -6764,3 +6764,34 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   .upgrade-banner { flex-wrap: wrap; }
   .upgrade-banner-text { flex-basis: 100%; }
 }
+
+/* ── 监控中心 ────────────────────────────────────────────────────────────
+   只用现有 tokens；这里补的两件事都是既有体系里没有的：一个能在 1280 以下
+   收成单列的两栏网格，一个不在 .field 里的裸输入框（搜索框、重试渠道下拉），
+   外观必须与 .field 内的控件完全一致，否则同一行里会看到两种输入框。 */
+.monitoring-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1280px) {
+  .monitoring-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.monitoring-input {
+  height: var(--control-h);
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  outline: none;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+
+.monitoring-input:focus { border-color: var(--accent); }

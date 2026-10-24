@@ -787,7 +787,7 @@ func (s *Store) WindowStatsByProvider(from, to time.Time) (map[string]map[int]mo
 }
 
 func (s *Store) MonitorRequestSummary(from, to time.Time) (monitoring.RequestSummary, error) {
-	rows, err := s.reader().Query(`SELECT status, error_description, latency_ms, cost_micros
+	rows, err := s.reader().Query(`SELECT status, error_description, latency_ms, cost_micros, priced
 		FROM request_logs WHERE time >= ? AND time <= ? AND `+monitorTrafficFilter,
 		monitorTime(from), monitorTime(to))
 	if err != nil {
@@ -801,8 +801,9 @@ func (s *Store) MonitorRequestSummary(from, to time.Time) (monitoring.RequestSum
 			status           int
 			errorDescription string
 			latency, cost    int64
+			priced           int
 		)
-		if err := rows.Scan(&status, &errorDescription, &latency, &cost); err != nil {
+		if err := rows.Scan(&status, &errorDescription, &latency, &cost, &priced); err != nil {
 			return summary, err
 		}
 		summary.Total++
@@ -811,6 +812,9 @@ func (s *Store) MonitorRequestSummary(from, to time.Time) (monitoring.RequestSum
 		}
 		if latency > 0 {
 			latencies = append(latencies, latency)
+		}
+		if priced != 0 {
+			summary.Priced++
 		}
 		summary.CostMicros += cost
 	}
