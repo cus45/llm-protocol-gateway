@@ -142,3 +142,8 @@
 | D39-2 | M3 | 闸门拒绝不冷却账号 | r37 | P1 | ✅ E1 | r39 | VPS 隔离实例：5 轮并发共 5 次 429，provider 仍 healthy，随后请求 200 | 仅单测证据升级为运行时 |
 | D39-3 | M5 | 用量分析翻页 | r37 | P1 | ✅ E1 | r39 | 生产 26080 条真实数据 items=total=distinct | 仅单测证据升级为运行时 |
 | D39-4 | M8 | 前端四项修复 | r38 | P2-P3 | ✅ E1 | r39 | 线上 bundle 含 log-session-bar/四选一/未计价；重复会话按钮已消除 | |
+| D39-5 | M9 | 域绑定点无校验（可存路径/端口/通配符/同名） | r38 M9-3 | P2 | ✅ | r39 | 764c4de PublicHostError + 处理器 400 | E3 红绿 |
+| D39-6 | M9 | hostMetrics 懒初始化数据竞争 | r38 M9-4 | P2 | ✅ | r39 | 922bcf9 sync.Once + 16 并发首访测试 | E3 |
+| D39-7 | M9 | 告警在 tick 协程同步串行发送（最坏 ~6s） | r38 M9-5 | P2 | 未核查 | — | 告警模块已被并发会话重构到 internal/monitoring | 文件已变 |
+| D39-8 | M9 | RestorePublicAccess 与 Stop 竞争 / cloudflared 日志 fd 泄漏 | r38 M9-6/7 | P2-P3 | 未核查 | — | 需真实隧道复现 | |
+| D39-9 | M8 | 密钥页协议筛选无 gemini / 缓存 key 不含筛选 / SSE 摘要 | r38 M8-5/7 | P3-P4 | 未核查 | — | | |
