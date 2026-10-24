@@ -170,3 +170,48 @@ func TestProviderWindowStats(t *testing.T) {
 		t.Fatalf("window stats = %+v", windows["p1"][5])
 	}
 }
+
+// 概览的流量面板全读这条汇总，所以它的口径必须钉住：哪些行算「真实流量」，
+// 以及 priced 计数——成本为 0 可能是免费，也可能是没计价，界面要分开显示。
+func TestMonitorRequestSummaryCountsPricedAndFiltersNoise(t *testing.T) {
+	s := openMonitoringTestStore(t)
+	now := time.Now().UTC()
+
+	insert := func(action string, status int, flow, source string, cost int64, priced int, latency int64) {
+		_, err := s.db.Exec(`INSERT INTO request_logs
+			(time, provider_id, action, status, protocol_flow, access_source, cost_micros, priced, latency_ms, ttft_ms, output_tokens, error_description)
+			VALUES (?, 'p1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			monitorTime(now), action, status, flow, source, cost, priced, latency, latency, 10, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insert("convert", 200, "", "lan", 5_000, 1, 100)
+	insert("pass_through", 200, "", "public", 0, 0, 400)       // 健康流量但未计价
+	insert("convert", 500, "", "lan", 0, 1, 900)               // 失败但已计价
+	insert("convert", 499, "", "lan", 0, 1, 5_000)             // 客户端断开：不算流量
+	insert("pass_through", 200, "embeddings", "lan", 0, 1, 50) // 嵌入：不算流量
+	insert("convert", 200, "", "monitor_probe", 0, 1, 60)      // 监控探测：不算流量
+
+	summary, err := s.MonitorRequestSummary(now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 3 {
+		t.Fatalf("total = %d, want 3 (499/embeddings/monitor_probe 都要排除): %+v", summary.Total, summary)
+	}
+	if summary.Success != 2 {
+		t.Fatalf("success = %d, want 2", summary.Success)
+	}
+	if summary.Priced != 2 {
+		t.Fatalf("priced = %d, want 2（第 2 行是健康但未计价）: %+v", summary.Priced, summary)
+	}
+	if summary.CostMicros != 5_000 {
+		t.Fatalf("cost = %d, want 5000", summary.CostMicros)
+	}
+	// 3 个样本的 P95 取最大档：900ms 而不是均值。
+	if summary.P95LatencyMs != 900 {
+		t.Fatalf("p95 = %d, want 900", summary.P95LatencyMs)
+	}
+}
