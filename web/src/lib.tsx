@@ -1630,15 +1630,18 @@ export function aggregateScheduleAttempts(logs: LogEntry[]): DecisionAggregate[]
       if (!providerId) continue;
       const row = byProvider.get(providerId) ?? { providerId, attempts: 0, served: 0, failed: 0, skipped: 0, servedMsTotal: 0 };
       row.attempts += 1;
+      // 判定看这一次尝试本身的结果，不能只看 deferred/skipped：唯一被尝试、
+      // 但上游回了 401/429 的那一次既不是"跳过"也不是"被丢弃"，按旧口径会被
+      // 记成"服务"，把失败藏起来。
+      const status = attempt.status;
+      const failedStatus = typeof status === 'number' && (status < 200 || status >= 300);
       if (attempt.skipped) {
         row.skipped += 1;
-      } else if (attempt.deferred) {
+      } else if (attempt.deferred || failedStatus) {
         row.failed += 1;
-      } else if (!attempt.status || (attempt.status >= 200 && attempt.status < 300)) {
+      } else {
         row.served += 1;
         if (typeof attempt.ms === 'number') row.servedMsTotal += attempt.ms;
-      } else {
-        row.failed += 1;
       }
       byProvider.set(providerId, row);
     }

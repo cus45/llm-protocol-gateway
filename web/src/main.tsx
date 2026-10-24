@@ -6091,7 +6091,13 @@ function App() {
 
               {decisionAggregate.length > 0 ? (
                 <div className="decision-aggregate" title="当前页日志里每个账号被如何调度：尝试 / 服务 / 失败 / 未发出">
-                  <div className="decision-aggregate-title">调度决策（当前页）</div>
+                  <div className="decision-aggregate-title">
+                    调度决策（当前页）
+                    <span className="decision-aggregate-sub">
+                      · 统计了 {displayedLogs.filter((log) => (log.analysis?.attempts?.length ?? 0) > 0).length} 条带调度记录的请求；
+                      「失败」含限流/额度 429 与被丢弃后换号，不代表账号故障
+                    </span>
+                  </div>
                   <div className="decision-aggregate-rows">
                     {decisionAggregate.map((row) => (
                       <div className="decision-aggregate-row" key={row.providerId}>
