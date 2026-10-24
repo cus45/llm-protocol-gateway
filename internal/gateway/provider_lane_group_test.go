@@ -560,3 +560,26 @@ func mustProvider(t *testing.T, server *Server, id string) domain.Provider {
 	}
 	return provider
 }
+
+// 组内排队：额度按最紧的成员算，但"能等多久"取组内最大——否则同一账号的
+// 另一行写了排队 5 秒，请求走到这一行仍然刚到就拒。
+func TestProviderLaneGroupQueueWaitTakesTheLongest(t *testing.T) {
+	t.Parallel()
+	impatient := domain.Provider{ID: "a", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "acct", MaxConcurrentRequests: 1, QueueWaitSeconds: 0}
+	patientRow := domain.Provider{ID: "b", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "acct", MaxConcurrentRequests: 1, QueueWaitSeconds: 5}
+	other := domain.Provider{ID: "c", Protocol: domain.ProtocolOpenAIChat, LaneGroup: "other", MaxConcurrentRequests: 1, QueueWaitSeconds: 9}
+	ungrouped := domain.Provider{ID: "d", Protocol: domain.ProtocolOpenAIChat, MaxConcurrentRequests: 1, QueueWaitSeconds: 0}
+	members := []domain.Provider{impatient, patientRow, other, ungrouped}
+
+	if got := providerLaneQueueWait(impatient, members); got != 5*time.Second {
+		t.Fatalf("a grouped row inherited %v, want the group's longest 5s", got)
+	}
+	// 别的组不参与：other 组是 9 秒，不能串到 acct。
+	if got := providerLaneQueueWait(patientRow, members); got != 5*time.Second {
+		t.Fatalf("a sibling's wait = %v, want its own 5s", got)
+	}
+	// 未分组的行仍只看自己。
+	if got := providerLaneQueueWait(ungrouped, members); got != 0 {
+		t.Fatalf("an ungrouped row inherited %v, want its own 0", got)
+	}
+}

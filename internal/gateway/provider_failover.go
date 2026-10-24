@@ -137,6 +137,13 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 		if isRequestContextCanceled(transportErr) {
 			return failoverNone, "client_canceled"
 		}
+		// A refusal at the account's own lane is this gateway's admission
+		// control, not the vendor failing: nothing was sent. Counting it as a
+		// transport failure cooled a healthy account down for minutes after
+		// three busy requests, which is the opposite of what the lane is for.
+		if errors.Is(transportErr, errProviderSaturated) {
+			return failoverNone, "lane_saturated"
+		}
 		return failoverSoft, "transport: " + truncateReason(transportErr.Error())
 	}
 

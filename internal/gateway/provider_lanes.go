@@ -697,8 +697,27 @@ func (s *Server) acquireProviderSlot(ctx context.Context, provider domain.Provid
 		// to see why, so say it the first time this row is admitted.
 		s.warnMixedLaneGroup(provider, max, rate)
 	}
+	return lane.acquire(ctx, providerLaneQueueWait(provider, providers))
+}
+
+// providerLaneQueueWait is how long a request on this row may wait for a slot.
+// 额度按最紧的成员算，但等待不是额度：按本行的值会让"同一账号的另一行写了
+// 等 5 秒"失效，请求刚到就被拒。等多久都不会让账号超支，所以取组内最大。
+func providerLaneQueueWait(provider domain.Provider, providers []domain.Provider) time.Duration {
 	_, wait := providerConcurrencyConfig(provider)
-	return lane.acquire(ctx, wait)
+	group := providerLaneGroup(provider)
+	if group == "" {
+		return wait
+	}
+	for _, member := range providers {
+		if member.Deleted || !strings.EqualFold(providerLaneGroup(member), group) {
+			continue
+		}
+		if _, memberWait := providerConcurrencyConfig(member); memberWait > wait {
+			wait = memberWait
+		}
+	}
+	return wait
 }
 
 // providerInFlight is how many requests are in flight for the provider's
