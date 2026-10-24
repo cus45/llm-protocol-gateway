@@ -213,3 +213,70 @@ func TestGeminiFinishReasonTable(t *testing.T) {
 		}
 	}
 }
+
+// 同名工具被并行调用两次（读两个文件）时，两次调用与两条结果必须一一配对：
+// Gemini 不传 id，网关自己编的 id 一旦重复，上游会把两条结果当成同一次调用。
+func TestGeminiParallelSameNameCallsGetDistinctIDs(t *testing.T) {
+	gemini := geminiBody(t, `{
+		"contents": [
+			{"role": "user", "parts": [{"text": "read a and b"}]},
+			{"role": "model", "parts": [
+				{"functionCall": {"name": "read", "args": {"path": "a"}}},
+				{"functionCall": {"name": "read", "args": {"path": "b"}}}
+			]},
+			{"role": "user", "parts": [
+				{"functionResponse": {"name": "read", "response": {"out": "A"}}},
+				{"functionResponse": {"name": "read", "response": {"out": "B"}}}
+			]}
+		]
+	}`)
+	req, err := geminiToOpenAIChatRequest(gemini, "m")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	messages, _ := req["messages"].([]any)
+	assistant, _ := messages[1].(map[string]any)
+	calls, _ := assistant["tool_calls"].([]any)
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	first, _ := calls[0].(map[string]any)
+	second, _ := calls[1].(map[string]any)
+	if first["id"] == second["id"] {
+		t.Fatalf("parallel same-name calls share the id %v", first["id"])
+	}
+	// 两条 tool 结果分别配上两次调用，且顺序一致。
+	for i, want := range []any{first["id"], second["id"]} {
+		message, _ := messages[2+i].(map[string]any)
+		if got := message["tool_call_id"]; got != want {
+			t.Fatalf("tool result %d pairs with %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// Claude 的 output_config.format 没有 name（Claude GA 拒收），转成 Chat 的
+// response_format 时 OpenAI 形状要求 name 必填：必须补一个稳定默认值，否则
+// 上游直接 400。
+func TestClaudeFormatToChatCarriesAName(t *testing.T) {
+	format := outputConfigFormatToChatResponseFormat(map[string]any{
+		"format": map[string]any{
+			"type":   "json_schema",
+			"schema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+	})
+	if format == nil {
+		t.Fatalf("conversion returned nothing")
+	}
+	inner, _ := format["json_schema"].(map[string]any)
+	if name := stringValue(inner["name"]); name == "" {
+		t.Fatalf("json_schema is missing the name OpenAI requires: %#v", format)
+	}
+	// 稳定：同一份输入两次转换结果一致（否则会打散上游的 prompt cache）。
+	again := outputConfigFormatToChatResponseFormat(map[string]any{
+		"format": map[string]any{"type": "json_schema", "schema": map[string]any{"type": "object", "properties": map[string]any{}}},
+	})
+	innerAgain, _ := again["json_schema"].(map[string]any)
+	if innerAgain["name"] != inner["name"] {
+		t.Fatalf("the synthesized name is not stable")
+	}
+}

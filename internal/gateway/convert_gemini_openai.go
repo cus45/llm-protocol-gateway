@@ -142,8 +142,15 @@ func geminiParts(parts []any) (string, []any) {
 			if err != nil {
 				args = []byte("{}")
 			}
+			// Gemini 的 functionCall 不带 id，Chat 的 tool 消息却靠 id 配对。
+			// 同名工具并行调用（读两个文件）必须各拿一个不同的 id，否则两条
+			// tool 结果都挂在同一个 id 上，上游看到的是一次调用的两份答案。
+			callID := "call_" + name
+			if len(calls) > 0 {
+				callID = fmt.Sprintf("call_%s_%d", name, len(calls)+1)
+			}
 			calls = append(calls, map[string]any{
-				"id":   "call_" + name,
+				"id":   callID,
 				"type": "function",
 				"function": map[string]any{
 					"name":      name,
@@ -196,9 +203,15 @@ func geminiFunctionResponses(parts []any) []any {
 		if err != nil {
 			result = []byte("{}")
 		}
+		// 与 functionCall 的编号规则一致：同一条 content 里第 n 个同名结果
+		// 配第 n 个同名调用。
+		callID := "call_" + name
+		if len(out) > 0 {
+			callID = fmt.Sprintf("call_%s_%d", name, len(out)+1)
+		}
 		out = append(out, map[string]any{
 			"role":         "tool",
-			"tool_call_id": "call_" + name,
+			"tool_call_id": callID,
 			"content":      string(result),
 		})
 	}

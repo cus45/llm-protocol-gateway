@@ -57,10 +57,14 @@ func outputConfigFormatToChatResponseFormat(outputConfig any) map[string]any {
 		if !ok || len(schema) == 0 {
 			return nil
 		}
-		inner := map[string]any{"schema": schema}
-		if name := stringValue(format["name"]); name != "" {
-			inner["name"] = name
+		// OpenAI's json_schema requires a name; Claude's format has none (it
+		// rejects format.name). A stable default keeps the request valid
+		// without inventing a per-request name that would churn caches.
+		name := stringValue(format["name"])
+		if name == "" {
+			name = "response_schema"
 		}
+		inner := map[string]any{"schema": schema, "name": name}
 		return map[string]any{"type": "json_schema", "json_schema": inner}
 	}
 	return nil
