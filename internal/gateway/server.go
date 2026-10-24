@@ -339,6 +339,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__usage-analysis", s.handleUsageAnalysis)
 	mux.HandleFunc("GET /__rtk/stats", s.handleRTKStats)
 	mux.HandleFunc("GET /__app/logs", s.handleAppLogs)
+	mux.HandleFunc("GET /__app/version", s.handleAppVersion)
 	// UI 诊断日志：浏览器端关键事件上报（见 ui_log.go 的背景说明）。
 	mux.HandleFunc("POST /__ui-log", s.handleUILog)
 	mux.HandleFunc("PATCH /__app/log-level", s.handleSetLogLevel)
