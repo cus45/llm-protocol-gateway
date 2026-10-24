@@ -769,6 +769,10 @@ type APIKey struct {
 	// ActiveProviderID is the provider currently used after failover. Empty
 	// means use the route's preferred provider.
 	ActiveProviderID string `json:"activeProviderId,omitempty"`
+	// ServingProviderID 是最近一次真正返回响应的 Provider（运行期状态，不持久化）。
+	// 控制台的「在服务」看它：会话粘性命中的请求不会改写 ActiveProviderID，
+	// 只看粘滞位会把正在服务的备选显示成首选。空 = 进程启动后还没有请求。
+	ServingProviderID string `json:"servingProviderId,omitempty"`
 	// OwnerUserID binds this key to a console user. Empty means the key belongs
 	// to the administrator (legacy keys default to admin ownership).
 	OwnerUserID string `json:"ownerUserId,omitempty"`

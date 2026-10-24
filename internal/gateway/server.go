@@ -162,6 +162,9 @@ type Server struct {
 	// conversation is sticky to. Runtime-only like the availability tracker —
 	// a restart drops the pins and each key's sticky provider takes over.
 	sessionPins *sessionPinStore
+	// servingProviders：每个 Key 最近一次真正返回响应的 Provider（控制台「在服务」）。
+	// 与 ActiveProviderID 分开：后者是粘滞位，会话粘性命中时不会被改写。
+	servingProviders *servingProviderTracker
 
 	// Scheduling (see provider_schedule.go / provider_load.go): the round-robin
 	// cursors and the recent per-provider workload. Both runtime-only by
@@ -217,6 +220,7 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		oauthUsageCache:         newOAuthUsageCache(),
 		requestStatsCache:       newRequestStatsCache(),
 		sessionPins:             newSessionPinStore(),
+		servingProviders:        newServingProviderTracker(),
 		rotate:                  &rotateCounters{indices: map[string]uint64{}},
 		providerLoads:           newProviderLoadTracker(),
 		providerLanes:           newProviderLanes(),
@@ -579,6 +583,12 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	// but never appear in the normal console listing; admins use the
 	// dedicated GET /__providers/deleted trash view to find and restore them.
 	state.Providers = activeProviders(state.Providers)
+	// 「在服务」= 最近一次真正返回响应的 Provider，而不是粘滞位（见
+	// serving_provider.go：会话粘性命中的那一轮不改写 ActiveProviderID，
+	// 控制台以前只看粘滞位，于是日志显示备选在服务、界面却仍标首选）。
+	for index := range state.APIKeys {
+		state.APIKeys[index].ServingProviderID = s.servingProviderFor(state.APIKeys[index])
+	}
 	state.Providers = redactProvidersForClient(state.Providers)
 	for index := range state.Providers {
 		enrichProviderAdapterCurl(&state.Providers[index])

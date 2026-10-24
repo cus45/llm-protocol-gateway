@@ -98,7 +98,7 @@
 .akc-stack { display: grid; gap: 10px; min-width: 0; }
 .akc-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; align-items: stretch; }
 /* 同一排的两张卡必须等高：否则一张 5 行字段、一张 3 行，边框参差像没对齐 */
-.akc-grid-2 > .akc-card { align-content: start; }
+.akc-grid-2 > .akc-card { align-content: start; min-width: 0; }
 /* 内容最少的那块（提示 / 指引 / 列表）吃到剩余高度，两张卡底边才对得齐 */
 .akc-grid-2 > .akc-card > .akc-notes:last-child,
 .akc-grid-2 > .akc-card > .akc-steps:last-child,
@@ -619,11 +619,14 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 
 .akc-chain-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .akc-chain-foot-note { color: var(--subtle); font-size: 11.5px; }
+.akc-chain-foot-stale { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: 11.5px; }
 
 /* — 参数页表单 — */
 .akc-card {
   display: grid; gap: 10px; align-content: start;
-  min-width: 0;
+  min-width: 0; max-width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  box-sizing: border-box;
   padding: 12px;
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--surface-soft);
@@ -688,7 +691,7 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.akc-code-block { position: relative; margin: 0; }
+.akc-code-block { position: relative; margin: 0; min-width: 0; }
 .akc-code-block pre {
   margin: 0; padding: 10px 12px;
   max-height: 260px; overflow: auto;
@@ -696,7 +699,7 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
   background: var(--surface-sunken);
   color: var(--code);
   font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
-  white-space: pre-wrap; word-break: break-all;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
 }
 .akc-code-block.plain pre { border-left: 2px solid var(--accent-border); }
 .akc-code-block.plain.error pre { border-left-color: var(--red); color: var(--red); }
@@ -710,10 +713,10 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
   background: var(--surface); color: var(--text); font-size: 12.5px;
 }
 .akc-sandbox-input input:focus { outline: none; border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
-.akc-stats-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.akc-stats-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; min-width: 0; }
 .akc-stats-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .akc-stats-4 > div, .akc-stats-2 > div {
-  display: grid; gap: 2px;
+  display: grid; gap: 2px; min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--surface);

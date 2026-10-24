@@ -7,7 +7,18 @@ import {BrandIcon, InfoTip} from './ui';
 
 export function filterModelOptions(models: Model[], queryRaw: string): SearchableModelOption[] {
   const needle = queryRaw.trim().toLowerCase();
-  const options = models.map((model) => ({ id: model.id, label: modelSelectOptionLabel(model) }));
+  // 上游的模型列表常带重复（同一 id 列多次、大小写不同），下拉里逐条列出来只会
+  // 把需要的那条埋掉。这里按 id 去重、保留第一次出现；后端 UpdateProviderModels
+  // 也会去重，两处都做是为了老数据/别的写入路径也干净。
+  const seen = new Set<string>();
+  const options: SearchableModelOption[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    const key = id.toLowerCase();
+    if (!id || seen.has(key)) continue;
+    seen.add(key);
+    options.push({ id, label: modelSelectOptionLabel(model) });
+  }
   if (!needle) return options;
   return options.filter((option) => option.id.toLowerCase().includes(needle) || option.label.toLowerCase().includes(needle));
 }

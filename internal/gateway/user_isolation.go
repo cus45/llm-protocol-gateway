@@ -354,6 +354,14 @@ func (s *Server) stateForUser(identity sessionIdentity, state domain.GatewayStat
 	state.Routes = routes
 	state.Models = models
 	state.APIKeys = keysVisibleTo(identity, state.APIKeys)
+	// 普通用户看不到未授权的 Provider：把「在服务」里指向它们的那一项按未设置处理，
+	// 否则界面会拿着一个不存在的 id 去画绿点。
+	for index := range state.APIKeys {
+		serving := strings.TrimSpace(state.APIKeys[index].ServingProviderID)
+		if serving != "" && !allowed[serving] {
+			state.APIKeys[index].ServingProviderID = ""
+		}
+	}
 	if state.Endpoints == nil {
 		state.Endpoints = []domain.OutputEndpoint{}
 	}

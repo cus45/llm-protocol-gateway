@@ -669,6 +669,9 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
   const profiles = keyItem.profiles || [];
   const activeProfile = profiles.find((item) => item.id === (keyItem.activeProfileId || ''));
   const fallbackIds = keyItem.fallbackProviderIds || [];
+  // 弹窗里只列还存在的 Provider；悬空引用在保存时顺带清掉。
+  const validFallbackIds = fallbackIds.filter((id) => providers.some((item) => item.id === id));
+  const staleFallbackCount = fallbackIds.length - validFallbackIds.length;
   const publicAvailable = Boolean(props.publicBase);
   const effectivePublicBase = publicPreview && publicAvailable ? props.publicBase : '';
 
@@ -854,8 +857,9 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
           preferredProviderId={route?.providerId || ''}
           providers={providers}
           models={models}
-          selectedIds={fallbackIds}
+          selectedIds={validFallbackIds}
           modelOverrides={keyItem.fallbackModelOverrides || {}}
+          staleCount={staleFallbackCount}
           saving={saving}
           testingProviderID={testingProviderID}
           onRefreshModels={panel.onRefreshModels}
@@ -895,10 +899,19 @@ function RoutingTab({
   const profiles = keyItem.profiles || [];
   const activeProfileId = keyItem.activeProfileId || '';
   const activeProfile = profiles.find((item) => item.id === activeProfileId);
-  const fallbackIds = keyItem.fallbackProviderIds || [];
+  // Provider 是软删除（可回收站恢复），删掉后 Key 上的备选引用会被故意保留。
+  // 但在这条链路上它们永远不可能被尝试到（没有 Provider 可取），所以不能当成
+  // 正常节点排进流水线：占位、可拖、还能「设为首选」，只会误导人。
+  const fallbackRefs = keyItem.fallbackProviderIds || [];
+  const fallbackIds = fallbackRefs.filter((id) => providers.some((item) => item.id === id));
+  // 悬空引用只在「打开配置备选」时随保存一起清理，不在打开页面时自动写回：
+  // 万一 Provider 刚从回收站恢复，自动清理会把用户的备选链改坏。
+  const staleFallbackCount = fallbackRefs.length - fallbackIds.length;
   const overrides = keyItem.fallbackModelOverrides || {};
   const primary = providers.find((item) => item.id === primaryProviderId);
-  const servingProviderId = keyItem.activeProviderId || primaryProviderId;
+  // 「在服务」= 后端记录的真实服务节点（含会话粘性命中的备选）；老后端没有这个
+  // 字段时退回粘滞位，再退回首选。
+  const servingProviderId = keyItem.servingProviderId || keyItem.activeProviderId || primaryProviderId;
   const [dragState, setDragState] = React.useState<RowDragState>({draggingId: '', overId: '', after: false});
   const drag: RowDragBinding = {
     state: dragState,
@@ -948,7 +961,7 @@ function RoutingTab({
         if (!over) return;
         const next = moveFallbackId(fallbackIds, id, over, after);
         if (next === fallbackIds) return;
-        void panel.onUpdateFallbacks(keyItem, next, overrides);
+        void panel.onUpdateFallbacks(keyItem, next, pruneOverrides(overrides, next));
       };
       const onUp = () => finish();
       const onCancel = () => {
@@ -1041,7 +1054,7 @@ function RoutingTab({
         <div className="akc-chain-head">
           <span className="akc-chain-title">
             <Icon path={ICONS.shield} size={13} className="green" />
-            首选节点与备选降级流水线（共 {1 + fallbackIds.length} 个节点）
+            首选节点与备选降级流水线（共 {1 + fallbackIds.length} 个节点{staleFallbackCount > 0 ? ` · 另有 ${staleFallbackCount} 个已删除` : ''}）
           </span>
           <span className="akc-chain-hint">支持一键切换首选、独立锁定模型与探测</span>
         </div>
@@ -1096,6 +1109,19 @@ function RoutingTab({
             <span>配置备选 Provider</span>
           </button>
           <span className="akc-chain-foot-note">
+            {staleFallbackCount > 0 ? (
+              <span className="akc-chain-foot-stale">
+                {`有 ${staleFallbackCount} 个备选指向已删除的 Provider，不会参与调度。`}
+                <button
+                  type="button"
+                  className="akc-link"
+                  disabled={saving}
+                  onClick={() => void panel.onUpdateFallbacks(keyItem, fallbackIds, pruneOverrides(overrides, fallbackIds))}
+                >
+                  清理掉
+                </button>
+              </span>
+            ) : null}
             {fallbackIds.length === 0
               ? '未配置备选：首选额度耗尽后，这个密钥不会自动换到别的 Provider。'
               : '按住备选行拖动即可调整顺序，松手后保存；「设为首选」会交换绑定，其余备选顺序不变。'}
@@ -1104,6 +1130,15 @@ function RoutingTab({
       </div>
     </div>
   );
+}
+
+/** 只保留仍有效备选的模型覆写，避免给已删除的 Provider 留着垃圾键。 */
+function pruneOverrides(overrides: Record<string, string>, ids: string[]) {
+  const next: Record<string, string> = {};
+  for (const id of ids) {
+    if (overrides[id]) next[id] = overrides[id];
+  }
+  return next;
 }
 
 function removeKey(source: Record<string, string>, key: string) {
@@ -1179,7 +1214,7 @@ function PipelineRow({
         {provider ? (
           <ProviderLabel provider={provider} size={15} />
         ) : (
-          <span className="akc-chain-missing" title={fallbackProviderId}>已删除的 Provider</span>
+          <span className="akc-chain-missing" title={fallbackProviderId}>Provider 不存在</span>
         )}
       </div>
       <div className="akc-chain-middle">

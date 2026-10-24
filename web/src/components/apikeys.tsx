@@ -623,12 +623,16 @@ export function ApiKeyFallbackProvidersModal({
   onRefreshModels,
   onClose,
   onSave,
+  staleCount = 0,
 }: {
   preferredProviderId: string;
   providers: Provider[];
   models: Model[];
   selectedIds: string[];
   modelOverrides: Record<string, string>;
+  // 备选里指向已删除 Provider 的条数：它们不在 selectedIds 里，保存时会被一并清掉。
+  // 只在提示里说明数量，不必把每个孤儿 id 都列出来。
+  staleCount?: number;
   saving: boolean;
   testingProviderID: string;
   onRefreshModels: (providerId: string, providerName: string) => Promise<void>;
@@ -707,6 +711,11 @@ export function ApiKeyFallbackProvidersModal({
         <div className="field-label-row">
           <div className="hint-text">首选 Provider 不在此列表中。已选按优先级从上到下排列；同协议备选可以留空模型，跨协议备选保存前必须选好。</div>
         </div>
+        {staleCount > 0 ? (
+          <div className="hint-text">
+            另有 {staleCount} 个备选指向已删除的 Provider：它们不会出现在列表里，点击保存后会被一并移除。
+          </div>
+        ) : null}
         {candidates.length === 0 ? (
           <div className="empty-state compact">没有可配置的备选 Provider，请先添加更多输入 Provider。</div>
         ) : (

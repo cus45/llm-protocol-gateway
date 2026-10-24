@@ -1388,11 +1388,14 @@ func (s *Server) executeProtocolFlowWithFailover(
 			continue
 		}
 
-		// Stick to the provider that served this request — unless a session pin
-		// is what chose it. Two conversations pinned to two different accounts
-		// would otherwise rewrite ActiveProviderID on every turn, and the
-		// key-level stickiness would flap between them without either
-		// conversation having moved.
+		// Record which provider actually served this key. Two writers share the
+		// slot and they must not fight: a session pin (one conversation) choosing
+		// its pinned account, and the failure/recovery path moving the key. The
+		// immediate writer keeps the key-level ActiveProviderID in step with the
+		// traffic; the debounced writer additionally marks the key "serving" for
+		// the console, because the old rule never wrote anything when a session
+		// pin was what chose the provider, and the console then kept crowning the
+		// preferred provider while the logs showed a fallback serving every turn.
 		desiredActive := ""
 		if providerID != strings.TrimSpace(route.ProviderID) {
 			desiredActive = providerID
@@ -1406,6 +1409,7 @@ func (s *Server) executeProtocolFlowWithFailover(
 				s.logs.AddApp("info", "api key restored preferred provider", fmt.Sprintf("key=%s provider=%s", matchedKey.ID, route.ProviderID))
 			}
 		}
+		s.noteKeyServingProvider(matchedKey.ID, providerID)
 		// The conversation now belongs to the account that answered it, and that
 		// account has now carried this request's work.
 		s.setSessionPin(sessionKey, providerID)

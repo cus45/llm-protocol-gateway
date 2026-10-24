@@ -1962,6 +1962,35 @@ func (r *Router) SetProviderConcurrency(providerID string, maxConcurrentRequests
 	return domain.Provider{}, fmt.Errorf("provider %q not found", providerID)
 }
 
+
+// dedupeProviderModels 去掉同一 Provider 下重复的模型 id。
+//
+// 上游的 /models 经常把同一个模型列好几遍（带不同后缀的副本、分页重叠、同一
+// 账号被两条记录共用时两边各列一份），原样落到下拉里就是几十条一模一样的选项，
+// 选模型时根本找不到要的那条。保留第一次出现的那条（上游通常把主推模型排在
+// 前面），后续重复项直接丢弃；大小写不同但 id 相同的也按重复处理。
+func dedupeProviderModels(models []domain.Model) []domain.Model {
+	if len(models) < 2 {
+		return models
+	}
+	seen := make(map[string]struct{}, len(models))
+	out := make([]domain.Model, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		model.ID = id
+		out = append(out, model)
+	}
+	return out
+}
+
 func (r *Router) UpdateProviderModels(providerID string, models []domain.Model, healthStatus string) (domain.Provider, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1970,6 +1999,7 @@ func (r *Router) UpdateProviderModels(providerID string, models []domain.Model, 
 		if r.state.Providers[index].ID != providerID {
 			continue
 		}
+		models = dedupeProviderModels(models)
 		for modelIndex := range models {
 			models[modelIndex].ProviderID = providerID
 			models[modelIndex].Protocol = r.state.Providers[index].Protocol
