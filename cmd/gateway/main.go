@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/app"
+	"github.com/luca/llm-protocol-gateway/internal/gateway"
 )
 
 func main() {
@@ -21,6 +22,9 @@ func main() {
 	cfg := app.Config{
 		Port:          app.DefaultPort,
 		PreferEnvAddr: true,
+		// Stamped at build time by scripts/build-version.sh; empty for a plain
+		// `go run`, in which case the console never offers an upgrade.
+		Version: gateway.BuildVersion,
 		// PreferEnvAddr also selects the headless first-run default (webExposed=true)
 		// when SQLite has no webExposed setting yet.
 	}

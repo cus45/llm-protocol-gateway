@@ -70,6 +70,9 @@ type Config struct {
 	WebExposedSet bool
 	// PreferEnvAddr when true (headless CLI) lets GATEWAY_ADDR override bind host.
 	PreferEnvAddr bool
+	// Version is the build version this runtime serves; the console polls it to
+	// learn that a newer release is live. Empty for a development build.
+	Version string
 }
 
 // Runtime owns the gateway HTTP server lifecycle so both the headless CLI and
@@ -258,6 +261,9 @@ func (rt *Runtime) Start(cfg Config) error {
 
 	state.WebExposed = rt.webExposed
 	router := gateway.NewRouter(state)
+	// The console compares its own build version against this one to offer the
+	// upgrade prompt, so it must be set before the first request is served.
+	gateway.SetBuildVersion(cfg.Version)
 	server := gateway.NewServer(router, logs, db)
 	// 上次自检若被 kill/重启打断，selfcheck-* 密钥会残留；启动时扫一遍。
 	server.SweepSelfcheckLeftovers()

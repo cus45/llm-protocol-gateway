@@ -213,6 +213,7 @@ import {
     URLRow
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
+import {CURRENT_APP_VERSION, dismissUpgrade, fetchLatestAppVersion, isNewerVersion, reloadToVersion} from './app_version';
 
 // 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
 const ALL_PROVIDERS_VALUE = '__all_providers__';
@@ -342,6 +343,37 @@ function App() {
   const [hostMetrics, setHostMetrics] = useState<HostMetrics | null>(null);
   // null = 尚未探测，避免刷新瞬间误闪「后端未连接」
   const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
+  // 后端当前版本：与本页构建版本不同即说明发布了新版本，提示升级（见 app_version.ts）。
+  const [latestAppVersion, setLatestAppVersion] = useState<string>('');
+  const [upgradeDismissed, setUpgradeDismissed] = useState<boolean>(false);
+  const upgradeAvailable = isNewerVersion(latestAppVersion, CURRENT_APP_VERSION) && !upgradeDismissed;
+  useEffect(() => {
+    if (!CURRENT_APP_VERSION) {
+      // 开发构建没有版本号：不轮询，也不提示。
+      return;
+    }
+    let cancelled = false;
+    const check = () => {
+      void (async () => {
+        try {
+          const latest = await fetchLatestAppVersion();
+          if (cancelled || !latest) return;
+          setLatestAppVersion(latest);
+        } catch {
+          // 后端暂时不可达不代表有新版本：保持上次的结论，等下一轮。
+        }
+      })();
+    };
+    check();
+    const timer = window.setInterval(check, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
+    const onVisible = () => { if (isDocumentActive()) check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
   // 连续失败计数。公网走 Cloudflare 隧道时单次 TLS 握手实测约 1.5s，偶发抖动
   // 在所难免；单次失败就翻红会让 UI 频繁误报「重连中」，故需连续失败若干次
   // 才判定断线。ref 而非 state：只用于判定、不驱动渲染。
@@ -4525,6 +4557,23 @@ function App() {
 
   return (
     <>
+      {upgradeAvailable && (
+        <div className="upgrade-banner" role="status" aria-live="polite">
+          <span className="upgrade-banner-text">
+            新版本已发布（当前 {CURRENT_APP_VERSION} → 最新 {latestAppVersion}），刷新页面即可使用。
+          </span>
+          <button type="button" className="upgrade-banner-action" onClick={() => reloadToVersion(latestAppVersion)}>
+            立即升级
+          </button>
+          <button
+            type="button"
+            className="upgrade-banner-dismiss"
+            onClick={() => { dismissUpgrade(latestAppVersion); setUpgradeDismissed(true); }}
+          >
+            稍后
+          </button>
+        </div>
+      )}
       <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
         <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
           <div className="brand">

@@ -106,8 +106,15 @@ function gatewayDevPlugin(): Plugin {
   };
 }
 
+// 版本号由 scripts/build-version.sh 通过 GATEWAY_APP_VERSION 注入；未设置时为空串，
+// 前端据此判定为开发构建，不提示升级。
+const appVersion = (process.env.GATEWAY_APP_VERSION ?? '').trim();
+
 export default defineConfig({
   plugins: [react(), gatewayDevPlugin()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

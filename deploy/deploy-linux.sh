@@ -131,6 +131,10 @@ if ! tree_is_clean && [[ "$ALLOW_DIRTY" != "1" ]]; then
   die "拒绝构建脏包。先提交改动，或在明知不可回滚时加 --allow-dirty"
 fi
 EXPECT_REVISION="$(commit_now)"
+# 本次发布的版本号：同时注入前端（__APP_VERSION__）与后端（BuildVersion），
+# 控制台据此判断「后端已换了一版」，提示用户刷新升级。
+APP_VERSION="$(./scripts/build-version.sh)"
+info "发布版本: $APP_VERSION"
 if ! tree_is_clean; then
   warn "工作区与 HEAD 不一致（--allow-dirty）：产物无法对应到 commit，回滚只能凭这份产物本身"
 fi
@@ -221,8 +225,8 @@ if [[ "$SKIP_WEB" == "0" ]]; then
   else
     info "依赖已就绪，跳过 npm ci"
   fi
-  info "npm run build ..."
-  npm run build
+  info "npm run build (版本 $APP_VERSION) ..."
+  GATEWAY_APP_VERSION="$APP_VERSION" npm run build
   [[ -f "dist/index.html" ]] || die "前端构建失败：web/dist/index.html 不存在"
   ok "前端构建完成"
   cd "$ROOT"
@@ -242,7 +246,7 @@ if [[ "$SKIP_GO" == "0" ]]; then
   # 注意不要放进 git 仓库*外*的临时目录（如 /tmp）构建：go 会静默跳过 VCS 标记（二进制
   # 里没有 vcs 信息），校验脚本会拒绝这种产物。
   CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
-    go build -trimpath -ldflags "-s -w" -o bin/gateway-linux ./cmd/gateway
+    go build -trimpath -ldflags "-s -w -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$APP_VERSION" -o bin/gateway-linux ./cmd/gateway
   [[ -f bin/gateway-linux ]] || die "后端构建失败"
   ok "后端构建完成: $(ls -lh bin/gateway-linux | awk '{print $5}')"
 else
@@ -261,7 +265,7 @@ PROVENANCE_OK=0
 if ! tree_is_clean; then
   warn "工作区与 HEAD 不一致，重新构建并如实内嵌 vcs.modified=true ..."
   CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
-    go build -trimpath -ldflags "-s -w" -o bin/gateway-linux ./cmd/gateway
+    go build -trimpath -ldflags "-s -w -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$APP_VERSION" -o bin/gateway-linux ./cmd/gateway
 fi
 if bash "$ROOT/scripts/verify-build-provenance.sh" bin/gateway-linux "$EXPECT_REVISION"; then
   # 可复现性：同一 commit 两次构建应得到逐字节相同的二进制。缺 -trimpath（例如 GOFLAGS 里
