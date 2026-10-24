@@ -142,6 +142,32 @@ func TestAudioTranscriptionPassesTheUploadThrough(t *testing.T) {
 	}
 }
 
+// 音频端点必须真的挂在路由表上：处理器写对了但忘了注册，线上就是一个
+// 404（嵌入端点刚犯过同样的错）。这里走 Handler() 的 mux，不直接调处理器。
+func TestAudioEndpointsAreRouted(t *testing.T) {
+	provider := imagesImageProvider("audio-r", false)
+	server := embeddingsServer(t, provider, domain.APIKey{ID: "k1", Key: "sk-gw-admin"})
+	handler := server.Handler()
+
+	for _, path := range []string{
+		"/v1/audio/transcriptions",
+		"/openai/v1/audio/transcriptions",
+		"/v1/audio/translations",
+		"/openai/v1/audio/translations",
+	} {
+		// A JSON body is refused by the handler itself (400), which is proof the
+		// request reached it: an unregistered path would answer 404.
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"m"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer sk-gw-admin")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusNotFound {
+			t.Fatalf("%s is not routed: got 404", path)
+		}
+	}
+}
+
 // 非 multipart 的音频请求在出发前就拒绝，且不碰上游。
 func TestAudioRequiresMultipartForm(t *testing.T) {
 	up := newAudioUpstream(t, http.StatusOK, `{}`)
