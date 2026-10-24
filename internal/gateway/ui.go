@@ -24,7 +24,6 @@ var uiNavPaths = map[string]struct{}{
 	"/monitoring":       {},
 	"/quota-keeper":     {},
 	"/users":            {},
-	"/self-check":       {},
 	"/machine":          {},
 	"/settings":         {},
 }

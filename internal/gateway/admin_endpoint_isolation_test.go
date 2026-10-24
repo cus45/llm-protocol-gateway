@@ -2,7 +2,12 @@ package gateway
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
 // 控制台管理端点的访问控制有一层默认拒绝：不在用户白名单里的 /__* 路径对
@@ -28,7 +33,6 @@ func TestNormalUserIsRefusedOnAdminEndpoints(t *testing.T) {
 		{http.MethodGet, "/__public/control-token"},
 		{http.MethodGet, "/__host-metrics"},
 		{http.MethodGet, "/__rtk/stats"},
-		{http.MethodGet, "/__selfcheck/tools"},
 		{http.MethodPatch, "/__app/log-level"},
 		{http.MethodPatch, "/__settings/web-exposed"},
 		{http.MethodPatch, "/__settings/usage-batch"},
@@ -62,6 +66,63 @@ func TestNormalUserReachesOwnDataEndpoints(t *testing.T) {
 	for _, route := range allowed {
 		if !isUserAllowedPath(route.method, route.path) {
 			t.Fatalf("%s %s should stay reachable for role=user", route.method, route.path)
+		}
+	}
+}
+
+// 自检页已从控制台移除（监控中心阶段 3，任务 7）：页面入口、本机偏好与整批
+// /__selfcheck* 接口都不该再回来。CLI 深检走 /__monitor/probes/run，不经这些
+// 路由；Provider 级连通性测试走 /__providers/{id}/self-check/*（由
+// TestProviderSelfCheckRoutesStay 守住），也不受影响。
+type selfCheckAPIRoute struct{ method, path string }
+
+var retiredSelfCheckAPIRoutes = []selfCheckAPIRoute{
+	{http.MethodGet, "/__selfcheck/tools"},
+	{http.MethodPost, "/__selfcheck"},
+	{http.MethodGet, "/__selfcheck/sc-x"},
+	{http.MethodPost, "/__selfcheck/sc-x/retry/c1"},
+}
+
+func TestRetiredSelfCheckPageAndAPIRoutesAreGone(t *testing.T) {
+	if shouldServeUIFallback("/self-check") {
+		t.Fatal("/self-check must not fall back to the SPA entry page; the self-check page was retired")
+	}
+	for _, route := range retiredSelfCheckAPIRoutes {
+		if isUserAllowedPath(route.method, route.path) {
+			t.Fatalf("%s %s is still on the user allowlist", route.method, route.path)
+		}
+	}
+
+	server := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	// 只测「路由 + SPA 兜底」这一层：本机管理员旁路（与桌面端/本机访问一致），
+	// 已不存在的 /__ 路径必须落到 mux 的 404，而不是被当成页面返回 index.html。
+	// 角色白名单由上面两个测试负责。
+	handler := withHostSeparatedServing(server.Handler(), "", nil)
+	for _, route := range retiredSelfCheckAPIRoutes {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Host = "127.0.0.1:18779"
+		req.RemoteAddr = "127.0.0.1:50000"
+		handler.ServeHTTP(rec, req)
+		body := rec.Body.String()
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s = %d, want 404", route.method, route.path, rec.Code)
+		}
+		if strings.Contains(body, "<html") || strings.Contains(body, "<div id=") {
+			t.Fatalf("%s %s returned the SPA entry page (%d), want a 404", route.method, route.path, rec.Code)
+		}
+	}
+}
+
+// 自检页入口删除时，保留的 Provider 级连通性测试不能被误删。
+func TestProviderSelfCheckRoutesStay(t *testing.T) {
+	for _, path := range []string{
+		"/__providers/p1/self-check/health",
+		"/__providers/p1/self-check/chat",
+		"/__providers/p1/self-check/conformance",
+	} {
+		if !isSelfCheckPath(http.MethodPost, path) {
+			t.Fatalf("%s must stay a provider self-check path", path)
 		}
 	}
 }

@@ -28,8 +28,6 @@ import {
   RequestStatsSnapshot,
   Route,
   RouteTestResult,
-  SelfcheckCaseResult,
-  SelfcheckPrefs,
   SubscriptionCheckin,
   SubscriptionConnectKind,
   TimeHint
@@ -337,7 +335,6 @@ export const navItems = [
   { id: 'monitoring', label: '监控中心' },
   { id: 'quota-keeper', label: '额度保活' },
   { id: 'users', label: '用户管理' },
-  { id: 'self-check', label: '自检' },
   { id: 'machine', label: '机器状态' },
   { id: 'settings', label: '设置' },
 ] as const;
@@ -349,7 +346,7 @@ export const coreNavIDs: NavItemID[] = ['input-providers', 'api-keys'];
 export const navGroups: Array<{ label: string; ids: NavItemID[] }> = [
   { label: '核心配置', ids: ['input-providers', 'api-keys', 'output-providers', 'quota-keeper'] },
   { label: '数据洞察', ids: ['models-menu', 'usage-stats', 'traffic-tokens'] },
-  { label: '系统管理', ids: ['public-access', 'monitoring', 'users', 'self-check', 'machine', 'settings'] },
+  { label: '系统管理', ids: ['public-access', 'monitoring', 'users', 'machine', 'settings'] },
 ];
 
 // 普通用户仅可访问的页面（其余仅管理员可见）。监控中心刻意不在列：它读账号矩阵、
@@ -503,51 +500,6 @@ export function clearUICache(scope: string, kind: string) {
   } catch {
     // ignore
   }
-}
-
-/** 自检页偏好：无 TTL，按登录身份永久保存在本机。 */
-export const SELFCHECK_PREFS_PREFIX = 'llm-gateway-selfcheck-prefs:v1:';
-
-export function readSelfcheckPrefs(scope: string): SelfcheckPrefs | null {
-  try {
-    const raw = localStorage.getItem(`${SELFCHECK_PREFS_PREFIX}${scope}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SelfcheckPrefs;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function writeSelfcheckPrefs(scope: string, prefs: SelfcheckPrefs) {
-  try {
-    localStorage.setItem(`${SELFCHECK_PREFS_PREFIX}${scope}`, JSON.stringify(prefs));
-  } catch {
-    // quota / private mode — ignore
-  }
-}
-
-export function defaultSelfcheckModelForProvider(provider: Provider, models: Model[]): string {
-  const listed = models.filter((model) => model.providerId === provider.id);
-  return listed[0]?.id?.trim()
-    || provider.defaultModel?.trim()
-    || provider.models?.find((model) => model.id?.trim())?.id?.trim()
-    || '';
-}
-
-export function modelsForSelfcheckProvider(provider: Provider, allModels: Model[]): Model[] {
-  const listed = allModels.filter((model) => model.providerId === provider.id);
-  if (listed.length > 0) return listed;
-  const fallbackID = provider.defaultModel?.trim();
-  if (!fallbackID) return [];
-  return [{
-    id: fallbackID,
-    providerId: provider.id,
-    protocol: provider.protocol,
-    contextLength: 0,
-    inMenu: true,
-  }];
 }
 
 export function trafficRanksFromMap(map: Map<string, number>): Record<string, number> {
@@ -938,27 +890,6 @@ export function formatTrafficLogDetail(log: LogEntry, providers: Provider[] = []
   if (log.errorDescription) lines.push(`error: ${log.errorDescription}`);
   if (log.requestBody) lines.push('', '--- Request Body ---', formatJsonDisplay(log.requestBody));
   if (log.responseBody) lines.push('', '--- Response Body ---', formatJsonDisplay(log.responseBody));
-  return lines.join('\n');
-}
-
-export function formatSelfcheckCaseDetail(row: SelfcheckCaseResult) {
-  const lines = [
-    '=== 自检用例详情 ===',
-    `Provider: ${row.providerName || row.providerId}`,
-    `客户端: ${row.client}`,
-    `类型: ${row.kind || 'chat'}`,
-    `协议: ${row.protocol}`,
-    `模型: ${row.model || '-'}`,
-    `密钥: ${row.apiKeyName || '-'}`,
-    `路由: ${row.routeId || '-'}`,
-    `请求成功: ${row.success ? '是' : '否'}`,
-    `内容校验: ${row.contentOK ? 'OK' : '失败'}`,
-    `耗时: ${row.latencyMs} ms`,
-    `开始: ${row.startedAt || '-'}`,
-    `结束: ${row.finishedAt || '-'}`,
-  ];
-  if (row.error) lines.push('', '--- 错误详情 ---', row.error);
-  if (row.outputPreview) lines.push('', '--- 输出预览 ---', row.outputPreview);
   return lines.join('\n');
 }
 

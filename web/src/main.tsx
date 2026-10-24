@@ -45,7 +45,6 @@ import {
     coreNavIDs,
     defaultProviderChatTestOptions,
     defaultPublicAccess,
-    defaultSelfcheckModelForProvider,
     defaultThinkingValueForField,
     deriveUIDomainFromAPI,
     diskTempLabel,
@@ -64,7 +63,6 @@ import {
     formatJsonDisplay,
     formatLocalISODate,
     formatRate,
-    formatSelfcheckCaseDetail,
     formatTrafficLogDetail,
     formatTrafficLogJSON,
     getApiKeyBinding,
@@ -90,7 +88,6 @@ import {
     LOGS_PAGE_SIZE,
     mapFromTrafficRanks,
     modelAlias,
-    modelsForSelfcheckProvider,
     navGroups,
     navIDFromPath,
     navItems,
@@ -117,7 +114,6 @@ import {
     publicStatusTone,
     qoderDefaultBaseURL,
     readConnectResponse,
-    readSelfcheckPrefs,
     readStoredProviderDensity,
     readStoredSidebarCollapsed,
     readUICache,
@@ -141,7 +137,6 @@ import {
     uiCacheScope,
     userAllowedNavIDs,
     USERS_TABLE_GRID,
-    writeSelfcheckPrefs,
     writeStoredProviderDensity,
     writeStoredSidebarCollapsed,
     writeUICache
@@ -199,9 +194,6 @@ import {
     Route,
     RouteTestResult,
     RTKStatsResponse,
-    SelfcheckCaseResult,
-    SelfcheckJobStatus,
-    SelfcheckToolInfo,
     ThemeMode,
     TrafficRankCache
 } from './types';
@@ -315,7 +307,6 @@ function App() {
   }, [logs, logsKeyword]);
   // 当前页日志里的调度尝试聚合：谁被尝试、谁真服务、谁被跳过/失败。
   const decisionAggregate = useMemo(() => aggregateScheduleAttempts(displayedLogs), [displayedLogs]);
-  const [selfcheckCaseDetail, setSelfcheckCaseDetail] = useState<SelfcheckCaseResult | null>(null);
   const [requestStats, setRequestStats] = useState<RequestStatsSnapshot | null>(null);
   const usageRequestVersion = useRef(0);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -479,30 +470,6 @@ function App() {
   const copiedApiKeyTimer = useRef<number | null>(null);
   // 今日 / 本月用量：与用量页同源（/__request-stats），只取按密钥聚合的两块。
   const [apiKeyUsageSnapshot, setApiKeyUsageSnapshot] = useState<ApiKeyUsageSource | null>(null);
-  const [selfcheckProviderIDs, setSelfcheckProviderIDs] = useState<string[]>(() => {
-    const prefs = readSelfcheckPrefs(uiCacheScope(bootSession.auth));
-    return Array.isArray(prefs?.providerIds) ? prefs!.providerIds!.filter(Boolean) : [];
-  });
-  const [selfcheckModels, setSelfcheckModels] = useState<Record<string, string>>(() => {
-    const prefs = readSelfcheckPrefs(uiCacheScope(bootSession.auth));
-    return prefs?.models && typeof prefs.models === 'object' ? { ...prefs.models } : {};
-  });
-  const [selfcheckTimeoutSec, setSelfcheckTimeoutSec] = useState(() => {
-    const prefs = readSelfcheckPrefs(uiCacheScope(bootSession.auth));
-    const value = Number(prefs?.timeoutSec);
-    return Number.isFinite(value) && value >= 5 && value <= 600 ? value : 90;
-  });
-  const [selfcheckPrompt, setSelfcheckPrompt] = useState(() => {
-    const prefs = readSelfcheckPrefs(uiCacheScope(bootSession.auth));
-    const prompt = prefs?.prompt?.trim();
-    return prompt || '1+1等于几';
-  });
-  const [selfcheckTools, setSelfcheckTools] = useState<SelfcheckToolInfo[]>([]);
-  const [selfcheckLanRoot, setSelfcheckLanRoot] = useState('');
-  const [selfcheckRunning, setSelfcheckRunning] = useState(false);
-  const [selfcheckJob, setSelfcheckJob] = useState<SelfcheckJobStatus | null>(null);
-  const [selfcheckRetrying, setSelfcheckRetrying] = useState<string[]>([]);
-  const selfcheckPollRef = useRef<number | null>(null);
   const [providerDraft, setProviderDraft] = useState({
     name: '我的 OpenAI 对话 Provider',
     protocol: 'openai_chat' as Protocol,
@@ -1330,42 +1297,6 @@ function App() {
   }, [activeNav, authStatus?.role]);
 
   useEffect(() => {
-    if (activeNav !== 'self-check') return;
-    void refreshSelfcheckTools();
-  }, [activeNav]);
-
-  useEffect(() => {
-    // 自检勾选 Provider / 模型 / 超时 / Prompt 永久写入本机，刷新后仍保留。
-    writeSelfcheckPrefs(uiCacheScope(authStatus), {
-      providerIds: selfcheckProviderIDs,
-      models: selfcheckModels,
-      timeoutSec: selfcheckTimeoutSec,
-      prompt: selfcheckPrompt,
-    });
-  }, [authStatus, selfcheckProviderIDs, selfcheckModels, selfcheckTimeoutSec, selfcheckPrompt]);
-
-  useEffect(() => {
-    // Provider 被删除时，同步清掉自检勾选与模型记忆里的脏 ID。
-    const known = new Set(sortedProviders.map((provider) => provider.id));
-    setSelfcheckProviderIDs((current) => {
-      const next = current.filter((id) => known.has(id));
-      return next.length === current.length ? current : next;
-    });
-    setSelfcheckModels((current) => {
-      let changed = false;
-      const next: Record<string, string> = {};
-      for (const [providerID, model] of Object.entries(current)) {
-        if (!known.has(providerID)) {
-          changed = true;
-          continue;
-        }
-        next[providerID] = model;
-      }
-      return changed ? next : current;
-    });
-  }, [sortedProviders]);
-
-  useEffect(() => {
     if (activeNav !== 'users') return;
     void refreshConsoleUsers();
   }, [activeNav]);
@@ -1392,13 +1323,6 @@ function App() {
     window.history.replaceState({}, '', navPathForID('api-keys'));
     setActiveNav('api-keys');
   }, [authStatus, activeNav]);
-
-  useEffect(() => () => {
-    if (selfcheckPollRef.current != null) {
-      window.clearInterval(selfcheckPollRef.current);
-      selfcheckPollRef.current = null;
-    }
-  }, []);
 
   function goToPage(sectionID: NavItemID) {
     const path = navPathForID(sectionID);
@@ -3674,198 +3598,6 @@ function App() {
 
   function clearExportProviderSelection() {
     setSelectedExportProviderIDs([]);
-  }
-
-  function toggleSelfcheckProvider(providerID: string) {
-    const selecting = !selfcheckProviderIDs.includes(providerID);
-    setSelfcheckProviderIDs((current) => (
-      selecting
-        ? [...current, providerID]
-        : current.filter((id) => id !== providerID)
-    ));
-    if (selecting) {
-      const provider = sortedProviders.find((item) => item.id === providerID);
-      if (provider) {
-        setSelfcheckModels((current) => {
-          if (current[providerID]?.trim()) return current;
-          const fallback = defaultSelfcheckModelForProvider(provider, state.models);
-          if (!fallback) return current;
-          return { ...current, [providerID]: fallback };
-        });
-      }
-    }
-  }
-
-  function selectAllSelfcheckProviders() {
-    setSelfcheckProviderIDs(sortedProviders.map((provider) => provider.id));
-    setSelfcheckModels((current) => {
-      const next = { ...current };
-      let changed = false;
-      for (const provider of sortedProviders) {
-        if (next[provider.id]?.trim()) continue;
-        const fallback = defaultSelfcheckModelForProvider(provider, state.models);
-        if (!fallback) continue;
-        next[provider.id] = fallback;
-        changed = true;
-      }
-      return changed ? next : current;
-    });
-  }
-
-  function clearSelfcheckProviders() {
-    setSelfcheckProviderIDs([]);
-  }
-
-  function selfcheckModelForProvider(provider: Provider) {
-    const saved = selfcheckModels[provider.id]?.trim();
-    if (saved) return saved;
-    return defaultSelfcheckModelForProvider(provider, state.models);
-  }
-
-  function setSelfcheckModelForProvider(providerID: string, model: string) {
-    setSelfcheckModels((current) => {
-      const next = { ...current };
-      const trimmed = model.trim();
-      if (!trimmed) delete next[providerID];
-      else next[providerID] = trimmed;
-      return next;
-    });
-  }
-
-  async function refreshSelfcheckTools() {
-    try {
-      const response = await fetch(`${API_BASE}/__selfcheck/tools`, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json() as { tools?: SelfcheckToolInfo[]; lanRoot?: string };
-      setSelfcheckTools(data.tools || []);
-      setSelfcheckLanRoot(data.lanRoot || localGatewayRoot(state.endpoints));
-    } catch (error) {
-      showToast(`加载自检工具状态失败：${String(error)}`);
-    }
-  }
-
-  function stopSelfcheckPolling() {
-    if (selfcheckPollRef.current != null) {
-      window.clearInterval(selfcheckPollRef.current);
-      selfcheckPollRef.current = null;
-    }
-  }
-
-  async function pollSelfcheckJob(jobId: string) {
-    try {
-      const response = await fetch(`${API_BASE}/__selfcheck/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json() as SelfcheckJobStatus;
-      setSelfcheckJob(data);
-      if (data.status === 'done' || data.status === 'error') {
-        stopSelfcheckPolling();
-        setSelfcheckRunning(false);
-        const okCount = (data.results || []).filter((item) => item.success && item.contentOK).length;
-        const total = data.total || (data.results || []).length;
-        if (data.status === 'error') {
-          showToast(`自检失败：${data.error || '未知错误'}`);
-        } else {
-          showToast(`自检完成：${okCount}/${total} 通过`);
-        }
-        void refreshState(false);
-      }
-    } catch (error) {
-      stopSelfcheckPolling();
-      setSelfcheckRunning(false);
-      showToast(`轮询自检结果失败：${String(error)}`);
-    }
-  }
-
-  async function startSelfcheck() {
-    if (selfcheckRunning) return;
-    if (selfcheckProviderIDs.length === 0) {
-      showToast('请先勾选至少一个 Provider');
-      return;
-    }
-    const timeoutMs = Math.max(5, Math.min(600, selfcheckTimeoutSec || 90)) * 1000;
-    const models: Record<string, string> = {};
-    for (const providerID of selfcheckProviderIDs) {
-      const provider = sortedProviders.find((item) => item.id === providerID);
-      const model = (provider ? selfcheckModelForProvider(provider) : selfcheckModels[providerID] || '').trim();
-      if (model) models[providerID] = model;
-    }
-    setSelfcheckRunning(true);
-    setSelfcheckJob(null);
-    stopSelfcheckPolling();
-    try {
-      const response = await fetch(`${API_BASE}/__selfcheck`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerIds: selfcheckProviderIDs,
-          timeoutMs,
-          prompt: selfcheckPrompt.trim() || '1+1等于几',
-          models,
-        }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      const data = await response.json() as { jobId: string };
-      showToast('自检已开始，正在并行探测…');
-      await pollSelfcheckJob(data.jobId);
-      selfcheckPollRef.current = window.setInterval(() => {
-        void pollSelfcheckJob(data.jobId);
-      }, 1000);
-    } catch (error) {
-      setSelfcheckRunning(false);
-      showToast(`启动自检失败：${String(error)}`);
-    }
-  }
-
-  async function retrySelfcheckCase(caseId: string) {
-    if (!selfcheckJob?.jobId || !caseId) return;
-    if (selfcheckRetrying.includes(caseId)) return;
-    setSelfcheckRetrying((prev) => [...prev, caseId]);
-    const jobId = selfcheckJob.jobId;
-    try {
-      const response = await fetch(
-        `${API_BASE}/__selfcheck/${encodeURIComponent(jobId)}/retry/${encodeURIComponent(caseId)}`,
-        { method: 'POST', credentials: 'same-origin' },
-      );
-      if (!response.ok) throw new Error(await response.text());
-      showToast('已开始重试该用例…');
-      // The retry re-opens the job; resume polling until it settles again.
-      setSelfcheckRunning(true);
-      await pollSelfcheckJob(jobId);
-      if (selfcheckPollRef.current == null) {
-        selfcheckPollRef.current = window.setInterval(() => {
-          void pollSelfcheckJob(jobId);
-        }, 1000);
-      }
-    } catch (error) {
-      showToast(`重试失败：${String(error)}`);
-    } finally {
-      setSelfcheckRetrying((prev) => prev.filter((id) => id !== caseId));
-    }
-  }
-
-  function selfcheckClientLabel(client: string) {
-    if (client === 'opencode') return 'OpenCode';
-    if (client === 'codex') return 'Codex';
-    if (client === 'claude') return 'Claude';
-    return client;
-  }
-
-  function selfcheckKindLabel(kind?: string) {
-    if (kind === 'tool') return '工具调用';
-    if (kind === 'chat') return '对话';
-    return kind || '对话';
-  }
-
-  function formatSelfcheckTime(iso?: string) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleString('zh-CN', { hour12: false });
-  }
-
-  function openSelfcheckCaseLogs(row: SelfcheckCaseResult) {
-    setSelfcheckCaseDetail(row);
   }
 
   function providersExportFilename() {
@@ -6397,218 +6129,6 @@ function App() {
           </section>
           )}
 
-          {activeNav === 'self-check' && !isNormalUser && (
-          <section className="section-full">
-            <div className="card panel">
-              <div className="panel-header">
-                <div>
-                  <h2 className="panel-title">自检</h2>
-                  <p className="panel-desc">
-                    对勾选的输入 Provider 并行走局域网网关探测（OpenCode / Codex / Claude CLI），并校验回答内容；每个 Provider 可单独选择模型，选择会永久记在本机。
-                  </p>
-                </div>
-                <button
-                  className="btn primary"
-                  type="button"
-                  disabled={selfcheckRunning || selfcheckProviderIDs.length === 0 || sortedProviders.length === 0}
-                  onClick={() => void startSelfcheck()}
-                >
-                  {selfcheckRunning
-                    ? `自检中… ${selfcheckJob?.completed ?? 0}/${selfcheckJob?.total ?? selfcheckProviderIDs.length * 6}`
-                    : '开始自检'}
-                </button>
-              </div>
-
-              <div className="detail-section">
-                <div className="detail-section-title">探测参数</div>
-                <div className="form-grid compact" style={{ marginBottom: 14 }}>
-                  <label className="field">
-                    <span>超时（秒 / 每用例）</span>
-                    <input
-                      type="number"
-                      min={5}
-                      max={600}
-                      value={selfcheckTimeoutSec}
-                      disabled={selfcheckRunning}
-                      onChange={(event) => setSelfcheckTimeoutSec(Number(event.target.value) || 90)}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>探测 Prompt</span>
-                    <input
-                      type="text"
-                      value={selfcheckPrompt}
-                      disabled={selfcheckRunning}
-                      onChange={(event) => setSelfcheckPrompt(event.target.value)}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>局域网根地址</span>
-                    <input type="text" readOnly value={selfcheckLanRoot || localGatewayRoot(state.endpoints)} />
-                  </label>
-                </div>
-
-                <div className="hint-text">
-                    CLI 可用性：
-                    {selfcheckTools.length === 0
-                      ? '加载中…'
-                      : selfcheckTools.map((tool) => (
-                        <span key={tool.id} style={{ marginLeft: 10 }}>
-                          {tool.label}{' '}
-                          <Badge tone={tool.found ? 'green' : 'red'}>{tool.found ? '可用' : '缺失'}</Badge>
-                        </span>
-                      ))}
-                </div>
-              </div>
-
-              <div className="detail-section">
-                <div className="detail-section-title">选择 Provider</div>
-                {sortedProviders.length > 0 ? (
-                  <div className="providers-toolbar">
-                    <label className="checkbox-field">
-                      <input
-                        type="checkbox"
-                        checked={selfcheckProviderIDs.length > 0 && selfcheckProviderIDs.length === sortedProviders.length}
-                        disabled={selfcheckRunning}
-                        onChange={(event) => {
-                          if (event.target.checked) selectAllSelfcheckProviders();
-                          else clearSelfcheckProviders();
-                        }}
-                      />
-                      <span>全选 Provider</span>
-                    </label>
-                    <span className="providers-toolbar-meta">已选 {selfcheckProviderIDs.length} / {sortedProviders.length}</span>
-                    {selfcheckProviderIDs.length > 0 ? (
-                      <button className="mini-btn" type="button" disabled={selfcheckRunning} onClick={clearSelfcheckProviders}>清除选择</button>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {sortedProviders.length === 0 ? (
-                  <div className="empty-state">暂无输入 Provider，请先在「输入 Provider」页添加。</div>
-                ) : (
-                  <div className="selfcheck-provider-list">
-                  {sortedProviders.map((provider) => {
-                    const selected = selfcheckProviderIDs.includes(provider.id);
-                    const modelOptions = modelsForSelfcheckProvider(provider, state.models);
-                    return (
-                      <div className="selfcheck-provider-item" key={provider.id}>
-                        <label className="checkbox-field selfcheck-provider-check">
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            disabled={selfcheckRunning}
-                            onChange={() => toggleSelfcheckProvider(provider.id)}
-                          />
-                          <ProviderLabel provider={provider} size={15} />
-                          <Badge tone="slate">{protocolLabel(provider.protocol)}</Badge>
-                        </label>
-                        <div
-                          className="selfcheck-provider-model"
-                          onClick={(event) => event.stopPropagation()}
-                          onMouseDown={(event) => event.stopPropagation()}
-                        >
-                          <SearchableModelSelect
-                            value={selfcheckModelForProvider(provider)}
-                            models={modelOptions}
-                            disabled={selfcheckRunning || !selected}
-                            emptyLabel={modelOptions.length ? '选择模型' : '无可用模型'}
-                            onChange={(value) => setSelfcheckModelForProvider(provider.id, value)}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              </div>
-
-              {selfcheckJob ? (
-                <div className="usage-table-wrap">
-                  <div className="usage-section-title">
-                    结果
-                    {selfcheckJob.status === 'running' ? ` · 进行中 ${selfcheckJob.completed}/${selfcheckJob.total}` : null}
-                    {selfcheckJob.status === 'done' ? ' · 已完成' : null}
-                    {selfcheckJob.status === 'error' ? ` · 失败：${selfcheckJob.error || ''}` : null}
-                  </div>
-                  <div className="usage-table selfcheck-table">
-                    <div className="selfcheck-header">
-                      <span>时间</span>
-                      <span>Provider</span>
-                      <span>客户端</span>
-                      <span>类型</span>
-                      <span>协议</span>
-                      <span>模型</span>
-                      <span>成功</span>
-                      <span>内容</span>
-                      <span>耗时</span>
-                      <span>预览 / 错误</span>
-                      <span>操作</span>
-                    </div>
-                    {(selfcheckJob.results || []).length === 0 ? (
-                      <div className="empty-state">等待用例完成…</div>
-                    ) : (
-                      [...selfcheckJob.results]
-                        .sort((a, b) => `${a.providerName}-${a.client}-${a.kind}`.localeCompare(`${b.providerName}-${b.client}-${b.kind}`, 'zh'))
-                        .map((row, index) => {
-                          const caseId = row.caseId || `${row.providerId}|${row.client}|${row.kind || 'chat'}`;
-                          const retrying = selfcheckRetrying.includes(caseId);
-                          const passed = row.success && row.contentOK;
-                          const timeTitle = [
-                            row.startedAt ? `开始 ${row.startedAt}` : '',
-                            row.finishedAt ? `结束 ${row.finishedAt}` : '',
-                            row.apiKeyName ? `密钥 ${row.apiKeyName}` : '',
-                          ].filter(Boolean).join('\n');
-                          return (
-                          <div className="selfcheck-row" key={`${caseId}-${index}`}>
-                            <span className="selfcheck-time" title={timeTitle || undefined}>
-                              {formatSelfcheckTime(row.startedAt)}
-                            </span>
-                            <span className="usage-key-name">{row.providerName || row.providerId}</span>
-                            <span>{selfcheckClientLabel(row.client)}</span>
-                            <span>{selfcheckKindLabel(row.kind)}</span>
-                            <span>{protocolLabel(row.protocol as Protocol)}</span>
-                            <span className="selfcheck-model" title={row.model || ''}>{row.model || '—'}</span>
-                            <span><Badge tone={row.success ? 'green' : 'red'}>{row.success ? '是' : '否'}</Badge></span>
-                            <span><Badge tone={row.contentOK ? 'green' : 'amber'}>{row.contentOK ? 'OK' : '失败'}</Badge></span>
-                            <span>{row.latencyMs} ms</span>
-                            <span className="selfcheck-preview" title={row.error || row.outputPreview || ''}>
-                              {row.error || row.outputPreview || '—'}
-                            </span>
-                            <span className="selfcheck-actions">
-                              {passed ? null : (
-                                <button
-                                  className="mini-btn"
-                                  type="button"
-                                  onClick={() => openSelfcheckCaseLogs(row)}
-                                >
-                                  日志
-                                </button>
-                              )}
-                              {passed ? null : (
-                                <button
-                                  className="mini-btn"
-                                  type="button"
-                                  disabled={retrying}
-                                  onClick={() => { void retrySelfcheckCase(caseId); }}
-                                >
-                                  {retrying ? '重试中…' : '重试'}
-                                </button>
-                              )}
-                            </span>
-                          </div>
-                          );
-                        })
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="empty-state" style={{ marginTop: 16 }}>勾选 Provider 后点击「开始自检」。每个 Provider 会并行跑 6 个用例（3 个客户端 × 对话/工具调用）。</div>
-              )}
-            </div>
-          </section>
-          )}
-
           {activeNav === 'machine' && !isNormalUser && (
           <section className="section-full">
             <div className="panel-header" style={{ marginBottom: 0 }}>
@@ -7408,30 +6928,6 @@ function App() {
               <button type="submit" className="btn primary" disabled={passwordResetBusy || passwordResetValue.trim().length < 8}>{passwordResetBusy ? '重置中…' : '重置密码'}</button>
             </div>
           </form>
-        </Modal>
-      )}
-
-      {selfcheckCaseDetail && (
-        <Modal
-          title="自检用例错误详情"
-          description="展示该失败用例的完整错误信息与输出预览，便于排查。"
-          onClose={() => setSelfcheckCaseDetail(null)}
-        >
-          <div className="test-result-card fail">
-            <div className="test-result-head">
-              <Badge tone="red">{selfcheckClientLabel(selfcheckCaseDetail.client)} · {selfcheckKindLabel(selfcheckCaseDetail.kind)}</Badge>
-              <span>{selfcheckCaseDetail.providerName || selfcheckCaseDetail.providerId} · {protocolLabel(selfcheckCaseDetail.protocol as Protocol)} · {selfcheckCaseDetail.model || '-'} · {selfcheckCaseDetail.latencyMs}ms</span>
-            </div>
-            {selfcheckCaseDetail.error ? <div className="hint-line error">{selfcheckCaseDetail.error}</div> : null}
-            <div className="field-label-row">
-              <label>完整诊断信息</label>
-              <CopyButton className="field-label-spacer" value={formatSelfcheckCaseDetail(selfcheckCaseDetail)} label="复制全部" />
-            </div>
-            <pre className="json-preview">{formatSelfcheckCaseDetail(selfcheckCaseDetail)}</pre>
-          </div>
-          <div className="actions modal-actions">
-            <button className="btn" onClick={() => setSelfcheckCaseDetail(null)}>关闭</button>
-          </div>
         </Modal>
       )}
 

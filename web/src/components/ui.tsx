@@ -271,8 +271,6 @@ export function NavIcon({ id }: { id: NavItemID }) {
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.2V12l3.2 2" /><path d="M18.6 4.6 20.4 6.4M19.5 4.1v2.3h-2.3" /></svg>);
     case 'users':
       return (<svg viewBox="0 0 24 24" {...common}><circle cx="9.5" cy="8.5" r="3.5" /><path d="M3.5 19.5a6 6 0 0 1 12 0" /><path d="M16 5.6a3.5 3.5 0 0 1 0 5.8M17.8 14.3a6 6 0 0 1 2.7 5.2" /></svg>);
-    case 'self-check':
-      return (<svg viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12.2 2.4 2.4 4.6-4.8" /></svg>);
     case 'machine':
       return (<svg viewBox="0 0 24 24" {...common}><rect x="6" y="6" width="12" height="12" rx="2" /><rect x="10" y="10" width="4" height="4" rx="1" /><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" /></svg>);
     case 'settings':

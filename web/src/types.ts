@@ -478,48 +478,6 @@ export type ProvidersImportResult = {
   errors: string[];
 };
 
-export type SelfcheckToolInfo = {
-  id: string;
-  label: string;
-  path: string;
-  found: boolean;
-  client: string;
-  protocol: string;
-};
-
-export type SelfcheckCaseResult = {
-  caseId?: string;
-  providerId: string;
-  providerName: string;
-  client: string;
-  kind?: string;
-  protocol: string;
-  model?: string;
-  success: boolean;
-  contentOK: boolean;
-  latencyMs: number;
-  outputPreview?: string;
-  error?: string;
-  routeId?: string;
-  apiKeyName?: string;
-  startedAt?: string;
-  finishedAt?: string;
-};
-
-export type SelfcheckJobStatus = {
-  jobId: string;
-  status: 'running' | 'done' | 'error';
-  prompt?: string;
-  timeoutMs?: number;
-  lanRoot?: string;
-  startedAt?: string;
-  finishedAt?: string;
-  error?: string;
-  results: SelfcheckCaseResult[];
-  total: number;
-  completed: number;
-};
-
 export type OutputEndpoint = {
   id: string;
   name: string;
@@ -1038,13 +996,6 @@ export type ProviderTestResult = {
 };
 
 export type NavItemID = typeof navItems[number]['id'];
-
-export type SelfcheckPrefs = {
-  providerIds?: string[];
-  models?: Record<string, string>;
-  timeoutSec?: number;
-  prompt?: string;
-};
 
 export type TrafficRankCache = {
   providers: Record<string, number>;

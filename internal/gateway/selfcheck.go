@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,14 +47,6 @@ const (
 
 // selfcheckClientsPerProvider drives Total accounting: 3 clients × 2 kinds.
 const selfcheckCasesPerProvider = 6
-
-type selfcheckStartRequest struct {
-	ProviderIDs []string `json:"providerIds"`
-	TimeoutMs   int      `json:"timeoutMs"`
-	Prompt      string   `json:"prompt"`
-	// Models maps providerID → model id used for that provider's cases.
-	Models map[string]string `json:"models,omitempty"`
-}
 
 type selfcheckCaseResult struct {
 	CaseID        string `json:"caseId"`
@@ -127,223 +118,6 @@ type selfcheckToolInfo struct {
 	Found    bool   `json:"found"`
 	Client   string `json:"client"`
 	Protocol string `json:"protocol"`
-}
-
-func (s *Server) ensureSelfcheckStore() {
-	s.selfcheckMu.Lock()
-	defer s.selfcheckMu.Unlock()
-	if s.selfcheckJobs == nil {
-		s.selfcheckJobs = make(map[string]*selfcheckJob)
-	}
-}
-
-func (s *Server) handleSelfcheckTools(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tools":   s.selfcheckTools(),
-		"lanRoot": selfcheckLANRoot(s.router.State()),
-	})
-}
-
-func (s *Server) handleSelfcheckStart(w http.ResponseWriter, r *http.Request) {
-	var req selfcheckStartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid selfcheck json: "+err.Error())
-		return
-	}
-	providerIDs := uniqueNonEmpty(req.ProviderIDs)
-	if len(providerIDs) == 0 {
-		writeOpenAIError(w, http.StatusBadRequest, "providerIds is required")
-		return
-	}
-	timeoutMs := req.TimeoutMs
-	if timeoutMs <= 0 {
-		timeoutMs = selfcheckDefaultTimeoutMs
-	}
-	if timeoutMs < 5_000 {
-		timeoutMs = 5_000
-	}
-	if timeoutMs > 600_000 {
-		timeoutMs = 600_000
-	}
-	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
-		prompt = selfcheckDefaultPrompt
-	}
-
-	state := s.router.State()
-	for _, id := range providerIDs {
-		if _, ok := findProvider(state, id); !ok {
-			writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("provider %q not found", id))
-			return
-		}
-	}
-
-	jobID, err := newSelfcheckJobID()
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "failed to create job id: "+err.Error())
-		return
-	}
-	job := &selfcheckJob{
-		ID:        jobID,
-		Status:    "running",
-		Prompt:    prompt,
-		TimeoutMs: timeoutMs,
-		LANRoot:   selfcheckLANRoot(state),
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Results:   make([]selfcheckCaseResult, 0, len(providerIDs)*selfcheckCasesPerProvider),
-		Total:     len(providerIDs) * selfcheckCasesPerProvider,
-		Models:    normalizeSelfcheckModels(req.Models, providerIDs),
-		cases:     make(map[string]preparedCase),
-		running:   make(map[string]struct{}),
-	}
-	s.ensureSelfcheckStore()
-	s.selfcheckMu.Lock()
-	s.selfcheckJobs[jobID] = job
-	s.selfcheckMu.Unlock()
-
-	go s.runSelfcheckJob(job, providerIDs)
-
-	writeJSON(w, http.StatusAccepted, map[string]any{"jobId": jobID})
-}
-
-func (s *Server) handleSelfcheckStatus(w http.ResponseWriter, r *http.Request) {
-	jobID := strings.TrimSpace(r.PathValue("jobId"))
-	if jobID == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "jobId is required")
-		return
-	}
-	s.ensureSelfcheckStore()
-	s.selfcheckMu.Lock()
-	job := s.selfcheckJobs[jobID]
-	s.selfcheckMu.Unlock()
-	if job == nil {
-		writeOpenAIError(w, http.StatusNotFound, "selfcheck job not found")
-		return
-	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	results := make([]selfcheckCaseResult, len(job.Results))
-	copy(results, job.Results)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"jobId":      job.ID,
-		"status":     job.Status,
-		"prompt":     job.Prompt,
-		"timeoutMs":  job.TimeoutMs,
-		"lanRoot":    job.LANRoot,
-		"startedAt":  job.StartedAt,
-		"finishedAt": job.FinishedAt,
-		"error":      job.Error,
-		"results":    results,
-		"total":      job.Total,
-		"completed":  job.Completed,
-	})
-}
-
-// handleSelfcheckRetry re-runs a single failed case within an existing job so
-// the operator can retry transient failures without re-running everything.
-func (s *Server) handleSelfcheckRetry(w http.ResponseWriter, r *http.Request) {
-	jobID := strings.TrimSpace(r.PathValue("jobId"))
-	caseID := strings.TrimSpace(r.PathValue("caseId"))
-	if jobID == "" || caseID == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "jobId and caseId are required")
-		return
-	}
-	s.ensureSelfcheckStore()
-	s.selfcheckMu.Lock()
-	job := s.selfcheckJobs[jobID]
-	s.selfcheckMu.Unlock()
-	if job == nil {
-		writeOpenAIError(w, http.StatusNotFound, "selfcheck job not found")
-		return
-	}
-
-	job.mu.Lock()
-	item, ok := job.cases[caseID]
-	if !ok {
-		job.mu.Unlock()
-		writeOpenAIError(w, http.StatusNotFound, "selfcheck case not found")
-		return
-	}
-	if _, busy := job.running[caseID]; busy {
-		job.mu.Unlock()
-		writeOpenAIError(w, http.StatusConflict, "case retry already in progress")
-		return
-	}
-	job.running[caseID] = struct{}{}
-	// A retry re-opens a finished job so its aggregate status reflects the rerun.
-	if job.Status != "running" {
-		job.Status = "running"
-		job.FinishedAt = ""
-	}
-	lanRoot := job.LANRoot
-	job.mu.Unlock()
-	if lanRoot == "" {
-		lanRoot = selfcheckLANRoot(s.router.State())
-	}
-
-	// Retry needs a live route/key; the original ones were cleaned up when the
-	// job finished. Re-prepare against the current provider state.
-	if item.setupErr == "" {
-		if provider, found := findProvider(s.router.State(), item.providerID); found {
-			preferredModel := strings.TrimSpace(item.model)
-			if job.Models != nil {
-				if picked := strings.TrimSpace(job.Models[item.providerID]); picked != "" {
-					preferredModel = picked
-				}
-			}
-			if route, key, model, created, err := s.ensureSelfcheckRouteAndKey(provider, item.protocol, preferredModel, job.ID); err == nil {
-				item.routeID = route.ID
-				item.apiKeyName = key.Name
-				item.apiKey = key.Key
-				item.model = model
-				item.routeCreated = created
-				// ensureSelfcheckRouteAndKey leaves persistence to its caller.
-				if created {
-					if err := s.saveState(); err != nil {
-						s.logs.AddApp("warn", "selfcheck retry route save failed", err.Error())
-					}
-				}
-			} else {
-				item.setupErr = err.Error()
-			}
-		} else {
-			item.setupErr = "provider not found"
-		}
-	}
-
-	go func() {
-		result := s.runPreparedSelfcheckCase(job, lanRoot, item)
-		// Clean up the transient key/route this retry may have created.
-		routeIDs := map[string]struct{}{}
-		if item.routeCreated && item.routeID != "" {
-			routeIDs[item.routeID] = struct{}{}
-		}
-		s.cleanupSelfcheckArtifacts(routeIDs)
-
-		job.mu.Lock()
-		replaced := false
-		for i := range job.Results {
-			if job.Results[i].CaseID == caseID {
-				job.Results[i] = result
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			job.Results = append(job.Results, result)
-			if job.Completed < job.Total {
-				job.Completed++
-			}
-		}
-		delete(job.running, caseID)
-		if len(job.running) == 0 && job.Completed >= job.Total {
-			job.Status = "done"
-			job.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-		}
-		job.mu.Unlock()
-	}()
-
-	writeJSON(w, http.StatusAccepted, map[string]any{"jobId": jobID, "caseId": caseID})
 }
 
 func (s *Server) runSelfcheckJob(job *selfcheckJob, providerIDs []string) {
@@ -611,32 +385,6 @@ func (s *Server) runPreparedSelfcheckCase(
 	return finish(result)
 }
 
-func normalizeSelfcheckModels(raw map[string]string, providerIDs []string) map[string]string {
-	if len(raw) == 0 || len(providerIDs) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(providerIDs))
-	for _, id := range providerIDs {
-		allowed[id] = struct{}{}
-	}
-	out := make(map[string]string, len(raw))
-	for providerID, model := range raw {
-		providerID = strings.TrimSpace(providerID)
-		model = strings.TrimSpace(model)
-		if providerID == "" || model == "" {
-			continue
-		}
-		if _, ok := allowed[providerID]; !ok {
-			continue
-		}
-		out[providerID] = model
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 // ensureSelfcheckRouteAndKey prepares the route/key a case needs.
 //
 // It never calls saveState itself: a run prepares providers × 3 protocols
@@ -885,31 +633,6 @@ func dirSizeBytes(path string) int64 {
 		return nil
 	})
 	return total
-}
-
-func newSelfcheckJobID() (string, error) {
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return "sc-" + hex.EncodeToString(buf), nil
-}
-
-func uniqueNonEmpty(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
 }
 
 func truncateSelfcheckPreview(text string) string {

@@ -135,9 +135,6 @@ type Server struct {
 	// process owner (CLI runtime / desktop app) can rebind the HTTP listener.
 	webExposedChange func(enabled bool) error
 
-	// selfcheckJobs holds in-memory async self-check jobs (CLI smoke tests).
-	selfcheckMu   sync.Mutex
-	selfcheckJobs map[string]*selfcheckJob
 	// selfcheckRunFunc is where the job executor is reached: the weekly CLI deep
 	// check calls it so a test can substitute a fake executor (no real CLI) and
 	// still exercise the prepare/cleanup/record path around it. Nil means
@@ -510,10 +507,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /__quota-tasks/{id}", s.handleDeleteScheduledTask)
 	mux.HandleFunc("POST /__quota-tasks/{id}/run", s.handleRunScheduledTask)
 	mux.HandleFunc("GET /__quota-tasks/{id}/runs", s.handleListScheduledTaskRuns)
-	mux.HandleFunc("GET /__selfcheck/tools", s.handleSelfcheckTools)
-	mux.HandleFunc("POST /__selfcheck", s.handleSelfcheckStart)
-	mux.HandleFunc("GET /__selfcheck/{jobId}", s.handleSelfcheckStatus)
-	mux.HandleFunc("POST /__selfcheck/{jobId}/retry/{caseId}", s.handleSelfcheckRetry)
 	mux.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 	mux.HandleFunc("GET /openai/v1/models", s.handleOpenAIModels)
 	mux.HandleFunc("GET /anthropic/v1/models", s.handleClaudeModels)

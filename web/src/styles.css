@@ -200,7 +200,7 @@ a:hover { text-decoration: underline; }
 
 /* 数字场景统一启用表格数字：金额/计数/时间戳对齐 */
 .metric-value, .side-stats-number, .usage-bar-value, .log-time,
-.log-token, .log-latency, .selfcheck-time, .api-key-fallback-rank,
+.log-token, .log-latency, .api-key-fallback-rank,
 .claude-usage-head span:last-child { font-feature-settings: "tnum" 1; }
 
 /* 焦点环：键盘可达性 */
@@ -3074,50 +3074,7 @@ details.chatgpt-reset-credits.expandable > .chatgpt-reset-credits-list { padding
 .zhipu-reset-credits > span:nth-child(2) { font-weight: 600; color: var(--text-muted); font-size: 12px; }
 .zhipu-reset-credits .zhipu-reset-credits-hint { font-weight: 500; color: var(--subtle); font-size: 11px; }
 
-/* ----------------------------------------------------------------
-   19. 自检
-   ---------------------------------------------------------------- */
-.selfcheck-table { display: grid; gap: 8px; }
-.selfcheck-provider-list { display: grid; gap: 8px; margin-top: 10px; }
-.selfcheck-provider-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 1fr);
-  gap: 10px; align-items: center;
-  padding: 11px 14px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-soft);
-}
-.selfcheck-provider-check { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.selfcheck-provider-item span { color: var(--text); }
-.selfcheck-provider-model { min-width: 0; }
-.selfcheck-provider-model .searchable-select { width: 100%; }
-@media (max-width: 720px) { .selfcheck-provider-item { grid-template-columns: 1fr; } }
-.selfcheck-header, .selfcheck-row {
-  display: grid;
-  grid-template-columns: minmax(132px, 0.95fr) minmax(100px, 1fr) 78px 78px 90px minmax(110px, 1.1fr) 56px 56px 72px minmax(120px, 1.3fr) 118px;
-  gap: 10px; align-items: center;
-}
-.selfcheck-header {
-  padding: 10px 14px;
-  border-radius: var(--r-md);
-  background: var(--surface-soft);
-  color: var(--muted); font-size: 11.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.04em;
-}
-.selfcheck-row {
-  padding: 12px 14px;
-  border: 1px solid var(--border); border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text); font-size: 13px;
-  box-shadow: var(--shadow-soft);
-}
-.selfcheck-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.selfcheck-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.selfcheck-preview, .selfcheck-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-.selfcheck-model { color: var(--text); font-family: var(--mono); }
+/* 19. 自检 —— 随自检入口一并移除；后续段落编号保持不变，避免无谓的连锁改动。 */
 
 /* ----------------------------------------------------------------
    20. 用户管理
@@ -3882,9 +3839,9 @@ details:not([open]) > *:not(summary) { display: none !important; }
 }
 
 @media (max-width: 1100px) {
-  .log-table, .selfcheck-table { overflow-x: auto; padding-bottom: 6px; }
+  .log-table { overflow-x: auto; padding-bottom: 6px; }
   .log-header, .log-row-main, .traffic-log-header, .traffic-log-row,
-  .alert-log-header, .alert-log-row, .selfcheck-header, .selfcheck-row { min-width: 900px; }
+  .alert-log-header, .alert-log-row { min-width: 900px; }
 }
 
 /* ----------------------------------------------------------------

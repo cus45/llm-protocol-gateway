@@ -61,19 +61,6 @@ func TestSelfcheckKeyName(t *testing.T) {
 	}
 }
 
-func TestNormalizeSelfcheckModels(t *testing.T) {
-	t.Parallel()
-	got := normalizeSelfcheckModels(map[string]string{
-		"chatgpt账号": " gpt-5.6-terra ",
-		"other":     "x",
-		"":          "y",
-		"empty":     "  ",
-	}, []string{"chatgpt账号", "empty"})
-	if len(got) != 1 || got["chatgpt账号"] != "gpt-5.6-terra" {
-		t.Fatalf("got %#v", got)
-	}
-}
-
 func TestResolveSelfcheckModelPrefersRequest(t *testing.T) {
 	t.Parallel()
 	got := resolveSelfcheckModel(
