@@ -463,6 +463,9 @@ export const LOGS_PAGE_SIZE = 10;
 // API 密钥列表每页最多显示 30 个，密钥多时翻页浏览。
 export const API_KEYS_PAGE_SIZE = 30;
 
+// 密钥页视图模式（双栏聚焦 / 全量数据表）记在本地，刷新后保持。
+export const API_KEY_VIEW_STORAGE_KEY = 'llm-gateway-api-key-view';
+
 // 用户管理表格列宽（表头与数据行共用，保证对齐）。
 export const USERS_TABLE_GRID = 'minmax(0,0.7fr) 64px 48px minmax(0,1fr) minmax(0,0.8fr) minmax(0,0.9fr) minmax(0,0.9fr) 236px';
 

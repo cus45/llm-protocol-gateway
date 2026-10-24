@@ -1,0 +1,2106 @@
+// API 密钥控制中枢的界面骨架：顶部视图切换、左侧密钥队列、右侧详情工作区、
+// 全量表格、批量操作浮条。
+//
+// 每个字段怎么落到 PATCH、转发方案怎么切换，仍然在 apikeys.tsx 里（单一来源）；
+// 这里只负责「怎么摆、怎么切、怎么读得快」——同一个 Key 在三种视图里共用同一份
+// 服务端状态，不做第二份草稿。
+import React from 'react';
+import {ProviderLabel} from './provider_label';
+import {
+  ApiKeyDetailPanel,
+  ApiKeyFallbackProvidersModal,
+  ApiKeyModelMappingModal,
+  ApiKeyQuotaSection,
+} from './apikeys';
+import {providerSelectOptions} from './provider_select';
+import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './selects';
+import {Badge, BrandIcon, InfoTip, Switch} from './ui';
+import {
+  API_BASE,
+  apiKeyClientBaseURL,
+  apiKeyGatewayRoot,
+  clientConfigsForProtocol,
+  protocolLabel,
+  protocolFromLabel,
+  ScheduleModeOptions,
+  thinkingDepthSelectOptions,
+} from '../lib';
+import {
+  APIKey,
+  ConsoleUser,
+  KeyProfile,
+  Model,
+  OutputEndpoint,
+  Protocol,
+  Provider,
+  Route,
+  RouteTestResult,
+} from '../types';
+
+export type ApiKeyViewMode = 'split' | 'table';
+
+// 详情工作区要用的回调：直接取 ApikeyDetailPanel 的签名，避免两处漂移。
+export type ApiKeyPanelHandlers = Pick<
+  React.ComponentProps<typeof ApiKeyDetailPanel>,
+  | 'onUpdateField'
+  | 'onUpdateBinding'
+  | 'onUpdateFallbacks'
+  | 'onUpdateModelAliases'
+  | 'onDelete'
+  | 'onClone'
+  | 'onRefreshModels'
+  | 'onSwitchProfile'
+  | 'onCreateProfile'
+  | 'onUpdateProfile'
+  | 'onDeleteProfile'
+>;
+
+// ---------------------------------------------------------------------------
+// 纯函数：每一行 / 每一列要展示什么，全从 (key, route, provider, usage) 推出来。
+// ---------------------------------------------------------------------------
+
+/** 今日 / 本月请求量（与用量页同口径，来自 /__request-stats 的按密钥聚合）。 */
+export type ApiKeyUsage = {
+  todayRequests: number;
+  monthRequests: number;
+};
+
+const ZERO_USAGE: ApiKeyUsage = {todayRequests: 0, monthRequests: 0};
+
+/** 统计快照里只取本页需要的两块：今日 / 本月各自的按密钥聚合。 */
+export type ApiKeyUsageSource = {
+  today?: {byApiKey?: Array<{apiKeyId?: string; requestCount?: number}>};
+  month?: {byApiKey?: Array<{apiKeyId?: string; requestCount?: number}>};
+};
+
+export function buildApiKeyUsageMap(snapshot: ApiKeyUsageSource | null | undefined): Record<string, ApiKeyUsage> {
+  const map: Record<string, ApiKeyUsage> = {};
+  for (const row of snapshot?.today?.byApiKey || []) {
+    if (!row?.apiKeyId) continue;
+    map[row.apiKeyId] = {...(map[row.apiKeyId] || ZERO_USAGE), todayRequests: row.requestCount || 0};
+  }
+  for (const row of snapshot?.month?.byApiKey || []) {
+    if (!row?.apiKeyId) continue;
+    map[row.apiKeyId] = {...(map[row.apiKeyId] || ZERO_USAGE), monthRequests: row.requestCount || 0};
+  }
+  return map;
+}
+
+export type ApiKeyRouteInfo = {
+  route?: Route;
+  primary?: Provider;
+  /** 客户端的协议（输出端点）；没有路由时为空。 */
+  outputProtocol?: Protocol;
+  /** 入站语种 = 首选 Provider 的母语；与 outputProtocol 不同才发生转换。 */
+  inputProtocol?: Protocol;
+};
+
+export function apiKeyRouteInfo(key: APIKey, routes: Route[], providers: Provider[]): ApiKeyRouteInfo {
+  const route = routes.find((item) => item.id === key.routeId);
+  const primary = route ? providers.find((item) => item.id === route.providerId) : undefined;
+  return {
+    route,
+    primary,
+    outputProtocol: route?.outputProtocol,
+    inputProtocol: primary?.protocol ?? route?.outputProtocol,
+  };
+}
+
+export type ApiKeyRowModel = ApiKeyRouteInfo & {
+  ownerLabel: string;
+  ownerIsAdmin: boolean;
+  /** 首选上游锁定的模型；空 = 按客户端请求的模型走。 */
+  modelLabel: string;
+  usage: ApiKeyUsage;
+};
+
+export function apiKeyRowModel(
+  key: APIKey,
+  routes: Route[],
+  providers: Provider[],
+  usage: ApiKeyUsage | undefined,
+  ownerLabel: string,
+): ApiKeyRowModel {
+  const info = apiKeyRouteInfo(key, routes, providers);
+  return {
+    ...info,
+    ownerLabel,
+    ownerIsAdmin: !(key.ownerUserId || '').trim(),
+    modelLabel: key.modelOverride?.trim() || info.primary?.defaultModel?.trim() || '按客户端模型',
+    usage: usage || ZERO_USAGE,
+  };
+}
+
+/** 只露头尾、中间打码：截图 / 分享屏幕时不会整串泄露。 */
+export function maskKey(key: string) {
+  if (key.length <= 14) return key;
+  return `${key.slice(0, 8)}${'•'.repeat(6)}${key.slice(-4)}`;
+}
+
+// 新建方案 = 完整快照当前顶层转发配置（与 apikeys.tsx 原有实现同口径）。
+export function snapshotActiveProfile(keyItem: APIKey, name: string): Partial<KeyProfile> {
+  return {
+    name,
+    routeId: keyItem.routeId,
+    modelOverride: keyItem.modelOverride,
+    modelAliases: {...(keyItem.modelAliases || {})},
+    thinkingDepthOverride: keyItem.thinkingDepthOverride,
+    maxOutputTokens: keyItem.maxOutputTokens && keyItem.maxOutputTokens > 0 ? keyItem.maxOutputTokens : 0,
+    fallbackProviderIds: [...(keyItem.fallbackProviderIds || [])],
+    fallbackModelOverrides: {...(keyItem.fallbackModelOverrides || {})},
+    streamEnabled: keyItem.streamEnabled !== false,
+    scheduleMode: keyItem.scheduleMode || '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 线图标：与侧栏同一套 1.7px 线宽，不额外引图标库。
+// ---------------------------------------------------------------------------
+function Icon({path, size = 14, className = ''}: {path: React.ReactNode; size?: number; className?: string}) {
+  return (
+    <svg
+      className={`akc-icon ${className}`.trim()}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {path}
+    </svg>
+  );
+}
+
+const ICONS = {
+  key: <><circle cx="8" cy="12" r="4.2" /><path d="M12.2 12H21M17.5 12v3M20.8 12v2.2" /></>,
+  copy: <><rect x="9" y="9" width="11" height="11" rx="2.2" /><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H5.5A2.5 2.5 0 0 0 3 5.5v7A2.5 2.5 0 0 0 5.5 15" /></>,
+  check: <path d="m5 12.5 4.5 4.5L19 7" />,
+  trash: <><path d="M4 7h16M9.5 7V4.8h5V7" /><path d="m6.5 7 .9 12.2A1.8 1.8 0 0 0 9.2 21h5.6a1.8 1.8 0 0 0 1.8-1.8L17.5 7" /></>,
+  layers: <><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 13 9 5 9-5" /></>,
+  shuffle: <><path d="M3 6.5h3.5l10 11H21M3 17.5h3.5l10-11H21" /><path d="m18.2 3.4 2.8 3.1-2.8 3.1M18.2 14.4l2.8 3.1-2.8 3.1" /></>,
+  sliders: <><path d="M5 4v5.5M5 13.5V20M12 4v3M12 11v9M19 4v9M19 17v3" /><circle cx="5" cy="11.5" r="2" /><circle cx="12" cy="9" r="2" /><circle cx="19" cy="15" r="2" /></>,
+  code: <><path d="m8.5 8.5-4 3.5 4 3.5M15.5 8.5l4 3.5-4 3.5M13.5 5l-3 14" /></>,
+  terminal: <><rect x="2.8" y="4.5" width="18.4" height="15" rx="2.4" /><path d="m7 10 2.5 2.4L7 14.8M12.5 15h4.5" /></>,
+  refresh: <><path d="M20 11a8 8 0 1 0-1.8 6.4" /><path d="M20 4.5V11h-6.4" /></>,
+  up: <path d="m6 14 6-6 6 6" />,
+  down: <path d="m6 10 6 6 6-6" />,
+  shield: <path d="M12 3 5 6v5.5c0 4.2 2.9 7.7 7 9.5 4.1-1.8 7-5.3 7-9.5V6l-7-3Z" />,
+  shieldCheck: <><path d="M12 3 5 6v5.5c0 4.2 2.9 7.7 7 9.5 4.1-1.8 7-5.3 7-9.5V6l-7-3Z" /><path d="m9 12 2.2 2.2 4-4.2" /></>,
+  user: <><circle cx="12" cy="8.2" r="3.6" /><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0" /></>,
+  columns: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M10 4.5v15" /></>,
+  table: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M3.5 14.5h17M10 4.5v15" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  search: <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></>,
+  close: <path d="m6 6 12 12M18 6 6 18" />,
+  filter: <path d="M4 5.5h16l-6.2 7.4V20l-3.6-2v-5.1L4 5.5Z" />,
+  edit: <><path d="M4 20h4.2L20 8.2 15.8 4 4 15.8V20Z" /><path d="m13.6 6.2 4.2 4.2" /></>,
+  play: <path d="M8 5.2v13.6L19 12 8 5.2Z" />,
+  sort: <><path d="M7 4.5v15M4 16.5l3 3 3-3" /><path d="M13 7h7M13 12h5M13 17h3" /></>,
+};
+
+// ---------------------------------------------------------------------------
+// 顶部：标题 + 视图切换 + 主 CTA
+// ---------------------------------------------------------------------------
+export function ApiKeysTopBar({
+  totalKeys,
+  enabledKeys,
+  viewMode,
+  onViewModeChange,
+  onCreate,
+  createDisabled,
+}: {
+  totalKeys: number;
+  enabledKeys: number;
+  viewMode: ApiKeyViewMode;
+  onViewModeChange: (mode: ApiKeyViewMode) => void;
+  onCreate: () => void;
+  createDisabled?: boolean;
+}) {
+  return (
+    <div className="akc-topbar">
+      <div className="akc-topbar-title">
+        <div className="akc-topbar-heading">
+          <h2 className="panel-title">API 密钥控制中枢</h2>
+          <span className="akc-count-chip" title={`共 ${totalKeys} 把密钥`}>{totalKeys} 密钥</span>
+          {enabledKeys !== totalKeys ? <span className="akc-count-chip muted">{enabledKeys} 启用中</span> : null}
+        </div>
+        <p className="panel-desc">客户端使用 Bearer 或 x-api-key 携带密钥，网关自动完成双向透传与故障转移。</p>
+      </div>
+      <div className="akc-topbar-actions">
+        <div className="akc-segmented" role="group" aria-label="视图模式">
+          <button
+            type="button"
+            className={`akc-segmented-btn${viewMode === 'split' ? ' active' : ''}`}
+            onClick={() => onViewModeChange('split')}
+            title="左列选密钥，右侧实时配置"
+          >
+            <Icon path={ICONS.columns} />
+            <span>双栏聚焦</span>
+          </button>
+          <button
+            type="button"
+            className={`akc-segmented-btn${viewMode === 'table' ? ' active' : ''}`}
+            onClick={() => onViewModeChange('table')}
+            title="全宽矩阵，逐列对比所有密钥"
+          >
+            <Icon path={ICONS.table} />
+            <span>全量数据表</span>
+          </button>
+        </div>
+        <button type="button" className="akc-cta" disabled={createDisabled} onClick={onCreate}>
+          <Icon path={ICONS.plus} />
+          <span>新建 API 密钥</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 筛选条：搜索 + 所属用户 / 输入 Provider / 输出协议（两种视图共用）
+// ---------------------------------------------------------------------------
+export type ApiKeyFiltersProps = {
+  keyword: string;
+  setKeyword: (value: string) => void;
+  ownerOptions: Array<{id: string; label: string}>;
+  owner: string[];
+  setOwner: (value: string[]) => void;
+  /** 普通用户看不到「所属用户」，整列收起而不是置灰。 */
+  showOwner: boolean;
+  provider: string[];
+  setProvider: (value: string[]) => void;
+  protocol: string[];
+  setProtocol: (value: string[]) => void;
+  /** Provider id → 展示名：筛选胶囊上要写人话，而不是内部 id。 */
+  providerLabels?: Record<string, string>;
+  /** 排序：最近创建 / 名称 / 所属用户（与以前表头的排序按钮同口径）。 */
+  sort: string;
+  setSort: (value: string) => void;
+  reset: () => void;
+};
+
+/** 当前生效的筛选，做成可逐个移除的胶囊；没有筛选时整行不占位。 */
+function activeFilterChips(filters: ApiKeyFiltersProps) {
+  const chips: Array<{key: string; label: string; clear: () => void}> = [];
+  const keyword = filters.keyword.trim();
+  if (keyword) chips.push({key: 'kw', label: `“${keyword}”`, clear: () => filters.setKeyword('')});
+  for (const id of filters.owner) {
+    chips.push({key: `owner-${id}`, label: filters.ownerOptions.find((item) => item.id === id)?.label || id, clear: () => filters.setOwner(filters.owner.filter((item) => item !== id))});
+  }
+  for (const id of filters.provider) {
+    chips.push({key: `provider-${id}`, label: filters.providerLabels?.[id] || id, clear: () => filters.setProvider(filters.provider.filter((item) => item !== id))});
+  }
+  for (const id of filters.protocol) {
+    chips.push({key: `protocol-${id}`, label: protocolLabel(id as Protocol), clear: () => filters.setProtocol(filters.protocol.filter((item) => item !== id))});
+  }
+  return chips;
+}
+
+export function hasActiveApiKeyFilters(filters: ApiKeyFiltersProps) {
+  return Boolean(filters.keyword.trim())
+    || filters.owner.length > 0
+    || filters.provider.length > 0
+    || filters.protocol.length > 0;
+}
+
+export function ApiKeyFilterFields({filters, providers}: {filters: ApiKeyFiltersProps; providers: Provider[]}) {
+  return (
+    <>
+      <div className="akc-search">
+        <Icon path={ICONS.search} size={14} />
+        <input
+          type="search"
+          value={filters.keyword}
+          placeholder="搜索名称 / 密钥…"
+          aria-label="搜索密钥"
+          autoComplete="one-time-code"
+          data-1p-ignore
+          data-lpignore="true"
+          name="apiKeyFilterKeyword"
+          onChange={(event) => filters.setKeyword(event.target.value)}
+        />
+      </div>
+      <div className={`akc-filter-grid${filters.showOwner ? '' : ' no-owner'}`}>
+        {filters.showOwner ? (
+          <MultiSelectFilter
+            label="所属用户"
+            options={filters.ownerOptions}
+            selected={filters.owner}
+            onChange={filters.setOwner}
+            allLabel="全部用户"
+          />
+        ) : null}
+        <MultiSelectFilter
+          label="输入 Provider"
+          options={providerSelectOptions(providers, {withProtocol: false}).map((option) => ({id: option.value, label: option.label, icon: option.icon}))}
+          selected={filters.provider}
+          onChange={filters.setProvider}
+          allLabel="全部 Provider"
+        />
+        <MultiSelectFilter
+          label="输出协议"
+          options={(['openai_chat', 'openai_responses', 'claude'] as Protocol[]).map((protocol) => ({id: protocol, label: protocolLabel(protocol)}))}
+          selected={filters.protocol}
+          onChange={filters.setProtocol}
+          allLabel="全部协议"
+        />
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 左侧密钥队列
+// ---------------------------------------------------------------------------
+export function ApiKeyFleetPane({
+  keys,
+  totalKeys,
+  selectedKeyId,
+  checkedIds,
+  usage,
+  routes,
+  providers,
+  ownerLabel,
+  filters,
+  saving,
+  onSelect,
+  onToggleCheck,
+  onSelectAll,
+  onClearSelection,
+  onBatchDelete,
+  onCopyKey,
+  copiedKeyId,
+  createDisabled,
+  onCreate,
+}: {
+  keys: APIKey[];
+  totalKeys: number;
+  selectedKeyId: string;
+  checkedIds: string[];
+  usage: Record<string, ApiKeyUsage>;
+  routes: Route[];
+  providers: Provider[];
+  ownerLabel: (key: APIKey) => string;
+  filters: ApiKeyFiltersProps;
+  saving: boolean;
+  onSelect: (key: APIKey) => void;
+  onToggleCheck: (keyId: string, index: number, shiftKey: boolean) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
+  onBatchDelete: () => void;
+  onCopyKey: (key: APIKey) => void;
+  copiedKeyId: string;
+  createDisabled?: boolean;
+  onCreate: () => void;
+}) {
+  const allSelected = keys.length > 0 && keys.every((key) => checkedIds.includes(key.id));
+  const someSelected = checkedIds.length > 0 && !allSelected;
+  const chips = activeFilterChips(filters);
+
+  return (
+    <section className="akc-list card" aria-label="API 密钥列表">
+      <header className="akc-list-head">
+        <div className="akc-list-title">
+          <Icon path={ICONS.key} size={15} className="accent" />
+          <h3>API 密钥</h3>
+        </div>
+        <span className="akc-list-stat">
+          显示 <b>{keys.length}</b> / {totalKeys} 个密钥
+          {checkedIds.length > 0 ? <span className="akc-list-stat-checked"> · 已选 {checkedIds.length}</span> : null}
+        </span>
+      </header>
+
+      <div className="akc-list-filters">
+        <ApiKeyFilterFields filters={filters} providers={providers} />
+        {checkedIds.length > 0 ? (
+          <div className="akc-bulk-inline">
+            <button type="button" className="akc-bulk-delete" disabled={saving} onClick={onBatchDelete}>
+              <Icon path={ICONS.trash} size={13} />
+              <span>删除选中（{checkedIds.length}）</span>
+            </button>
+            <button type="button" className="akc-bulk-clear" onClick={onClearSelection}>清除选择</button>
+          </div>
+        ) : null}
+      </div>
+
+      <div className={`akc-list-tools${chips.length === 0 ? ' no-chips' : ''}`}>
+        <div className="akc-active-filters">
+          {chips.map((chip) => (
+            <button key={chip.key} type="button" className="akc-filter-chip" title={`移除筛选：${chip.label}`} onClick={chip.clear}>
+              <span>{chip.label}</span>
+              <Icon path={ICONS.close} size={10} />
+            </button>
+          ))}
+          {chips.length > 1 ? (
+            <button type="button" className="akc-link" onClick={filters.reset}>清空</button>
+          ) : null}
+        </div>
+        <label className="akc-sort">
+          <Icon path={ICONS.sort} size={12} />
+          <select
+            value={filters.sort}
+            aria-label="排序方式"
+            onChange={(event) => filters.setSort(event.target.value)}
+          >
+            <option value="createdAt">最近创建</option>
+            <option value="name">名称 A→Z</option>
+            <option value="owner">按所属用户</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="akc-list-columns">
+        <label className="akc-check-all" title={allSelected ? '取消全选' : '全选当前筛选'}>
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(node) => { if (node) node.indeterminate = someSelected; }}
+            disabled={keys.length === 0 || saving}
+            aria-label="全选当前列表"
+            onChange={(event) => { if (event.target.checked) onSelectAll(); else onClearSelection(); }}
+          />
+        </label>
+        <span>名称 / 协议</span>
+        <span className="akc-list-columns-right">所属用户</span>
+      </div>
+
+      <div className="akc-list-body" role="listbox" aria-label="密钥">
+        {keys.length === 0 ? (
+          <div className="akc-list-empty">
+            <Icon path={ICONS.filter} size={26} />
+            <p>{totalKeys === 0 ? '还没有任何 API 密钥' : '没有符合筛选条件的密钥'}</p>
+            {totalKeys === 0 ? (
+              <button type="button" className="akc-link" disabled={createDisabled} onClick={onCreate}>新建第一把密钥</button>
+            ) : (
+              <button type="button" className="akc-link" onClick={filters.reset}>重置筛选条件</button>
+            )}
+          </div>
+        ) : keys.map((key, index) => {
+          const model = apiKeyRowModel(key, routes, providers, usage[key.id], ownerLabel(key));
+          const isActive = key.id === selectedKeyId;
+          const isChecked = checkedIds.includes(key.id);
+          const converted = model.inputProtocol && model.outputProtocol && model.inputProtocol !== model.outputProtocol;
+          return (
+            <div
+              key={key.id}
+              role="option"
+              aria-selected={isActive}
+              tabIndex={0}
+              className={`akc-key-row${isActive ? ' active' : ''}${isChecked ? ' checked' : ''}${key.enabled ? '' : ' off'}`}
+              onClick={() => onSelect(key)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSelect(key);
+                }
+              }}
+            >
+              <label className="akc-row-check" onClick={(event) => event.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  disabled={saving}
+                  aria-label={`选择 ${key.name}`}
+                  onChange={(event) => onToggleCheck(key.id, index, !!(event.nativeEvent as MouseEvent).shiftKey)}
+                />
+              </label>
+              <div className="akc-key-main">
+                <div className="akc-key-name-row">
+                  <span className="akc-key-name" title={key.name}>{key.name}</span>
+                  <span className={`akc-key-dot${key.enabled ? ' on' : ''}`} title={key.enabled ? '启用中' : '已停用'} />
+                </div>
+                <div className="akc-key-protocols">
+                  {model.outputProtocol ? (
+                    converted ? (
+                      <>
+                        <span className="akc-proto-in" title="首选上游的母语协议">{protocolLabel(model.inputProtocol!)}</span>
+                        <span className="akc-proto-arrow" aria-hidden="true">→</span>
+                        <span className="akc-proto-out converted" title="客户端使用的协议">{protocolLabel(model.outputProtocol)}</span>
+                      </>
+                    ) : (
+                      <span className="akc-proto-single" title="输入与输出同一协议，网关只做透传">
+                        {protocolLabel(model.outputProtocol)}
+                        <em>透传</em>
+                      </span>
+                    )
+                  ) : (
+                    <span className="akc-proto-missing">路由已失效</span>
+                  )}
+                  <span className="akc-key-meta">
+                    {model.usage.todayRequests > 0 ? `今日 ${model.usage.todayRequests.toLocaleString()} 次` : '今日无请求'}
+                  </span>
+                </div>
+              </div>
+              <div className="akc-key-side">
+                <span className={`akc-owner-chip${model.ownerIsAdmin ? ' admin' : ''}`} title={`所属用户：${model.ownerLabel}`}>
+                  <Icon path={model.ownerIsAdmin ? ICONS.shieldCheck : ICONS.user} size={11} />
+                  <span>{model.ownerLabel}</span>
+                </span>
+                <button
+                  type="button"
+                  className={`akc-key-copy${copiedKeyId === key.id ? ' copied' : ''}`}
+                  title="复制 API 密钥"
+                  aria-label={`复制 ${key.name} 的密钥`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCopyKey(key);
+                  }}
+                >
+                  <Icon path={copiedKeyId === key.id ? ICONS.check : ICONS.copy} size={13} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <footer className="akc-list-foot">
+        <span>勾选后可批量管理 · Shift 点选连续多选</span>
+        {checkedIds.length > 0 ? <span className="akc-list-foot-count">已勾选 {checkedIds.length} 项</span> : null}
+      </footer>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 右侧详情工作区
+// ---------------------------------------------------------------------------
+export type ApiKeyDetailTab = 'routing' | 'params' | 'client' | 'quota';
+
+export type ApiKeyWorkspaceProps = {
+  keyItem: APIKey;
+  providers: Provider[];
+  models: Model[];
+  routes: Route[];
+  endpoints: OutputEndpoint[];
+  owners?: ConsoleUser[];
+  saving: boolean;
+  canWriteQuota: boolean;
+  testingProviderID: string;
+  tunnelRunning: boolean;
+  livePublicURL: string;
+  fixedOutputLabels: string[];
+  panel: ApiKeyPanelHandlers;
+  onToggleEnabled: (key: APIKey) => void;
+  onUpdateOwner?: (key: APIKey, ownerUserId: string) => Promise<void>;
+  onToast: (message: string) => void;
+  /** 用来拼客户端 Base URL 的公网根地址（管理员开关控制；普通用户固定内网）。 */
+  publicBase: string;
+  /** 内存视图模式：表格里双击打开抽屉时也复用同一套详情。 */
+  onTest?: (key: APIKey, prompt: string) => Promise<RouteTestResult | null>;
+};
+
+function useCopiedToken(timeoutMs = 1800) {
+  const [token, setToken] = React.useState('');
+  const timer = React.useRef<number | null>(null);
+  React.useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+  const flash = React.useCallback((next: string) => {
+    setToken(next);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setToken(''), timeoutMs);
+  }, [timeoutMs]);
+  return [token, flash] as const;
+}
+
+export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
+  const {
+    keyItem, providers, models, routes, endpoints, owners, saving, canWriteQuota,
+    testingProviderID, tunnelRunning, livePublicURL, fixedOutputLabels, panel, onToast,
+  } = props;
+  const { route, primary, outputProtocol } = apiKeyRouteInfo(keyItem, routes, providers);
+  const [tab, setTab] = React.useState<ApiKeyDetailTab>('routing');
+  const [publicPreview, setPublicPreview] = React.useState(false);
+  const [copied, flashCopied] = useCopiedToken();
+  const [fallbackModalOpen, setFallbackModalOpen] = React.useState(false);
+  const profiles = keyItem.profiles || [];
+  const activeProfile = profiles.find((item) => item.id === (keyItem.activeProfileId || ''));
+  const fallbackIds = keyItem.fallbackProviderIds || [];
+  const publicAvailable = Boolean(props.publicBase);
+  const effectivePublicBase = publicPreview && publicAvailable ? props.publicBase : '';
+
+  React.useEffect(() => {
+    if (!publicAvailable && publicPreview) setPublicPreview(false);
+  }, [publicAvailable, publicPreview]);
+
+  function copy(text: string, message: string, token = 'plain') {
+    if (!text) return;
+    void navigator.clipboard?.writeText(text).then(() => {
+      flashCopied(token);
+      onToast(message);
+    }).catch(() => onToast('复制失败，请手动选中文本复制'));
+  }
+
+  const clientURL = route ? apiKeyClientBaseURL(route, endpoints, effectivePublicBase) : '';
+
+  const tabs: Array<{id: ApiKeyDetailTab; label: string; icon: React.ReactNode}> = [
+    {id: 'routing', label: '转发方案与容灾链路', icon: ICONS.shuffle},
+    {id: 'params', label: '基本绑定与模型覆写', icon: ICONS.sliders},
+    {id: 'client', label: '客户端配置与调用示例', icon: ICONS.code},
+    {id: 'quota', label: '额度与用量治理', icon: ICONS.shield},
+  ];
+
+  return (
+    <section className="akc-detail card" aria-label="密钥详情">
+      <header className="akc-detail-head">
+        <div className="akc-detail-identity">
+          <Icon path={ICONS.key} size={15} className="accent" />
+          <h3 className="akc-detail-name" title={keyItem.name}>{keyItem.name}</h3>
+          <button
+            type="button"
+            className={`akc-status-pill${keyItem.enabled ? ' on' : ''}`}
+            disabled={saving}
+            title={keyItem.enabled ? '点击停用该密钥' : '点击启用该密钥'}
+            onClick={() => props.onToggleEnabled(keyItem)}
+          >
+            <span className="akc-status-dot" />
+            {keyItem.enabled ? '启用中' : '已停用'}
+          </button>
+          {outputProtocol ? (
+            <span className="akc-proto-chip" title="客户端协议 → 上游协议">
+              {protocolLabel(outputProtocol)}
+              {primary && primary.protocol !== outputProtocol ? (
+                <><span aria-hidden="true" className="akc-proto-arrow">→</span>{protocolLabel(primary.protocol)}</>
+              ) : (
+                <em className="akc-proto-chip-tag">透传</em>
+              )}
+            </span>
+          ) : (
+            <Badge tone="red">路由失效</Badge>
+          )}
+          {keyItem.activeProviderId && keyItem.activeProviderId !== (route?.providerId || '') ? (
+            <Badge tone="amber">已切备选</Badge>
+          ) : null}
+        </div>
+        <div className="akc-detail-actions">
+          <button
+            type="button"
+            className={`akc-action${copied === 'url' ? ' copied' : ''}`}
+            disabled={!clientURL}
+            onClick={() => copy(clientURL, `已复制客户端 Base URL：${clientURL}`, 'url')}
+            title={clientURL || '请先为密钥绑定路由'}
+          >
+            <Icon path={copied === 'url' ? ICONS.check : ICONS.copy} size={13} />
+            <span>{copied === 'url' ? '已复制' : '复制 URL'}</span>
+          </button>
+          <button
+            type="button"
+            className={`akc-action${copied === 'key' ? ' copied' : ''}`}
+            onClick={() => copy(keyItem.key, '已复制 API Key', 'key')}
+          >
+            <Icon path={copied === 'key' ? ICONS.check : ICONS.key} size={13} />
+            <span>{copied === 'key' ? '已复制' : '复制 Key'}</span>
+          </button>
+          <button type="button" className="akc-action" disabled={saving} onClick={() => panel.onClone(keyItem)} title="复制配置新建一把密钥">
+            <Icon path={ICONS.layers} size={13} />
+            <span>克隆</span>
+          </button>
+          <button type="button" className="akc-action danger" disabled={saving} onClick={() => void panel.onDelete(keyItem)} title="删除该密钥">
+            <Icon path={ICONS.trash} size={13} />
+            <span>删除</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="akc-tabs" role="tablist" aria-label="密钥配置">
+        {tabs.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            className={`akc-tab${tab === item.id ? ' active' : ''}`}
+            onClick={() => setTab(item.id)}
+          >
+            <Icon path={item.icon} size={13} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+        <span className="akc-tab-meta">
+          生效方案 <b>{activeProfile?.name || '顶层配置'}</b>
+        </span>
+      </div>
+
+      <div className="akc-detail-body">
+        {tab === 'routing' ? (
+          <RoutingTab
+            keyItem={keyItem}
+            providers={providers}
+            models={models}
+            saving={saving}
+            testingProviderID={testingProviderID}
+            primaryProviderId={route?.providerId || ''}
+            outputProtocol={route?.outputProtocol || 'openai_chat'}
+            panel={panel}
+            onOpenFallbackModal={() => setFallbackModalOpen(true)}
+          />
+        ) : null}
+
+        {tab === 'params' ? (
+          <ParamsTab
+            keyItem={keyItem}
+            providers={providers}
+            models={models}
+            owners={owners}
+            saving={saving}
+            testingProviderID={testingProviderID}
+            fixedOutputLabels={fixedOutputLabels}
+            primaryProviderId={route?.providerId || ''}
+            primaryProvider={primary}
+            bindingOutputProtocol={outputProtocol || 'openai_chat'}
+            panel={panel}
+            publicPreview={publicPreview}
+            publicAvailable={publicAvailable}
+            onPublicPreviewChange={setPublicPreview}
+          />
+        ) : null}
+
+        {tab === 'client' ? (
+          <ClientTab
+            keyItem={keyItem}
+            route={route}
+            primary={primary}
+            endpoints={endpoints}
+            tunnelRunning={tunnelRunning}
+            livePublicURL={livePublicURL}
+            clientURL={clientURL}
+            publicPreview={publicPreview}
+            publicAvailable={publicAvailable}
+            onPublicPreviewChange={setPublicPreview}
+            onCopy={copy}
+            copied={copied}
+            onTest={props.onTest}
+            onUpdateField={panel.onUpdateField}
+          />
+        ) : null}
+
+        {tab === 'quota' ? (
+          <div className="akc-stack">
+            <div className="akc-card">
+              <div className="akc-card-head">
+                <span className="akc-card-title">
+                  <Icon path={ICONS.shield} size={13} className="green" />
+                  额度窗口与上限
+                </span>
+                <span className="akc-card-note">按网关本机时区累计；是治理闸门，不是预付费</span>
+              </div>
+              <ApiKeyQuotaSection
+                keyItem={keyItem}
+                saving={saving}
+                canWrite={canWriteQuota}
+                onUpdateField={panel.onUpdateField}
+              />
+            </div>
+            <QuotaUsageCard keyItem={keyItem} />
+          </div>
+        ) : null}
+      </div>
+
+      {fallbackModalOpen ? (
+        <ApiKeyFallbackProvidersModal
+          preferredProviderId={route?.providerId || ''}
+          providers={providers}
+          models={models}
+          selectedIds={fallbackIds}
+          modelOverrides={keyItem.fallbackModelOverrides || {}}
+          saving={saving}
+          testingProviderID={testingProviderID}
+          onRefreshModels={panel.onRefreshModels}
+          onClose={() => setFallbackModalOpen(false)}
+          onSave={async (ids, overrides) => {
+            await panel.onUpdateFallbacks(keyItem, ids, overrides);
+            setFallbackModalOpen(false);
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+// ---- Tab 1：转发方案与容灾链路 ------------------------------------------------
+function RoutingTab({
+  keyItem,
+  providers,
+  models,
+  saving,
+  testingProviderID,
+  primaryProviderId,
+  outputProtocol,
+  panel,
+  onOpenFallbackModal,
+}: {
+  keyItem: APIKey;
+  providers: Provider[];
+  models: Model[];
+  saving: boolean;
+  testingProviderID: string;
+  primaryProviderId: string;
+  outputProtocol: Protocol;
+  panel: ApiKeyPanelHandlers;
+  onOpenFallbackModal: () => void;
+}) {
+  const profiles = keyItem.profiles || [];
+  const activeProfileId = keyItem.activeProfileId || '';
+  const activeProfile = profiles.find((item) => item.id === activeProfileId);
+  const fallbackIds = keyItem.fallbackProviderIds || [];
+  const overrides = keyItem.fallbackModelOverrides || {};
+  const primary = providers.find((item) => item.id === primaryProviderId);
+  const servingProviderId = keyItem.activeProviderId || primaryProviderId;
+
+  return (
+    <div className="akc-stack">
+      {/* 方案切换条：一行放完，右侧是新建 / 重命名 / 删除 */}
+      <div className="akc-bar">
+        <div className="akc-bar-main">
+          <span className="akc-bar-label">转发方案：</span>
+          <div className="akc-chips">
+            {profiles.length === 0 ? (
+              <span className="akc-scheme-chip active" title="未保存任何方案，直接使用顶层配置">
+                当前配置<span className="akc-scheme-mark">生效</span>
+              </span>
+            ) : profiles.map((profile) => {
+              const isActive = profile.id === activeProfileId;
+              return (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={`akc-scheme-chip${isActive ? ' active' : ''}`}
+                  disabled={saving || isActive}
+                  onClick={() => void panel.onSwitchProfile(keyItem, profile.id)}
+                  title={isActive ? '当前生效方案' : `切换到「${profile.name}」`}
+                >
+                  {profile.name}
+                  {isActive ? <span className="akc-scheme-mark">生效</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="akc-bar-actions">
+          <SchemeActions
+            keyItem={keyItem}
+            activeProfile={activeProfile}
+            saving={saving}
+            onCreate={panel.onCreateProfile}
+            onUpdate={panel.onUpdateProfile}
+            onDelete={panel.onDeleteProfile}
+          />
+        </div>
+      </div>
+
+      {/* 调度模式：分段控件，一行 */}
+      <div className="akc-bar">
+        <div className="akc-bar-main">
+          <span className="akc-bar-label">
+            <Icon path={ICONS.shuffle} size={13} className="accent" />
+            调度模式：
+          </span>
+          <div className="akc-mini-segmented" role="group" aria-label="调度模式">
+            {ScheduleModeOptions.map((option) => (
+              <button
+                key={option.value || 'order'}
+                type="button"
+                className={(keyItem.scheduleMode || '') === option.value ? 'active' : ''}
+                disabled={saving || (fallbackIds.length === 0 && option.value !== '')}
+                title={option.hint}
+                onClick={() => void panel.onUpdateField(keyItem, 'scheduleMode', option.value)}
+              >
+                {option.label.replace(/（.*?）/, '')}
+                {option.value === '' ? <span className="akc-seg-note">默认</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+        <span className="akc-bar-hint">
+          <InfoTip text="同一段对话仍然钉在它已建好缓存的账号上（会话粘性优先于调度模式）；被标记「异常」的候选永远排在最后，但不会被跳过。" />
+          {fallbackIds.length === 0 ? '配置备选后才能切换调度模式' : '会话粘性优先于调度模式（命中 Prompt Cache）'}
+        </span>
+      </div>
+
+      {/* 首选 + 备选流水线 */}
+      <div className="akc-chain">
+        <div className="akc-chain-head">
+          <span className="akc-chain-title">
+            <Icon path={ICONS.shield} size={13} className="green" />
+            首选节点与备选降级流水线（共 {1 + fallbackIds.length} 个节点）
+          </span>
+          <span className="akc-chain-hint">支持一键切换首选、独立锁定模型与探测</span>
+        </div>
+
+        <div className="akc-chain-list">
+          <PipelineRow
+            primary
+            rank="首选"
+            provider={primary}
+            fallbackProviderId={primaryProviderId}
+            model={keyItem.modelOverride || primary?.defaultModel || ''}
+            serving={servingProviderId === primaryProviderId || !servingProviderId}
+            providerModelCount={primary ? models.filter((model) => model.providerId === primary.id).length : 0}
+            saving={saving}
+            testingProviderID={testingProviderID}
+            onRefreshModels={panel.onRefreshModels}
+            onRemove={() => undefined}
+            onMove={() => undefined}
+            onPromote={() => undefined}
+            canMoveUp={false}
+            canMoveDown={false}
+          />
+          {fallbackIds.map((id, index) => {
+            const provider = providers.find((item) => item.id === id);
+            const override = overrides[id] || '';
+            const inherits = !override && Boolean(primary && provider && provider.protocol === primary.protocol);
+            return (
+              <PipelineRow
+                key={id}
+                rank={`备选 ${index + 1}`}
+                provider={provider}
+                fallbackProviderId={id}
+                model={override || (inherits ? '请求模型' : '')}
+                modelMuted={!override}
+                serving={servingProviderId === id}
+                saving={saving}
+                testingProviderID={testingProviderID}
+                onRefreshModels={panel.onRefreshModels}
+                onRemove={() => void panel.onUpdateFallbacks(keyItem, fallbackIds.filter((item) => item !== id), removeKey(overrides, id))}
+                onMove={(delta) => void panel.onUpdateFallbacks(keyItem, moveItem(fallbackIds, index, delta), overrides)}
+                onPromote={() => void panel.onUpdateBinding(keyItem, id, outputProtocol)}
+                canMoveUp={index > 0}
+                canMoveDown={index < fallbackIds.length - 1}
+              />
+            );
+          })}
+        </div>
+
+        <div className="akc-chain-foot">
+          <button
+            type="button"
+            className="akc-soft-btn"
+            disabled={saving || !primaryProviderId || providers.length < 2}
+            onClick={onOpenFallbackModal}
+          >
+            <Icon path={ICONS.plus} size={13} />
+            <span>配置备选 Provider</span>
+          </button>
+          <span className="akc-chain-foot-note">
+            {fallbackIds.length === 0
+              ? '未配置备选：首选额度耗尽后，这个密钥不会自动换到别的 Provider。'
+              : '当前承接节点以绿点标出；「设为首选」会交换绑定，其余备选顺序不变。'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function removeKey(source: Record<string, string>, key: string) {
+  const next = {...source};
+  delete next[key];
+  return next;
+}
+
+function moveItem(list: string[], index: number, delta: number) {
+  const target = index + delta;
+  if (target < 0 || target >= list.length) return list;
+  const next = [...list];
+  const [item] = next.splice(index, 1);
+  next.splice(target, 0, item);
+  return next;
+}
+
+function PipelineRow({
+  rank,
+  primary,
+  provider,
+  fallbackProviderId,
+  model,
+  modelMuted,
+  serving,
+  saving,
+  testingProviderID,
+  providerModelCount,
+  onRefreshModels,
+  onRemove,
+  onMove,
+  onPromote,
+  canMoveUp,
+  canMoveDown,
+}: {
+  rank: string;
+  primary?: boolean;
+  provider?: Provider;
+  fallbackProviderId: string;
+  model: string;
+  modelMuted?: boolean;
+  serving: boolean;
+  saving: boolean;
+  testingProviderID: string;
+  providerModelCount?: number;
+  onRefreshModels: (providerId: string, providerName: string) => Promise<void>;
+  onRemove: () => void;
+  onMove: (delta: number) => void;
+  onPromote: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}) {
+  const health = provider?.healthStatus;
+  const unhealthy = health === 'unavailable';
+  return (
+    <div className={`akc-chain-row${primary ? ' primary' : ''}${serving ? ' serving' : ''}${unhealthy ? ' unhealthy' : ''}`}>
+      <span className={`akc-chain-rank${primary ? ' primary' : ''}`}>{rank}</span>
+      <div className="akc-chain-identity">
+        {provider ? (
+          <ProviderLabel provider={provider} size={15} />
+        ) : (
+          <span className="akc-chain-missing" title={fallbackProviderId}>已删除的 Provider</span>
+        )}
+      </div>
+      <div className="akc-chain-middle">
+        {provider ? (
+          <span className={`akc-model-chip${modelMuted || !model ? ' muted' : ''}`} title={modelMuted ? '沿用请求里的模型名' : '该节点锁定的模型'}>
+            {model || '未锁定模型'}
+          </span>
+        ) : null}
+        <span className="akc-serving">
+          <span className={`akc-serving-dot${serving ? ' on' : ''}${unhealthy ? ' bad' : ''}`} />
+          {unhealthy && !serving ? '上游异常' : serving ? '在服务' : '待命'}
+        </span>
+      </div>
+      <div className="akc-chain-actions">
+        {provider ? (
+          <button
+            type="button"
+            className="akc-row-icon"
+            title="刷新该 Provider 的模型列表"
+            disabled={saving || testingProviderID === provider.id}
+            onClick={() => void onRefreshModels(provider.id, provider.name)}
+          >
+            <Icon path={ICONS.refresh} size={13} className={testingProviderID === provider.id ? 'spin' : ''} />
+          </button>
+        ) : null}
+        {!primary ? (
+          <button type="button" className="akc-row-text-btn" disabled={saving || !provider} onClick={onPromote} title="把这台上游提为首选">
+            设为首选
+          </button>
+        ) : (
+          <span className="akc-row-model-note">{providerModelCount ? `${providerModelCount} 个模型` : ''}</span>
+        )}
+        {!primary ? (
+          <>
+            <span className="akc-row-order">
+              <button type="button" className="akc-row-icon" disabled={saving || !canMoveUp} title="上移" onClick={() => onMove(-1)}>
+                <Icon path={ICONS.up} size={13} />
+              </button>
+              <button type="button" className="akc-row-icon" disabled={saving || !canMoveDown} title="下移" onClick={() => onMove(1)}>
+                <Icon path={ICONS.down} size={13} />
+              </button>
+            </span>
+            <button type="button" className="akc-row-text-btn danger" disabled={saving} title="从备选链移除" onClick={onRemove}>
+              移除
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SchemeActions({
+  keyItem,
+  activeProfile,
+  saving,
+  onCreate,
+  onUpdate,
+  onDelete,
+}: {
+  keyItem: APIKey;
+  activeProfile?: KeyProfile;
+  saving: boolean;
+  onCreate: ApiKeyPanelHandlers['onCreateProfile'];
+  onUpdate: ApiKeyPanelHandlers['onUpdateProfile'];
+  onDelete: ApiKeyPanelHandlers['onDeleteProfile'];
+}) {
+  const [dialog, setDialog] = React.useState<'create' | 'rename' | null>(null);
+  const [name, setName] = React.useState('');
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+
+  React.useEffect(() => {
+    if (!dialog) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [dialog]);
+
+  const open = (mode: 'create' | 'rename') => {
+    setName(mode === 'rename' ? activeProfile?.name || '' : '');
+    setDialog(mode);
+  };
+  const closeDialog = () => setDialog(null);
+
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      if (dialog === 'create') {
+        await onCreate(keyItem, snapshotActiveProfile(keyItem, trimmed), true);
+      } else if (dialog === 'rename' && activeProfile) {
+        await onUpdate(keyItem, activeProfile.id, {...activeProfile, name: trimmed});
+      }
+      setDialog(null);
+    } catch {
+      // 失败时保留输入框供修改重试；提示由数据层给出
+    }
+  };
+
+  if (dialog) {
+    return (
+      <div className="akc-inline-dialog" role="dialog" aria-label={dialog === 'create' ? '新建转发方案' : '重命名转发方案'}>
+        <input
+          ref={inputRef}
+          value={name}
+          disabled={saving}
+          placeholder={dialog === 'create' ? '方案名称…' : '新名称'}
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); void submit(); }
+            if (event.key === 'Escape') { event.stopPropagation(); setDialog(null); }
+          }}
+        />
+        <button type="button" className="akc-inline-confirm" disabled={saving || !name.trim()} onClick={() => void submit()}>
+          {saving ? '保存中…' : '确认'}
+        </button>
+        <button type="button" className="akc-soft-btn" onClick={closeDialog}>取消</button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button type="button" className="akc-soft-btn" disabled={saving} onClick={() => open('create')}>
+        <Icon path={ICONS.plus} size={13} />
+        <span>新建方案</span>
+      </button>
+      {activeProfile ? (
+        <button type="button" className="akc-soft-btn" disabled={saving} onClick={() => open('rename')}>
+          <Icon path={ICONS.edit} size={13} />
+          <span>重命名</span>
+        </button>
+      ) : null}
+      {activeProfile && (keyItem.profiles || []).length > 1 ? (
+        <button
+          type="button"
+          className="akc-soft-btn danger"
+          disabled={saving}
+          onClick={() => {
+            if (!window.confirm(`删除方案「${activeProfile.name}」？删除后将切换到其余方案之一。`)) return;
+            void onDelete(keyItem, activeProfile.id);
+          }}
+        >
+          <Icon path={ICONS.trash} size={13} />
+          <span>删除当前</span>
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+// ---- Tab 2：基本绑定与模型覆写 ------------------------------------------------
+function ParamsTab({
+  keyItem,
+  providers,
+  models,
+  owners,
+  saving,
+  testingProviderID,
+  fixedOutputLabels,
+  primaryProviderId,
+  primaryProvider,
+  bindingOutputProtocol,
+  panel,
+  publicPreview,
+  publicAvailable,
+  onPublicPreviewChange,
+}: {
+  keyItem: APIKey;
+  providers: Provider[];
+  models: Model[];
+  owners?: ConsoleUser[];
+  saving: boolean;
+  testingProviderID: string;
+  fixedOutputLabels: string[];
+  primaryProviderId: string;
+  primaryProvider?: Provider;
+  bindingOutputProtocol: Protocol;
+  panel: ApiKeyPanelHandlers & Pick<React.ComponentProps<typeof ApiKeyDetailPanel>, 'onUpdateOwner'>;
+  publicPreview: boolean;
+  publicAvailable: boolean;
+  onPublicPreviewChange: (value: boolean) => void;
+}) {
+  const providerModels = primaryProvider ? models.filter((model) => model.providerId === primaryProvider.id) : [];
+  const [aliasModalOpen, setAliasModalOpen] = React.useState(false);
+  const aliasCount = Object.keys(keyItem.modelAliases || {}).length;
+
+  return (
+    <div className="akc-grid-2">
+      <div className="akc-card">
+        <div className="akc-card-head">
+          <span className="akc-card-title">
+            <Icon path={ICONS.sliders} size={13} className="accent" />
+            基本绑定参数
+          </span>
+        </div>
+        <div className="akc-form">
+          <ApiKeyNameField
+            name={keyItem.name}
+            disabled={saving}
+            onSave={(name) => panel.onUpdateField(keyItem, 'name', name)}
+          />
+          <IconSelect
+            label="输入 Provider（首选）"
+            value={primaryProviderId}
+            disabled={saving}
+            options={providerSelectOptions(providers)}
+            onChange={(providerId) => void panel.onUpdateBinding(keyItem, providerId, bindingOutputProtocol)}
+          />
+          {owners ? (
+            <div className="akc-field">
+              <label>所属用户</label>
+              <select
+                value={keyItem.ownerUserId || ''}
+                disabled={saving}
+                onChange={(event) => void panel.onUpdateOwner?.(keyItem, event.target.value)}
+              >
+                <option value="">内置 admin（无归属）</option>
+                {owners.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
+              </select>
+            </div>
+          ) : null}
+          <div className="akc-form-row">
+            <div className="akc-field">
+              <label>输出协议</label>
+              <select
+                value={protocolLabel(bindingOutputProtocol)}
+                disabled={saving || !primaryProviderId}
+                onChange={(event) => void panel.onUpdateBinding(keyItem, primaryProviderId, protocolFromLabel(event.target.value))}
+              >
+                {fixedOutputLabels.map((label) => <option key={label} value={label}>{label}</option>)}
+              </select>
+            </div>
+            <div className="akc-field">
+              <label>上游母语协议</label>
+              <div className="akc-readonly">{primaryProvider ? protocolLabel(primaryProvider.protocol) : '—'}</div>
+            </div>
+          </div>
+          <div className="akc-field">
+            <div className="akc-label-row">
+              <label>公网 Base URL 预览</label>
+              <InfoTip text="打开后「复制 URL」与客户端配置使用公网隧道域名；关闭则用内网地址。仅影响复制出来的配置，不影响转发。" />
+            </div>
+            <Switch
+              checked={publicPreview && publicAvailable}
+              disabled={!publicAvailable}
+              label={publicAvailable ? (publicPreview ? '使用公网域名' : '使用内网地址') : '隧道未开启，只能使用内网地址'}
+              onChange={onPublicPreviewChange}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="akc-card">
+        <div className="akc-card-head">
+          <span className="akc-card-title">
+            <Icon path={ICONS.sliders} size={13} className="purple" />
+            模型替换与推理深度
+          </span>
+        </div>
+        <div className="akc-form">
+          <div className="akc-field">
+            <div className="akc-label-row">
+              <label>固定模型替换</label>
+              <InfoTip text="设置后将忽略请求体中的 model，统一替换为所选模型；留空表示按客户端请求的模型走。" />
+            </div>
+            <div className="akc-field-inline">
+              <SearchableModelSelect
+                value={keyItem.modelOverride || ''}
+                models={providerModels}
+                disabled={saving || !primaryProvider}
+                emptyLabel={primaryProvider?.defaultModel ? `（不替换 · 默认 ${primaryProvider.defaultModel}）` : '（不替换，使用请求体 model）'}
+                onChange={(value) => void panel.onUpdateField(keyItem, 'modelOverride', value)}
+              />
+              <button
+                type="button"
+                className="akc-soft-btn"
+                disabled={saving || !primaryProvider || testingProviderID === primaryProvider.id}
+                onClick={() => primaryProvider ? void panel.onRefreshModels(primaryProvider.id, primaryProvider.name) : undefined}
+              >
+                <Icon path={ICONS.refresh} size={13} className={primaryProvider && testingProviderID === primaryProvider.id ? 'spin' : ''} />
+                <span>{primaryProvider && testingProviderID === primaryProvider.id ? '刷新中…' : '刷新模型'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="akc-form-row">
+            <div className="akc-field">
+              <label>思考深度</label>
+              <select
+                value={keyItem.thinkingDepthOverride || ''}
+                disabled={saving}
+                onChange={(event) => void panel.onUpdateField(keyItem, 'thinkingDepthOverride', event.target.value)}
+              >
+                {thinkingDepthSelectOptions({value: '', label: '（不覆盖）'})}
+              </select>
+            </div>
+            <MaxOutputTokensField
+              value={keyItem.maxOutputTokens && keyItem.maxOutputTokens > 0 ? keyItem.maxOutputTokens : 0}
+              disabled={saving}
+              onSave={(value) => panel.onUpdateField(keyItem, 'maxOutputTokens', value)}
+            />
+          </div>
+
+          <div className="akc-form-row">
+            <div className="akc-field">
+              <div className="akc-label-row">
+                <label>流式响应（SSE）</label>
+                <InfoTip text="关闭后该 Key 的 stream:true 请求将被拒绝。" />
+              </div>
+              <Switch
+                checked={keyItem.streamEnabled !== false}
+                label="允许 stream:true"
+                disabled={saving}
+                onChange={(value) => void panel.onUpdateField(keyItem, 'streamEnabled', value)}
+              />
+            </div>
+            <div className="akc-field">
+              <div className="akc-label-row">
+                <label>Codex Fast 档（强制）</label>
+                <InfoTip text="开启后，该 Key 的请求只要落到 ChatGPT OAuth（Codex）Provider，就强制以 fast 档转发（service_tier=priority，速度约 1.5~2.5x，额度消耗 2~2.5x）。其他类型 Provider 不受影响。" />
+              </div>
+              <Switch
+                checked={keyItem.codexForceFast === true}
+                label="强制 fast 档"
+                disabled={saving}
+                onChange={(value) => void panel.onUpdateField(keyItem, 'codexForceFast', value)}
+              />
+            </div>
+          </div>
+
+          <div className="akc-field">
+            <div className="akc-label-row">
+              <label>模型映射</label>
+              <InfoTip text="把客户端请求的 model 名改写成上游真实模型名（按 Key 生效）。" />
+              <span className="akc-muted-inline">{aliasCount > 0 ? `已配置 ${aliasCount} 个别名` : '未配置别名'}</span>
+            </div>
+            <div className="akc-field-inline">
+              <button type="button" className="akc-soft-btn" disabled={saving || !primaryProvider} onClick={() => setAliasModalOpen(true)}>
+                <Icon path={ICONS.edit} size={13} />
+                <span>配置映射</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <ApiKeyModelMappingModal
+        open={aliasModalOpen}
+        providerName={primaryProvider?.name || 'Provider'}
+        models={providerModels}
+        aliases={keyItem.modelAliases || {}}
+        saving={saving}
+        onClose={() => setAliasModalOpen(false)}
+        onSave={(aliases) => panel.onUpdateModelAliases(keyItem, aliases)}
+      />
+    </div>
+  );
+}
+
+function MaxOutputTokensField({value, disabled, onSave}: {value: number; disabled: boolean; onSave: (value: number) => Promise<void>}) {
+  const [draft, setDraft] = React.useState(value > 0 ? String(value) : '');
+  React.useEffect(() => { setDraft(value > 0 ? String(value) : ''); }, [value]);
+  const commit = () => {
+    const raw = draft.trim();
+    const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
+    const next = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 200000) : 0;
+    setDraft(next > 0 ? String(next) : '');
+    if (next === value) return;
+    void onSave(next);
+  };
+  return (
+    <div className="akc-field">
+      <div className="akc-label-row">
+        <label>最大输出 Token</label>
+        <InfoTip text="留空或 0 按模型自动解析；填写后覆盖上游 max_tokens（上限 200000）。" />
+      </div>
+      <input
+        type="number"
+        min={0}
+        max={200000}
+        placeholder="0 = 自动（按模型）"
+        disabled={disabled}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+      />
+    </div>
+  );
+}
+
+function ApiKeyNameField({name, disabled, onSave}: {name: string; disabled: boolean; onSave: (name: string) => Promise<void>}) {
+  const [draft, setDraft] = React.useState(name);
+  React.useEffect(() => { setDraft(name); }, [name]);
+  return (
+    <div className="akc-field">
+      <label>名称</label>
+      <input
+        value={draft}
+        disabled={disabled}
+        placeholder="例如 key1"
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const trimmed = draft.trim();
+          if (!trimmed || trimmed === name) { setDraft(name); return; }
+          void onSave(trimmed);
+        }}
+        onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+      />
+    </div>
+  );
+}
+
+// ---- Tab 3：客户端配置与调用示例 ----------------------------------------------
+function ClientTab({
+  keyItem,
+  route,
+  primary,
+  endpoints,
+  tunnelRunning,
+  livePublicURL,
+  clientURL,
+  publicPreview,
+  publicAvailable,
+  onPublicPreviewChange,
+  onCopy,
+  copied,
+  onTest,
+  onUpdateField,
+}: {
+  keyItem: APIKey;
+  route?: Route;
+  primary?: Provider;
+  endpoints: OutputEndpoint[];
+  tunnelRunning: boolean;
+  livePublicURL: string;
+  clientURL: string;
+  publicPreview: boolean;
+  publicAvailable: boolean;
+  onPublicPreviewChange: (value: boolean) => void;
+  onCopy: (text: string, message: string, token?: string) => void;
+  copied: string;
+  onTest?: (key: APIKey, prompt: string) => Promise<RouteTestResult | null>;
+  onUpdateField: ApiKeyPanelHandlers['onUpdateField'];
+}) {
+  const [snippet, setSnippet] = React.useState<'claude' | 'openai' | 'codex'>('claude');
+  const gatewayURL = apiKeyGatewayRoot(endpoints, publicPreview && publicAvailable ? livePublicURL : '').replace(/\/$/, '');
+  const publicBase = publicPreview && publicAvailable ? livePublicURL : '';
+
+  const snippets = {
+    claude: {
+      label: 'Claude Code',
+      base: `${gatewayURL}/anthropic`,
+      auth: 'x-api-key',
+      code: `export ANTHROPIC_BASE_URL=${shellArg(`${gatewayURL}/anthropic`)}\nexport ANTHROPIC_AUTH_TOKEN=${shellArg(keyItem.key)}`,
+    },
+    openai: {
+      label: 'OpenAI SDK',
+      base: `${gatewayURL}/v1`,
+      auth: 'Authorization: Bearer',
+      code: `curl ${shellArg(`${gatewayURL}/v1/chat/completions`)} \\\n  -H ${shellArg(`Authorization: Bearer ${keyItem.key}`)} \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":${shellArg(keyItem.modelOverride || primary?.defaultModel || 'auto')},"messages":[{"role":"user","content":"你好"}]}'`,
+    },
+    codex: {
+      label: 'Codex',
+      base: `${gatewayURL}/openai/v1`,
+      auth: 'Authorization: Bearer',
+      code: `export OPENAI_BASE_URL=${shellArg(`${gatewayURL}/openai/v1`)}\nexport OPENAI_API_KEY=${shellArg(keyItem.key)}`,
+    },
+  } as const;
+  const active = snippets[snippet];
+
+  return (
+    <div className="akc-stack">
+      <div className="akc-bar">
+        <div className="akc-bar-main">
+          <span className="akc-bar-label">网关地址：</span>
+          <div className="akc-mini-segmented" role="group" aria-label="网关地址类型">
+            <button type="button" className={!publicPreview ? 'active' : ''} onClick={() => onPublicPreviewChange(false)}>内网</button>
+            <button
+              type="button"
+              className={publicPreview ? 'active' : ''}
+              disabled={!publicAvailable}
+              title={publicAvailable ? livePublicURL : '未开启公网域名 / 隧道'}
+              onClick={() => onPublicPreviewChange(true)}
+            >
+              公网域名
+            </button>
+          </div>
+          <code className="akc-inline-code" title={clientURL}>{clientURL || gatewayURL}</code>
+        </div>
+        <span className="akc-bar-hint">
+          {tunnelRunning ? `隧道运行中${livePublicURL ? ` · ${livePublicURL}` : ''}` : '公网隧道未开启，仅内网可用'}
+        </span>
+      </div>
+
+      <div className="akc-grid-2">
+        <div className="akc-card">
+          <div className="akc-card-head">
+            <span className="akc-card-title">
+              <Icon path={ICONS.code} size={13} className="accent" />
+              一键复制客户端配置
+            </span>
+            <span className="akc-card-note">按当前输出协议匹配可用的客户端</span>
+          </div>
+          <div className="akc-client-buttons">
+            {clientConfigsForProtocol(route?.outputProtocol).map((client) => (
+              <button
+                key={client}
+                type="button"
+                className={`akc-client-btn${copied === client ? ' copied' : ''}`}
+                disabled={!route}
+                onClick={() => onCopy(
+                  buildClientConfigText(client, keyItem, route!, gatewayURL, primary),
+                  `已复制 ${clientConfigButtonLabel(client)} 配置`,
+                  client,
+                )}
+              >
+                <BrandIcon icon={client === 'codex' ? 'codex-color' : client === 'claude' ? 'claude-color' : 'opencode'} name={client} size={15} />
+                <span>{copied === client ? '已复制' : `复制 ${clientConfigButtonLabel(client)} 配置`}</span>
+              </button>
+            ))}
+          </div>
+          <div className="akc-hint">
+            {route ? `当前输出协议：${protocolLabel(route.outputProtocol)}` : '请先在「基本绑定」里为该密钥选择 Provider 与输出协议。'}
+          </div>
+        </div>
+
+        <div className="akc-card">
+          <div className="akc-card-head">
+            <span className="akc-card-title">
+              <Icon path={ICONS.code} size={13} className="purple" />
+              协议接入一览
+            </span>
+          </div>
+          <div className="akc-mini-segmented">
+            {(Object.keys(snippets) as Array<keyof typeof snippets>).map((id) => (
+              <button key={id} type="button" className={snippet === id ? 'active' : ''} onClick={() => setSnippet(id)}>
+                {snippets[id].label}
+              </button>
+            ))}
+          </div>
+          <div className="akc-kv">
+            <span>Base URL</span>
+            <code>{active.base}</code>
+            <button type="button" className="akc-row-text-btn" onClick={() => onCopy(active.base, '已复制 Base URL')}>复制</button>
+          </div>
+          <div className="akc-kv">
+            <span>鉴权头</span>
+            <code>{active.auth}</code>
+            <span>密钥</span>
+            <code title={keyItem.key}>{maskKey(keyItem.key)}</code>
+            <button type="button" className="akc-row-text-btn" onClick={() => onCopy(keyItem.key, '已复制 API Key')}>复制</button>
+          </div>
+          <div className="akc-code-block">
+            <button type="button" className="akc-row-text-btn akc-code-copy" onClick={() => onCopy(active.code, `已复制 ${active.label} 配置`)}>
+              <Icon path={ICONS.copy} size={12} /> 复制
+            </button>
+            <pre>{active.code}</pre>
+          </div>
+        </div>
+      </div>
+
+      {route ? (
+        <div className="akc-card">
+          <div className="akc-card-head">
+            <span className="akc-card-title">
+              <Icon path={ICONS.code} size={13} />
+              {tunnelRunning ? '公网调用示例' : '局域网调用示例'}（cURL）
+            </span>
+            <button
+              type="button"
+              className="akc-soft-btn"
+              onClick={() => onCopy(routeTestCurl(route, endpoints, keyItem, publicBase, primary), '已复制 curl')}
+            >
+              <Icon path={ICONS.copy} size={13} />
+              <span>复制 curl</span>
+            </button>
+          </div>
+          <pre className="akc-code-block plain">{routeTestCurl(route, endpoints, keyItem, publicBase, primary)}</pre>
+        </div>
+      ) : null}
+
+      {onTest && route ? <SandboxCard keyItem={keyItem} onTest={onTest} onUpdateField={onUpdateField} /> : null}
+    </div>
+  );
+}
+
+function clientConfigButtonLabel(client: 'opencode' | 'codex' | 'claude') {
+  return client === 'opencode' ? 'OpenCode' : client === 'codex' ? 'Codex' : 'Claude';
+}
+
+/** POSIX 单引号转义：密钥里理论上不会有单引号，但拼命令行时不能假设。 */
+function shellArg(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function routeTestCurl(route: Route, endpoints: OutputEndpoint[], keyItem: APIKey, publicBase: string, provider?: Provider) {
+  const endpoint = endpoints.find((item) => item.protocol === route.outputProtocol);
+  const root = `${apiKeyGatewayRoot(endpoints, publicBase)}${endpoint?.basePath || ''}`;
+  const model = keyItem.modelOverride?.trim() || provider?.defaultModel?.trim() || 'your-model';
+  const url = route.outputProtocol === 'claude' ? `${root}/v1/messages`
+    : route.outputProtocol === 'openai_responses' ? `${root}/responses`
+    : route.outputProtocol === 'gemini' ? `${root}/models/${model}:generateContent`
+    : `${root}/chat/completions`;
+  const payload: Record<string, unknown> = route.outputProtocol === 'claude'
+    ? {model, max_tokens: 1024, messages: [{role: 'user', content: '你好'}]}
+    : route.outputProtocol === 'gemini'
+      ? {contents: [{parts: [{text: '你好'}]}]}
+      : {model, messages: [{role: 'user', content: '你好'}]};
+  const auth = route.outputProtocol === 'claude'
+    ? `  -H ${shellArg(`x-api-key: ${keyItem.key}`)} \\\n`
+    : route.outputProtocol === 'gemini'
+      ? `  -H ${shellArg(`x-goog-api-key: ${keyItem.key}`)} \\\n`
+      : `  -H ${shellArg(`Authorization: Bearer ${keyItem.key}`)} \\\n`;
+  return `curl -s ${shellArg(url)} \\\n  -H 'Content-Type: application/json' \\\n${auth}  -d '${JSON.stringify(payload).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 极简客户端配置片段（贴到对应配置文件里即可）。
+ * 完整可执行的安装脚本（含备份与增量合并）仍在「客户端配置」弹窗里生成，
+ * 两边职责不重叠：这里给的是「看一眼就知道该填什么」。
+ */
+export function buildClientConfigText(
+  client: 'opencode' | 'codex' | 'claude',
+  keyItem: APIKey,
+  route: Route,
+  gatewayURL: string,
+  provider?: Provider,
+) {
+  const base = `${gatewayURL}${route.outputProtocol === 'claude' ? '/anthropic' : route.outputProtocol === 'openai_responses' ? '/openai/v1' : '/v1'}`;
+  const model = keyItem.modelOverride?.trim() || provider?.defaultModel?.trim() || 'auto';
+  if (client === 'claude') {
+    return JSON.stringify({env: {ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: keyItem.key, ANTHROPIC_MODEL: model}}, null, 2);
+  }
+  if (client === 'codex') {
+    return JSON.stringify({
+      model,
+      model_provider: 'llm-gateway',
+      model_providers: {'llm-gateway': {name: 'LLM Gateway', base_url: base, env_key: 'OPENAI_API_KEY', api_key: keyItem.key}},
+    }, null, 2);
+  }
+  return JSON.stringify({
+    provider: {'llm-gateway': {npm: '@ai-sdk/openai-compatible', options: {baseURL: base, apiKey: keyItem.key}, models: {[model]: {}}}},
+    model: `llm-gateway/${model}`,
+  }, null, 2);
+}
+
+// 在线调试沙箱：真的用这把 Key 打一次网关，答案就是「这条链现在通不通」。
+function SandboxCard({keyItem, onTest, onUpdateField}: {
+  keyItem: APIKey;
+  onTest: (key: APIKey, prompt: string) => Promise<RouteTestResult | null>;
+  onUpdateField: ApiKeyPanelHandlers['onUpdateField'];
+}) {
+  const [prompt, setPrompt] = React.useState('用一句话解释什么是量子纠缠。');
+  const [result, setResult] = React.useState<RouteTestResult | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [serverError, setServerError] = React.useState('');
+
+  const run = async () => {
+    setBusy(true);
+    setServerError('');
+    setResult(null);
+    try {
+      const response = await onTest(keyItem, prompt);
+      if (response) setResult(response);
+      else setServerError('网关没有返回结果');
+    } catch (error) {
+      setServerError(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="akc-card">
+      <div className="akc-card-head">
+        <span className="akc-card-title">
+          <Icon path={ICONS.terminal} size={13} className="purple" />
+          在线调试沙箱
+        </span>
+        <span className="akc-card-note">用本密钥直连网关，真实走一遍协议转换与故障转移</span>
+      </div>
+      <div className="akc-sandbox-input">
+        <input
+          value={prompt}
+          placeholder="输入测试提示词…"
+          disabled={busy}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !busy) { event.preventDefault(); void run(); } }}
+        />
+        <button type="button" className="akc-cta" disabled={busy || !prompt.trim()} onClick={() => void run()}>
+          <Icon path={ICONS.play} size={12} />
+          <span>{busy ? '透传中…' : '发送测试'}</span>
+        </button>
+      </div>
+      {result ? (
+        <>
+          <div className="akc-stats-4">
+            <div>
+              <span>状态</span>
+              <b className={result.success ? 'ok' : 'bad'}>{result.status || (result.success ? '200' : '失败')}</b>
+            </div>
+            <div>
+              <span>时延</span>
+              <b>{result.latencyMs != null ? `${result.latencyMs}ms` : '—'}</b>
+            </div>
+            <div>
+              <span>协议转换</span>
+              <b className="accent">{result.protocolFlow || '—'}</b>
+            </div>
+            <div>
+              <span>模型</span>
+              <b>{result.model || '—'}</b>
+            </div>
+          </div>
+          <pre className={`akc-code-block plain${result.success ? '' : ' error'}`}>
+            {result.preview || result.error || '（无内容）'}
+          </pre>
+        </>
+      ) : null}
+      {serverError ? <div className="akc-hint error">{serverError}</div> : null}
+      <div className="akc-sandbox-foot">
+        <span>{keyItem.enabled ? '该密钥已启用，测试会走真实调度' : '该密钥已停用，测试可能被网关拒绝'}</span>
+        <Switch checked={keyItem.enabled} label={keyItem.enabled ? '启用' : '停用'} onChange={(value) => void onUpdateField(keyItem, 'enabled', value)} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 额度页补充读数：今日 / 本月请求数，与用量页同源（/__request-stats）。
+// ---------------------------------------------------------------------------
+function QuotaUsageCard({keyItem}: {keyItem: APIKey}) {
+  const [stats, setStats] = React.useState<ApiKeyUsageSource | null>(null);
+  const [error, setError] = React.useState('');
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetch(`${API_BASE}/__request-stats`, {credentials: 'same-origin'})
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+      .then((data: ApiKeyUsageSource) => { if (!cancelled) { setStats(data); setError(''); } })
+      .catch((reason: unknown) => { if (!cancelled) setError(String(reason)); });
+    return () => { cancelled = true; };
+  }, [keyItem.id]);
+  const usage = buildApiKeyUsageMap(stats)[keyItem.id] || ZERO_USAGE;
+  return (
+    <div className="akc-card">
+      <div className="akc-card-head">
+        <span className="akc-card-title">
+          <Icon path={ICONS.shield} size={13} />
+          窗口内已用请求数
+        </span>
+        <span className="akc-card-note">只统计已完成请求，与用量页同口径</span>
+      </div>
+      <div className="akc-stats-2">
+        <div>
+          <span>今日</span>
+          <b>{usage.todayRequests.toLocaleString()}</b>
+        </div>
+        <div>
+          <span>本月</span>
+          <b>{usage.monthRequests.toLocaleString()}</b>
+        </div>
+      </div>
+      {error ? <div className="akc-hint error">用量读取失败：{error}</div> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 全量数据表
+// ---------------------------------------------------------------------------
+export function ApiKeyFullTable({
+  keys,
+  totalKeys,
+  checkedIds,
+  selectedKeyId,
+  usage,
+  routes,
+  providers,
+  ownerLabel,
+  saving,
+  onToggleCheck,
+  onSelectAll,
+  onClearSelection,
+  onSelect,
+  onOpenDrawer,
+  onCopyKey,
+  copiedKeyId,
+  onDelete,
+  onToggleEnabled,
+  onBatchDelete,
+  filters,
+  providersForFilters,
+  pagination,
+}: {
+  keys: APIKey[];
+  totalKeys: number;
+  checkedIds: string[];
+  selectedKeyId: string;
+  usage: Record<string, ApiKeyUsage>;
+  routes: Route[];
+  providers: Provider[];
+  ownerLabel: (key: APIKey) => string;
+  saving: boolean;
+  onToggleCheck: (keyId: string, index: number, shiftKey: boolean) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
+  onSelect: (key: APIKey) => void;
+  onOpenDrawer: (key: APIKey) => void;
+  onCopyKey: (key: APIKey) => void;
+  copiedKeyId: string;
+  onDelete: (key: APIKey) => void;
+  onToggleEnabled: (key: APIKey) => void;
+  onBatchDelete: () => void;
+  /** 表格视图的筛选行：与左侧队列同一套控件。 */
+  filters?: ApiKeyFiltersProps;
+  providersForFilters?: Provider[];
+  pagination?: {page: number; total: number; pageSize: number; onPrev: () => void; onNext: () => void};
+}) {
+  const allSelected = keys.length > 0 && keys.every((key) => checkedIds.includes(key.id));
+  return (
+    <section className="akc-tablecard card">
+      <header className="akc-table-head">
+        <div className="akc-list-title">
+          <Icon path={ICONS.table} size={15} className="accent" />
+          <h3>全量密钥矩阵</h3>
+          <span className="akc-list-stat">
+            显示 <b>{keys.length}</b> / {totalKeys}
+            {checkedIds.length > 0 ? <span className="akc-list-stat-checked"> · 已选 {checkedIds.length}</span> : null}
+          </span>
+        </div>
+        <div className="akc-table-actions">
+          {checkedIds.length > 0 ? (
+            <>
+              <button type="button" className="akc-bulk-delete" disabled={saving} onClick={onBatchDelete}>
+                <Icon path={ICONS.trash} size={13} />
+                删除选中（{checkedIds.length}）
+              </button>
+              <button type="button" className="akc-bulk-clear" onClick={onClearSelection}>清除选择</button>
+            </>
+          ) : null}
+        </div>
+      </header>
+      {filters ? (
+        <div className="akc-table-filters">
+          <ApiKeyFilterFields filters={filters} providers={providersForFilters || providers} />
+        </div>
+      ) : null}
+      <div className="akc-table-scroll">
+        <table className="akc-table">
+          <thead>
+            <tr>
+              <th className="akc-th-check">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(node) => { if (node) node.indeterminate = checkedIds.length > 0 && !allSelected; }}
+                  aria-label="全选"
+                  onChange={(event) => { if (event.target.checked) onSelectAll(); else onClearSelection(); }}
+                />
+              </th>
+              <th>名称与密钥</th>
+              <th>所属用户</th>
+              <th>输入 Provider</th>
+              <th>协议</th>
+              <th>首选模型</th>
+              <th className="num">今日</th>
+              <th className="num">本月</th>
+              <th>状态</th>
+              <th className="akc-th-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {keys.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="akc-table-empty">当前筛选条件下没有匹配的密钥。</td>
+              </tr>
+            ) : keys.map((key, index) => {
+              const model = apiKeyRowModel(key, routes, providers, usage[key.id], ownerLabel(key));
+              const isChecked = checkedIds.includes(key.id);
+              const converted = Boolean(model.inputProtocol && model.outputProtocol && model.inputProtocol !== model.outputProtocol);
+              return (
+                <tr
+                  key={key.id}
+                  className={`${isChecked ? 'checked ' : ''}${selectedKeyId === key.id ? 'active' : ''}`}
+                  onClick={() => onSelect(key)}
+                  onDoubleClick={() => onOpenDrawer(key)}
+                >
+                  <td className="akc-th-check" onClick={(event) => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      disabled={saving}
+                      aria-label={`选择 ${key.name}`}
+                      onChange={(event) => onToggleCheck(key.id, index, !!(event.nativeEvent as MouseEvent).shiftKey)}
+                    />
+                  </td>
+                  <td>
+                    <div className="akc-table-name">
+                      <span className={`akc-key-dot${key.enabled ? ' on' : ''}`} />
+                      <span title={key.name}>{key.name}</span>
+                    </div>
+                    <div className="akc-table-sub mono">{maskKey(key.key)}</div>
+                  </td>
+                  <td>
+                    <span className={`akc-owner-chip${model.ownerIsAdmin ? ' admin' : ''}`}>
+                      <Icon path={model.ownerIsAdmin ? ICONS.shieldCheck : ICONS.user} size={11} />
+                      {model.ownerLabel}
+                    </span>
+                  </td>
+                  <td>
+                    {model.primary ? <ProviderLabel provider={model.primary} size={15} /> : <span className="akc-chain-missing">未绑定</span>}
+                  </td>
+                  <td>
+                    <div className="akc-table-protocols">
+                      {model.outputProtocol ? (
+                        converted ? (
+                          <>
+                            <span>{protocolLabel(model.inputProtocol!)}</span>
+                            <span className="akc-proto-arrow">→</span>
+                            <span className="out">{protocolLabel(model.outputProtocol)}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="out">{protocolLabel(model.outputProtocol)}</span>
+                            <span className="akc-proto-same">透传</span>
+                          </>
+                        )
+                      ) : <Badge tone="red">失效</Badge>}
+                    </div>
+                  </td>
+                  <td>
+                    <div className={`akc-table-sub strong${key.modelOverride ? '' : ' muted'}`} title={model.modelLabel}>{model.modelLabel}</div>
+                  </td>
+                  <td className="num mono">{model.usage.todayRequests.toLocaleString()}</td>
+                  <td className="num mono">{model.usage.monthRequests.toLocaleString()}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className={`akc-status-pill compact${key.enabled ? ' on' : ''}`}
+                      disabled={saving}
+                      title={key.enabled ? '点击停用' : '点击启用'}
+                      onClick={(event) => { event.stopPropagation(); onToggleEnabled(key); }}
+                    >
+                      <span className="akc-status-dot" />
+                      {key.enabled ? '启用中' : '已停用'}
+                    </button>
+                  </td>
+                  <td className="akc-th-actions" onClick={(event) => event.stopPropagation()}>
+                    <div className="akc-table-row-actions">
+                      <button type="button" className="akc-row-icon" title="打开配置" onClick={() => onOpenDrawer(key)}>
+                        <Icon path={ICONS.sliders} size={13} />
+                      </button>
+                      <button type="button" className="akc-row-icon" title="复制密钥" onClick={() => onCopyKey(key)}>
+                        <Icon path={copiedKeyId === key.id ? ICONS.check : ICONS.copy} size={13} />
+                      </button>
+                      <button type="button" className="akc-row-icon danger" title="删除" disabled={saving} onClick={() => onDelete(key)}>
+                        <Icon path={ICONS.trash} size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <footer className="akc-list-foot">
+        <span>单击选中 · 双击打开配置抽屉 · Shift 连续多选</span>
+        {pagination ? (
+          <span className="akc-pager-actions">
+            <span>第 {pagination.page} / {pagination.total} 页 · 每页 {pagination.pageSize} 个</span>
+            <button type="button" className="akc-soft-btn" disabled={pagination.page <= 1} onClick={pagination.onPrev}>上一页</button>
+            <button type="button" className="akc-soft-btn" disabled={pagination.page >= pagination.total} onClick={pagination.onNext}>下一页</button>
+          </span>
+        ) : (
+          <span className="akc-list-foot-count">共 {keys.length} 把密钥</span>
+        )}
+      </footer>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 侧滑抽屉（全量表格里双击行打开）：复用同一个详情工作区
+// ---------------------------------------------------------------------------
+export function ApiKeyDrawer({open, title, onClose, children}: {open: boolean; title: string; onClose: () => void; children: React.ReactNode}) {
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="akc-drawer-backdrop" onMouseDown={onClose}>
+      <aside className="akc-drawer" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="akc-drawer-bar">
+          <span>密钥配置 · {title}</span>
+          <button type="button" className="akc-row-icon" aria-label="关闭" onClick={onClose}>
+            <Icon path={ICONS.close} size={15} />
+          </button>
+        </div>
+        <div className="akc-drawer-body">{children}</div>
+      </aside>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 底部批量操作浮条
+// ---------------------------------------------------------------------------
+export function ApiKeyBatchBar({
+  count,
+  saving,
+  onClear,
+  onEnable,
+  onDisable,
+  onDelete,
+}: {
+  count: number;
+  saving: boolean;
+  onClear: () => void;
+  onEnable: () => void;
+  onDisable: () => void;
+  onDelete: () => void;
+}) {
+  if (count === 0) return null;
+  return (
+    <div className="akc-batchbar" role="toolbar" aria-label="批量操作">
+      <span className="akc-batchbar-count">
+        已选择 <b>{count}</b> 把密钥
+      </span>
+      <div className="akc-batchbar-actions">
+        <button type="button" disabled={saving} onClick={onEnable}>批量启用</button>
+        <button type="button" disabled={saving} onClick={onDisable}>批量停用</button>
+        <button type="button" className="danger" disabled={saving} onClick={onDelete}>
+          <Icon path={ICONS.trash} size={13} />
+          批量删除
+        </button>
+      </div>
+      <button type="button" className="akc-batchbar-close" aria-label="取消选择" onClick={onClear}>
+        <Icon path={ICONS.close} size={14} />
+      </button>
+    </div>
+  );
+}

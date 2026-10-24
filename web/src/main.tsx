@@ -1,14 +1,24 @@
 // 应用入口：App 组件 + 启动引导。通用类型/工具/组件已拆分到 types.ts、lib.ts、components/。
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './styles.css';
 import {
-    ApiKeyDetailPanel,
     ApiKeyEditableField,
     ApiKeyFixedModelField,
     ApiKeyModelMappingControl
 } from './components/apikeys';
 import {LogTimingWaterfall, MachineMetric, UsageRangeCalendar} from './components/charts';
+import {
+    ApiKeyBatchBar,
+    ApiKeyDetailWorkspace,
+    ApiKeyDrawer,
+    ApiKeyFleetPane,
+    ApiKeyFullTable,
+    ApiKeysTopBar,
+    buildApiKeyUsageMap,
+    type ApiKeyUsageSource,
+    type ApiKeyViewMode
+} from './components/api_key_console';
 import {UsagePage} from './components/usage';
 import {
     activePublicBaseURL,
@@ -16,6 +26,7 @@ import {
     antiAutofillProps,
     API_BASE,
     API_KEYS_PAGE_SIZE,
+    API_KEY_VIEW_STORAGE_KEY,
     apiKeyReferencesProvider,
     BACKEND_FAIL_STREAK_LIMIT,
     BACKEND_POLL_MS_LOCAL,
@@ -452,6 +463,20 @@ function App() {
   const [apiKeyPage, setApiKeyPage] = useState(1);
   const [apiKeySortBy, setApiKeySortBy] = useState<'name' | 'createdAt' | 'owner'>('owner');
   const [apiKeySortDir, setApiKeySortDir] = useState<'asc' | 'desc'>('asc');
+  // 密钥页视图：双栏聚焦（左队列 + 右详情，参照 Nexus 控制台的交互）或全量表格 + 抽屉。
+  // 用户的选择记在本地，下次进来保持一致。
+  const [apiKeyViewMode, setApiKeyViewMode] = useState<ApiKeyViewMode>(() => {
+    try {
+      return localStorage.getItem(API_KEY_VIEW_STORAGE_KEY) === 'table' ? 'table' : 'split';
+    } catch {
+      return 'split';
+    }
+  });
+  const [apiKeyDrawerOpen, setApiKeyDrawerOpen] = useState(false);
+  const [copiedApiKeyID, setCopiedApiKeyID] = useState('');
+  const copiedApiKeyTimer = useRef<number | null>(null);
+  // 今日 / 本月用量：与用量页同源（/__request-stats），只取按密钥聚合的两块。
+  const [apiKeyUsageSnapshot, setApiKeyUsageSnapshot] = useState<ApiKeyUsageSource | null>(null);
   const [selfcheckProviderIDs, setSelfcheckProviderIDs] = useState<string[]>(() => {
     const prefs = readSelfcheckPrefs(uiCacheScope(bootSession.auth));
     return Array.isArray(prefs?.providerIds) ? prefs!.providerIds!.filter(Boolean) : [];
@@ -927,15 +952,6 @@ function App() {
     setApiKeyPage(1);
   }, [apiKeyKeyword, apiKeyOwnerFilter, apiKeyProviderFilter, apiKeyProtocolFilter, apiKeySortBy, apiKeySortDir]);
 
-  function toggleApiKeySort(field: 'name' | 'createdAt' | 'owner') {
-    if (apiKeySortBy === field) {
-      setApiKeySortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
-      return;
-    }
-    setApiKeySortBy(field);
-    setApiKeySortDir(field === 'createdAt' ? 'desc' : 'asc');
-  }
-
   const selectedApiKey = useMemo(() => {
     const keys = state.apiKeys || [];
     if (selectedApiKeyID && keys.some((item) => item.id === selectedApiKeyID)) {
@@ -943,6 +959,63 @@ function App() {
     }
     return filteredApiKeys[0];
   }, [state.apiKeys, selectedApiKeyID, filteredApiKeys]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(API_KEY_VIEW_STORAGE_KEY, apiKeyViewMode);
+    } catch {
+      // 隐私模式下写不进去，忽略：只是不记忆而已
+    }
+  }, [apiKeyViewMode]);
+
+  // 进入密钥页 / 切回前台时取一次今日、本月用量。统计接口本身有服务端聚合缓存，
+  // 不需要跟着 5 秒轮询刷——密钥列表上的「今日 N 次」晚一分钟更新没人会注意。
+  useEffect(() => {
+    if (activeNav !== 'api-keys') return undefined;
+    let cancelled = false;
+    const load = () => {
+      void fetch(`${API_BASE}/__request-stats`, {credentials: 'same-origin'})
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+        .then((data: ApiKeyUsageSource) => { if (!cancelled) setApiKeyUsageSnapshot(data); })
+        .catch(() => { /* 用量读不到不影响配置，不加噪声 */ });
+    };
+    load();
+    const timer = window.setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeNav]);
+
+  const apiKeyUsageMap = useMemo(() => buildApiKeyUsageMap(apiKeyUsageSnapshot), [apiKeyUsageSnapshot]);
+
+  const resetApiKeyFilters = useCallback(() => {
+    setApiKeyKeyword('');
+    setApiKeyOwnerFilter([]);
+    setApiKeyProviderFilter([]);
+    setApiKeyProtocolFilter([]);
+  }, []);
+
+  const apiKeyFiltersProps = useMemo(() => ({
+    keyword: apiKeyKeyword,
+    setKeyword: setApiKeyKeyword,
+    ownerOptions: [
+      // 哨兵值只代表「无归属」的老 Key；被提权为管理员的用户仍用自己的 id 持有 Key。
+      {id: LOG_OWNER_FILTER_ADMIN, label: '内置 admin（无归属）'},
+      ...consoleUsers.map((user) => ({id: user.id, label: user.username})),
+    ],
+    owner: apiKeyOwnerFilter,
+    setOwner: setApiKeyOwnerFilter,
+    showOwner: authStatus?.role !== 'user',
+    provider: apiKeyProviderFilter,
+    setProvider: setApiKeyProviderFilter,
+    protocol: apiKeyProtocolFilter,
+    setProtocol: setApiKeyProtocolFilter,
+    providerLabels: Object.fromEntries(state.providers.map((provider) => [provider.id, providerOptionLabel(provider)])),
+    sort: apiKeySortBy,
+    setSort: (value: string) => setApiKeySortBy(value as 'name' | 'createdAt' | 'owner'),
+    reset: resetApiKeyFilters,
+  }), [apiKeyKeyword, apiKeyOwnerFilter, apiKeyProviderFilter, apiKeyProtocolFilter, state.providers, consoleUsers, authStatus?.role, resetApiKeyFilters, apiKeySortBy]);
 
   useEffect(() => {
     const resolved = applyThemeMode(themeMode);
@@ -4191,6 +4264,127 @@ function App() {
     }
   }
 
+  // 列表行、表头、操作按钮上的复制：不弹按钮态，靠行内的 ✓ 与全局 toast 反馈。
+  function copyApiKeyValue(key: APIKey) {
+    void copy(key.key);
+    setCopiedApiKeyID(key.id);
+    if (copiedApiKeyTimer.current !== null) window.clearTimeout(copiedApiKeyTimer.current);
+    copiedApiKeyTimer.current = window.setTimeout(() => setCopiedApiKeyID(''), 1600);
+  }
+
+  // 一键启用 / 停用：详情标题上的状态胶囊和表格里的状态列共用。
+  function toggleApiKeyEnabled(key: APIKey) {
+    if (saving) return;
+    void updateApiKeyField(key, 'enabled', !key.enabled);
+  }
+
+  async function setCheckedApiKeysEnabled(enabled: boolean) {
+    const ids = checkedApiKeyIDs.filter((id) => (state.apiKeys || []).some((key) => key.id === id));
+    if (ids.length === 0) return;
+    setSaving(true);
+    try {
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const key = (state.apiKeys || []).find((item) => item.id === id);
+        if (!key) throw new Error('密钥已不存在');
+        const response = await fetch(`${API_BASE}/__apikeys/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(buildApiKeyPatchBody(key, {enabled})),
+        });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      }));
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      await refreshState(false);
+      await refreshAppLogs();
+      showToast(failed > 0
+        ? `已${enabled ? '启用' : '停用'} ${ids.length - failed} 个密钥，${failed} 个失败`
+        : `已${enabled ? '启用' : '停用'} ${ids.length} 个密钥`);
+      if (failed === 0) clearApiKeyChecks();
+    } catch (error) {
+      showToast(`批量操作失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // 在线调试沙箱：按住这把 Key 的输出协议，用它自己的 token 打一次网关，
+  // 因此答案是「这条链现在通不通」，而不是模拟。
+  async function runApiKeySandboxTest(key: APIKey, prompt: string): Promise<RouteTestResult | null> {
+    const route = state.routes.find((item) => item.id === key.routeId);
+    if (!route) {
+      showToast('该密钥没有绑定路由，无法测试');
+      return null;
+    }
+    const endpoint = state.endpoints.find((item) => item.protocol === route.outputProtocol);
+    if (!endpoint) {
+      showToast('找不到对应输出协议的接入端点，无法测试');
+      return null;
+    }
+    const base = `${localGatewayRoot(state.endpoints)}${endpoint.basePath}`;
+    const model = key.modelOverride?.trim() || state.providers.find((item) => item.id === route.providerId)?.defaultModel || 'auto';
+    const isClaude = route.outputProtocol === 'claude';
+    const url = isClaude ? `${base}/v1/messages`
+      : route.outputProtocol === 'openai_responses' ? `${base}/responses`
+      : `${base}/chat/completions`;
+    const body = isClaude
+      ? {model, max_tokens: 512, messages: [{role: 'user', content: prompt}]}
+      : {model, stream: false, messages: [{role: 'user', content: prompt}]};
+    const headers: Record<string, string> = {'Content-Type': 'application/json'};
+    if (isClaude) {
+      headers['x-api-key'] = key.key;
+      headers['anthropic-version'] = '2023-06-01';
+    } else {
+      headers['Authorization'] = `Bearer ${key.key}`;
+    }
+    const started = performance.now();
+    try {
+      const response = await fetch(url, {method: 'POST', headers, body: JSON.stringify(body)});
+      const latencyMs = Math.round(performance.now() - started);
+      const text = await response.text();
+      let modelUsed = '';
+      let preview = text;
+      try {
+        const data = JSON.parse(text) as Record<string, any>;
+        modelUsed = String(data.model || '');
+        const content = route.outputProtocol === 'openai_responses'
+          ? (data.output_text || data.output?.[0]?.content?.[0]?.text || '')
+          : Array.isArray(data.content)
+            ? data.content.map((part: {text?: string}) => part.text || '').join('')
+            : data.choices?.[0]?.message?.content || data.error?.message || '';
+        preview = content || text;
+      } catch {
+        // 非 JSON：原文直接给用户看，不做二次包装
+      }
+      return {
+        success: response.ok,
+        status: response.status,
+        latencyMs,
+        model: modelUsed || model,
+        protocolFlow: `${protocolLabel(route.outputProtocol)}`,
+        preview: preview.slice(0, 4000),
+        error: response.ok ? undefined : preview.slice(0, 500),
+      };
+    } catch (error) {
+      return {success: false, latencyMs: Math.round(performance.now() - started), error: String(error)};
+    }
+  }
+
+  // 详情工作区要的补丁回调：与 apiKeys 面板同源，一次性打包，避免 JSX 里再传十几项。
+  const apiKeyPanelProps = {
+    onUpdateField: updateApiKeyField,
+    onUpdateBinding: updateApiKeyBinding,
+    onUpdateFallbacks: updateApiKeyFallbacks,
+    onUpdateModelAliases: updateApiKeyModelAliases,
+    onUpdateOwner: updateApiKeyOwner,
+    onDelete: deleteApiKey,
+    onClone: openCloneApiKeyModal,
+    onRefreshModels: refreshApiKeyModelsForProvider,
+    onSwitchProfile: switchApiKeyProfile,
+    onCreateProfile: createApiKeyProfile,
+    onUpdateProfile: updateApiKeyProfile,
+    onDeleteProfile: deleteApiKeyProfile,
+  };
+
   async function deleteCheckedApiKeys() {
     const ids = checkedApiKeyIDs.filter((id) => (state.apiKeys || []).some((key) => key.id === id));
     if (ids.length === 0) return;
@@ -4586,206 +4780,135 @@ function App() {
 
         <main className="main">
           {activeNav === 'api-keys' && (
-          <section className="section-full">
-            <div className="card panel api-keys-panel">
-              <div className="panel-header">
-                <div>
-                  <h2 className="panel-title">API 密钥</h2>
-                  <p className="panel-desc">客户端使用 Bearer 或 x-api-key 携带密钥。选择输入 Provider 与输出协议，网关自动完成透传或转换。</p>
-                </div>
-                <button className="btn primary" disabled={saving || state.providers.length === 0} onClick={openApiKeyModal}>新建 API 密钥</button>
+          <section className="section-full akc-page">
+            <ApiKeysTopBar
+              totalKeys={(state.apiKeys || []).length}
+              enabledKeys={(state.apiKeys || []).filter((key) => key.enabled).length}
+              viewMode={apiKeyViewMode}
+              onViewModeChange={setApiKeyViewMode}
+              onCreate={openApiKeyModal}
+              createDisabled={saving || state.providers.length === 0}
+            />
+            {state.providers.length === 0 ? (
+              <div className="akc-banner">请先创建至少一个输入 Provider，再添加 API 密钥。</div>
+            ) : null}
+
+            {apiKeyViewMode === 'split' ? (
+              <div className="akc-split">
+                <ApiKeyFleetPane
+                  keys={filteredApiKeys}
+                  totalKeys={(state.apiKeys || []).length}
+                  selectedKeyId={selectedApiKey?.id || ''}
+                  checkedIds={checkedApiKeyIDs}
+                  usage={apiKeyUsageMap}
+                  routes={state.routes}
+                  providers={state.providers}
+                  ownerLabel={apiKeyOwnerName}
+                  filters={apiKeyFiltersProps}
+                  saving={saving}
+                  onSelect={(key) => setSelectedApiKeyID(key.id)}
+                  onToggleCheck={toggleApiKeyCheck}
+                  onSelectAll={selectAllFilteredApiKeys}
+                  onClearSelection={clearApiKeyChecks}
+                  onBatchDelete={() => void deleteCheckedApiKeys()}
+                  onCopyKey={copyApiKeyValue}
+                  copiedKeyId={copiedApiKeyID}
+                  createDisabled={saving || state.providers.length === 0}
+                  onCreate={openApiKeyModal}
+                />
+                {selectedApiKey ? (
+                  <ApiKeyDetailWorkspace
+                    keyItem={selectedApiKey}
+                    providers={state.providers}
+                    models={state.models}
+                    routes={state.routes}
+                    endpoints={state.endpoints}
+                    owners={!isNormalUser ? consoleUsers : undefined}
+                    saving={saving}
+                    canWriteQuota={!isNormalUser}
+                    testingProviderID={testingProviderID}
+                    tunnelRunning={tunnelRunning}
+                    livePublicURL={livePublicURL}
+                    fixedOutputLabels={fixedOutputLabels}
+                    panel={apiKeyPanelProps}
+                    onToggleEnabled={toggleApiKeyEnabled}
+                    onToast={showToast}
+                    publicBase={tunnelRunning ? livePublicURL : ''}
+                    onTest={runApiKeySandboxTest}
+                  />
+                ) : (
+                  <div className="akc-detail card akc-detail-placeholder">
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="8" cy="12" r="4.2" /><path d="M12.2 12H21M17.5 12v3M20.8 12v2.2" /></svg>
+                    <p>{filteredApiKeys.length === 0 ? '没有符合筛选条件的密钥' : '请从左侧选择一把 API 密钥'}</p>
+                  </div>
+                )}
               </div>
-              {state.providers.length === 0 ? <div className="empty-state">请先创建至少一个输入 Provider，再添加 API 密钥。</div> : null}
-              {(state.apiKeys || []).length > 0 ? (
-                <div className="api-keys-toolbar">
-                  <div className="field api-keys-filter-field">
-                    <label>名称</label>
-                    <input
-                      type="search"
-                      className="api-keys-filter-search"
-                      autoComplete="one-time-code"
-                      data-1p-ignore
-                      data-lpignore="true"
-                      name="apiKeyFilterKeyword"
-                      placeholder="名称 / 密钥"
-                      value={apiKeyKeyword}
-                      {...antiAutofillProps()}
-                      onChange={(event) => {
-                        reportIfLooksLikeAutofill('apikey-filter-filled', apiKeyKeyword, event.target.value, event);
-                        setApiKeyKeyword(event.target.value);
-                      }}
-                    />
-                  </div>
-                  {!isNormalUser ? (
-                    <MultiSelectFilter
-                      label="所属用户"
-                      options={[
-                        // 哨兵值只代表「无归属」的老 Key；被提权为管理员的用户仍用自己
-                        // 的 id 持有 Key，所以这里必须列出全部用户，不能按角色过滤。
-                        { id: LOG_OWNER_FILTER_ADMIN, label: '内置 admin（无归属）' },
-                        ...consoleUsers.map((user) => ({ id: user.id, label: user.username })),
-                      ]}
-                      selected={apiKeyOwnerFilter}
-                      onChange={setApiKeyOwnerFilter}
-                      allLabel="全部用户"
-                    />
-                  ) : null}
-                  <MultiSelectFilter
-                    label="输入 Provider"
-                    options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider), icon: providerIcon(provider) }))}
-                    selected={apiKeyProviderFilter}
-                    onChange={setApiKeyProviderFilter}
-                    allLabel="全部 Provider"
-                  />
-                  <MultiSelectFilter
-                    label="输出协议"
-                    options={(['openai_chat', 'openai_responses', 'claude'] as Protocol[]).map((protocol) => ({ id: protocol, label: protocolLabel(protocol) }))}
-                    selected={apiKeyProtocolFilter}
-                    onChange={setApiKeyProtocolFilter}
-                    allLabel="全部协议"
-                  />
-                  <div className="api-keys-toolbar-meta">
-                    显示 {filteredApiKeys.length} / {(state.apiKeys || []).length} 个密钥
-                    {apiKeyTotalPages > 1 ? ` · 第 ${currentApiKeyPage} / ${apiKeyTotalPages} 页` : ''}
-                    {checkedApiKeyIDs.length > 0 ? ` · 已选 ${checkedApiKeyIDs.length}` : ''}
-                  </div>
-                  {checkedApiKeyIDs.length > 0 ? (
-                    <div className="api-keys-bulk-actions">
-                      <button className="btn danger" type="button" disabled={saving} onClick={() => void deleteCheckedApiKeys()}>
-                        删除选中（{checkedApiKeyIDs.length}）
-                      </button>
-                      <button className="mini-btn" type="button" disabled={saving} onClick={clearApiKeyChecks}>清除选择</button>
-                    </div>
-                  ) : null}
-                </div>
+            ) : (
+              <ApiKeyFullTable
+                keys={pagedApiKeys}
+                totalKeys={(state.apiKeys || []).length}
+                checkedIds={checkedApiKeyIDs}
+                selectedKeyId={selectedApiKey?.id || ''}
+                usage={apiKeyUsageMap}
+                routes={state.routes}
+                providers={state.providers}
+                ownerLabel={apiKeyOwnerName}
+                saving={saving}
+                onToggleCheck={toggleApiKeyCheck}
+                onSelectAll={selectAllFilteredApiKeys}
+                onClearSelection={clearApiKeyChecks}
+                onSelect={(key) => setSelectedApiKeyID(key.id)}
+                onOpenDrawer={(key) => {
+                  setSelectedApiKeyID(key.id);
+                  setApiKeyDrawerOpen(true);
+                }}
+                onCopyKey={copyApiKeyValue}
+                copiedKeyId={copiedApiKeyID}
+                onDelete={(key) => void deleteApiKey(key)}
+                onToggleEnabled={toggleApiKeyEnabled}
+                onBatchDelete={() => void deleteCheckedApiKeys()}
+                pagination={apiKeyTotalPages > 1 ? {
+                  page: currentApiKeyPage,
+                  total: apiKeyTotalPages,
+                  pageSize: API_KEYS_PAGE_SIZE,
+                  onPrev: () => setApiKeyPage(currentApiKeyPage - 1),
+                  onNext: () => setApiKeyPage(currentApiKeyPage + 1),
+                } : undefined}
+              />
+            )}
+
+            <ApiKeyDrawer open={apiKeyDrawerOpen} title={selectedApiKey?.name || ''} onClose={() => setApiKeyDrawerOpen(false)}>
+              {selectedApiKey ? (
+                <ApiKeyDetailWorkspace
+                  keyItem={selectedApiKey}
+                  providers={state.providers}
+                  models={state.models}
+                  routes={state.routes}
+                  endpoints={state.endpoints}
+                  owners={!isNormalUser ? consoleUsers : undefined}
+                  saving={saving}
+                  canWriteQuota={!isNormalUser}
+                  testingProviderID={testingProviderID}
+                  tunnelRunning={tunnelRunning}
+                  livePublicURL={livePublicURL}
+                  fixedOutputLabels={fixedOutputLabels}
+                  panel={apiKeyPanelProps}
+                  onToggleEnabled={toggleApiKeyEnabled}
+                  onToast={showToast}
+                  publicBase={tunnelRunning ? livePublicURL : ''}
+                  onTest={runApiKeySandboxTest}
+                />
               ) : null}
-              {(state.apiKeys || []).length === 0 ? (
-                <div className="empty-state">暂无 API 密钥。点击「新建 API 密钥」生成 sk-gw-… 密钥。</div>
-              ) : (
-                <div className="api-keys-layout">
-                  <div className="api-keys-table-wrap">
-                    <div className="api-keys-table">
-                      <div className={`api-keys-table-head${!isNormalUser ? ' with-owner' : ''}`}>
-                        <label className="api-keys-check" title="全选当前列表" onClick={(event) => event.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            checked={filteredApiKeys.length > 0 && filteredApiKeys.every((key) => checkedApiKeyIDs.includes(key.id))}
-                            disabled={filteredApiKeys.length === 0 || saving}
-                            onChange={(event) => {
-                              if (event.target.checked) selectAllFilteredApiKeys();
-                              else clearApiKeyChecks();
-                            }}
-                            aria-label="全选当前列表"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className={`api-keys-sort-btn${apiKeySortBy === 'name' ? ' active' : ''}`}
-                          onClick={() => toggleApiKeySort('name')}
-                          title="按名称排序"
-                        >
-                          名称{apiKeySortBy === 'name' ? (apiKeySortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                        </button>
-                        {!isNormalUser ? (
-                          <button
-                            type="button"
-                            className={`api-keys-sort-btn${apiKeySortBy === 'owner' ? ' active' : ''}`}
-                            onClick={() => toggleApiKeySort('owner')}
-                            title="按所属用户排序"
-                          >
-                            用户{apiKeySortBy === 'owner' ? (apiKeySortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                          </button>
-                        ) : null}
-                      </div>
-                      {filteredApiKeys.length === 0 ? (
-                        <div className="empty-state compact">当前筛选条件下没有匹配的密钥。</div>
-                      ) : pagedApiKeys.map((key, pageIndex) => {
-                        // index 基于 filteredApiKeys 全局序号，保证 Shift 连选跨页也正确。
-                        const index = apiKeyPageStart + pageIndex;
-                        const checked = checkedApiKeyIDs.includes(key.id);
-                        return (
-                          <button
-                            type="button"
-                            key={key.id}
-                            className={`api-keys-row${!isNormalUser ? ' with-owner' : ''}${selectedApiKey?.id === key.id ? ' active' : ''}${checked ? ' checked' : ''}`}
-                            onClick={(event) => {
-                              if (event.shiftKey) {
-                                event.preventDefault();
-                                toggleApiKeyCheck(key.id, index, true);
-                                return;
-                              }
-                              setSelectedApiKeyID(key.id);
-                            }}
-                          >
-                            <label
-                              className="api-keys-check"
-                              onClick={(event) => event.stopPropagation()}
-                              onKeyDown={(event) => event.stopPropagation()}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={saving}
-                                onChange={(event) => {
-                                  const native = event.nativeEvent as MouseEvent;
-                                  toggleApiKeyCheck(key.id, index, !!native.shiftKey);
-                                }}
-                                aria-label={`选择 ${key.name}`}
-                              />
-                            </label>
-                            <span className="api-keys-cell name" title={key.name}>{key.name}</span>
-                            {!isNormalUser ? (
-                              <span className="api-keys-cell owner" title={apiKeyOwnerName(key)}>{apiKeyOwnerName(key)}</span>
-                            ) : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {apiKeyTotalPages > 1 ? (
-                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>第 {currentApiKeyPage} / {apiKeyTotalPages} 页 · 每页 {API_KEYS_PAGE_SIZE} 个</span>
-                        <span style={{ display: 'flex', gap: 8 }}>
-                          <button className="mini-btn" type="button" disabled={currentApiKeyPage <= 1} onClick={() => setApiKeyPage(currentApiKeyPage - 1)}>上一页</button>
-                          <button className="mini-btn" type="button" disabled={currentApiKeyPage >= apiKeyTotalPages} onClick={() => setApiKeyPage(currentApiKeyPage + 1)}>下一页</button>
-                        </span>
-                      </div>
-                    ) : null}
-                    <div className="api-keys-select-hint">勾选后可批量删除；Shift+点击可连续多选</div>
-                  </div>
-                  {selectedApiKey ? (
-                    <ApiKeyDetailPanel
-                      keyItem={selectedApiKey}
-                      providers={state.providers}
-                      routes={state.routes}
-                      models={state.models}
-                      endpoints={state.endpoints}
-                      saving={saving}
-                      canWriteQuota={!isNormalUser}
-                      testingProviderID={testingProviderID}
-                      tunnelRunning={tunnelRunning}
-                      livePublicURL={livePublicURL}
-                      fixedOutputLabels={fixedOutputLabels}
-                      onUpdateField={updateApiKeyField}
-                      onUpdateBinding={updateApiKeyBinding}
-                      onUpdateModelAliases={updateApiKeyModelAliases}
-                      onUpdateFallbacks={updateApiKeyFallbacks}
-                      onDelete={deleteApiKey}
-                      onClone={openCloneApiKeyModal}
-                      onRefreshModels={refreshApiKeyModelsForProvider}
-                      onToast={showToast}
-                      owners={!isNormalUser ? consoleUsers : undefined}
-                      onUpdateOwner={!isNormalUser ? updateApiKeyOwner : undefined}
-                      onSwitchProfile={switchApiKeyProfile}
-                      onCreateProfile={createApiKeyProfile}
-                      onUpdateProfile={updateApiKeyProfile}
-                      onDeleteProfile={deleteApiKeyProfile}
-                    />
-                  ) : (
-                    <div className="api-keys-detail empty-state">请从左侧列表选择一个 API 密钥。</div>
-                  )}
-                </div>
-              )}
-            </div>
+            </ApiKeyDrawer>
+
+            <ApiKeyBatchBar
+              count={checkedApiKeyIDs.length}
+              saving={saving}
+              onClear={clearApiKeyChecks}
+              onEnable={() => void setCheckedApiKeysEnabled(true)}
+              onDisable={() => void setCheckedApiKeysEnabled(false)}
+              onDelete={() => void deleteCheckedApiKeys()}
+            />
           </section>
           )}
 
