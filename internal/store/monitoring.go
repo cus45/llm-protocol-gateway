@@ -825,6 +825,12 @@ func (s *Store) MonitorRequestSummary(from, to time.Time) (monitoring.RequestSum
 	return summary, nil
 }
 
+// SaveCheckinHistory upserts one day's check-in history row.
+//
+// It is the standalone form of what checkin.go's SaveCheckin does inside the
+// same transaction as the current-state update; production writes through that
+// path. Kept as the documented single-row API (used by the migration tests) —
+// a caller that uses it must also update `checkins`, or the two disagree.
 func (s *Store) SaveCheckinHistory(record domain.CheckinRecord) error {
 	offline := 0
 	if record.Offline {
@@ -842,6 +848,9 @@ func (s *Store) SaveCheckinHistory(record domain.CheckinRecord) error {
 	return err
 }
 
+// ListCheckinHistory reads the last days of check-in history for one provider,
+// newest first. The console shows today's state from `checkins`; this is the
+// history view behind it.
 func (s *Store) ListCheckinHistory(providerID string, days int) ([]domain.CheckinRecord, error) {
 	if days <= 0 {
 		days = 30
