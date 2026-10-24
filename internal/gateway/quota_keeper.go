@@ -818,6 +818,15 @@ func (s *Server) claimQuotaProbe(providerID string) bool {
 	return true
 }
 
+// probeInFlight reports whether any probe (keepalive, light or CLI deep check)
+// currently holds providerID. Read-only peek for schedulers that want to skip
+// instead of racing claimQuotaProbe.
+func (s *Server) probeInFlight(providerID string) bool {
+	s.quotaKeeperMu.Lock()
+	defer s.quotaKeeperMu.Unlock()
+	return s.quotaProbeInFlight[providerID]
+}
+
 func (s *Server) releaseQuotaProbe(providerID string) {
 	s.quotaKeeperMu.Lock()
 	defer s.quotaKeeperMu.Unlock()

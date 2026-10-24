@@ -348,6 +348,11 @@ export const PROBE_SKIP_TEXT: Record<string, string> = {
   no_model: '没有可用模型，未发出请求',
   provider_disabled: '账号已停用，未探测',
   provider_missing: '账号不存在或已删除',
+  // CLI 深检的整轮上限（2 小时）到了，剩余用例没跑；取消是网关停止时中止的轮次。
+  // 两者都不是失败，只是「没跑完」。
+  round_budget: '整轮超过 2 小时上限，剩余用例未跑',
+  cancelled: '网关停止，本轮中止',
+  running: '深检正在进行中',
 };
 
 export function probeSkipText(skipped: string | undefined): string {
@@ -355,16 +360,32 @@ export function probeSkipText(skipped: string | undefined): string {
   return PROBE_SKIP_TEXT[skipped] ?? `已跳过（${skipped}）`;
 }
 
-/** 探测 kind 文案。CLI 深检尚未上线，界面不出现该入口，只用于给历史记录兜底。 */
+/** 探测 kind 文案：轻探测 / CLI 深检。 */
 export function probeKindText(kind: string): string {
   if (kind === 'light') return '轻探测';
   if (kind === 'cli') return 'CLI 深检';
   return kind || '—';
 }
 
+/** 深检 caseID 形如 `<providerId>|<client>|<kind>`，映射成「客户端 · chat/tool」。 */
+const SELFCHECK_CLIENT_TEXT: Record<string, string> = {
+  opencode: 'OpenCode',
+  codex: 'Codex',
+  claude: 'Claude',
+};
+
 export function probeCaseText(key: string): string {
   if (key === 'chat') return '最小对话';
   if (key === 'tools') return '工具调用';
-  if (key.startsWith('selfcheck:')) return `自检 ${key.slice('selfcheck:'.length)}`;
+  if (key === 'prepare' || key === 'cli') return '深检准备';
+  if (key.startsWith('selfcheck:')) {
+    const caseId = key.slice('selfcheck:'.length);
+    const parts = caseId.split('|');
+    if (parts.length === 3) {
+      const client = SELFCHECK_CLIENT_TEXT[parts[1]] ?? parts[1];
+      return `${client} · ${parts[2]}`;
+    }
+    return caseId || '—';
+  }
   return key || '—';
 }

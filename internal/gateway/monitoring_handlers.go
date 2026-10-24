@@ -1122,12 +1122,17 @@ func (s *Server) handleMonitorProbeRun(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = probeKindLight
 	}
-	if kind != probeKindLight {
+	if kind != probeKindLight && kind != probeKindCLI {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "errorKind": "kind_unavailable"})
 		return
 	}
-	if _, err := s.router.ProviderByID(in.ProviderID); err != nil {
+	provider, err := s.router.ProviderByID(in.ProviderID)
+	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, "Provider 不存在或已删除")
+		return
+	}
+	if kind == probeKindCLI {
+		s.runMonitorCLIDeepCheck(w, r, provider)
 		return
 	}
 	run := s.runLightProbe(r.Context(), in.ProviderID)
@@ -1144,6 +1149,79 @@ func (s *Server) handleMonitorProbeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// runMonitorCLIDeepCheck 手动触发一个账号的深检。深检要跑 6 条真实 CLI 用例，
+// 同步等会挂住 HTTP 好几分钟，所以直接在当前请求里跑完再回结果：运维点的是
+// 「现在就确认」，回了 202 还得再拉一次才有结论。
+//
+// 和自动深检走同一条 runCLIDeepCheckRound：临时 route/key 的清理、单轮上限、
+// 落库口径完全一致。409 在起跑前就能确定——单飞登记不靠后台时序。
+func (s *Server) runMonitorCLIDeepCheck(w http.ResponseWriter, r *http.Request, provider domain.Provider) {
+	if provider.Disabled {
+		// 与轻探测一致：停用账号回 200 + skipped=provider_disabled，而不是报错。
+		// 「没跑」不是失败，界面据此显示原因。
+		run := probeRun{
+			ProviderID: provider.ID, ProviderName: provider.Name, Kind: probeKindCLI, At: time.Now().UTC(),
+			Cases:   []probeCaseResult{{Case: probeCLICasePrefix + "prepare", Skipped: "provider_disabled", Error: "provider disabled"}},
+			Skipped: "provider_disabled",
+		}
+		s.recordProbeRun(run)
+		writeJSON(w, http.StatusOK, probeRunBody(run))
+		return
+	}
+	if missing := missingSelfcheckCLIs(s.selfcheckTools()); len(missing) > 0 {
+		// CLI 缺失不是错误：记录一行 skipped=cli_missing，照样回 200，
+		// 界面据此显示「CLI 未安装，未判定失败」。
+		run := probeRun{
+			ProviderID: provider.ID, ProviderName: provider.Name, Kind: probeKindCLI, At: time.Now().UTC(),
+			Cases:   []probeCaseResult{{Case: "cli", Skipped: probeCLISkipCLIMissing, Error: "missing CLI: " + strings.Join(missing, ",")}},
+			Skipped: probeCLISkipCLIMissing,
+		}
+		s.recordProbeRun(run)
+		writeJSON(w, http.StatusOK, probeRunBody(run))
+		return
+	}
+	if !s.claimQuotaProbe(provider.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok": false, "providerId": provider.ID, "kind": probeKindCLI, "errorKind": "in_flight",
+		})
+		return
+	}
+	defer s.releaseQuotaProbe(provider.ID)
+	// 直接用本轮返回的行组响应，不回查库去猜「哪一轮是我跑的」（重启后库里可能
+	// 有更晚、但不属于本轮的行）。
+	runs := s.runCLIDeepCheckRound(context.WithoutCancel(r.Context()), provider.ID, s.probeClock().UTC().Add(probeCLIRoundBudget))
+	writeJSON(w, http.StatusOK, probeRunsBody(provider.ID, probeKindCLI, runs))
+}
+
+// probeRunBody 把单行组成的「一轮」（整轮没跑成，如 CLI 缺失/账号停用）合成响应。
+func probeRunBody(run probeRun) map[string]any {
+	body := map[string]any{
+		"ok":         !run.Failed(),
+		"providerId": run.ProviderID,
+		"kind":       run.Kind,
+		"at":         run.At,
+		"cases":      run.Cases,
+		"skipped":    run.Skipped,
+	}
+	return body
+}
+
+// probeRunsBody 把一轮的所有行合成一个响应：ok 只看真正跑了的用例，失败原因
+// 取第一条失败用例。
+func probeRunsBody(providerID, kind string, runs []probeRun) map[string]any {
+	body := map[string]any{"ok": true, "providerId": providerID, "kind": kind}
+	var cases []probeCaseResult
+	skipped := ""
+	for _, run := range runs {
+		cases = append(cases, run.Cases...)
+		skipped = firstNonEmpty(skipped, run.Skipped)
+		body["at"] = run.At
+	}
+	body["cases"] = cases
+	body["skipped"] = skipped
+	return body
 }
 
 func (s *Server) handleMonitorProbeConfig(w http.ResponseWriter, r *http.Request) {
@@ -1182,6 +1260,10 @@ func (s *Server) handleMonitorProbeConfigUpdate(w http.ResponseWriter, r *http.R
 	}
 	if _, err := clockMinutes(incoming.Daily.WindowEnd); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "每日窗口结束时间格式应为 HH:MM")
+		return
+	}
+	if err := monitoring.ValidateWeeklyCLI(incoming.WeeklyCLI.Weekday, incoming.WeeklyCLI.Time); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "每周深检的星期要在 0-6（0=周日）、时间格式应为 HH:MM")
 		return
 	}
 	if err := monitoring.NewConfig(s.monitoringStore).SaveProbe(incoming); err != nil {

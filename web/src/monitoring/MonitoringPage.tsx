@@ -1,48 +1,48 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {
-  MonitorAPIError,
-  acknowledgeAlert,
-  createChannel,
-  deleteChannel,
-  fetchAccounts,
-  fetchAlert,
-  fetchAlerts,
-  fetchChannels,
-  fetchDispatch,
-  fetchEvents,
-  fetchOverview,
-  fetchProbeConfig,
-  fetchProbes,
-  ignoreAlert,
-  renewAccount,
-  refreshQuota,
-  retryPush,
-  runProbe,
-  saveProbeConfig,
-  testChannel,
-  updateChannel,
-  updateDispatch,
+    acknowledgeAlert,
+    createChannel,
+    deleteChannel,
+    fetchAccounts,
+    fetchAlert,
+    fetchAlerts,
+    fetchChannels,
+    fetchDispatch,
+    fetchEvents,
+    fetchOverview,
+    fetchProbeConfig,
+    fetchProbes,
+    ignoreAlert,
+    MonitorAPIError,
+    refreshQuota,
+    renewAccount,
+    retryPush,
+    runProbe,
+    saveProbeConfig,
+    testChannel,
+    updateChannel,
+    updateDispatch,
 } from './api';
 import type {
-  MonitorAccount,
-  MonitorAlert,
-  MonitorAlertDetail,
-  MonitorChannelInput,
-  MonitorChannelView,
-  MonitorDispatchConfig,
-  MonitorEvent,
-  MonitorOverview,
-  MonitorProbeAccount,
-  MonitorProbeConfig,
-  MonitorProbeRunResult,
-  MonitorProbeRun,
-  MonitorSeverity,
+    MonitorAccount,
+    MonitorAlert,
+    MonitorAlertDetail,
+    MonitorChannelInput,
+    MonitorChannelView,
+    MonitorDispatchConfig,
+    MonitorEvent,
+    MonitorOverview,
+    MonitorProbeAccount,
+    MonitorProbeConfig,
+    MonitorProbeRun,
+    MonitorProbeRunResult,
+    MonitorSeverity,
 } from './types';
-import { AccountsTab } from './AccountsTab';
-import { AlertsTab } from './AlertsTab';
-import { OverviewTab } from './OverviewTab';
-import { PROBE_KIND_LIGHT, ProbeSettingsPanel, ProbesTab } from './ProbesTab';
-import { SettingsTab } from './SettingsTab';
+import {AccountsTab} from './AccountsTab';
+import {AlertsTab} from './AlertsTab';
+import {OverviewTab} from './OverviewTab';
+import {PROBE_KIND_LIGHT, ProbesTab} from './ProbesTab';
+import {SettingsTab} from './SettingsTab';
 
 type TabID = 'overview' | 'accounts' | 'alerts' | 'probes' | 'settings';
 
@@ -425,8 +425,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           probeResult={probeResult && probeResult.providerId === selectedAccount ? probeResult.data : null}
           onRunProbe={(providerId) => {
             setDrawerError('');
+            // 真实原因已由 runProbeFor 写到面板顶部错误行，这里只补一句「在哪没成」。
             void runProbeFor(providerId).then((result) => {
-              if (!result) setDrawerError('探测请求失败，请稍后重试');
+              if (!result) setDrawerError('探测没有发出：账号或上游已不可用，原因见页面顶部提示');
             });
           }}
           onCloseDrawer={() => {
@@ -489,6 +490,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           }
           onDismissResult={() => setProbeResult(null)}
           onRunProbe={runProbeFor}
+          onRefreshRuns={() => void loadVisible()}
           onFilter={filterProbes}
           onOpenAccount={openAccount}
         />

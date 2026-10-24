@@ -101,7 +101,7 @@ func TestMonitorProbeRunLightConflictAndGuards(t *testing.T) {
 
 	for _, item := range []struct{ name, body string }{
 		{"missing provider", `{}`},
-		{"unknown kind", `{"providerId":"p1","kind":"cli"}`},
+		{"unknown kind", `{"providerId":"p1","kind":"deep"}`},
 		{"unknown provider", `{"providerId":"gone"}`},
 	} {
 		recorder := monitorCall(t, server.handleMonitorProbeRun, http.MethodPost, "/__monitor/probes/run",
@@ -121,7 +121,8 @@ func TestMonitorProbeConfigRoundTripAndGuards(t *testing.T) {
 	server.monitoringStore = db
 
 	good := `{"eventDriven":{"enabled":true,"idleMinutes":45,"maxPerDayPerAccount":2,"minIntervalMinutes":120},` +
-		`"daily":{"enabled":true,"windowStart":"03:00","windowEnd":"05:00"},"quotaStaleMinutes":30}`
+		`"daily":{"enabled":true,"windowStart":"03:00","windowEnd":"05:00"},` +
+		`"weeklyCli":{"enabled":true,"weekday":0,"time":"05:00"},"quotaStaleMinutes":30}`
 	saved := monitorCall(t, server.handleMonitorProbeConfigUpdate, http.MethodPut, "/__monitor/probe-config",
 		good, nil, monitorAdminID())
 	if saved.Code != http.StatusOK {

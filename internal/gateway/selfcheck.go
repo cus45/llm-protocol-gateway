@@ -139,7 +139,7 @@ func (s *Server) ensureSelfcheckStore() {
 
 func (s *Server) handleSelfcheckTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tools":   resolveSelfcheckTools(),
+		"tools":   s.selfcheckTools(),
 		"lanRoot": selfcheckLANRoot(s.router.State()),
 	})
 }
@@ -291,7 +291,7 @@ func (s *Server) handleSelfcheckRetry(w http.ResponseWriter, r *http.Request) {
 					preferredModel = picked
 				}
 			}
-			if route, key, model, created, err := s.ensureSelfcheckRouteAndKey(provider, item.protocol, preferredModel); err == nil {
+			if route, key, model, created, err := s.ensureSelfcheckRouteAndKey(provider, item.protocol, preferredModel, job.ID); err == nil {
 				item.routeID = route.ID
 				item.apiKeyName = key.Name
 				item.apiKey = key.Key
@@ -391,7 +391,7 @@ func (s *Server) runSelfcheckJob(job *selfcheckJob, providerIDs []string) {
 			}
 			if !ok {
 				setupErr = "provider not found"
-			} else if route, key, m, created, err := s.ensureSelfcheckRouteAndKey(provider, pair.protocol, preferredModel); err != nil {
+			} else if route, key, m, created, err := s.ensureSelfcheckRouteAndKey(provider, pair.protocol, preferredModel, job.ID); err != nil {
 				setupErr = err.Error()
 			} else {
 				routeID = route.ID
@@ -645,7 +645,14 @@ func normalizeSelfcheckModels(raw map[string]string, providerIDs []string) map[s
 // created route. Callers persist once instead — see the routeCreated return
 // value. (API keys are unaffected: they go through apiKeyStore's incremental
 // single-row CRUD, not saveState.)
-func (s *Server) ensureSelfcheckRouteAndKey(provider domain.Provider, protocol domain.Protocol, preferredModel string) (domain.Route, domain.APIKey, string, bool, error) {
+//
+// keyScope 加在临时密钥名里（selfcheck-<keyScope><provider>-<protocol>）。深检
+// 传本轮的 jobID，这样两轮同时活着时各自的密钥名不同，任一方结束时的按前缀
+// 清理不会删掉另一方还在用的密钥；空串是旧行为，仅供既有自检入口使用。
+//
+// 名字始终以 selfcheck- 开头：request_logs 的 access_source=monitor_probe 就是
+// 按这个前缀判定的（server.go），改名不能动前缀。
+func (s *Server) ensureSelfcheckRouteAndKey(provider domain.Provider, protocol domain.Protocol, preferredModel, keyScope string) (domain.Route, domain.APIKey, string, bool, error) {
 	preferredModel = strings.TrimSpace(preferredModel)
 	state := s.router.State()
 	routeCreated := false
@@ -666,7 +673,7 @@ func (s *Server) ensureSelfcheckRouteAndKey(provider domain.Provider, protocol d
 		s.logs.AddApp("info", "selfcheck route created", route.ID)
 	}
 
-	keyName := selfcheckKeyName(provider.ID, protocol)
+	keyName := selfcheckScopedKeyName(keyScope, provider.ID, protocol)
 	state = s.router.State()
 	if key, ok := findAPIKeyByName(state, keyName); ok {
 		modelOverride := strings.TrimSpace(key.ModelOverride)
@@ -735,7 +742,16 @@ func resolveSelfcheckModel(key domain.APIKey, provider domain.Provider, preferre
 }
 
 func selfcheckKeyName(providerID string, protocol domain.Protocol) string {
-	return selfcheckKeyPrefix + providerID + "-" + string(protocol)
+	return selfcheckScopedKeyName("", providerID, protocol)
+}
+
+// selfcheckScopedKeyName 带轮次作用域的临时密钥名；scope 为空即旧格式。
+func selfcheckScopedKeyName(scope, providerID string, protocol domain.Protocol) string {
+	name := selfcheckKeyPrefix + providerID + "-" + string(protocol)
+	if scope = strings.TrimSpace(scope); scope != "" {
+		name = selfcheckKeyPrefix + scope + "-" + providerID + "-" + string(protocol)
+	}
+	return name
 }
 
 func findProvider(state domain.GatewayState, id string) (domain.Provider, bool) {
@@ -983,6 +999,16 @@ func (p *selfcheckToolProbe) cleanup() {
 		return
 	}
 	_ = os.Remove(p.path)
+}
+
+// selfcheckTools reports which CLIs this machine has. It goes through the
+// server so a test can swap server.selfcheckToolsFunc and restore it in
+// t.Cleanup; production reads the real machine in resolveSelfcheckTools.
+func (s *Server) selfcheckTools() []selfcheckToolInfo {
+	if s != nil && s.selfcheckToolsFunc != nil {
+		return s.selfcheckToolsFunc()
+	}
+	return resolveSelfcheckTools()
 }
 
 func resolveSelfcheckTools() []selfcheckToolInfo {

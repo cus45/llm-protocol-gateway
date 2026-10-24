@@ -44,7 +44,10 @@ type monitoringStore interface {
 	// the daily budget, and neither may reset because the process restarted.
 	MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error)
 	InsertMonitorProbeRun(monitoring.ProbeRunRecord) error
+	InsertMonitorProbeRuns([]monitoring.ProbeRunRecord) error
+	ReplaceMonitorProbeRun(providerID, runningCase string, records []monitoring.ProbeRunRecord) error
 	LatestMonitorProbeRuns(providerID string, limit int) ([]monitoring.ProbeRunRecord, error)
+	LatestMonitorProbeRunsOfKind(kind, providerID string, limit int) ([]monitoring.ProbeRunRecord, error)
 }
 
 // windowStatsStore is implemented by the store's request-log aggregation. It is

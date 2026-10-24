@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { BrandIcon, Modal, Switch } from '../components/ui';
-import type { MonitorProbeAccount, MonitorProbeConfig, MonitorProbeRun, MonitorProbeRunResult } from './types';
-import { normalizeProbeCase, probeCaseText, probeKindText, probeSkipText } from './types';
-import { displayTime, formatLatency, relativeToNow } from './format';
+import {useState} from 'react';
+import {BrandIcon, Modal, Switch} from '../components/ui';
+import type {MonitorProbeAccount, MonitorProbeConfig, MonitorProbeRun, MonitorProbeRunResult} from './types';
+import {normalizeProbeCase, probeCaseText, probeKindText, probeSkipText} from './types';
+import {displayTime, formatLatency, relativeToNow} from './format';
 
 /** 已上线的探测种类。CLI 深检未上线，这里不出现任何入口。 */
 export const PROBE_KIND_LIGHT = 'light';
@@ -21,6 +21,8 @@ export interface ProbesTabProps {
   probeResult: { providerId: string; data: MonitorProbeRunResult } | null;
   onDismissResult: () => void;
   onRunProbe: (providerId: string) => Promise<MonitorProbeRunResult | null>;
+  /** 探测结束后再取一次记录列表（探测行可能比第一次刷新晚落库）。 */
+  onRefreshRuns: () => void;
   onFilter: (providerId: string) => void;
   onOpenAccount: (providerId: string) => void;
 }
@@ -59,7 +61,7 @@ function dailyText(account: MonitorProbeAccount): string {
 export function ProbesTab(props: ProbesTabProps) {
   const {
     probeAccounts, probeRuns, providerFilter, timezone, busy, error, iconOf,
-    probeResult, onDismissResult, onRunProbe, onFilter, onOpenAccount,
+    probeResult, onDismissResult, onRunProbe, onFilter, onOpenAccount, onRefreshRuns,
   } = props;
   const now = Date.now();
   const nameOf = (providerId: string) =>
@@ -70,7 +72,10 @@ export function ProbesTab(props: ProbesTabProps) {
   const run = (providerId: string) => {
     setRunError('');
     void onRunProbe(providerId).then((data) => {
-      if (!data) setRunError(`${nameOf(providerId)}：探测请求失败，请稍后重试`);
+      // onRunProbe 内部已经刷新过，但刷新请求可能在探测行落库之前返回；这里再把已落库的记录补进来，
+      // 否则弹层打开期间「最近探测记录」会少掉刚跑的两行。
+      if (data) void onRefreshRuns();
+      else setRunError(`${nameOf(providerId)}：探测请求失败，请稍后重试`);
     });
   };
 
@@ -184,7 +189,7 @@ export function ProbesTab(props: ProbesTabProps) {
                 <span className="m-clip">{probeCaseText(row.case)}</span>
                 <span className="m-row-num">{statusCodeText(row.status)}</span>
                 <span className={`m-clip ${skipped ? 'muted-text' : row.ok ? '' : 'err'}`}>
-                  {skipped || (row.ok ? '通过' : '失败')}
+                  {skipped || (row.ok ? '通过' : row.status === 0 && row.errorCode === 'network' ? '失败 · 网络不可达' : '失败')}
                 </span>
                 <span className="muted-text">{formatLatency(row.durationMs)}</span>
                 <span className="muted-text m-clip" title={row.model || ''}>{row.model || '—'}</span>
@@ -227,11 +232,15 @@ export function ProbeResultBody({ result }: ProbeResultBodyProps) {
   if (skipped) return <div className="metric-note">{skipped}</div>;
   const cases = result.cases ?? [];
   if (cases.length === 0) return <div className="metric-note">{'探测已提交，但没有返回用例结果。'}</div>;
+  // 深检（kind=cli）与轻探测的结论口径不同：深检失败不进入 probe_failed、也不会
+  // 触发任何自动处置，文案必须分开，否则运维会被误导。
+  const isCLI = result.kind === 'cli';
+  const headline = isCLI
+    ? (result.ok ? 'CLI 深检通过' : 'CLI 深检未通过：不进入 probe_failed 规则，不会自动处置账号。')
+    : (result.ok ? '轻探测通过' : '轻探测失败：只进入 probe_failed 规则，不会自动处置账号。');
   return (
     <div>
-      <div className="metric-note">
-        {result.ok ? '轻探测通过' : '轻探测失败：只进入 probe_failed 规则，不会自动处置账号。'}
-      </div>
+      <div className="metric-note">{headline}</div>
       {cases.map(normalizeProbeCase).map((item, index) => (
         <div className="log-row" key={`${item.key}-${index}`}>
           <div className="mrow mrow-probe-case">

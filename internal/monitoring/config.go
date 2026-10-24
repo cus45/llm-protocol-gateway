@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -246,6 +247,23 @@ func DefaultProbeConfig() ProbeConfig {
 	cfg.WeeklyCLI.Weekday = 0
 	cfg.WeeklyCLI.Time = "05:00"
 	return cfg
+}
+
+// ValidateWeeklyCLI 校验每周 CLI 深检的排程字段：weekday 0=周日 … 6=周六，
+// time 严格是 HH:MM。写坏的值会让「每周一次」变成「每周零次」或天天跑，宁可拒掉。
+func ValidateWeeklyCLI(weekday int, at string) error {
+	if weekday < 0 || weekday > 6 {
+		return fmt.Errorf("weeklyCli.weekday must be 0..6, got %d", weekday)
+	}
+	if len(at) != 5 || at[2] != ':' {
+		return fmt.Errorf("weeklyCli.time must be HH:MM, got %q", at)
+	}
+	hour, errHour := strconv.Atoi(at[:2])
+	minute, errMinute := strconv.Atoi(at[3:])
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return fmt.Errorf("weeklyCli.time must be HH:MM, got %q", at)
+	}
+	return nil
 }
 
 type MigrationMarker struct {

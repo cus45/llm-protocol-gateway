@@ -933,17 +933,41 @@ func monitorPercentile(values []int64, p float64) int64 {
 // too: the daily budget and answers like "why is there no weekly deep check"
 // both have to be explainable from the database alone.
 func (s *Store) InsertMonitorProbeRun(record monitoring.ProbeRunRecord) error {
-	_, err := s.db.Exec(`INSERT INTO monitor_probe_runs
-		(provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ProviderID, record.Kind, record.Case, boolToInt(record.OK), record.Status,
-		record.Skipped, record.DurationMs, record.Model, record.ErrorCode, record.Day,
-		record.Time.UTC().Format(time.RFC3339Nano))
+	return s.InsertMonitorProbeRuns([]monitoring.ProbeRunRecord{record})
+}
+
+// InsertMonitorProbeRuns writes one round in a single transaction. A round is
+// several rows sharing one timestamp, and the "did this round already run"
+// checks read them as a unit: a half-written round must not be visible.
+func (s *Store) InsertMonitorProbeRuns(records []monitoring.ProbeRunRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("insert probe run: %w", err)
+		return fmt.Errorf("insert probe runs: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, record := range records {
+		if _, err := tx.Exec(`INSERT INTO monitor_probe_runs
+			(provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			record.ProviderID, record.Kind, record.Case, boolToInt(record.OK), record.Status,
+			record.Skipped, record.DurationMs, record.Model, record.ErrorCode, record.Day,
+			record.Time.UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("insert probe run: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("insert probe runs: %w", err)
 	}
 	return nil
 }
+
+// MonitorProbeRunningCase 是 CLI 深检「本轮已在跑」的占位行 case_key。占位行
+// 不是一次探测：它不延长失败连续数、不占当日配额，探测页也不当作结果展示；
+// 它唯一的用途是让周检的「本周已跑」在执行器返回之前就从库里成立（重启安全）。
+const MonitorProbeRunningCasePrefix = "round:running:"
 
 // MonitorProbeOutcome summarises one provider's probe history for the rule
 // engine, plus how many probes were already spent on `day`. A skipped round
@@ -958,7 +982,8 @@ func (s *Store) InsertMonitorProbeRun(record monitoring.ProbeRunRecord) error {
 func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.ProbeOutcome, int, error) {
 	outcome := monitoring.ProbeOutcome{}
 	rows, err := s.reader().Query(`SELECT kind, case_key, ok, status, skipped, time
-		FROM monitor_probe_runs WHERE provider_id = ? ORDER BY time DESC, id DESC LIMIT 50`, providerID)
+		FROM monitor_probe_runs WHERE provider_id = ? AND case_key NOT LIKE '`+MonitorProbeRunningCasePrefix+`%'
+		ORDER BY time DESC, id DESC LIMIT 50`, providerID)
 	if err != nil {
 		return outcome, 0, fmt.Errorf("read probe runs: %w", err)
 	}
@@ -1024,15 +1049,70 @@ func (s *Store) MonitorProbeOutcome(providerID string, day string) (monitoring.P
 	return outcome, used, nil
 }
 
+// ReplaceMonitorProbeRun 在一段事务里删掉某账号某一轮时刻的占位行（以及本轮
+// 可能残留的行），再写入正式结果。深检收尾用它把「running」占位换成真结果：
+// 要么全换上，要么一行不动。
+func (s *Store) ReplaceMonitorProbeRun(providerID, runningCase string, records []monitoring.ProbeRunRecord) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("replace probe run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM monitor_probe_runs
+		WHERE provider_id = ? AND case_key = ?`,
+		providerID, runningCase); err != nil {
+		return fmt.Errorf("replace probe run: %w", err)
+	}
+	for _, record := range records {
+		if _, err := tx.Exec(`INSERT INTO monitor_probe_runs
+			(provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			record.ProviderID, record.Kind, record.Case, boolToInt(record.OK), record.Status,
+			record.Skipped, record.DurationMs, record.Model, record.ErrorCode, record.Day,
+			record.Time.UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("replace probe run: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("replace probe run: %w", err)
+	}
+	return nil
+}
+
 // LatestMonitorProbeRuns returns the most recent probe rows for one provider,
 // newest first, for the probe page.
+//
+// 原先的按账号过滤把 providerID 填进两个占位、再配合空串判断，结果过滤条件恒不
+// 成立（探测页最近结果一直是全量）。这里改成按需拼 WHERE 子句。
 func (s *Store) LatestMonitorProbeRuns(providerID string, limit int) ([]monitoring.ProbeRunRecord, error) {
+	return s.LatestMonitorProbeRunsOfKind("", providerID, limit)
+}
+
+// LatestMonitorProbeRunsOfKind narrows the listing to one kind (light | cli).
+// The weekly deep check asks for its own kind only: a light run stamped with a
+// later clock would otherwise push the CLI rows out of a limit-sized window and
+// make "did this week run" answer wrongly.
+func (s *Store) LatestMonitorProbeRunsOfKind(kind, providerID string, limit int) ([]monitoring.ProbeRunRecord, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// 用拼接而不是 (? = '' OR x = ?)：参数按位置绑定，同一个值填两个占位
+	// 会让其中一个条件恒不成立（见 LatestMonitorProbeRuns 的说明）。kind /
+	// providerID 只是加不加 WHERE 子句的选择。
+	where := "1=1"
+	args := make([]any, 0, 3)
+	if providerID != "" {
+		where += " AND provider_id = ?"
+		args = append(args, providerID)
+	}
+	if kind != "" {
+		where += " AND kind = ?"
+		args = append(args, kind)
+	}
+	args = append(args, limit)
 	rows, err := s.reader().Query(`SELECT provider_id, kind, case_key, ok, status, skipped, duration_ms, model, error_code, day, time
-		FROM monitor_probe_runs WHERE (? = '' OR provider_id = ?) ORDER BY time DESC, id DESC LIMIT ?`,
-		providerID, providerID, limit)
+		FROM monitor_probe_runs WHERE `+where+`
+		ORDER BY time DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read latest probe runs: %w", err)
 	}

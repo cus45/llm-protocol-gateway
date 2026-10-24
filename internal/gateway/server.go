@@ -86,6 +86,9 @@ type Server struct {
 	rtk                *rtkCompressor
 	scheduledTaskStore ScheduledTaskStore
 	checkinStore       CheckinStore
+	// probeNow is the clock the weekly CLI deep check schedules on. Nil means
+	// time.Now; tests inject a fake so "this week already ran" needs no sleeps.
+	probeNow func() time.Time
 	// checkinMu guards checkinRunning, the set of providers whose check-in is in
 	// flight: the loop and a press of the same account must not both spend its
 	// one-shot refresh token.
@@ -135,6 +138,16 @@ type Server struct {
 	// selfcheckJobs holds in-memory async self-check jobs (CLI smoke tests).
 	selfcheckMu   sync.Mutex
 	selfcheckJobs map[string]*selfcheckJob
+	// selfcheckRunFunc is where the job executor is reached: the weekly CLI deep
+	// check calls it so a test can substitute a fake executor (no real CLI) and
+	// still exercise the prepare/cleanup/record path around it. Nil means
+	// runSelfcheckJob.
+	selfcheckRunFunc func(ctx context.Context, job *selfcheckJob, providerIDs []string)
+	// selfcheckToolsFunc is where "which CLIs does this machine have" is
+	// answered: the weekly deep check calls it so a test can substitute a fake
+	// CLI table (t.Cleanup restores nil) instead of installing real CLIs.
+	// Nil means resolveSelfcheckTools (the real machine).
+	selfcheckToolsFunc func() []selfcheckToolInfo
 
 	// providerAvailability tracks providers that a live upstream request found
 	// unavailable (hard quota/auth, or repeated soft 429/5xx/transport failures),

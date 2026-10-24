@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +42,9 @@ type probeCaseResult struct {
 	Duration int64
 	Model    string
 	Error    string
+	// Skipped 非空表示这一发没跑（深检的 cli_missing / 整轮超时 / 取消）。
+	// 没跑不等于失败：失败计数与告警只认真正打出去的结果。
+	Skipped string
 }
 
 // probeRun 是一个账号一轮探测的结果。Skipped 非空表示这一轮根本没跑成
@@ -219,25 +225,54 @@ func monitorProbeDay(s *Server, now time.Time) string {
 
 // persistProbeRun 把每一发探测落库。库里存的是「跑成了什么」，规则与调度都只读库，
 // 所以重启不会把连续失败计数和当日配额清零。
-func (s *Server) persistProbeRun(run probeRun) {
+//
+// 一轮是一个时间戳，写入走单事务：周检的「本周跑过没有」就靠读这个时间戳，
+// 半轮可见会让重启后的调度误判。
+func (s *Server) persistProbeRun(run probeRun) error {
 	if s.monitoringStore == nil || len(run.Cases) == 0 {
-		return
+		return nil
 	}
 	day := monitorProbeDay(s, run.At)
+	records := make([]monitoring.ProbeRunRecord, 0, len(run.Cases))
 	for _, item := range run.Cases {
-		errorCode := item.Error
-		if len(errorCode) > 200 {
-			errorCode = errorCode[:200]
-		}
-		if err := s.monitoringStore.InsertMonitorProbeRun(monitoring.ProbeRunRecord{
-			ProviderID: run.ProviderID, Kind: run.Kind, Case: item.Case, OK: item.OK,
-			Status: item.Status, DurationMs: item.Duration, Model: item.Model,
-			ErrorCode: errorCode, Day: day, Time: run.At,
-		}); err != nil {
-			slog.Warn("monitoring probe run persist failed", "provider", run.ProviderID, "error", err)
-			return
-		}
+		records = append(records, probeRunRecordOf(run, item, day))
 	}
+	if err := s.monitoringStore.InsertMonitorProbeRuns(records); err != nil {
+		slog.Warn("monitoring probe run persist failed", "provider", run.ProviderID, "kind", run.Kind, "error", err)
+		return err
+	}
+	return nil
+}
+
+// probeRunRecordOf 构造一行探测记录。run.Skipped 在这里读取并写进行：和循环
+// 放在同一函数里时，这一列在落库前会被读成零值（Go 1.26 Windows，见 memory
+// go126-windows-slice-compare-miscompile）。
+func probeRunRecordOf(run probeRun, item probeCaseResult, day string) monitoring.ProbeRunRecord {
+	// 逐字段赋值而不是一次大结构化字面量：run / item 两组字段写在同一个字面量里
+	// 时，Go 1.26 Windows 会把 run 的字段对错位（Kind 拿到 Skipped 的值），
+	// 落库的 kind 变成跳过原因、skipped 变成空。见 memory
+	// go126-windows-slice-compare-miscompile。
+	var record monitoring.ProbeRunRecord
+	record.ProviderID = run.ProviderID
+	record.Kind = run.Kind
+	record.Case = item.Case
+	record.OK = item.OK
+	record.Status = item.Status
+	record.Skipped = run.Skipped
+	record.DurationMs = item.Duration
+	record.Model = item.Model
+	record.ErrorCode = capProbeError(item.Error)
+	record.Day = day
+	record.Time = run.At
+	return record
+}
+
+// capProbeError 截断错误码：库里只留前 200 字节。
+func capProbeError(text string) string {
+	if len(text) > 200 {
+		return text[:200]
+	}
+	return text
 }
 
 // recordProbeRun 把一轮探测写进事件流。成功与失败都只写 info 事件：成级由
@@ -246,30 +281,32 @@ func (s *Server) recordProbeRun(run probeRun) {
 	if s.monitoringStore == nil {
 		return
 	}
-	s.persistProbeRun(run)
+	_ = s.persistProbeRun(run)
+	s.recordProbeEvent(run)
+}
+
+// recordProbeEvent 只写事件流（落库由调用方负责）。
+func (s *Server) recordProbeEvent(run probeRun) {
+	if s.monitoringStore == nil {
+		return
+	}
 	name := run.ProviderName
 	if name == "" {
 		name = run.ProviderID
-	}
-	cases := make([]map[string]any, 0, len(run.Cases))
-	for _, item := range run.Cases {
-		entry := map[string]any{"case": item.Case, "ok": item.OK, "durationMs": item.Duration}
-		if item.Status != 0 {
-			entry["status"] = item.Status
-		}
-		if item.Model != "" {
-			entry["model"] = item.Model
-		}
-		if item.Error != "" {
-			entry["error"] = item.Error
-		}
-		cases = append(cases, entry)
 	}
 	title := name + " 轻探测通过"
 	if run.Failed() {
 		title = name + " 轻探测失败"
 	}
-	if _, err := s.monitoringStore.InsertMonitorEvent(monitoring.Event{
+	if _, err := s.monitoringStore.InsertMonitorEvent(probeEventOf(run, name, title)); err != nil {
+		// 探测记录失败不影响探测本身，也不能把账号判成不可用。
+		slog.Warn("monitoring probe event failed", "provider", run.ProviderID, "error", err)
+	}
+}
+
+// probeEventOf 构造探测器的那一条 info 事件。
+func probeEventOf(run probeRun, name, title string) monitoring.Event {
+	event := monitoring.Event{
 		Time: run.At, Kind: monitoring.EventKindProbe, Severity: monitoring.SeverityInfo,
 		TargetType: monitoring.TargetProvider, TargetID: run.ProviderID, TargetName: name,
 		Title: title, Status: monitoring.StatusInfo,
@@ -280,12 +317,29 @@ func (s *Server) recordProbeRun(run probeRun) {
 			// case 标出第一个失败的 case（chat / tools），界面和告警一眼能看出
 			// 是「对话不通」还是「工具声明被拒」。
 			"case":  run.FailedCase(),
-			"cases": cases,
+			"cases": probeCaseDetails(run.Cases),
 		},
-	}); err != nil {
-		// 探测记录失败不影响探测本身，也不能把账号判成不可用。
-		slog.Warn("monitoring probe event failed", "provider", run.ProviderID, "error", err)
 	}
+	return event
+}
+
+// probeCaseDetails 是事件 detail 里的逐用例列表。
+func probeCaseDetails(cases []probeCaseResult) []map[string]any {
+	out := make([]map[string]any, 0, len(cases))
+	for _, item := range cases {
+		entry := map[string]any{"case": item.Case, "ok": item.OK, "durationMs": item.Duration}
+		if item.Status != 0 {
+			entry["status"] = item.Status
+		}
+		if item.Model != "" {
+			entry["model"] = item.Model
+		}
+		if item.Error != "" {
+			entry["error"] = item.Error
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 const (
@@ -420,12 +474,31 @@ func (s *Server) startMonitorProber(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.runProbeTick(ctx, time.Now().UTC())
+			s.runProbeTick(ctx, s.probeClock().UTC())
 		}
 	}
 }
 
+// runProbeTick 是探测调度的外形：先看本周深检到点没有，然后跑轻探测那半边。
+// 两件事各在各的函数里，tick 本身不做任何判定。
 func (s *Server) runProbeTick(ctx context.Context, now time.Time) {
+	if cliDeepCheckAllowed(s) == false {
+		return
+	}
+	if dueWeeklyCLIDeepCheck(s, now) {
+		s.runWeeklyCLIIfDue(ctx, now)
+	}
+	s.runLightProbeTick(ctx, now)
+}
+
+// cliDeepCheckAllowed 是 tick 里「要不要看周检」的闸门。周检的一切都读库，
+// 没有 store 就无从谈起。
+func cliDeepCheckAllowed(s *Server) bool {
+	return s.monitoringStore != nil
+}
+
+// runLightProbeTick 是 tick 里轻探测那半边。配置在这里重新读，只传 now。
+func (s *Server) runLightProbeTick(ctx context.Context, now time.Time) {
 	if s.monitoringStore == nil {
 		return
 	}
@@ -433,6 +506,12 @@ func (s *Server) runProbeTick(ctx context.Context, now time.Time) {
 	if !cfg.EventDriven.Enabled && !cfg.Daily.Enabled {
 		return
 	}
+	s.runLightProbeSweep(ctx, now, cfg)
+}
+
+// runLightProbeSweep 扫一遍账号，按事件驱动与每日窗口两套条件决定要不要发轻探测。
+// 正在跑深检（probeInFlight）的账号本 tick 直接跳过：同一账号不并发双发。
+func (s *Server) runLightProbeSweep(ctx context.Context, now time.Time, cfg monitoring.ProbeConfig) {
 	targets := s.liveProbeTargets()
 	if len(targets) == 0 {
 		return
@@ -448,6 +527,9 @@ func (s *Server) runProbeTick(ctx context.Context, now time.Time) {
 	dailyBudget := probeDailyBatchPerTick
 
 	for _, provider := range targets {
+		if s.probeInFlight(provider.ID) {
+			continue
+		}
 		outcome, used, err := s.monitoringStore.MonitorProbeOutcome(provider.ID, day)
 		if err != nil {
 			continue
@@ -473,4 +555,482 @@ func (s *Server) runProbeTick(ctx context.Context, now time.Time) {
 			}
 		}
 	}
+}
+
+// ── 每周 CLI 深检 ─────────────────────────────────────────────────────────
+
+const (
+	// probeKindCLI 是深检在 monitor_probe_runs.kind 里的值。周检的「本周跑过
+	// 没有」只看这一类行，与轻探测互不干扰。
+	probeKindCLI = "cli"
+	// probeCLICasePrefix 拼成 case_key='selfcheck:<caseID>'。深检的请求日志
+	// 靠 selfcheck- 临时密钥前缀标成 monitor_probe，两者同源、外部客户端
+	// 都伪造不了。
+	probeCLICasePrefix = "selfcheck:"
+	// probeCLICaseTimeout 与 selfcheckDefaultTimeoutMs 对齐：单条用例 90 秒。
+	probeCLICaseTimeout = 90 * time.Second
+	// probeCLIRoundBudget 是整轮上限。6 条用例串行、每条 90 秒封顶，正常整轮
+	// 约 9 分钟；这里留足余量给慢 CLI 启动，超出后剩下的用例记 skipped。
+	probeCLIRoundBudget = 2 * time.Hour
+	// probeCLISkipCLIMissing：这台机器缺必需 CLI。只记 skipped，不判失败、
+	// 不告警——缺 CLI 是网关部署的问题，不是账号的问题。
+	probeCLISkipCLIMissing = "cli_missing"
+	// probeCLISkipRunning 是本轮「已在跑」的占位行。它让周检的「本周已跑」在
+	// 执行器返回之前就成立，从而在进程重启后不会对同一账号重起一轮。
+	probeCLISkipRunning = "running"
+	// probeCLIRoundMaxAccounts 限制一轮最多串几个账号。深检每条用例都要起一个
+	// 真实 CLI，账号多了单轮自然超出 2 小时上限；排在后面的账号本轮不跑，
+	// 不发任何行，下一个 tick 按库里记录接着判，直到本周全部跑完。
+	probeCLIRoundMaxAccounts = 3
+)
+
+// weeklyCLIDue 判「这一发该不该在本周打」。它只看两个时刻：配置写的那天那个
+// 时刻（按投递时区），以及库里上一轮的落库时间。重启后从库里重算，不在内存
+// 里记「本周已跑」。
+//
+// 判据是「上一轮早于本周排程点」。排程点过点后的 7 天内恰有一小时满足它：
+// 网关那一晚停机，开机后的首个 tick 也会补跑，而且不会跑第二次。
+func weeklyCLIDue(now time.Time, loc *time.Location, weekday int, at string, lastRun time.Time) bool {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if weekday < 0 || weekday > 6 {
+		return false
+	}
+	minutes, err := clockMinutes(at)
+	if err != nil {
+		return false
+	}
+	local := now.In(loc)
+	daysSince := (int(local.Weekday()) - weekday + 7) % 7
+	scheduled := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).
+		AddDate(0, 0, -daysSince).Add(time.Duration(minutes) * time.Minute)
+	if local.Before(scheduled) {
+		return false
+	}
+	return lastRun.IsZero() || lastRun.Before(scheduled)
+}
+
+func (s *Server) probeClock() time.Time {
+	if s.probeNow != nil {
+		return s.probeNow()
+	}
+	return time.Now()
+}
+
+// lastCLIRunAt 读 monitor_probe_runs 里最近一轮深检的时间。深检每周至多几轮，
+// 最近的 200 行足以覆盖。
+func (s *Server) lastCLIRunAt() (time.Time, error) {
+	runs, err := s.monitoringStore.LatestMonitorProbeRunsOfKind(probeKindCLI, "", 200)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, run := range runs {
+		if run.Kind == probeKindCLI {
+			return run.Time, nil
+		}
+	}
+	return time.Time{}, nil
+}
+
+// missingSelfcheckCLIs 返回必需 CLI 里缺了的那几个 id。
+func missingSelfcheckCLIs(tools []selfcheckToolInfo) []string {
+	missing := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if !tool.Found {
+			missing = append(missing, tool.ID)
+		}
+	}
+	return missing
+}
+
+// dueWeeklyCLIDeepCheck 判本周深检到点没有。调用方拿到的只有一个 bool；它刻意
+// 不是 Server 的方法：内联进 tick 后方法接收者上的判定会被相邻的调用串掉
+// （Go 1.26.1/1.26.8 Windows，见 memory go126-windows-slice-compare-miscompile）。
+//
+
+//go:noinline
+func dueWeeklyCLIDeepCheck(s *Server, now time.Time) bool {
+	cfg := monitoring.NewConfig(s.monitoringStore).Probe()
+	if cfg.WeeklyCLI.Enabled == false {
+		return false
+	}
+	lastRun, err := s.lastCLIRunAt()
+	if err != nil {
+		slog.Warn("monitoring cli deep check: read history failed", "error", err)
+		return false
+	}
+	return weeklyCLIDue(now, monitorProbeLocation(s), cfg.WeeklyCLI.Weekday, cfg.WeeklyCLI.Time, lastRun)
+}
+
+// runWeeklyCLIIfDue 在既有 60 秒 tick 里判周检：到点且本周没跑过才跑。判定只
+// 读库，重启后不会重复消耗。
+//
+// 判定全用「算出一个结论再比大小」的写法，不在调用之间携带布尔/切片派生状态：
+// Go 1.26.1 Windows 会把这种跨调用状态在内联后串到一起（见 memory
+// go126-windows-slice-compare-miscompile 与 runLightProbeSweep 的注释）。
+//
+
+//go:noinline
+func (s *Server) runWeeklyCLIIfDue(ctx context.Context, now time.Time) {
+	if s.monitoringStore == nil {
+		return
+	}
+	if dueWeeklyCLIDeepCheck(s, now) == false {
+		return
+	}
+	all := s.liveProbeTargets()
+	count := len(all)
+	if count == 0 {
+		return
+	}
+	if count > probeCLIRoundMaxAccounts {
+		count = probeCLIRoundMaxAccounts
+	}
+	picked := make([]domain.Provider, count)
+	copy(picked, all[:count])
+	started, _ := s.startDeepCheck(ctx, picked)
+	if started == false {
+		slog.Info("monitoring cli deep check deferred: a probe is in flight", "accounts", count)
+	}
+}
+
+// startDeepCheck 在后台跑一轮深检，立即返回是否起得来。同账号已有探测在飞
+// （不管轻探测还是深检）就回 false，调用方回 409：运维点是「现在确认」，排队
+// 只会让他以为没生效再点一次。
+//
+// 单飞在起 goroutine 之前就占住，409 才是确定的；整轮结束（含 panic）一定
+// release，并发度也由它封顶为一轮。
+func (s *Server) startDeepCheck(ctx context.Context, targets []domain.Provider) (bool, string) {
+	if s.monitoringStore == nil {
+		return false, "monitoring_disabled"
+	}
+	if len(targets) == 0 {
+		return false, "no_target"
+	}
+	// CLI 缺失要在占单飞之前判：缺项时整轮只记 skipped=cli_missing、一条命令都不跑，
+	// 若先 claim，本 tick 的轻探测扫描会把这些账号当「正在飞」而全部跳过
+	// （runLightProbeSweep 的 probeInFlight 分支），每日轮会白白空掉一个 tick。
+	if missing := missingSelfcheckCLIs(s.selfcheckTools()); len(missing) > 0 {
+		ids := make([]string, 0, len(targets))
+		for _, provider := range targets {
+			ids = append(ids, provider.ID)
+		}
+		go s.recordCLIDeepCheckCLIMissing(ctx, ids, missing)
+		return true, ""
+	}
+	claimed := make([]string, 0, len(targets))
+	release := func() {
+		for _, id := range claimed {
+			s.releaseQuotaProbe(id)
+		}
+	}
+	for _, provider := range targets {
+		if !s.claimQuotaProbe(provider.ID) {
+			release()
+			return false, "in_flight"
+		}
+		claimed = append(claimed, provider.ID)
+	}
+	go func() {
+		// 兜底只针对起 goroutine 之前的那一小段：一旦执行体接手，它的 defer 负责
+		// 释放，这里的重复释放会删掉别的调用者的登记。
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				release()
+				panic(recovered)
+			}
+		}()
+		s.runCLIDeepCheck(ctx, claimed)
+	}()
+	return true, ""
+}
+
+// runCLIDeepCheck 是深检的执行体，全程持有所见账号的单飞登记。
+func (s *Server) runCLIDeepCheck(ctx context.Context, providerIDs []string) {
+	defer func() {
+		for _, id := range providerIDs {
+			s.releaseQuotaProbe(id)
+		}
+	}()
+	s.runCLIDeepCheckRounds(ctx, providerIDs)
+}
+
+// runCLIDeepCheckRounds 先查 CLI：缺项就每个账号记一行 skipped=cli_missing
+// 收工，一条命令都不执行；否则逐个账号跑。
+// recordCLIDeepCheckCLIMissing 给每个账号记一行 skipped=cli_missing。没跑不等于失败：
+// 不占单飞、不写事件告警，只留「为什么没有深检」的凭证。
+func (s *Server) recordCLIDeepCheckCLIMissing(ctx context.Context, providerIDs []string, missing []string) {
+	if s.monitoringStore == nil || len(providerIDs) == 0 {
+		return
+	}
+	startedAt := s.probeClock().UTC()
+	slog.Info("monitoring cli deep check skipped: cli missing", "cli", strings.Join(missing, ","))
+	for _, providerID := range providerIDs {
+		if ctx.Err() != nil {
+			return
+		}
+		provider, _ := s.router.ProviderByID(providerID)
+		s.recordProbeRun(probeRun{
+			ProviderID: providerID, ProviderName: provider.Name, Kind: probeKindCLI, At: startedAt,
+			Cases:   []probeCaseResult{{Case: "cli", Skipped: probeCLISkipCLIMissing, Error: "missing CLI: " + strings.Join(missing, ",")}},
+			Skipped: probeCLISkipCLIMissing,
+		})
+	}
+}
+
+func (s *Server) runCLIDeepCheckRounds(ctx context.Context, providerIDs []string) {
+	if s.monitoringStore == nil || len(providerIDs) == 0 {
+		return
+	}
+	if missing := missingSelfcheckCLIs(s.selfcheckTools()); len(missing) > 0 {
+		s.recordCLIDeepCheckCLIMissing(ctx, providerIDs, missing)
+		return
+	}
+	startedAt := s.probeClock().UTC()
+	deadline := startedAt.Add(probeCLIRoundBudget)
+	for index, providerID := range providerIDs {
+		if ctx.Err() != nil {
+			return
+		}
+		s.runCLIDeepCheckRound(ctx, providerID, deadline)
+		// 给后面排队的账号留出 2 小时上限；剩不下就收工，没跑的账号不记任何
+		// 行，下一个 tick 会重新排到它们。
+		if index+1 < len(providerIDs) && !s.probeClock().Before(deadline) {
+			slog.Info("monitoring cli deep check: round budget spent, deferring remaining accounts", "left", len(providerIDs)-index-1)
+			return
+		}
+	}
+}
+
+// runCLIDeepCheckRound 对一个账号跑 6 条用例：3 个客户端 × chat/tool。
+//
+// 复用 runSelfcheckJob 而不是另写一份：临时 route/key 的准备与清理只有那一处
+// 实现，复制一份迟早会漂移成泄漏。整轮一个 deadline 控住执行器（到点会把在跑
+// 的 CLI 连同 exec.CommandContext 一起杀掉），执行器退出后把没跑到的用例补记
+// 为 skipped。
+//
+// 返回值是本轮最终落库的行：手动 handler 直接拿它组响应，不再回查库去猜
+// 「哪一轮是我跑的」（M6）。
+//
+// 重启安全（M1）：起执行器之前先落一行占位（skipped='running'），本轮收尾时
+// 在同一事务里删掉占位、写入正式行。占位行让 weeklyCLIDue 把「本周已跑」判为
+// 真：进程若在执行中崩掉，新进程不会对同一账号重起一轮（代价是本周少一次深检，
+// 方向保守）。占位的 case_key 不是 selfcheck:*，所以 MonitorProbeOutcome 的
+// 「按轮连续失败」与当日配额都不把它算成一发探测。
+func (s *Server) runCLIDeepCheckRound(ctx context.Context, providerID string, deadline time.Time) []probeRun {
+	// jobID 是本轮的标记：自检 job 目录、临时密钥作用域都用它，两轮同时活着
+	// 时各自的密钥名不同，互不删除。
+	return s.runCLIDeepCheckRoundKeyed(ctx, providerID, deadline, newProbeCLIJobID(s.probeClock().UTC()))
+}
+
+func (s *Server) runCLIDeepCheckRoundKeyed(ctx context.Context, providerID string, deadline time.Time, jobID string) []probeRun {
+	roundAt := s.probeClock().UTC()
+	state := s.router.State()
+	provider, ok := findProvider(state, providerID)
+	if !ok || provider.Disabled {
+		run := probeRun{
+			ProviderID: providerID, Kind: probeKindCLI, At: roundAt, Skipped: "provider_missing",
+			Cases: []probeCaseResult{{Case: probeCLICasePrefix + "prepare", Skipped: "provider_missing", Error: "provider not found or disabled"}},
+		}
+		s.recordProbeRun(run)
+		return []probeRun{run}
+	}
+	job := &selfcheckJob{
+		ID:        jobID,
+		Status:    "running",
+		Prompt:    selfcheckDefaultPrompt,
+		TimeoutMs: int(probeCLICaseTimeout / time.Millisecond),
+		LANRoot:   selfcheckLANRoot(state),
+		StartedAt: roundAt.Format(time.RFC3339),
+		Total:     selfcheckCasesPerProvider,
+		cases:     make(map[string]preparedCase),
+		running:   make(map[string]struct{}),
+	}
+	if err := s.markCLIDeepCheckRunning(job.ID, providerID, roundAt); err != nil {
+		slog.Warn("monitoring cli deep check: running marker failed", "provider", providerID, "error", err)
+	}
+	// 执行器只受整轮 deadline 约束，不继承调用方的 ctx：手动深检的 ctx 是那个
+	// HTTP 请求的 ctx，响应一返回就被取消，执行器会在准备完 route/key 之后、
+	// 自己的 defer 清理之前被掐断，留下 selfcheck-* 临时密钥。
+	jobCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancel()
+	selfcheckDone := make(chan struct{})
+	go func() {
+		defer close(selfcheckDone)
+		if s.selfcheckRunFunc != nil {
+			s.selfcheckRunFunc(jobCtx, job, []string{providerID})
+		} else {
+			s.runSelfcheckJob(job, []string{providerID})
+		}
+	}()
+	<-selfcheckDone
+	// 执行器自己的 defer 已经清过一次；这里再扫一遍兜底（cleanup 幂等），
+	// 保证收尾时刻起库里与内存里都不会再有本轮残留。
+	s.cleanupSelfcheckArtifacts(nil)
+	job.mu.Lock()
+	results := make([]selfcheckCaseResult, len(job.Results))
+	copy(results, job.Results)
+	job.mu.Unlock()
+	// M2/M3：reason 看「现在是否已过整轮上限」，而不是 jobCtx 是否被取消——执行器
+	// 恰在 deadline 那一刻返回时，jobCtx.Err() 可能已是 deadline exceeded，但
+	// 这仍是「跑满预算、剩余没跑」。
+	now := s.probeClock().UTC()
+	overBudget := now.After(deadline)
+	runs := s.buildCLIDeepCheck(provider, results, probeRoundEnd(now, roundAt), overBudget)
+	s.persistDeepCheckReplacingRunning(job.ID, providerID, runs)
+	return runs
+}
+
+// cliRunningMarkerCase 是占位行的 case_key。刻意不用 selfcheck: 前缀，避免被
+// MonitorProbeOutcome 当成一次真实探测（它会跳过 case_key 以 selfcheck: 开头的
+// 行做当日配额，见 store.MonitorProbeOutcome）。
+const cliRunningMarkerCasePrefix = "round:running:"
+
+// markCLIDeepCheckRunning 写一行「本轮已在跑」的占位（case_key 里带 jobID，
+// 与本轮收尾时删除的那一行一一对应）。
+func (s *Server) markCLIDeepCheckRunning(jobID, providerID string, roundAt time.Time) error {
+	var marker monitoring.ProbeRunRecord
+	marker.ProviderID = providerID
+	marker.Kind = probeKindCLI
+	marker.Case = cliRunningMarkerCasePrefix + jobID
+	marker.Skipped = probeCLISkipRunning
+	marker.Day = monitorProbeDay(s, roundAt)
+	marker.Time = roundAt
+	return s.monitoringStore.InsertMonitorProbeRun(marker)
+}
+
+// persistDeepCheckReplacingRunning 在同一事务里删掉本轮占位、写入正式行。
+func (s *Server) persistDeepCheckReplacingRunning(jobID, providerID string, runs []probeRun) {
+	records := make([]monitoring.ProbeRunRecord, 0, selfcheckCasesPerProvider)
+	for _, run := range runs {
+		day := monitorProbeDay(s, run.At)
+		for _, item := range run.Cases {
+			records = append(records, probeRunRecordOf(run, item, day))
+		}
+	}
+	if err := s.monitoringStore.ReplaceMonitorProbeRun(providerID, cliRunningMarkerCasePrefix+jobID, records); err != nil {
+		slog.Warn("monitoring cli deep check: replace running marker failed, appending", "provider", providerID, "error", err)
+		s.persistDeepCheck(runs)
+	}
+	for _, run := range runs {
+		s.recordProbeEvent(run)
+	}
+}
+
+// persistDeepCheck 逐条落库并写事件。
+func (s *Server) persistDeepCheck(runs []probeRun) {
+	for _, run := range runs {
+		s.recordProbeRun(run)
+	}
+}
+
+// buildCLIDeepCheck 把执行器的用例结论转成探测行。没出现在结果里的用例补记
+// skipped：它们不进失败计数，但占住「本周已跑」，避免每个 tick 反复起一轮。
+// 返回的顺序是按 case 的，落库时才落；测试也直接调它，不经后台。
+func (s *Server) buildCLIDeepCheck(provider domain.Provider, results []selfcheckCaseResult, roundAt time.Time, cancelled bool) []probeRun {
+	// 每轮组装都是独立的小函数（cliSingleSkippedRun / cliDeepCheckRun），这里
+	// 只用返回值拼一张表；跳过原因经无循环的 cliSkipReason 传递。在同一函数里
+	// 带循环组装再写库时，标志会在落库前被读成零值（Go 1.26 Windows，见
+	// memory go126-windows-slice-compare-miscompile）。
+	reason := cliSkipReason(cancelled)
+	out := make([]probeRun, 0, 1+selfcheckCasesPerProvider)
+	for _, caseID := range cliMissingCaseIDs(provider.ID, results) {
+		out = append(out, cliSingleSkippedRun(provider, caseID, reason, roundAt))
+	}
+	out = append(out, cliDeepCheckRun(provider, results, roundAt))
+	return out
+}
+
+// probeRoundEnd 给「这一轮结束时」的时间戳：正常就是 now，但不早于开跑时刻
+// 加 1ms，保证注入的假时钟下收尾轮与开始行不会撞在同一时刻。
+func probeRoundEnd(now, startedAt time.Time) time.Time {
+	floor := startedAt.Add(time.Millisecond)
+	if now.Before(floor) {
+		return floor
+	}
+	return now
+}
+
+// cliSkipReason 给整轮没跑到的用例一个跳过原因。刻意没有循环、没有跨调用状态。
+func cliSkipReason(cancelled bool) string {
+	if cancelled {
+		return "cancelled"
+	}
+	return "round_budget"
+}
+
+// cliSingleSkippedRun 构造「一条没跑到的用例」落在哪一轮。
+func cliSingleSkippedRun(provider domain.Provider, caseID, skip string, roundAt time.Time) probeRun {
+	run := probeRun{ProviderID: provider.ID, ProviderName: provider.Name, Kind: probeKindCLI, At: roundAt}
+	// 行级 Skipped 才是落库那一列（probeRunRecordOf 读 run.Skipped）；用例级
+	// 那一份只给事件与后续展示用。两处都必须写。
+	run.Skipped = skip
+	item := probeCaseResult{Case: probeCLICasePrefix + caseID, Skipped: skip, Error: "not run: round did not finish in time"}
+	run.Cases = append(run.Cases, item)
+	return run
+}
+
+// cliMissingCaseIDs 列出执行器没交回结果的用例（整轮 deadline 掐断后的剩余）。
+func cliMissingCaseIDs(providerID string, results []selfcheckCaseResult) []string {
+	seen := make(map[string]bool, len(results))
+	for _, result := range results {
+		seen[result.CaseID] = true
+	}
+	missing := make([]string, 0, selfcheckCasesPerProvider)
+	for _, caseID := range selfcheckAllCaseIDs(providerID) {
+		if !seen[caseID] {
+			missing = append(missing, caseID)
+		}
+	}
+	return missing
+}
+
+// cliDeepCheckRun 组装执行器交回的结果（纯组装，不落库）。
+func cliDeepCheckRun(provider domain.Provider, results []selfcheckCaseResult, roundAt time.Time) probeRun {
+	// 用执行结束后的时钟由调用方决定 roundAt；这里不再读时钟，组装是纯函数。
+	run := probeRun{ProviderID: provider.ID, ProviderName: provider.Name, Kind: probeKindCLI, At: roundAt}
+	for _, result := range results {
+		item := probeCaseResult{
+			Case: probeCLICasePrefix + result.CaseID, OK: result.Success && result.ContentOK,
+			Status: selfcheckStatus(result), Duration: result.LatencyMs,
+			Model: result.Model, Error: truncateRunReason(result.Error),
+		}
+		run.Cases = append(run.Cases, item)
+	}
+	return run
+}
+
+// selfcheckAllCaseIDs 按执行器的固定次序列出 3 客户端 × chat/tool 的 6 个 case。
+func selfcheckAllCaseIDs(providerID string) []string {
+	ids := make([]string, 0, selfcheckCasesPerProvider)
+	for _, client := range []selfcheckClientCase{selfcheckClientOpenCode, selfcheckClientCodex, selfcheckClientClaude} {
+		for _, kind := range []selfcheckCaseKind{selfcheckKindChat, selfcheckKindTool} {
+			ids = append(ids, selfcheckCaseID(providerID, client, kind))
+		}
+	}
+	return ids
+}
+
+// selfcheckStatus 给深检行一个状态码。CLI 不在 HTTP 层，200 表示用例通过；
+// 超时记 0（与传输层失败同义）；其余失败记 502，便于和轻探测的 401/5xx
+// 区分开——深检失败几乎总是「CLI 或协议转换坏了」，不是账号鉴权坏了。
+func selfcheckStatus(result selfcheckCaseResult) int {
+	switch {
+	case result.Success && result.ContentOK:
+		return http.StatusOK
+	case strings.Contains(result.Error, "timed out") || strings.Contains(result.Error, "deadline exceeded"):
+		return 0
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// newProbeCLIJobID 生成 selfcheck 目录约定要求的 job id（prune 只认 sc- 前缀）。
+func newProbeCLIJobID(roundAt time.Time) string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "sc-cli-" + strconv.FormatInt(roundAt.UnixNano(), 36)
+	}
+	return "sc-cli-" + hex.EncodeToString(buf)
 }

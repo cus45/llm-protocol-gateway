@@ -1,10 +1,9 @@
-import { useMemo, useState } from 'react';
-import { BrandIcon, Modal } from '../components/ui';
-import type { MonitorAccount, MonitorProbeAccount, MonitorProbeRunResult } from './types';
-import { hasTime } from './types';
-import { displayTime, probeSummaryText, quotaText, relativeToNow, SEVERITY_TONE } from './format';
-import { probeSkipText } from './types';
-import { ProbeResultBody } from './ProbesTab';
+import {useMemo, useState} from 'react';
+import {BrandIcon, Modal} from '../components/ui';
+import type {MonitorAccount, MonitorProbeAccount, MonitorProbeRunResult} from './types';
+import {hasTime} from './types';
+import {displayTime, probeSummaryText, quotaText, relativeToNow, SEVERITY_TONE} from './format';
+import {ProbeResultBody} from './ProbesTab';
 
 export interface AccountsTabProps {
   accounts: MonitorAccount[];
@@ -209,7 +208,6 @@ export function AccountsTab(props: AccountsTabProps) {
                     {hasTime(probe.lastProbeAt)
                       ? `最近一次执行 ${displayTime(probe.lastProbeAt, timezone).text}（${relativeToNow(probe.lastProbeAt, Date.now())}）`
                       : '还没有探测记录'}
-                    {probeSkipText(probe.skipped) ? ` · ${probeSkipText(probe.skipped)}` : ''}
                   </div>
                   <div className="metric-note" title="当日次数 / 每日上限，按投递时区计算">
                     {`当日次数 ${probe.maxPerDay === 0 ? `${probe.usedToday} / 不限` : `${probe.usedToday} / ${probe.maxPerDay}`} · 连续失败 ${probe.consecutiveFailures} 次`}
@@ -217,7 +215,7 @@ export function AccountsTab(props: AccountsTabProps) {
                   {needsProbe && (
                     <div className="metric-note err">{'探测未跑通，已进入 probe_failed 判定'}</div>
                   )}
-                  {detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它；手动探测也不适用。'}</div>}
+                  {detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它，也不会发探测。'}</div>}
                 </>
               ) : (
                 <div className="metric-note">{'探测现状读取中'}</div>
