@@ -8660,7 +8660,7 @@ html[data-theme="dark"] .mon-topo { box-shadow: 0 18px 44px -32px var(--topo-ton
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px 14px;
-  padding: 11px 14px;
+  padding: 14px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 72%, transparent);
   /* 筛选下拉在头部：抬高层级，双栏菜单才不会被下面的拓扑集群盖住。 */
@@ -8720,7 +8720,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
-  padding: 23px 20px 21px;
+  padding: 32px 20px 30px;
   min-width: 0;
   /* 点阵底纹：参考图里的一层极淡网格，用 --topo-tone 推导，明色下压低到 4%。 */
   background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
