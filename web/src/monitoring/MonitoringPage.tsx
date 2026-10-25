@@ -139,7 +139,7 @@ const POLL_MS = 15_000;
  */
 const PROBE_POLL_MS = 3_000;
 /** 账号卡片点阵保留的探测发数（与 /__monitor/probes 单次返回的 50 发上限配套）。 */
-const ACCOUNT_DOT_WINDOW = 10;
+const ACCOUNT_DOT_WINDOW = 20;
 const EVENT_PAGE = 30;
 const ALERT_PAGE = 50;
 

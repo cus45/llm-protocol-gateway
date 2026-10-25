@@ -8885,8 +8885,15 @@ html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); colo
 .mon-acc-probe-label { color: var(--muted); font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
 .mon-acc-probe-note { color: var(--subtle); font-size: 10.5px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; overflow-wrap: anywhere; }
 .mon-acc-probe-note.ok { color: var(--green); font-weight: 600; }
-.mon-acc-probe-dots { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.mon-acc-dot { flex: 1 1 0; min-width: 4px; height: 12px; border-radius: 3px; background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--border); }
+/* 探测点阵：参考是 20 个方块排两行（每行 10 个）。单行 20 个会把方块压到 4px 以下，
+   既看不清又和参考的读法不同——两行更接近「最近 20 次」的语义。 */
+.mon-acc-probe-dots {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 3px;
+  min-width: 0;
+}
+.mon-acc-dot { min-width: 0; height: 9px; border-radius: 2px; background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--border); }
 .mon-acc-dot.ok { background: var(--green); box-shadow: none; }
 .mon-acc-dot.err { background: var(--red); box-shadow: none; }
 
