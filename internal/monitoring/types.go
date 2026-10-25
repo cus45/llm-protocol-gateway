@@ -269,6 +269,9 @@ type RenewalRecord struct {
 	Duration   time.Duration
 	Err        error
 	ExpiresAt  time.Time
+	// Skipped 表示这次调用没有轮换凭证（未到厂商的续期窗口）。它不是一次
+	// 成功也不是失败：事件要留痕，但不能把连续失败计数清零。
+	Skipped bool
 }
 
 type ProviderObservation struct {

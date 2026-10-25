@@ -182,13 +182,22 @@ func (s *Service) RecordRenewal(ctx context.Context, rec RenewalRecord) {
 	}
 	severity := SeverityInfo
 	title := "凭证续期成功"
-	detail := map[string]any{"vendor": rec.Vendor, "durationMs": rec.Duration.Milliseconds()}
+	renewed := true
+	if rec.Skipped {
+		title = "手动续期：未到续期窗口"
+		renewed = false
+	}
+	detail := map[string]any{
+		"vendor": rec.Vendor, "durationMs": rec.Duration.Milliseconds(),
+		"renewed": renewed, "attempted": !rec.Skipped,
+	}
 	if !rec.ExpiresAt.IsZero() {
 		detail["expiresAt"] = rec.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	if rec.Err != nil {
 		severity = SeverityP0
 		title = "凭证续期失败"
+		detail["renewed"] = false
 		errorKind := classifyRenewalError(rec.Err)
 		detail["errorKind"] = errorKind
 		slog.Warn("monitoring: credential renewal failed", "provider", rec.ProviderID, "errorKind", errorKind)

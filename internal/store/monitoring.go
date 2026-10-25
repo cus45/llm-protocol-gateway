@@ -886,7 +886,7 @@ func (s *Store) RecentRenewalOutcomes(providerID string, limit int) (monitoring.
 	if limit <= 0 {
 		limit = 10
 	}
-	rows, err := s.reader().Query(`SELECT severity, time FROM monitor_events
+	rows, err := s.reader().Query(`SELECT severity, time, detail_json FROM monitor_events
 		WHERE kind = 'renewal' AND target_id = ? ORDER BY time DESC, id DESC LIMIT ?`,
 		providerID, limit)
 	if err != nil {
@@ -895,9 +895,17 @@ func (s *Store) RecentRenewalOutcomes(providerID string, limit int) (monitoring.
 	defer rows.Close()
 	outcome := monitoring.RenewalOutcome{}
 	for rows.Next() {
-		var severity, at string
-		if err := rows.Scan(&severity, &at); err != nil {
+		var severity, at, detail string
+		if err := rows.Scan(&severity, &at, &detail); err != nil {
 			return monitoring.RenewalOutcome{}, err
+		}
+		// 「未到续期窗口」也是一条 renewal 事件（事件流要看得见），但它不是
+		// 一次续期尝试：不能把它当成成功去清零连续失败。
+		var parsed struct {
+			Attempted *bool `json:"attempted"`
+		}
+		if json.Unmarshal([]byte(detail), &parsed) == nil && parsed.Attempted != nil && !*parsed.Attempted {
+			continue
 		}
 		if !outcome.Known {
 			outcome.Known = true

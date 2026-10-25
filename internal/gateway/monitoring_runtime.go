@@ -127,3 +127,19 @@ func (s *Server) recordRenewal(provider domain.Provider, vendor string, started 
 		ExpiresAt: providerCredentialExpiry(provider),
 	})
 }
+
+// recordRenewalSkipped keeps a manual click visible even when the vendor's
+// refresh window was not yet open. The vendor returns the token untouched in
+// that case, so without this event the console shows a spinner followed by
+// nothing and looks broken.
+func (s *Server) recordRenewalSkipped(provider domain.Provider, vendor string, started time.Time) {
+	if s == nil || s.monitoring == nil {
+		return
+	}
+	s.monitoring.RecordRenewal(context.Background(), monitoring.RenewalRecord{
+		ProviderID: provider.ID, Vendor: vendor, StartedAt: started,
+		Duration:  time.Since(started),
+		ExpiresAt: providerCredentialExpiry(provider),
+		Skipped:   true,
+	})
+}

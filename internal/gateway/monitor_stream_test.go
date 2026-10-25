@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
@@ -154,6 +155,68 @@ func waitForSubscribers(t *testing.T, server *Server, want int) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("subscribers = %d, want %d", server.monitorStreamHub().subscribers(), want)
+}
+
+// Live request frames are ephemeral, throttled, and carry no request bodies.
+// A console that is not connected must not consume the throttle budget either:
+// the next subscriber should see traffic immediately.
+func TestMonitorStreamTrafficFrames(t *testing.T) {
+	server, _ := monitorTestServer(t, monitorClaudeProvider(), monitorAPIKeyProvider())
+	hub := server.monitorStreamHub()
+	entry := monitor.RequestLog{
+		Time: time.Now().UTC(), ProviderID: "p-claude", Model: "claude-sonnet",
+		Status: 200, LatencyMillis: 1200, TTFTMillis: 340,
+		InputTokens: 42, OutputTokens: 7, CostMicros: 1234, Priced: true,
+		RequestBody: `{"prompt":"sk-ant-SECRET"}`,
+	}
+
+	// No subscriber: publishing is a no-op and must not start the throttle window.
+	server.publishMonitorTraffic(entry)
+	sub, ok := hub.subscribe()
+	if !ok {
+		t.Fatal("subscribe failed")
+	}
+	t.Cleanup(func() { hub.unsubscribe(sub) })
+
+	server.publishMonitorTraffic(entry)
+	first := nextTrafficFrame(t, sub)
+	var payload map[string]any
+	if err := json.Unmarshal(first.Data, &payload); err != nil {
+		t.Fatalf("traffic payload: %v", err)
+	}
+	if payload["providerId"] != "p-claude" || payload["model"] != "claude-sonnet" {
+		t.Fatalf("traffic payload lost routing fields: %v", payload)
+	}
+	if strings.Contains(string(first.Data), "SECRET") {
+		t.Fatalf("traffic frame leaked the request body: %s", first.Data)
+	}
+
+	// Second publish inside the interval is dropped.
+	server.publishMonitorTraffic(entry)
+	select {
+	case frame := <-sub.ch:
+		t.Fatalf("throttled publish still emitted %q", frame.Event)
+	default:
+	}
+
+	// After the interval a frame goes out again.
+	time.Sleep(monitorTrafficInterval + 20*time.Millisecond)
+	server.publishMonitorTraffic(entry)
+	nextTrafficFrame(t, sub)
+}
+
+func nextTrafficFrame(t *testing.T, sub *monitorStreamSubscriber) monitorStreamEnvelope {
+	t.Helper()
+	select {
+	case frame := <-sub.ch:
+		if frame.Event != monitorStreamTraffic {
+			t.Fatalf("frame event = %q, want %q", frame.Event, monitorStreamTraffic)
+		}
+		return frame
+	case <-time.After(time.Second):
+		t.Fatal("no traffic frame")
+		return monitorStreamEnvelope{}
+	}
 }
 
 // ① Connecting yields a snapshot carrying every console section, then no-ops.

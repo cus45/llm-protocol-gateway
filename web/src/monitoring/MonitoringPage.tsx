@@ -1,6 +1,6 @@
 import type {ReactNode} from 'react';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {NavIcon} from '../components/ui';
+import {Modal, NavIcon} from '../components/ui';
 import {navPathForID} from '../lib';
 import type {NavItemID} from '../types';
 import {
@@ -46,7 +46,7 @@ import type {
     MonitorSeverity,
 } from './types';
 import {hasTime} from './types';
-import {displayTime} from './format';
+import {displayTime, relativeToNow} from './format';
 import type {AccountsProbeView} from './AccountsTab';
 import {AccountsTab} from './AccountsTab';
 import {AlertsTab} from './AlertsTab';
@@ -132,8 +132,28 @@ function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' | 'mute' }) 
   );
 }
 
+/** 顶栏「账号续期」只看 24 小时内到期（含已过期）的登录凭证。 */
+const RENEW_WINDOW_MS = 24 * 60 * 60_000;
+
+type RenewStage = 'idle' | 'running' | 'ok' | 'skipped' | 'failed';
+
+interface RenewRow {
+  providerId: string;
+  name: string;
+  vendor: string;
+  expiresAt: string;
+  stage: RenewStage;
+  message?: string;
+}
+
 const POLL_MS = 15_000;
 /**
+ * 监控读取的重试节奏。网关重启 / 反代 502 这类故障通常一两秒内自愈，
+ * 一次失败就整页报「链路读取失败」会让人误以为监控坏了。
+ */
+const FETCH_RETRY_DELAYS = [400, 1200];
+/** 仍在失败时的补拉间隔：比 15 秒轮询快，故障窗口过去后尽快恢复，不用等下一轮。 */
+const FETCH_FAILED_RETRY_MS = 4_000;/**
  * 单发轻探测的后端上限是 30 秒，期间「正在探测」的按钮要一直亮着；
  * 这个节拍只比轮询密，别让它比探测本身先停。
  */
@@ -210,6 +230,15 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [rulesNotice, setRulesNotice] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
+  // 动作结果条会自动消失，避免「点了没反应」或提示一直挂在页头。
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  // 顶栏「账号续期」：null = 未打开；数组 = 弹窗里的续期计划（空数组表示没有到期账号）。
+  const [renewRows, setRenewRows] = useState<RenewRow[] | null>(null);
+  const [renewBusy, setRenewBusy] = useState(false);
   // 抽屉里的动作要就地给反馈：账号页在 Modal 打开时，面板顶部的错误行会被抽屉挡住。
   const [drawerNote, setDrawerNote] = useState('');
   const [drawerError, setDrawerError] = useState('');
@@ -218,6 +247,10 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [lastLoadedAt, setLastLoadedAt] = useState('');
 
   const generation = useRef(0);
+  // 失败后的补拉定时器与「当前最新一次 loadVisible」：4 秒补拉不能重新建一个闭包，
+  // 否则会拿着旧的筛选条件去取数。
+  const retryTimerRef = useRef<number | null>(null);
+  const loadVisibleRef = useRef<() => void>(() => undefined);
   const timezone = dispatch?.timezone || 'Asia/Shanghai';
 
   const goTab = useCallback((next: TabID, params: Record<string, string> = {}) => {
@@ -250,21 +283,21 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         return null;
       });
       const [nextOverview, nextAccounts, nextAlerts, nextEvents, nextChannels, nextDispatch, nextProbes, nextRules] = await Promise.all([
-        fetchOverview(),
-        fetchAccounts(),
-        fetchAlerts({
+        fetchWithRetry(fetchOverview),
+        fetchWithRetry(fetchAccounts),
+        fetchWithRetry(() => fetchAlerts({
           status: statusFilter || undefined,
           severity: severityFilter || undefined,
           range: '7d',
           pageSize: ALERT_PAGE,
-        }),
-        fetchEvents({
+        })),
+        fetchWithRetry(() => fetchEvents({
           range: '24h',
           pageSize: EVENT_PAGE,
-        }),
+        })),
         // 告警详情里的「重试推送」要选渠道，所以告警页也要拿一次渠道（脱敏视图）。
-        tab === 'settings' || tab === 'alerts' ? fetchChannels() : Promise.resolve(null),
-        dispatch ? Promise.resolve(null) : fetchDispatch(),
+        tab === 'settings' || tab === 'alerts' ? fetchWithRetry(fetchChannels) : Promise.resolve(null),
+        dispatch ? Promise.resolve(null) : fetchWithRetry(fetchDispatch),
         probesPromise,
         // 规则表只给顶栏副标题和页签计数用；读失败不影响页面，等下一轮再试。
         fetchRules().catch(() => null),
@@ -286,14 +319,40 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       }
       if (nextRules) setRules(nextRules);
       setLastLoadedAt(nextOverview.generatedAt);
+      // 成功一轮就取消挂起的补拉，避免多打一次。
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
       setError('');
     } catch (reason) {
       if (mine !== generation.current) return;
       setError(reason instanceof MonitorAPIError ? reason.message : '监控数据读取失败');
+      const authFailure = reason instanceof MonitorAPIError && (reason.status === 401 || reason.status === 403);
+      // 旧数据保留在页面上；4 秒后再拉一次，故障窗口过去就自动恢复，不用等 15 秒轮询。
+      // 鉴权失败重试也没用（401/403 要么登录态过期，要么没有权限）。
+      if (!authFailure && retryTimerRef.current === null) {
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          if (!document.hidden) loadVisibleRef.current();
+        }, FETCH_FAILED_RETRY_MS);
+      }
     } finally {
       if (mine === generation.current) setLoading(false);
     }
   }, [dispatch, probeFilter, severityFilter, statusFilter, tab]);
+
+  useEffect(() => {
+    loadVisibleRef.current = () => {
+      void loadVisible();
+    };
+    return () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [loadVisible]);
 
   useEffect(() => {
     void loadVisible();
@@ -400,6 +459,65 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     },
     [loadVisible],
   );
+
+  /**
+   * 顶栏「账号续期」：只把已进入续期窗口的账号排进计划。窗口外的账号不排队——
+   * 提前轮换 refresh token 可能把还能用的凭证作废，这是各厂商自己的续期窗口
+   * 决定的，前端不越权。
+   */
+  const openRenewPlan = useCallback(() => {
+    const now = Date.now();
+    const due = accounts
+      .filter(
+        (account) =>
+          account.capabilities.oauth &&
+          hasTime(account.expiresAt) &&
+          Date.parse(account.expiresAt as string) - now <= RENEW_WINDOW_MS,
+      )
+      .sort((left, right) => Date.parse(left.expiresAt as string) - Date.parse(right.expiresAt as string))
+      .map<RenewRow>((account) => ({
+        providerId: account.providerId,
+        name: account.name,
+        vendor: account.vendor,
+        expiresAt: account.expiresAt as string,
+        stage: 'idle',
+      }));
+    setRenewRows(due);
+  }, [accounts]);
+
+  const runRenewPlan = useCallback(async () => {
+    if (!renewRows || renewRows.length === 0 || renewBusy) return;
+    setRenewBusy(true);
+    const mark = (providerId: string, patch: Partial<RenewRow>) => {
+      setRenewRows((prev) => prev?.map((row) => (row.providerId === providerId ? { ...row, ...patch } : row)) ?? prev);
+    };
+    let rotated = 0;
+    let skipped = 0;
+    let failed = 0;
+    for (const row of renewRows) {
+      mark(row.providerId, { stage: 'running', message: undefined });
+      try {
+        const result = await renewAccount(row.providerId);
+        if (!result.ok) throw new MonitorAPIError(502, `续期失败：${result.errorKind ?? 'unknown'}`);
+        if (result.renewed) {
+          rotated += 1;
+          mark(row.providerId, { stage: 'ok', message: '凭证已轮换' });
+        } else {
+          skipped += 1;
+          mark(row.providerId, { stage: 'skipped', message: '未到厂商续期窗口，凭证保持不变' });
+        }
+      } catch (reason) {
+        failed += 1;
+        mark(row.providerId, {
+          stage: 'failed',
+          message: reason instanceof MonitorAPIError ? reason.message : '请求失败，请稍后重试',
+        });
+      }
+    }
+    setRenewBusy(false);
+    setNotice(`续期完成：轮换 ${rotated} · 未到窗口 ${skipped} · 失败 ${failed}；结果已写入事件流。`);
+    await loadVisible();
+  }, [loadVisible, renewBusy, renewRows]);
 
   /**
    * 账号页的探测点阵：账号现状（consecutiveFailures 等）来自 `/__monitor/probes` 的 accounts，
@@ -663,7 +781,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
             <HeaderActionIcon id="refresh" />
             <span>{loading ? '刷新中' : '刷新指标'}</span>
           </button>
-          <button type="button" className="mon-header-btn is-green" onClick={() => selectTab('accounts')}>
+          <button type="button" className="mon-header-btn is-green" onClick={openRenewPlan}>
             <HeaderActionIcon id="renew" />
             <span>账号续期</span>
           </button>
@@ -679,6 +797,15 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           </a>
         </div>
       </header>
+
+      {notice && tab !== 'settings' && (
+        <div className="mon-notice" role="status" aria-live="polite">
+          <span>{notice}</span>
+          <button type="button" className="mon-notice-close" onClick={() => setNotice('')} aria-label="关闭提示">
+            ×
+          </button>
+        </div>
+      )}
 
       {/* 2. 子页签：图标 + 文字 + 数量徽标；激活 = 底部 2px 强调线 + 强调色文字。整条横向可滚。 */}
       <div
@@ -763,7 +890,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
               async () => {
                 const result = await renewAccount(providerId);
                 if (!result.ok) throw new MonitorAPIError(502, `续期失败：${result.errorKind ?? 'unknown'}`);
-                setDrawerNote(result.renewed ? '凭证已轮换' : '未到续期窗口，凭证保持不变');
+                setDrawerNote(result.renewed ? '凭证已轮换，已写入事件流' : '未到续期窗口，凭证保持不变（已记录到事件流）');
               },
               undefined,
               setDrawerError,
@@ -920,6 +1047,55 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         />
       )}
       </div>
+
+      {renewRows && (
+        <Modal
+          title="账号续期"
+          description="逐项续期登录凭证（OAuth 令牌）；积分或额度批次到期属于上游账期，续期不会延长。"
+          onClose={() => {
+            if (!renewBusy) setRenewRows(null);
+          }}
+        >
+          <p className="mon-renew-lead">
+            {renewRows.length === 0
+              ? '当前没有 24 小时内到期的登录凭证，没有需要续期的账号。单个账号仍可在「集群容灾与 SLA 矩阵」里手动续期。'
+              : `以下 ${renewRows.length} 个账号的登录凭证将在 24 小时内到期（或已过期），逐个续期：`}
+          </p>
+          {renewRows.length > 0 && (
+            <ul className="mon-renew-list">
+              {renewRows.map((row) => (
+                <li key={row.providerId} className={`mon-renew-row is-${row.stage}`}>
+                  <div className="mon-renew-id">
+                    <strong>{row.name}</strong>
+                    <span>{row.vendor || row.providerId}</span>
+                  </div>
+                  <div className="mon-renew-when" title={displayTime(row.expiresAt, timezone).title}>
+                    {`凭证 ${relativeToNow(row.expiresAt, Date.now())}`}
+                  </div>
+                  <div className="mon-renew-state">
+                    {row.message ?? (row.stage === 'running' ? '续期中…' : '等待')}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mon-detail-actions">
+            <button type="button" className="btn btn-sm" onClick={() => setRenewRows(null)} disabled={renewBusy}>
+              {'关闭'}
+            </button>
+            {renewRows.some((row) => row.stage === 'idle') && (
+              <button
+                type="button"
+                className="btn btn-sm primary"
+                onClick={() => void runRenewPlan()}
+                disabled={renewBusy}
+              >
+                {renewBusy ? '续期中…' : `开始续期（${renewRows.filter((row) => row.stage === 'idle').length}）`}
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -939,9 +1115,24 @@ function collectorState(raw: string | undefined): 'ok' | 'stale' | 'down' {
   return 'ok';
 }
 
+/**
+ * 瞬时失败重试：网关重启、反代 502、连接被重置都在几百毫秒到一两秒内自愈。
+ * 鉴权失败重试没有意义，直接抛出；其余按 FETCH_RETRY_DELAYS 退避重试。
+ */
+async function fetchWithRetry<T>(task: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await task();
+    } catch (reason) {
+      if (attempt >= FETCH_RETRY_DELAYS.length) throw reason;
+      if (reason instanceof MonitorAPIError && (reason.status === 401 || reason.status === 403)) throw reason;
+      await new Promise((resolve) => window.setTimeout(resolve, FETCH_RETRY_DELAYS[attempt]));
+    }
+  }
+}
+
 /** 分页合并：轮询可能插进新行，按 id 去重才不会重复渲染。 */
-function mergeByID<T extends { id: number }>(current: T[], incoming: T[]): T[] {
-  const merged = [...current];
+function mergeByID<T extends { id: number }>(current: T[], incoming: T[]): T[] {  const merged = [...current];
   for (const item of incoming) {
     if (!merged.some((existing) => existing.id === item.id)) merged.push(item);
   }

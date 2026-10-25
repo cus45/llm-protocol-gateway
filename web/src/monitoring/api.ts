@@ -290,9 +290,9 @@ export function saveRules(rules: Array<Partial<MonitorRule> & { key: string }>):
  */
 export const MONITOR_STREAM_PATH = '/__monitor/stream';
 
-export type MonitorStreamEventName = 'snapshot' | 'events' | 'alert' | 'probe' | 'resync';
+export type MonitorStreamEventName = 'snapshot' | 'events' | 'alert' | 'probe' | 'traffic' | 'resync';
 
-export const MONITOR_STREAM_EVENTS: readonly MonitorStreamEventName[] = ['snapshot', 'events', 'alert', 'probe', 'resync'];
+export const MONITOR_STREAM_EVENTS: readonly MonitorStreamEventName[] = ['snapshot', 'events', 'alert', 'probe', 'traffic', 'resync'];
 
 export interface MonitorStreamSnapshot {
   generatedAt?: string;
@@ -392,6 +392,43 @@ export function parseStreamProbeFrame(raw: unknown): MonitorStreamProbeFrame | n
     : [];
   if (runs.length === 0) return null;
   return { providerId: asString(row.providerId) || runs[0].providerId, runs };
+}
+
+/**
+ * `event: traffic` 帧是一次真实请求的摘要（不落库、不含正文）。
+ * 缺 providerId 或 time 的帧丢掉：没有归属的流量行在页面上无法筛选。
+ */
+export interface MonitorTrafficSample {
+  time: string;
+  providerId: string;
+  model: string;
+  status: number;
+  latencyMs: number;
+  ttftMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  costMicros: number;
+  priced: boolean;
+}
+
+export function parseStreamTrafficFrame(raw: unknown): MonitorTrafficSample | null {
+  const row = asRecord(raw);
+  if (!row) return null;
+  const time = asString(row.time);
+  const providerId = asString(row.providerId);
+  if (!time || !providerId) return null;
+  return {
+    time,
+    providerId,
+    model: asString(row.model),
+    status: asNumber(row.status),
+    latencyMs: asNumber(row.latencyMs),
+    ttftMs: asNumber(row.ttftMs),
+    inputTokens: asNumber(row.inputTokens),
+    outputTokens: asNumber(row.outputTokens),
+    costMicros: asNumber(row.costMicros),
+    priced: row.priced === true,
+  };
 }
 
 /**

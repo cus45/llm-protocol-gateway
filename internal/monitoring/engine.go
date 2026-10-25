@@ -514,10 +514,14 @@ func (e *Engine) providerEvaluations(p ProviderObservation, now time.Time) []eva
 	}
 
 	if rule, ok := e.rule("credit_expiring"); ok {
-		available := p.Quota != nil && p.Quota.Remaining > 0 && !p.Quota.ExpiresAt.IsZero()
+		// 读数本身可用 = 有正余额；到期时刻已过不算「数据不可用」——那是真实的
+		// 过期读数，应当走正常恢复（连续两轮未命中），而不是等数据缺失宽限期。
+		// 不要求 expiresAt 在将来时，Sub(now) 恒为负、永远小于 lead，告警会挂到
+		// 天荒地老，所以命中条件里必须显式判「还没到期」。
+		available := p.Quota != nil && p.Quota.Remaining > 0
 		lead := time.Duration(rule.Params["leadHours"]) * time.Hour
-		hit := available && p.Quota.ExpiresAt.Sub(now) < lead
-		detail := map[string]any{}
+		hit := available && p.Quota.ExpiresAt.After(now) && p.Quota.ExpiresAt.Sub(now) < lead
+		detail := map[string]any{"leadHours": lead.Hours()}
 		if p.Quota != nil {
 			detail["remaining"] = p.Quota.Remaining
 			detail["expiresAt"] = timeString(p.Quota.ExpiresAt)

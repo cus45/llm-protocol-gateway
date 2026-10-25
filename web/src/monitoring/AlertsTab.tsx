@@ -111,6 +111,14 @@ const EVIDENCE_LABELS: Record<string, string> = {
   successRatio: '成功率',
   tokenLimit: 'Token 上限',
   tokenUsed: '已用 Token',
+  remaining: '剩余额度',
+  expiresAt: '到期时间',
+  source: '额度来源',
+  leadHours: '提前提醒（小时）',
+  renewed: '凭证是否轮换',
+  durationMs: '耗时（毫秒）',
+  vendor: '厂商',
+  errorKind: '错误分类',
 };
 
 const DISPOSITION_TEXT: Record<string, string> = {
@@ -207,11 +215,17 @@ export function describeAlert(alert: MonitorAlert, now: number): string {
       const expiresAt = str(detail, 'expiresAt');
       const left = untilText(expiresAt, now);
       const remain = num(detail, 'remaining');
+      const lead = num(detail, 'leadHours');
       const amount = remain !== undefined && remain > 0 ? `剩余 ${Math.round(remain)} 积分/额度` : '剩余额度';
+      const window = lead !== undefined && lead > 0 ? `（规则：提前 ${lead} 小时提醒）` : '';
       if (!left) {
         return `${kind} ${target} 的额度即将到期，${amount}届时将失效，请核对到期时间并尽快使用或续费。`;
       }
-      return `${kind} ${target} ${amount}将在 ${left}失效，届时未用完的部分不再可用，请尽快使用或充值。`;
+      if (left === '已经到期') {
+        // 旧数据里可能存在「批次已过期但读数还在」的快照；不能写成「将在已经到期失效」。
+        return `${kind} ${target} 的到期时刻已经过去，但额度读数仍显示 ${amount}。这份读数可能停在过期前的快照，请手动刷新额度核对；确认后本条告警会自动恢复。`;
+      }
+      return `${kind} ${target} ${amount}将在 ${left}失效${window}，届时未用完的部分不再可用，请尽快使用或充值。`;
     }
     case 'oauth_expiring': {
       const expiresAt = str(detail, 'expiresAt');
@@ -378,7 +392,10 @@ function pushSentence(alert: MonitorAlert): { text: string; tone: string } {
     case 'suppressed':
       return { text: '静默时段内已抑制', tone: 'off' };
     case 'skipped':
-      return { text: '未推送（无匹配渠道）', tone: 'off' };
+      // P2 是规则层面故意不走外部渠道，不是推送故障；用中性语气说明，别写成「报错」。
+      return alert.pushError === 'p2 事件不推送'
+        ? { text: 'P2 仅站内，不推外部渠道', tone: 'off' }
+        : { text: '未推送（无匹配渠道）', tone: 'off' };
     default:
       return { text: '尚未推送', tone: 'off' };
   }
@@ -444,7 +461,14 @@ export function AlertsTab(props: AlertsTabProps) {
   const now = Date.now();
 
   const timeline = timelineOf(detail);
-  const evidence = detailPairs(detail?.latestEvent?.detail ?? detail?.alert?.detail, 10);
+  /*
+   * 证据分两份：alert.detail 是采集器最近一轮读数（与上方描述同一口径），
+   * latestEvent.detail 是触发那一刻的冻结快照。两者会随着额度批次轮换而不同，
+   * 只显示其中一份就会出现「正文 2 天后到期、证据却是 1 天前」这种自相矛盾。
+   */
+  const evidence = detailPairs(detail?.alert?.detail, 10);
+  const firedEvidence = detailPairs(detail?.latestEvent?.detail, 10);
+  const firedDiffers = firedEvidence.length > 0 && JSON.stringify(firedEvidence) !== JSON.stringify(evidence);
   const pushable = !!detail?.latestEvent && detail.latestEvent.pushStatus !== 'sent';
 
   // 进行中 / 已恢复 的合计：服务端给的全量口径（不受状态筛选影响），没给时退回本页计数。
@@ -566,9 +590,14 @@ export function AlertsTab(props: AlertsTabProps) {
                         </span>
                       </span>
                     )}
-                    <span className="mon-alert-meta-item">
-                      <span className="mon-alert-meta-key">{'触发'}</span>
-                      <span className="mon-alert-meta-num">{`${countText(alert.count)} 次`}</span>
+                    <span
+                      className="mon-alert-meta-item"
+                      title="采集器每分钟评估一轮；这是告警开始至今的时长，不是推送次数。命中轮数见诊断包。"
+                    >
+                      <span className="mon-alert-meta-key">{firing ? '持续' : '历时'}</span>
+                      <span className="mon-alert-meta-num">
+                        {durationText((now - Date.parse(alert.firstSeen)) / 60_000)}
+                      </span>
                     </span>
                     <span className="mon-alert-meta-item" title={stamp.title}>
                       <span className="mon-alert-meta-key">{'更新'}</span>
@@ -656,9 +685,14 @@ export function AlertsTab(props: AlertsTabProps) {
           size="wide"
         >
           <p className="mon-alert-desc mon-detail-desc">{describeAlert(detail.alert, now)}</p>
+          {detail.alert.ruleKey === 'credit_expiring' && (
+            <p className="mon-detail-note">
+              {'额度到期是上游账期：账号续期只轮换登录凭证，不会延长这里的到期时间。'}
+            </p>
+          )}
           <div className="monitoring-cols">
             <div className="card mon-detail-card">
-              <div className="mon-card-title">{'证据'}</div>
+              <div className="mon-card-title">{'证据 · 最近一轮采集'}</div>
               {!ruleKnown(detail.alert.ruleKey) && (
                 <div className="mon-detail-note">{`规则 key：${detail.alert.ruleKey}（规则表里没有这一条，可能是历史版本留下的告警）`}</div>
               )}
@@ -669,10 +703,32 @@ export function AlertsTab(props: AlertsTabProps) {
                   <span className="mon-detail-v" title={value}>{value}</span>
                 </div>
               ))}
+              {firedDiffers && (
+                <>
+                  <div className="mon-card-title" style={{ marginTop: 12 }}>
+                    {`触发时快照 · ${displayTime(detail.latestEvent!.time, timezone).text}`}
+                  </div>
+                  {firedEvidence.map(([key, value]) => (
+                    <div className="mon-detail-kv" key={`fired-${key}`}>
+                      <span className="mon-detail-k" title={key}>{EVIDENCE_LABELS[key] ?? key}</span>
+                      <span className="mon-detail-v" title={value}>{value}</span>
+                    </div>
+                  ))}
+                  <div className="mon-detail-note">
+                    {'触发后读数仍在更新（例如额度批次换了新到期时间）；上行是当前值，这里保留触发那一刻的原始值。'}
+                  </div>
+                </>
+              )}
               <div className="mon-detail-note">
                 {`首次 ${displayTime(detail.alert.firstSeen, timezone).text} · 最近 ${displayTime(detail.alert.lastSeen, timezone).text}`}
               </div>
-              {detail.alert.pushError && <div className="mon-detail-note err">{`推送报错：${detail.alert.pushError}`}</div>}
+              {detail.alert.pushError && (
+                <div className={`mon-detail-note${detail.alert.pushStatus === 'skipped' ? '' : ' err'}`}>
+                  {detail.alert.pushStatus === 'skipped'
+                    ? `推送说明：${detail.alert.pushError}（P2 只进站内，不送飞书/钉钉）`
+                    : `推送报错：${detail.alert.pushError}`}
+                </div>
+              )}
             </div>
 
             <div className="card mon-detail-card">

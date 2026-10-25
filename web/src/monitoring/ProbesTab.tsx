@@ -11,7 +11,7 @@ import type {
 import {ERROR_KIND_TEXT, normalizeProbeCase, probeCaseText, probeSkipText} from './types';
 import {displayTime, displayTimeCompact, formatLatency} from './format';
 import type {MonitorStreamEventName} from './api';
-import {fetchEvents, MONITOR_STREAM_EVENTS, MONITOR_STREAM_PATH, parseStreamEventsFrame,} from './api';
+import {fetchEvents, MONITOR_STREAM_EVENTS, MONITOR_STREAM_PATH, parseStreamEventsFrame, parseStreamTrafficFrame,} from './api';
 
 /** 已上线的探测种类：只有轻探测。后端对其余 kind 回 400 kind_unavailable。 */
 export const PROBE_KIND_LIGHT = 'light';
@@ -33,6 +33,12 @@ const EVENT_CAP = 500;
 
 /** 速率窗口：最近 5 秒收到的事件条数 ÷ 5。 */
 const RATE_WINDOW_MS = 5_000;
+
+/**
+ * 请求流量帧只留在本页最近 2 分钟：它们是实时尾巴，不是 24h 底稿的一部分。
+ * 过期后从视图里滑出，避免每 200ms 一条的流量把真实事件挤出视野。
+ */
+const TRAFFIC_TTL_MS = 120_000;
 
 /** 未收到 snapshot 的宽限时长：超时说明对面不是 SSE（老后端 404、反代吐 HTML），直接降级。 */
 const SNAPSHOT_GRACE_MS = 8_000;
@@ -66,11 +72,12 @@ function rateText(count: number): string {
 
 // ── 事件分类 ───────────────────────────────────────────────────────────
 
-type EventCategory = 'all' | 'probe' | 'alert' | 'renewal' | 'checkin' | 'system';
+type EventCategory = 'all' | 'traffic' | 'probe' | 'alert' | 'renewal' | 'checkin' | 'system';
 
 /** 分类顺序与参考的事件流页签一致；quota 尚无生产者，归档到「系统内核」。 */
 const EVENT_CATEGORIES: Array<{ id: EventCategory; label: string }> = [
   { id: 'all', label: '全部' },
+  { id: 'traffic', label: '请求流量' },
   { id: 'renewal', label: '账号续期' },
   { id: 'probe', label: '轻探测' },
   { id: 'alert', label: '告警' },
@@ -79,6 +86,7 @@ const EVENT_CATEGORIES: Array<{ id: EventCategory; label: string }> = [
 ];
 
 const KIND_LABEL: Record<string, string> = {
+  traffic: '请求流量',
   probe: '轻探测',
   alert: '告警',
   renewal: '账号续期',
@@ -89,7 +97,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 function categoryOf(kind: string): Exclude<EventCategory, 'all'> {
-  if (kind === 'probe' || kind === 'alert' || kind === 'renewal' || kind === 'checkin') return kind;
+  if (kind === 'traffic' || kind === 'probe' || kind === 'alert' || kind === 'renewal' || kind === 'checkin') return kind;
   return 'system';
 }
 
@@ -151,6 +159,23 @@ interface EventMetric {
  */
 function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
   const detail = ev.detail || {};
+  if (ev.kind === 'traffic') {
+    const status = asNumber(detail.status);
+    const latency = asNumber(detail.latencyMs);
+    const ttft = asNumber(detail.ttftMs);
+    const input = asNumber(detail.inputTokens);
+    const output = asNumber(detail.outputTokens);
+    return [
+      {
+        label: '状态码',
+        value: statusCodeText(status),
+        tone: status === 0 || status >= 400 ? 'err' : undefined,
+      },
+      { label: '延迟', value: latency > 0 ? formatLatency(latency) : '—', tone: latency > 0 ? undefined : 'muted' },
+      { label: 'TTFT', value: ttft > 0 ? formatLatency(ttft) : '—', tone: ttft > 0 ? undefined : 'muted' },
+      { label: 'Tokens 入/出', value: input > 0 || output > 0 ? `${input} / ${output}` : '—', tone: input > 0 || output > 0 ? undefined : 'muted' },
+    ];
+  }
   if (ev.kind === 'probe') {
     const cases = Array.isArray(detail.cases) ? detail.cases : [];
     const first = cases.length > 0 ? (cases[0] as Record<string, unknown>) : null;
@@ -179,6 +204,10 @@ function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
     const duration = asNumber(detail.durationMs);
     const expires = asText(detail.expiresAt);
     const errorKind = asText(detail.errorKind);
+    // attempted=false 是「未到厂商续期窗口」，不能算成功；没有 renewed 字段的旧事件按成功处理。
+    const attempted = detail.attempted !== false;
+    const renewed = detail.renewed !== false;
+    const result = errorKind ? errorReason(errorKind) : !attempted ? '未尝试（未到窗口）' : renewed ? '成功' : '未轮换';
     return [
       { label: '耗时', value: duration > 0 ? formatLatency(duration) : '—', tone: duration > 0 ? undefined : 'muted' },
       { label: '凭证商', value: asText(detail.vendor) || '—', tone: asText(detail.vendor) ? undefined : 'muted' },
@@ -189,8 +218,8 @@ function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
       },
       {
         label: '结果',
-        value: errorKind ? errorReason(errorKind) : '成功',
-        tone: errorKind ? 'err' : undefined,
+        value: result,
+        tone: errorKind ? 'err' : attempted && renewed ? undefined : 'muted',
       },
     ];
   }
@@ -200,6 +229,17 @@ function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
 /** 一行等宽 payload：探测按 case 展开，其余把 detail 拍平成 key=value。 */
 function payloadSegments(ev: MonitorEvent): string[] {
   const detail = ev.detail || {};
+  if (ev.kind === 'traffic') {
+    const costMicros = asNumber(detail.costMicros);
+    const priced = detail.priced === true;
+    return [
+      `provider=${ev.targetId || '—'}`,
+      `model=${asText(detail.model) || '—'}`,
+      `status=${statusCodeText(asNumber(detail.status))}`,
+      // 未计价不等于免费：照「成本账本」的口径写「未计价」，不显示 $0。
+      priced ? `cost=$${(costMicros / 1_000_000).toFixed(4)}` : 'cost=未计价',
+    ];
+  }
   if (ev.kind === 'probe') {
     const cases = Array.isArray(detail.cases) ? detail.cases : [];
     const first = cases.length > 0 ? (cases[0] as Record<string, unknown>) : null;
@@ -293,8 +333,11 @@ export function ProbesTab(props: ProbesTabProps) {
   // 暂停时新到的事件先攒着（连接不断），恢复时一次补上。
   const pausedRef = useRef(false);
   const backlogRef = useRef<MonitorEvent[]>([]);
-  // 已经上过屏的事件 id：SSE 与 REST 重复送达时只算一次。
+  // SSE 与 REST 重复送达时只算一次。流量帧用递减的负数 id，永远不与库里的正数 id 相撞。
   const seenRef = useRef<Set<number>>(new Set());
+  const trafficSeqRef = useRef(0);
+  // 流量帧的处理函数挂在 SSE effect 里，账号改名或轮询刷新不能重建连接，所以走 ref 取名字。
+  const accountsRef = useRef(probeAccounts);
   const highlightRef = useRef<Set<string>>(new Set());
   const freshTimersRef = useRef(new Map<string, number>());
   const gotDataRef = useRef(false);
@@ -316,6 +359,7 @@ export function ProbesTab(props: ProbesTabProps) {
   // 结果一到就收起选择器：两层 Modal 叠在一起时点哪里都不对。
   useEffect(() => { if (probeResult) setPickerOpen(false); }, [probeResult]);
   useEffect(() => { providerRef.current = providerFilter; }, [providerFilter]);
+  useEffect(() => { accountsRef.current = probeAccounts; }, [probeAccounts]);
   useEffect(() => { clearedAtRef.current = clearedAt; }, [clearedAt]);
   useEffect(() => { pageShownRef.current = pageShown; }, [pageShown]);
   useEffect(() => { pinnedRef.current = pinned; }, [pinned]);
@@ -511,6 +555,32 @@ export function ProbesTab(props: ProbesTabProps) {
     const onAlert = () => touch();
     const onProbe = () => touch();
 
+    // 真实请求摘要：前端合成一条临时事件（负数 id、不落库），让实时尾巴跟着网关流量动。
+    // 同一个 200ms 窗口内后端已经节流，这里不再去重：每次请求都是独立采样。
+    const onTraffic = (event: MessageEvent<string>) => {
+      touch();
+      const sample = parseStreamTrafficFrame(payload(event));
+      if (!sample) return;
+      trafficSeqRef.current -= 1;
+      const account = accountsRef.current.find((item) => item.providerId === sample.providerId);
+      const failed = sample.status === 0 || sample.status >= 400;
+      ingest([{
+        id: trafficSeqRef.current,
+        time: sample.time,
+        kind: 'traffic',
+        severity: 'info',
+        targetType: 'provider',
+        targetId: sample.providerId,
+        targetName: account?.name,
+        title: `${failed ? '请求失败' : '请求完成'} · ${sample.model || '未标注模型'}`,
+        detail: { ...sample },
+        status: 'info',
+        count: 1,
+        firstSeen: sample.time,
+        lastSeen: sample.time,
+      }]);
+    };
+
     // 后端丢了一段（慢消费者 / 快照失败）：resync 之后不会再来一次快照，
     // 主动把已加载的页重读一遍，缺口才补得回来。
     const onResync = () => {
@@ -526,6 +596,7 @@ export function ProbesTab(props: ProbesTabProps) {
       events: onEvents,
       alert: onAlert,
       probe: onProbe,
+      traffic: onTraffic,
       resync: onResync,
     };
     for (const name of MONITOR_STREAM_EVENTS) {
@@ -658,14 +729,20 @@ export function ProbesTab(props: ProbesTabProps) {
     });
   };
 
-  // 合并后的事件：底稿 ∪ 增量，再按本地清空分界过滤。
+  // 合并后的事件：底稿 ∪ 增量，按本地清空分界过滤；流量帧再按 2 分钟 TTL 滑出。
+  // tickNow 每秒变一次，过期判定才会自己生效（不能只依赖新帧到达）。
   const views = useMemo(() => {
     const rows = mergeEvents(baseEvents, streamEvents);
-    return clearedAt > 0 ? rows.filter((ev) => Date.parse(ev.time) > clearedAt) : rows;
-  }, [baseEvents, streamEvents, clearedAt]);
+    return rows.filter((ev) => {
+      const stamp = Date.parse(ev.time);
+      if (clearedAt > 0 && stamp <= clearedAt) return false;
+      if (ev.kind === 'traffic' && tickNow - stamp > TRAFFIC_TTL_MS) return false;
+      return true;
+    });
+  }, [baseEvents, streamEvents, clearedAt, tickNow]);
 
   const counts = useMemo(() => {
-    const map: Record<EventCategory, number> = { all: views.length, probe: 0, alert: 0, renewal: 0, checkin: 0, system: 0 };
+    const map: Record<EventCategory, number> = { all: views.length, traffic: 0, probe: 0, alert: 0, renewal: 0, checkin: 0, system: 0 };
     for (const ev of views) map[categoryOf(ev.kind)] += 1;
     return map;
   }, [views]);
@@ -703,7 +780,7 @@ export function ProbesTab(props: ProbesTabProps) {
     ? providerFilter ? `${nameOf(providerFilter)} 24h 内没有事件` : '24h 内还没有事件'
     : '这个筛选条件下没有事件';
   const emptyNote = views.length === 0
-    ? '轻探测、告警、续期和系统采集写入后会实时出现在这里。'
+    ? '真实请求流量、轻探测、告警、续期和系统采集写入后会实时出现在这里。'
     : '换个分类或清空搜索词再试。';
 
   return (
@@ -943,8 +1020,8 @@ export function ProbesTab(props: ProbesTabProps) {
 
       {/* ④ 脚注：窗口口径、已载入/总数、按账号筛选与加载更多。 */}
       <div className="mon-ev-foot">
-        <span title="REST 读 24h 最近一页，SSE 增量按 id 去重合并；清空只影响本页">
-          {`24h 窗口 · 已载入 ${views.length} 条${totalCount > views.length ? ` / 共 ${totalCount} 条` : ''}${clearedAt > 0 ? ' · 已本地清空旧条目' : ''} · 取数于 ${displayTime(new Date(fetchedAt).toISOString(), timezone).text}`}
+        <span title="REST 读 24h 最近一页，SSE 增量按 id 去重合并；请求流量是 SSE 独有的临时帧（≤5 帧/秒节流、只保留 2 分钟、不落库）；清空只影响本页">
+          {`24h 窗口 · 已载入 ${views.length} 条${totalCount > views.length ? ` / 共 ${totalCount} 条` : ''}${clearedAt > 0 ? ' · 已本地清空旧条目' : ''}${counts.traffic > 0 ? ` · 流量帧 ${counts.traffic} 条（保留 2 分钟）` : ''} · 取数于 ${displayTime(new Date(fetchedAt).toISOString(), timezone).text}`}
         </span>
         <div className="mon-ev-foot-actions">
           {providerFilter && (

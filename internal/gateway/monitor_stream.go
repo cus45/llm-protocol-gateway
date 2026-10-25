@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
@@ -43,6 +44,10 @@ const (
 	// monitorStreamCatchUpPages bounds how many event pages one catch-up read
 	// pulls; 50 × 5 = 250 rows in one frame set.
 	monitorStreamCatchUpPages = 5
+	// monitorTrafficInterval throttles live request frames. A busy gateway would
+	// otherwise flush the queue with them and push out the probe/alert frames
+	// that actually carry state. 5 frames/s is plenty for a tail view.
+	monitorTrafficInterval = 200 * time.Millisecond
 )
 
 // monitorStreamEvent names mirror the SSE `event:` lines.
@@ -51,6 +56,7 @@ const (
 	monitorStreamEvents        = "events"
 	monitorStreamAlert         = "alert"
 	monitorStreamProbe         = "probe"
+	monitorStreamTraffic       = "traffic"
 	monitorStreamResync        = "resync"
 )
 
@@ -337,6 +343,42 @@ func (s *Server) publishMonitorAlert(reason string, alertID int64) {
 	s.publishStream(monitorStreamEnvelope{Event: monitorStreamAlert, ID: alertID, Data: mustStreamJSON(payload)})
 }
 
+// publishMonitorTraffic emits one ephemeral frame per (throttled) real request.
+// Nothing here is persisted: the frame exists so the console's live tail moves
+// with actual gateway traffic instead of waiting for the next probe round.
+// Bodies and headers never enter the payload — provider/model/status/timing
+// only, all of which the request log already shows to the same audience.
+func (s *Server) publishMonitorTraffic(entry monitor.RequestLog) {
+	if s == nil {
+		return
+	}
+	if s.monitorStreamHub().subscribers() == 0 {
+		return
+	}
+	now := time.Now()
+	s.monitorTrafficMu.Lock()
+	if !s.monitorTrafficAt.IsZero() && now.Sub(s.monitorTrafficAt) < monitorTrafficInterval {
+		s.monitorTrafficMu.Unlock()
+		return
+	}
+	s.monitorTrafficAt = now
+	s.monitorTrafficMu.Unlock()
+
+	payload := map[string]any{
+		"time":         entry.Time.UTC().Format(time.RFC3339Nano),
+		"providerId":   entry.ProviderID,
+		"model":        entry.Model,
+		"status":       entry.Status,
+		"latencyMs":    entry.LatencyMillis,
+		"ttftMs":       entry.TTFTMillis,
+		"inputTokens":  entry.InputTokens,
+		"outputTokens": entry.OutputTokens,
+		"costMicros":   entry.CostMicros,
+		"priced":       entry.Priced,
+	}
+	s.publishStream(monitorStreamEnvelope{Event: monitorStreamTraffic, Data: mustStreamJSON(payload)})
+}
+
 func mustStreamJSON(value any) json.RawMessage {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -448,6 +490,7 @@ func (s *Server) monitorProbeSnapshotOf(providers []domain.Provider) (monitorStr
 //	events    [Event, ...]            id = newest event row id
 //	alert     {id, reason, alert?}    id = alert id
 //	probe     {providerId, runs}      id = round timestamp (unix ms)
+//	traffic   {time, providerId, model, status, latencyMs, ttftMs, ...}  ephemeral
 //	resync    {reason, cursor}        id = event cursor the client resumes from
 //	": ping"                          heartbeat comment, every sseHeartbeatInterval
 func (s *Server) handleMonitorStream(w http.ResponseWriter, r *http.Request) {

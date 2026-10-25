@@ -114,6 +114,10 @@ type Server struct {
 	// and StartMonitoring may race to first use it).
 	monitorHub     *monitorStreamHub
 	monitorHubOnce sync.Once
+	// monitorTrafficAt throttles live request frames; guarded by monitorTrafficMu
+	// because every finished request writes it.
+	monitorTrafficMu sync.Mutex
+	monitorTrafficAt time.Time
 	// monitorIsolationMu serializes the forced circuit-break endpoints' read-
 	// check-write of the isolation marker and the Disabled flag together, so two
 	// clicks cannot leave a disabled account with no marker (or vice versa).
@@ -1483,6 +1487,9 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		entry.ResponseBody = truncateForLog(scrubSensitiveRequestBody(responseBody), logBodyCapOK)
 	}
 	s.logs.Add(entry)
+	// Live tail: only provider/model/status/timing leave this function; the
+	// bodies stay in the request log.
+	s.publishMonitorTraffic(entry)
 	usageUserID := ""
 	if gatewayKeyMatched {
 		usageUserID = ownerUserIDForStats(matchedKey.OwnerUserID)

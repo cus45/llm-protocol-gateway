@@ -8092,6 +8092,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-ev-card:hover { border-color: var(--border-strong); }
 .mon-ev-card.k-alert { border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }
 .mon-ev-card.k-renewal { border-color: color-mix(in srgb, var(--green) 30%, var(--border)); }
+.mon-ev-card.k-traffic { border-color: color-mix(in srgb, var(--accent) 22%, var(--border)); }
 /* 新条目入场：一次 0.9s 的主色描边 + 底色闪动，不改变布局。 */
 .mon-ev-card.fresh { animation: mon-ev-flash 0.9s ease-out 1; }
 @keyframes mon-ev-flash {
@@ -8112,6 +8113,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-ev-card.k-renewal .mon-ev-bead { background: var(--green); }
 .mon-ev-card.k-checkin .mon-ev-bead { background: var(--purple); }
 .mon-ev-card.k-system .mon-ev-bead { background: var(--slate); }
+.mon-ev-card.k-traffic .mon-ev-bead { background: var(--accent); }
 .mon-ev-card.s-p0 .mon-ev-bead { background: var(--red); }
 
 .mon-ev-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
@@ -8141,6 +8143,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-ev-kind.k-renewal { color: var(--green); background: var(--green-soft); }
 .mon-ev-kind.k-checkin { color: var(--purple); background: var(--purple-soft); }
 .mon-ev-kind.k-system { color: var(--slate); background: var(--slate-soft); }
+.mon-ev-kind.k-traffic { color: var(--accent-strong); background: var(--accent-soft); }
 html[data-theme="dark"] .mon-ev-sev.p0 { color: #fca5a5; }
 html[data-theme="dark"] .mon-ev-sev.p1 { color: #fcd34d; }
 html[data-theme="dark"] .mon-ev-sev.p2 { color: #93c5fd; }
@@ -8262,6 +8265,7 @@ html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(
 .mon-ev-term-kind.k-renewal { color: var(--green); }
 .mon-ev-term-kind.k-checkin { color: var(--purple); }
 .mon-ev-term-kind.k-system { color: var(--slate); }
+.mon-ev-term-kind.k-traffic { color: var(--accent-strong); }
 .mon-ev-term-title { flex: none; max-width: 42%; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mon-ev-term-detail { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
 
@@ -9846,6 +9850,59 @@ html[data-theme="light"] .mon-alert-sentence.tone-err { color: color-mix(in srgb
 .mon-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .mon-detail-actions > .mon-detail-note { flex: 1 1 100%; }
 .mon-detail-select { height: var(--control-h-sm); padding: 0 10px; font-size: 12px; }
+
+/* 顶栏「账号续期」弹窗：一行一个账号，结果永远带文字（颜色只做辅助）。 */
+.mon-renew-lead { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.mon-renew-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mon-renew-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(110px, max-content) minmax(0, 1.2fr);
+  gap: 4px 14px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+.mon-renew-id { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; }
+.mon-renew-id strong { color: var(--text-strong); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.mon-renew-id span { color: var(--muted); font-size: 11px; }
+.mon-renew-when { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.mon-renew-state { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.mon-renew-row.is-running { border-color: var(--accent-border); }
+.mon-renew-row.is-ok .mon-renew-state { color: var(--green); }
+.mon-renew-row.is-skipped .mon-renew-state { color: var(--amber); }
+.mon-renew-row.is-failed .mon-renew-state { color: var(--red); }
+@media (max-width: 640px) {
+  .mon-renew-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 动作结果条：挂在页头下方，10 秒自动消失，也可手动关闭。 */
+.mon-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mon-notice > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.mon-notice-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mon-notice-close:hover { color: var(--text-strong); background: var(--surface-sunken); }
 
 /* 规则页（v4）：筛选条 + 3 列卡片网格，对齐参考「规则引擎」。
    每张卡：首行「层级胶囊 + 级别胶囊 + 未保存标记 + 开关」→ 规则名（不截断）→ 检查/静默元信息

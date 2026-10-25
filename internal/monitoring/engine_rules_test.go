@@ -215,6 +215,28 @@ func TestCredentialRulesNeedData(t *testing.T) {
 	if got := ruleTicksProvider(t, credits, base.Add(2*time.Minute), unusable, "credit_expiring"); len(got) != 0 {
 		t.Fatalf("credit_expiring fired on an unusable quota reading: %+v", got)
 	}
+
+	// 到期时刻已经过去（批次过期但读数仍能读到剩余）时不能再算「即将到期」，
+	// 否则 Sub(now) 是负数、永远小于 lead，告警永远恢复不了。
+	expired := NewEngine(newFakeStore(), DefaultRules())
+	expiredFired := ruleTicksProvider(t, expired, base, soon, "credit_expiring")
+	if len(expiredFired) != 1 || !expiredFired[0].Firing {
+		t.Fatalf("credit_expiring should fire first: %+v", expiredFired)
+	}
+	stale := soon
+	stale.Quota = &QuotaSnapshot{Source: "workbuddy", Remaining: 400, Limit: 1000, Ratio: 0.4,
+		ExpiresAt: base.Add(-time.Hour), ObservedAt: base.Add(2 * time.Minute)}
+	resolvedCount := 0
+	for offset := 2; offset <= 4; offset++ {
+		for _, item := range ruleTicksProvider(t, expired, base.Add(time.Duration(offset)*time.Minute), stale, "credit_expiring") {
+			if item.Resolved {
+				resolvedCount++
+			}
+		}
+	}
+	if resolvedCount != 1 {
+		t.Fatalf("credit_expiring did not resolve after the deadline passed: %d", resolvedCount)
+	}
 }
 
 func ruleTicksProvider(t *testing.T, engine *Engine, now time.Time, provider ProviderObservation, ruleKey string) []Transition {

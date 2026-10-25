@@ -84,3 +84,49 @@ func TestRecordRenewalWithoutMonitoringIsNoop(t *testing.T) {
 	var nilServer *Server
 	nilServer.recordRenewal(domain.Provider{ID: "p"}, "claude", time.Now(), nil)
 }
+
+// A manual click that lands outside the vendor's refresh window still has to
+// leave a trace in the event stream, but it must not reset the consecutive
+// failure streak — nothing was attempted, so nothing was proven.
+func TestRecordRenewalSkippedIsVisibleButNotASuccess(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	server := &Server{logs: monitor.NewStore()}
+	server.monitoring = monitoring.NewService(nil, nil, nil, db, db)
+
+	provider := domain.Provider{ID: "p-workbuddy", AuthType: domain.AuthTypeWorkBuddy}
+	base := time.Now().Add(-10 * time.Minute).UTC()
+	server.recordRenewal(provider, "workbuddy", base, nil)
+	server.recordRenewal(provider, "workbuddy", base.Add(time.Minute), errors.New("401"))
+	server.recordRenewalSkipped(provider, "workbuddy", base.Add(2*time.Minute))
+
+	events, err := db.QueryMonitorEvents(monitoring.EventQuery{Kind: monitoring.EventKindRenewal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events.Items) != 3 {
+		t.Fatalf("renewal events = %d, want 3", len(events.Items))
+	}
+	skip := events.Items[0]
+	if skip.Severity != monitoring.SeverityInfo {
+		t.Fatalf("skipped severity = %q, want info", skip.Severity)
+	}
+	if skip.Title != "手动续期：未到续期窗口" {
+		t.Fatalf("skipped title = %q", skip.Title)
+	}
+	if attempted, ok := skip.Detail["attempted"].(bool); !ok || attempted {
+		t.Fatalf("skipped detail should mark attempted=false: %v", skip.Detail)
+	}
+
+	outcome, err := db.RecentRenewalOutcomes(provider.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Known || outcome.LastOK || outcome.Consecutive != 1 {
+		t.Fatalf("skip should leave the failure streak intact: %+v", outcome)
+	}
+}

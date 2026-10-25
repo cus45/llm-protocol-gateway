@@ -255,14 +255,19 @@ func (s *Server) handleMonitorAccountRefresh(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), monitorProbeTimeout)
 	defer cancel()
-	renewed, renewErr := s.renewCredentialForMonitor(ctx, provider)
+	started := time.Now()
+	renewedProvider, renewErr := s.renewCredentialForMonitor(ctx, provider)
+	rotated := providerAccessToken(renewedProvider) != providerAccessToken(provider)
+	if renewErr == nil && !rotated {
+		s.recordRenewalSkipped(provider, providerVendorKey(provider), started)
+	}
 	result := map[string]any{
 		"ok":         renewErr == nil,
 		"providerId": provider.ID,
 		"vendor":     providerVendorKey(provider),
-		"renewed":    providerAccessToken(renewed) != providerAccessToken(provider),
+		"renewed":    rotated,
 	}
-	if expiry := providerCredentialExpiry(renewed); !expiry.IsZero() {
+	if expiry := providerCredentialExpiry(renewedProvider); !expiry.IsZero() {
 		result["expiresAt"] = expiry.UTC().Format(time.RFC3339)
 	}
 	if renewErr != nil {

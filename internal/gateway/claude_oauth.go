@@ -587,6 +587,9 @@ func (s *Server) ensureFreshClaudeTokenWithin(provider domain.Provider, lead tim
 		s.logs.AddApp("error", "failed to persist refreshed claude oauth token", err.Error())
 		slog.Error("failed to persist refreshed claude oauth token", "provider", updated.ID, "error", err)
 	}
+	// 成功也要埋点：缺了这一条，监控中心的续期记录与连续失败判断会一直停在
+	// 上一次失败上，看起来像「续期成功却仍报失败」。
+	s.recordRenewal(updated, "claude", time.Now(), nil)
 	return updated, nil
 }
 

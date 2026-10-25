@@ -11,7 +11,8 @@
 
 export type MonitorSeverity = 'p0' | 'p1' | 'p2' | 'info';
 
-export type MonitorEventKind = 'alert' | 'renewal' | 'probe' | 'checkin' | 'quota' | 'system';
+/** `traffic` 是前端合成的实时请求摘要（SSE 独有，不落库），其余来自 monitor_events。 */
+export type MonitorEventKind = 'alert' | 'renewal' | 'probe' | 'checkin' | 'quota' | 'system' | 'traffic';
 
 export type MonitorAlertStatus = 'firing' | 'resolved' | 'info';
 export type MonitorDisposition = 'open' | 'acknowledged' | 'ignored';
