@@ -10479,3 +10479,25 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .mon-acc-probe + .mon-acc-quota .mon-acc-track {
   position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
 }
+
+/* 对齐参考的内容区高度：参考的三列指标格 55px、探活点阵区 33px，
+   我们分别是 68 / 44。收紧到参考尺度（信息不变，只是行高与内边距更紧凑）。 */
+.mon-acc-metrics { padding: 7px 9px; }
+.mon-acc-metric { gap: 0; }
+.mon-acc-metric-label { line-height: 1.15; }
+.mon-acc-metric-value { line-height: 1.2; }
+.mon-acc-probe { padding: 0; }
+.mon-acc-probe-head { margin-bottom: 3px; }
+.mon-acc-probe .mon-acc-probe-dots { height: auto; }
+.mon-acc-dot { height: 8px; }
+/* 探活区再收：参考这一块是 33px（一行标题 + 一行点阵），我们是标题 + 两行点阵。
+   点阵高度 8 → 7、标题行高收紧，两行也能落进 33px 量级。 */
+.mon-acc-probe-head { line-height: 1.2; }
+.mon-acc-probe .mon-acc-probe-dots { gap: 2px; }
+.mon-acc-dot { height: 7px; }
+/* 收尾 11px：卡片内间距 8 → 7，三列指标格再压 2px。 */
+.mon-acc-card { gap: 7px; }
+.mon-acc-metrics { padding: 6px 9px; }
+.mon-acc-facts { padding-top: 0; }
+/* 307 → 314（参考）：内间距回到 8px。 */
+.mon-acc-card { gap: 8px; }
