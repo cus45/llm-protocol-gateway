@@ -10518,3 +10518,20 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
   .mon-alert-main > .mon-alert-desc { grid-column: 1 / -1; }
   .mon-alert-main > .mon-alert-meta { grid-column: 1 / -1; }
 }
+
+/* 告警主的第三行（持续/更新/推送状态）并进描述行：参考这一块只有标题行 + 描述行。
+   元信息改为描述行内右对齐的一段，不再独占一行——省 17px，信息不丢。 */
+@media (min-width: 1101px) {
+  .mon-alert-main { position: relative; }
+  .mon-alert-main > .mon-alert-desc { padding-right: 0; }
+  .mon-alert-main > .mon-alert-meta {
+    position: absolute; right: 0; bottom: -1px;
+    max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    background: inherit;
+  }
+  .mon-alert-main { padding-bottom: 0; }
+}
+/* 61 → 64（参考）：行内边距回到参考的 14px。 */
+.mon-alert-row { padding: 14px 14px 14px 17px; }
+/* 69 → 64：上下内边距 14 → 11.5。 */
+.mon-alert-row { padding: 11.5px 14px 11.5px 17px; }
