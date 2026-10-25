@@ -10008,3 +10008,10 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
 .monitoring-page .mon-tab-panel { padding: 0 20px; }
 .monitoring-page .mon-overview { padding: 2px; }
+
+/* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
+   在监控页里显得比方一点。只作用于监控页，不动全站。 */
+.monitoring-page .card,
+.monitoring-page .mon-set-card,
+.monitoring-page .mon-meta,
+.monitoring-page .mon-topo { border-radius: 16px; }
