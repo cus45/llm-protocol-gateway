@@ -9183,7 +9183,7 @@ select.mon-acc-select-input {
   flex-direction: column;
   gap: 10px;
   min-width: 0;
-  padding: 14px;
+  padding: 16px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 90%, transparent);
