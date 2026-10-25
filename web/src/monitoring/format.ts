@@ -41,6 +41,16 @@ export function displayTime(raw: string | undefined, timeZone: string): { text: 
   return { text: `${formatted} ${zone}`, title: date.toLocaleString() };
 }
 
+/**
+ * 时间戳的紧凑形态：只有「日期 时间」，不带时区名。窄屏事件行用它——时区后缀
+ * 会把标题挤到第二行，而时区在页面顶部的「窗口 … Asia/Shanghai」里已经写明了。
+ * 完整形态仍在 title 里，悬停可见。
+ */
+export function displayTimeCompact(text: string): string {
+  const space = text.lastIndexOf(' ');
+  return space > 0 ? text.slice(0, space) : text;
+}
+
 /** 距今多久（负值=未来）。 */
 export function relativeToNow(raw: string | undefined, now: number): string {
   if (!hasTime(raw)) return '—';

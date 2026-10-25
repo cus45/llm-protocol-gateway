@@ -6860,12 +6860,10 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .monitoring-cols {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  /* 子卡用 subgrid 共享这两条轨道：两卡等高，且高度随内容走；账号一多，整块封顶约一屏
-     （690px），两卡列表各自在卡内滚动（不把概览页拉成几千像素，也不留死白）。
-     封顶栏用 minmax(0, 690px)：直接写 max-height 会让子网格里 auto 的轨道、flex:1 0
-     的滚动区退化成 0 高（卡片只剩标题）。最小 0 也不能省：minmax(auto, …) 的自动下限
-     按内容算，会绕过 690px 上限。 */
-  grid-template-rows: max-content minmax(0, 690px);
+  /* 子卡用 subgrid 共享轨道，两卡等高，高度随内容走（不强行拉满一屏，也不留死白）。
+     高度封顶不写在这里：卡片跨两行，最小内容按「头 + 96px 列表」× 两行算，轨道上的
+     上限会被这点下限顶穿（实测 4 行网格能长到 2000px）。封顶改为列表自身的 max-height。 */
+  grid-template-rows: max-content max-content;
   gap: 12px;
 }
 
@@ -6963,7 +6961,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .m-acc-detail { justify-self: end; align-self: center; padding: 0 10px; white-space: nowrap; }
 /* 只按结构位置定位，不挂在按钮类上（告警行的「处理」也带 .m-acc-detail）。
    用显式列线而不是 grid-area detail：区域名在首行跨两列，自动放置会把按钮铺满整行。 */
-.mrow-account-mini > .m-acc-detail { grid-area: 2 / 3; }
+.mrow-account-mini > .m-acc-detail { grid-row: 2; grid-column: 3; align-self: center; }
 
 /* 当前告警：与左侧账号卡同高，列表内滚动，不把整页拉长也不留死白。
    两卡都用 subgrid 分到同一组轨道（行高/间距都来自 .monitoring-cols），高度随内容互相拉齐。 */
@@ -6974,8 +6972,11 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   gap: 8px;
   min-width: 0;
 }
+/* 桌面封顶约一屏（690px / 480px 的单列档另定）：账号有 26 个时，概览页不该被拉成几千米长，
+   两卡列表各自在卡内滚动。用长度而不是百分比——百分比会被当成 auto，等于没封顶。 */
 .m-scroll-list {
   min-height: 0;
+  max-height: 620px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -6988,6 +6989,8 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .m-alert-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .m-alert-title { font-weight: 500; overflow-wrap: anywhere; }
 .m-alert-meta { color: var(--subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+/* 时间戳两形态：宽屏带时区，窄屏只留日期时间（时区在页头已写明）。 */
+.m-stamp-short { display: none; }
 .m-alert-main .badge { align-self: flex-start; }
 
 /* 事件流：时间 / 级别 / 标题 / 详情 四列，详情允许两行。 */
@@ -7002,8 +7005,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 @media (max-width: 1280px) {
   .monitoring-cols {
     grid-template-columns: minmax(0, 1fr);
-    /* 单列上下排：两张卡各自封顶，告警多时卡内滚动，账号卡不被推到很下面。 */
-    grid-template-rows: minmax(0, 690px) minmax(0, 480px);
+    grid-template-rows: max-content;
   }
 }
 
@@ -7230,7 +7232,13 @@ select.rules-control {
   .mrow-alert-mini > .m-alert-main { grid-column: 2 / 4; }
   .mrow-event { grid-template-columns: 76px 36px minmax(0, 1fr); }
   .mrow-event > :first-child { grid-column: auto; }
-  .mrow-event > .m-event-title { grid-column: 3; }
+  /* 窄屏时间列只放「10/25 09:11」：时区后缀在这里没有信息量，却把标题挤到第二行。
+     标题才是这一行的主信息，必须和时间同排。时间要显式落在第 1 列——只写 auto
+     会被网格自动放置铺满整行（实测 256px），标题就又被挤下去了。 */
+  .mrow-event > .m-alert-meta { grid-column: 1; grid-row: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+  .mrow-event > .m-alert-meta > .m-stamp-full { display: none; }
+  .mrow-event > .m-alert-meta > .m-stamp-short { display: inline; }
+  .mrow-event > .m-event-title { grid-column: 3; grid-row: 1; }
   .mrow-event > .m-event-detail { grid-column: 1 / -1; }
 }
 @media (max-width: 420px) {
@@ -7240,16 +7248,23 @@ select.rules-control {
   .mrow-account-mini > .m-acc-name,
   .mrow-account-mini > .m-acc-facts,
   .mrow-account-mini > .m-acc-badges,
-  .mrow-account-mini > .m-acc-detail { grid-column: 1; }
   .mrow-account-mini > .m-acc-name { grid-row: 1; }
   .mrow-account-mini > .m-acc-facts { grid-row: 2; }
-  .mrow-account-mini > .m-acc-badges { grid-row: 3; justify-content: flex-start; }
-  .mrow-account-mini > .m-acc-detail { grid-row: 4; justify-self: start; }
+  .mrow-account-mini > .m-acc-badges { grid-row: 3; grid-column: 1; justify-content: flex-start; }
+  .mrow-account-mini > .m-acc-detail { grid-row: 4; grid-column: 1; justify-self: start; }
 }
 @media (max-width: 560px) {
-  .mrow-event { grid-template-columns: 36px minmax(0, 1fr); }
-  .mrow-event > :first-child { grid-column: 1 / -1; }
-  .mrow-event > .m-event-title { grid-column: 2; }
+  .mrow-event { grid-template-columns: 76px 36px minmax(0, 1fr); }
+  /* 手机档不再把时间铺满整行：标题才是主信息，必须与时间同排。时间只留
+     「10/25 09:11」（时区见页头），完整值在 title 上。 */
+  .mrow-event > .m-alert-meta {
+    grid-column: 1; grid-row: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px;
+  }
+  .mrow-event > .m-alert-meta > .m-stamp-full { display: none; }
+  .mrow-event > .m-alert-meta > .m-stamp-short { display: inline; }
+  .mrow-event > .m-event-title { grid-column: 3; grid-row: 1; }
+  .mrow-event > .m-event-detail { grid-column: 1 / -1; }
   /* 事件筛选条在手机上一行放不下，改成整宽、内部横向滚动，不把页面撑宽。 */
   .monitoring-page .card.panel > .m-panel-head.has-filters { flex-wrap: wrap; align-items: flex-start; }
   .monitoring-page .card.panel > .m-panel-head.has-filters > .panel-header-actions {

@@ -3,7 +3,7 @@ import { BrandIcon } from '../components/ui';
 import { formatCostMicros } from '../lib';
 import type { MonitorAccount, MonitorAlert, MonitorEvent, MonitorOverview, MonitorSeverity } from './types';
 import { hasTime, SEVERITY_TEXT } from './types';
-import { detailPairs, displayTime, formatLatency, formatRatio, quotaText, relativeToNow, SEVERITY_TONE } from './format';
+import { detailPairs, displayTime, displayTimeCompact, formatLatency, formatRatio, quotaText, relativeToNow, SEVERITY_TONE } from './format';
 
 export interface OverviewTabProps {
   overview: MonitorOverview | null;
@@ -330,7 +330,10 @@ export function OverviewTab(props: OverviewTabProps) {
           return (
             <div className="log-row" key={event.id}>
               <div className="mrow mrow-event">
-                <span className="m-alert-meta" title={stamp.title}>{stamp.text}</span>
+                <span className="m-alert-meta" title={stamp.text}>
+                  <span className="m-stamp-full">{stamp.text}</span>
+                  <span className="m-stamp-short">{displayTimeCompact(stamp.text)}</span>
+                </span>
                 <span className={`badge ${SEVERITY_TONE[event.severity]}`}>{event.severity.toUpperCase()}</span>
                 <span className="m-event-title" title={event.title}>
                   {event.title}
