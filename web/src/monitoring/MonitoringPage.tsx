@@ -245,6 +245,13 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   // 顶栏副标题与「规则」页签徽标要的是全量口径：告警列表可能被状态/级别筛选过，不能拿来数。
   const [rules, setRules] = useState<MonitorRule[]>([]);
   const [lastLoadedAt, setLastLoadedAt] = useState('');
+  // 顶部同步胶囊在窄屏（1024 下只有约 100px）装不下完整时间，改用相对时间「3 分钟前」：
+  // 绝对时间与完整口径都留在 title 里，不再靠省略号把「10/26 03:21:5…」切掉。
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const generation = useRef(0);
   // 失败后的补拉定时器与「当前最新一次 loadVisible」：4 秒补拉不能重新建一个闭包，
@@ -377,6 +384,23 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       observer.disconnect();
     };
   }, []);
+
+  // 激活页签滚入视野：1024 下「规则引擎」超出右缘、390 下靠后的页签完全在屏外。
+  // 直接改滚动容器的 scrollLeft，不用 scrollIntoView——后者会把祖先（含整页）一起滚动，
+  // 深链 ?tab=rules 打开时页面会莫名跳到中间。只动横向、竖直方向绝不碰。
+  useEffect(() => {
+    const el = tabsRef.current;
+    const btn = el?.querySelector<HTMLElement>('.mon-tab.active');
+    if (!el || !btn) return;
+    const pad = parseFloat(getComputedStyle(el).paddingLeft) || 0;
+    // 右端多留 4px（渐隐伪元素 24px 只有边缘轻轻压过来）：贴边时最后一个页签的右侧圆角/边框
+    // 刚好压在渐隐起点上，实测 390 下右边界 365 vs 可见 364 差 1px。
+    const padR = (parseFloat(getComputedStyle(el).paddingRight) || 0) + 4;
+    const left = btn.offsetLeft - pad;
+    const right = btn.offsetLeft + btn.offsetWidth + padR;
+    if (left < el.scrollLeft) el.scrollLeft = left;
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth;
+  }, [tab, tabsScroll.end]);
 
   // 探测配置：只在设置页读一次 `/probe-config`（写入要走 PUT）。失败不拖垮整页：
   // 设置页的其它卡片照常可用，探测配置卡片不出现，等下一轮再试。
@@ -654,6 +678,15 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const vendorless = accounts.filter((item) => !item.vendor.trim()).length;
   const liveProbes = probeAccounts.reduce((sum, item) => sum + item.usedToday, 0);
   const loadedAt = lastLoadedAt ? displayTime(lastLoadedAt, timezone).text : '';
+  // 顶栏同步胶囊的「几分钟前」：nowMs 每 30 秒走一次，跨分钟时文案自动更新。
+  const loadedAgoSec = lastLoadedAt ? Math.max(0, Math.round((nowMs - Date.parse(lastLoadedAt)) / 1000)) : 0;
+  const relativeLoaded = !lastLoadedAt
+    ? ''
+    : loadedAgoSec < 45 ? '刚刚'
+    : loadedAgoSec < 3600 ? `${Math.round(loadedAgoSec / 60)} 分钟前`
+    : `${Math.round(loadedAgoSec / 3600)} 小时前`;
+  // 完整口径留给悬停提示：用户要看的是「哪一秒」，胶囊上只显示新鲜度。
+  const syncHint = lastLoadedAt ? `（${lastLoadedAt}，${timezone}）` : '';
 
   // 告警静音：直接开关投递配置的 quietEnabled（PUT /__monitor/dispatch 的返回值就是新的完整配置）。
   // 静默时段内 P1 摘要延后、非 P0 通知排队，P0 仍即时发——这是后端 dispatcher 的真实语义。
@@ -746,9 +779,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
                 <i className="mon-chain-dot" aria-hidden="true" />
                 <span className="mon-chain-text">{chainState.text}</span>
               </span>
-              <span className="mon-header-sync">
+              <span className="mon-header-sync" title={loadedAt ? `${loadedAt} 同步${syncHint}` : undefined}>
                 <i className="live-dot" aria-hidden="true" />
-                {loading ? '同步中…' : loadedAt ? `${loadedAt} 同步` : '等待首轮同步'}
+                {loading ? '同步中…' : loadedAt ? `${relativeLoaded} 同步` : '等待首轮同步'}
               </span>
             </div>
             <p
@@ -844,7 +877,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         <OverviewTab
           overview={overview}
           accounts={accounts}
-          events={events}
           timezone={timezone}
           loading={loading}
           error={error}

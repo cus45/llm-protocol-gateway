@@ -228,6 +228,23 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredTheme());
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() => resolveTheme(readStoredTheme()));
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredSidebarCollapsed());
+  // 手机档（≤440）导航条里的「⋯」面板：主题切换与账号原来在侧栏页脚，收进顶部单行栏后放这里。
+  const [sidebarMoreOpen, setSidebarMoreOpen] = useState(false);
+  useEffect(() => {
+    if (!sidebarMoreOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && typeof target.closest === 'function' && target.closest('.sidebar-more')) return;
+      setSidebarMoreOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setSidebarMoreOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [sidebarMoreOpen]);
   useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
   const [showScrollTop, setShowScrollTop] = useState(false);
   useEffect(() => {
@@ -4557,6 +4574,61 @@ function App() {
                 退出登录
               </button>
             ) : null}
+          </div>
+
+          {/* 手机档（≤440）「⋯」：侧栏页脚收进顶部单行栏后，主题切换与退出放这里。 */}
+          <div className="sidebar-more">
+            <button
+              type="button"
+              className={`icon-btn sidebar-more-btn${sidebarMoreOpen ? ' active' : ''}`}
+              onClick={() => setSidebarMoreOpen((v) => !v)}
+              aria-expanded={sidebarMoreOpen}
+              aria-label="更多（主题与账号）"
+              title="更多（主题与账号）"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="19" cy="12" r="1.6" />
+              </svg>
+            </button>
+            {sidebarMoreOpen && (
+              <div className="sidebar-more-panel">
+                <ThemeSwitch value={themeMode} onChange={setThemeMode} size="compact" />
+                {authStatus?.authenticated && authStatus.username ? (
+                  <div className="user-card">
+                    <div className="user-avatar">{authStatus.username.slice(0, 1).toUpperCase()}</div>
+                    <div className="user-meta">
+                      <b>{authStatus.username}</b>
+                      <span title={dataFetchedAt ? `页面数据最近一次成功拉取的时间（约每 5 秒自动刷新）` : undefined}>
+                        {dataFetchedAt ? <i className="live-dot" aria-hidden="true" /> : null}
+                        {authStatus.role === 'user' ? '普通用户' : '管理员'}
+                        {dataFetchedAt ? ` · 更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
+                      </span>
+                    </div>
+                    {authStatus?.requireAuth ? (
+                      <button
+                        className="icon-btn"
+                        type="button"
+                        disabled={authBusy}
+                        onClick={() => void logoutAdmin()}
+                        title="退出登录"
+                        aria-label="退出登录"
+                      >
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" />
+                          <path d="M10 8l-4 4 4 4M6 12h10" />
+                        </svg>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : authStatus?.requireAuth ? (
+                  <button className="btn" type="button" disabled={authBusy} onClick={() => void logoutAdmin()}>
+                    退出登录
+                  </button>
+                ) : null}
+              </div>
+            )}
           </div>
         </aside>
 

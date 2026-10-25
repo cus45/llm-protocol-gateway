@@ -443,6 +443,12 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
           })}
         </div>
         <div className="mon-rules-toolbar-right">
+          {dirtyKeys.size > 0 && (
+            <span className="mon-rules-dirty" title="改动只在点「保存规则」或卡片上的「保存」后生效；保存是整表提交">
+              <span className="mon-rules-dirty-dot" aria-hidden />
+              {`${dirtyKeys.size} 条未保存`}
+            </span>
+          )}
           <span className="mon-rules-active">
             {'活跃规则: '}
             <b className="mon-rules-active-value">{enabledCount}</b>
@@ -452,29 +458,6 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
             {saving ? '保存中…' : '保存规则'}
           </button>
         </div>
-      </div>
-
-      <div className="mon-rules-statusbar">
-        <div className="mon-rules-stats">
-          <span className="mon-rules-stat">
-            <b className="mon-rules-stat-value">{enabledCount}</b>
-            <span className="mon-rules-stat-key">{'条已启用'}</span>
-          </span>
-          <span className="mon-rules-stat-sep" aria-hidden>{'/'}</span>
-          <span className="mon-rules-stat">
-            <b className="mon-rules-stat-value">{drafts.length}</b>
-            <span className="mon-rules-stat-key">{'条总数'}</span>
-          </span>
-          {dirtyKeys.size > 0 && (
-            <span className="mon-rules-dirty" title="改动只在点「保存规则」或卡片上的「保存」后生效；保存是整表提交">
-              <span className="mon-rules-dirty-dot" aria-hidden />
-              {`${dirtyKeys.size} 条未保存`}
-            </span>
-          )}
-        </div>
-        <p className="mon-rules-note">
-          {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
-        </p>
       </div>
 
       {error && <div className="rules-inline-error" role="alert"><span className="rules-err">{error}</span></div>}

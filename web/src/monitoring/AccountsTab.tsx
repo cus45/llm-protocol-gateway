@@ -1010,6 +1010,10 @@ export function AccountsTab(props: AccountsTabProps) {
         </div>
 
         <div className="mon-acc-toolbar-side">
+          <span
+            className="mon-acc-count"
+            title="角色、熔断档位按健康与探测结果推导；强制隔离由人工发起并需人工恢复"
+          >{`${filtered.length} / ${accounts.length} 个账号`}</span>
           <label className="mon-acc-select">
             <span className="mon-acc-select-label">{'状态'}</span>
             <select
@@ -1077,13 +1081,6 @@ export function AccountsTab(props: AccountsTabProps) {
         </div>
       </div>
 
-      <div className="mon-acc-meta-row">
-        <span className="mon-acc-count">{`${filtered.length} / ${accounts.length} 个账号`}</span>
-        <span className="mon-acc-meta-note" title="角色按健康与告警推导；熔断档位按探测连续失败推导；强制隔离需人工恢复">
-          {'角色、熔断档位按健康与探测结果推导；强制隔离由人工发起并需人工恢复'}
-        </span>
-      </div>
-
       {empty && <Onboarding />}
       {!empty && filtered.length === 0 && <div className="m-empty">{'没有符合当前筛选的账号。'}</div>}
 
@@ -1149,6 +1146,8 @@ export function AccountsTab(props: AccountsTabProps) {
                 </span>
               </h3>
 
+              {/* 参考的首屏分组（徽标 + 名称 + 指标块）到此结束。 */}
+              <div className="mon-acc-primary">
               <div className="mon-acc-metrics">
                 <div className="mon-acc-metric">
                   <span className="mon-acc-metric-label">{'最近探测成功率'}</span>
@@ -1183,6 +1182,7 @@ export function AccountsTab(props: AccountsTabProps) {
                       : '无记录'}
                   </span>
                 </div>
+              </div>
               </div>
 
               {facts ? (

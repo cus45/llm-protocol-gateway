@@ -1,4 +1,23 @@
 @import './akc.css';
+
+/* 自托管字体（web/public/fonts/，均 SIL OFL，许可证与文件同目录）。
+   参考设计走 Google Fonts 外链；生产环境外链不可控（内网 / 被墙 / 慢首屏），所以把同一族
+   的可变字重文件打进 dist；西文字形按需下载。 */
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans-Variable.ttf") format("truetype-variations");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Variable.ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ============================================================
    LLM Protocol Gateway · Admin Console Design System
    干净 / 克制 / 专业 — 现代 SaaS 控制台语言
@@ -99,8 +118,10 @@
   --z-dropdown: 3200;
   --z-toast: 4000;
 
-  /* 字体：英文优先 Inter/Segoe UI Variable（数字更挺拔），中文回落 PingFang SC / 雅黑 / Noto Sans SC */
-  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 字体：与参考设计同一族——西文 Plus Jakarta Sans、中文 Noto Sans SC，再回落系统字体。
+     两者都是本地打包（见文件顶部 @font-face，web/public/fonts/，SIL OFL），不引外链：
+     参考页用 Google Fonts <link>，生产/内网不可控，这里改成自托管。 */
+  --font: "Plus Jakarta Sans", "Noto Sans SC", "WenQuanYi Zen Hei", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
 
   --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%235b6478' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -255,6 +276,8 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
   transition: padding 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .sidebar.collapsed { padding: 18px 10px 16px; align-items: stretch; }
+/* 「⋯」（主题/账号）：只在手机档 ≤440 出现，显示规则见 900 档媒体查询。 */
+.sidebar-more { display: none; }
 
 /* 桌面端：侧栏脱离文档流并钉在视口里，右栏多长都只由窗口滚动，
    侧栏不会再随页面滚走。left 用百分比而不是 100vw 计算，避免 Windows
@@ -3879,6 +3902,74 @@ details:not([open]) > *:not(summary) { display: none !important; }
   .sidebar-footer .theme-switch { display: grid; flex: 0 0 auto; width: 132px; }
   .sidebar .user-card { flex: 1; justify-content: flex-start; padding: 8px; }
   .sidebar .user-meta { display: block; }
+  /* 「⋯」菜单：只在 ≤440 生效（这里放显示规则，基础规则里的 display:none 在文件中更靠后，
+     同级媒体查询同优先级时后写的赢，所以必须写在这里）。 */
+  /* 基础规则里是 display:none（桌面不出现）；显示规则放在 900 档这里——它前面的 1240 档也写了
+     .sidebar .brand-actions { display: none }，所以不再借用品牌区那个按钮容器。 */
+  .sidebar .sidebar-more { display: inline-grid; position: relative; }
+  .sidebar .sidebar-more-btn { width: 30px; height: 30px; border-radius: 8px; }
+  .sidebar-more-panel {
+    position: absolute;
+    z-index: 60;
+    top: calc(100% + 6px);
+    right: 0;
+    width: min(232px, calc(100vw - 28px));
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--sidebar-border);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop, var(--shadow-soft));
+  }
+  .sidebar-more-panel .theme-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .sidebar-more-panel .user-card { justify-content: flex-start; padding: 8px; }
+  .sidebar-more-panel .user-meta { display: block; }
+  .sidebar-more-panel .user-card .icon-btn { position: static; margin-left: auto; }
+}
+/* ≤440px：顶部导航条从「品牌 + 行内导航 + ⋯ / 头像」约 241px 压成一条单行栏（实测 50px，
+   加 .shell 上下 10px 边距后主内容从 y≈76 起）。导航 11 项分到两个满宽、等宽按钮的行里，
+   每行剩下的宽度由可搜索下拉占着：放得下 11 个图标就有标签，放不下就只剩图标（JS 加 .is-icons）。 */
+@media (max-width: 440px) {
+  .sidebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    height: auto;
+    padding: 4px 8px;
+    border-radius: var(--r-lg);
+  }
+  /* 品牌不显示 */
+  .sidebar .brand { display: none; }
+  .sidebar .status-pill { display: none; }
+  .sidebar .nav { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 6px; overflow: visible; }
+  /* 三个分组按项数分宽（4/3/5），组内一行不折。900 档写的是 `.sidebar .nav-group { display: contents }`，
+     基础规则里还有同为 0,3,0 的 flex-direction: column；显式写回 row + flex 才能让每组变成横排的一条。 */
+  .sidebar .nav-group { display: flex; flex-direction: row; flex-wrap: nowrap; flex: 4 1 0; gap: 2px; min-width: 0; }
+  .sidebar .nav-group:nth-child(2) { flex-grow: 3; }
+  .sidebar .nav-group:nth-child(3) { flex-grow: 5; }
+  /* 1240 档给后随分组加了 margin/padding/border-top 当分隔线；横排图标条里这些是多余的横线，
+     还各撑高 7px（实测把 51px 的导航行顶到 51+14 分两段排）。 */
+  .sidebar .nav-group + .nav-group { margin-top: 0; padding-top: 0; border-top: 0; }
+  .sidebar .nav-item { display: flex; flex-direction: row; width: auto; flex: 1 1 0; min-width: 0; justify-content: center; padding: 8px 0; gap: 5px; border-radius: 8px; }
+  .sidebar .nav-icon { width: 20px; height: 20px; }
+  /* 图标条里激活态用底下的强调线（同页签）；块状背景会把单个图标涂成一块亮斑。 */
+  .sidebar .nav-item.active { background: transparent; }
+  .sidebar .nav-item.active::after { content: ""; position: absolute; left: 25%; right: 25%; bottom: 1px; height: 2px; border-radius: 999px; background: var(--accent); }
+  .sidebar .nav-status-dot { position: absolute; top: 4px; right: 4px; margin: 0; }
+  /* 标签只在「图标 + 两字」放得下时出现（JS 用实际宽度判定，见 SidebarNav width prop）。 */
+  .sidebar.is-icons .nav-label { display: none; }
+  /* 行尾：主题 + 账号收进「⋯」面板，只留「⋯」与头像两个入口。 */
+  /* 显式给行：基础规则 .sidebar-more { display: none } 在文件更靠后、同优先级，会盖掉 900 档的
+     display: inline-grid，于是本项没有盒子、grid 自动放置会把它单独排到第 2 行。 */
+  .sidebar .sidebar-more { grid-column: 2; grid-row: 1; display: inline-grid; }
+  .sidebar-footer { grid-column: 3; display: flex; margin-top: 0; padding-top: 0; border-top: 0; gap: 6px; }
+  .sidebar-footer .theme-switch { display: none; }
+  /* 只收页脚里那个（头像入口）；面板里的 user-card 要保留整行文字。 */
+  .sidebar-footer > .user-card { width: 30px; height: 30px; padding: 0; justify-content: center; border-radius: 8px; }
+  .sidebar-footer > .user-card .user-meta { display: none; }
+  .sidebar-footer > .user-card .icon-btn { display: none; }
 }
 @media (max-width: 760px) {
   .shell { width: calc(100% - 20px); margin: 10px auto; }
@@ -7241,6 +7332,15 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
      页签条就留在卡片内宽里，多出来的部分由它自己横向滚。 */
   .mon-tab { padding: 0 11px; gap: 6px; }
 }
+/* 901–1240：侧栏此时是 76px 图标栏，内容区反而比页签的内容需求窄（1024 下页签共 937px、
+   可滚区只有 932−32=900），激活页签永远滚不到「完整可见」。把页签条与页签的内边距各收
+   4px（16→12 / 16→13）：1024 下 5 个页签共 882px，整条放下、不再横滚。 */
+@media (min-width: 641px) and (max-width: 1240px) {
+  .mon-tabs { padding: 0 12px; }
+  .mon-tab { padding: 0 13px; }
+  .mon-tabs.has-fade-start::before { margin-left: -12px; }
+  .mon-tabs.has-fade-end::after { margin-right: -12px; }
+}
 
 /* 概览：两卡一行，量卡与「用量统计」的指标卡同一套语言（标题 + 大数字 + 副注）。 */
 .monitor-metric-row { margin-bottom: 12px; }
@@ -8375,7 +8475,7 @@ html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(
   content: '';
   position: absolute;
   inset: 14px auto 14px 0;
-  width: 3px;
+  width: 0;
   border-radius: 0 3px 3px 0;
   background: var(--mon-tone);
 }
@@ -9074,7 +9174,7 @@ html[data-theme="light"] .mon-cluster-status.down { color: color-mix(in srgb, va
   align-items: center;
   justify-content: space-between;
   gap: 10px 14px;
-  margin: 0 0 10px;
+  margin: 0;
   padding: 12px 14px;
   border-radius: 16px;
   border: 1px solid var(--border);
@@ -9181,7 +9281,7 @@ select.mon-acc-select-input {
 .mon-acc-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
   min-width: 0;
   padding: 16px;
   border-radius: 16px;
@@ -9210,7 +9310,7 @@ select.mon-acc-select-input {
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 15px;
   white-space: nowrap;
 }
 .mon-acc-role.standby { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-strong); }
@@ -9241,7 +9341,7 @@ select.mon-acc-select-input {
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 15px;
   white-space: nowrap;
 }
 .mon-acc-breaker-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
@@ -9552,6 +9652,7 @@ html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); colo
 .mon-band.is-hit { border-color: var(--border); background: var(--surface-soft); color: var(--text); }
 .mon-band-label { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mon-band-state { min-width: 0; overflow-wrap: anywhere; }
+.mon-band.is-hit { border: 0; background: none; }
 .mon-band.is-hit .mon-band-state { font-weight: 500; }
 .mon-dot.muted { background: var(--subtle); opacity: 0.45; }
 
@@ -9628,7 +9729,7 @@ html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); colo
   overflow-wrap: anywhere;
 }
 
-/* 告警行：左侧一道级别色条；标题整行折行；账号徽标点开到账号详情。 */
+/* 告警行：左侧一道级别色条（参考里没有色条，颜色只由描边与底色表达）；标题整行折行；账号徽标点开到账号详情。 */
 .mon-alerts-list { display: grid; gap: 8px; min-width: 0; }
 .mon-alert-row {
   position: relative;
@@ -9648,7 +9749,7 @@ html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); colo
   content: '';
   position: absolute;
   inset: 12px auto 12px 0;
-  width: 3px;
+  width: 0;
   border-radius: 0 3px 3px 0;
   background: var(--mon-tone, var(--slate));
 }
@@ -9995,7 +10096,7 @@ html[data-theme="light"] .mon-rules-dirty { color: color-mix(in srgb, var(--ambe
 .mon-rule-card {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 0;
   min-width: 0;
   padding: 16px;
   border-radius: 16px;
@@ -10433,7 +10534,7 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    参考拓扑卡 1172 = 主栏 1216 − 两侧 21 + 边框。 */
 /* 六个 tab 统一内边距：参考账号页容器 1176 = 主栏 1216 − 两侧 20，概览拓扑 1172
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
-.monitoring-page .mon-tab-panel { padding: 20px 24px 0 0; }
+.monitoring-page .mon-tab-panel { padding: 20px; }
 .monitoring-page .mon-overview { padding: 0 4px 0 0; }
 
 /* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
@@ -10496,11 +10597,9 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .mon-acc-probe .mon-acc-probe-dots { gap: 2px; }
 .mon-acc-dot { height: 7px; }
 /* 收尾 11px：卡片内间距 8 → 7，三列指标格再压 2px。 */
-.mon-acc-card { gap: 7px; }
 .mon-acc-metrics { padding: 6px 9px; }
 .mon-acc-facts { padding-top: 0; }
-/* 307 → 314（参考）：内间距回到 8px。 */
-.mon-acc-card { gap: 8px; }
+/* 307 → 314（参考）：内间距由本文件末尾的三页对齐块统一给（gap 5px）。 */
 
 /* 告警行的尺寸以实测参考为准：参考的「告警行」是 1172×109.5（不是筛选条的 64）。
    这里只保留与参考一致的圆角/内边距，结构差异（我们是三行、参考区块更紧凑）不靠压扁消除。 */
@@ -10522,7 +10621,7 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
   box-shadow: none;
   backdrop-filter: none;
 }
-.monitoring-page .mon-set-card:first-child { border-top: 0; padding-top: 0; }
+/* 原「裸区块」规则（首块去边框/上内边距）已随 e97c0c0 回退删除：参考是独立卡片。 */
 
 /* 监控页卡片底色对齐参考 #131826（我们的 --surface 是 #131829，差 3/255）。
    只在监控页覆盖这个局部变量，不动全站 token。 */
@@ -10539,3 +10638,720 @@ html[data-theme="dark"] .monitoring-page {
 .mon-alert-main { gap: 4px; }
 /* 99.4 → 109.5（参考）：上下内边距 16 → 21。 */
 .mon-alert-row { padding: 21px 16px; }
+
+/* 参考是「应用式布局」：内容区固定高、overflow hidden，内层自己 overflow-y auto；
+   我们是整页滚动。对齐参考后，侧栏与页头固定，只有内容区滚动。
+   尺寸取自参考实测：内容区 788.5（视口 900 − 页头 69 − tab 43）、内层 748.5×1176、gap 16。 */
+@media (min-width: 901px) {
+  .main { height: calc(100vh - 0px); min-height: 0; overflow: hidden; }
+  .monitoring-page {
+    display: flex; flex-direction: column;
+    height: 100%; min-height: 0;
+  }
+  .monitoring-page .mon-tab-panel {
+    display: flex; flex-direction: column;
+    flex: 1 1 auto; min-height: 0;
+    padding: 20px;
+    overflow: hidden;
+  }
+  .monitoring-page .mon-overview,
+  .monitoring-page .mon-accounts,
+  .monitoring-page .mon-alerts,
+  .monitoring-page .mon-probes,
+  .monitoring-page .mon-rules,
+  .monitoring-page .mon-settings {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+}
+/* 新的滚动模型下主栏已满宽，抵消极左内边距取消；tab 面板四边 20（参考 p-5）。 */
+.monitoring-page { margin-left: 0; }
+/* 参考的内容区从侧栏右缘直接开始（244 = 224 + 20 由内层 p-5 提供），
+   .main 不再额外加左内边距。 */
+@media (min-width: 901px) { .main { padding-left: 0; } }
+/* grid 行默认按内容撑高，需显式约束才能让内层滚动容器拿到可用高度 */
+@media (min-width: 901px) {
+  .main > .section-full { min-height: 0; height: 100%; overflow: hidden; }
+  .main > .section-full > .monitoring-page { min-height: 0; height: 100%; }
+}
+
+/* ═══ 设置页对齐参考（P11/P12/P13/P15/P16 + D6）═══════════════════════════════
+   参考 MonitoringCenter.tsx:2059-2060：外层 `h-full overflow-y-auto pr-1`，
+   内层 `max-w-4xl mx-auto space-y-5` —— 单列居中、块间距 20；每块
+   `p-5 rounded-2xl bg-[#0e1628]/80 border border-white/[0.08]`（实测 x382 / 896 宽 /
+   p20 / r16）；表单 `grid md:grid-cols-2 gap-4 text-xs`；渠道行 `p-3.5 rounded-xl
+   bg-black/20 border-white/[0.05] gap-4`；input/按钮 `rounded-xl`（12）、input `py-2` 高 34。
+   本块整体覆盖 10186~10380 的 v4 设置页样式，不改动其它页的规则。 */
+
+/* P11 区块容器：单列居中 896，块间距 20（覆盖 10461 的通用 flex gap:16）。
+   宽度用 min(896px, 100%)：窄视口下不溢出，宽视口下居中（1176 内容根 → x=382）。 */
+.monitoring-page .mon-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: 896px;
+  margin-inline: auto;
+}
+/* P11 卡片壳：底色 + 1px 边框 + r16 + p20，内部不在重复 16 的内边距。 */
+.mon-settings .mon-set-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+/* 区块头：参考 mb-4（标题行到内容的间距由卡的 gap 16 承担）；
+   标题左边距与一行对齐，不再用「标题下压说明」的 3px 紧凑堆叠。 */
+.mon-settings .mon-set-head { gap: 8px 16px; }
+.mon-settings .mon-set-head-text { gap: 6px; }
+/* P12 卡片标题：参考 text-sm font-bold → 14px / 700 / 行高 20。 */
+.mon-settings .mon-set-head-text > .mon-card-title { font-size: 14px; font-weight: 700; line-height: 20px; }
+.mon-settings .mon-set-head-icon { width: 16px; height: 16px; }
+/* P13 说明文字：参考 text-xs → 12 / 400 / 19.5（0.5px 档位全部回到整数档）。 */
+.mon-settings .mon-set-desc { font-size: 12px; line-height: 1.625; }
+
+/* P13 小节标题回到整数档；小节仍保留分隔线（参考没有小节，这是我们的信息分层）。 */
+.mon-settings .mon-set-group { gap: 12px; padding-top: 14px; }
+.mon-settings .mon-set-group-title { font-size: 12px; font-weight: 600; }
+.mon-settings .mon-set-group-note { font-size: 11px; }
+
+/* 参数网格：参考 grid-cols-2 gap-4 → 列距与行距都 16。 */
+.mon-settings .mon-set-grid { gap: 16px; }
+.mon-settings .mon-set-param { gap: 6px; }
+/* P13 标签：参考 text-xs text-slate-300 font-medium mb-1.5 → 12 / 500 / 16（间距走 gap 6）。 */
+.mon-settings .mon-set-param-label { font-size: 12px; font-weight: 500; line-height: 16px; color: var(--text); }
+/* P13 副注：参考 text-[10px] → 10 / 行高 1.5。 */
+.mon-settings .mon-set-param-hint { font-size: 10px; line-height: 1.5; }
+.mon-settings .mon-set-param-switch,
+.mon-settings .mon-set-switches,
+.mon-settings .mon-set-switches > .switch-control,
+.mon-settings .mon-set-window { min-height: 34px; }
+
+/* P15 / P16 输入框统一：高 34、内边距 8 12、字号 12、圆角 12。 */
+.mon-settings .mon-set-param-control > input,
+.mon-settings .mon-set-input-pair > input,
+.mon-settings .mon-set-range > input,
+.mon-settings .mon-set-card .field input,
+.mon-settings .mon-set-card .field select {
+  height: 34px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+.mon-settings .mon-set-input-pair > input,
+.mon-settings .mon-set-range > input { color: var(--text); }
+/* 数值 + 单位：参考数值框 w-24（96），单位紧跟其后。 */
+.mon-settings .mon-set-input-pair > input { flex: 0 0 96px; width: 96px; min-width: 96px; }
+.mon-settings .mon-set-unit { font-size: 12px; line-height: 16px; color: var(--muted); }
+.mon-settings .mon-set-range-sep { font-size: 12px; }
+.mon-settings .mon-set-window { gap: 8px 12px; }
+
+/* 底部说明 / 状态行：P13 → 12 整数档。 */
+.mon-settings .mon-set-foot { font-size: 12px; line-height: 1.5; }
+.mon-settings .mon-set-inline { font-size: 12px; line-height: 1.5; }
+
+/* P13 / D6 空状态与渠道行：空状态用与参考渠道行同规格的壳（r12 / p14 / black 20% 底 /
+   white 5% 边框），文案 12 + 11 整数档。 */
+.mon-settings .mon-set-empty {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  background: rgba(0, 0, 0, 0.2);
+  gap: 4px;
+}
+html[data-theme="light"] .mon-settings .mon-set-empty { background: var(--surface-soft); border-color: var(--border); }
+.mon-settings .mon-set-empty-title { font-size: 12px; font-weight: 700; line-height: 16px; }
+.mon-settings .mon-set-empty-note { font-size: 11px; line-height: 16px; }
+.mon-settings .mon-set-list { gap: 12px; }
+.mon-settings .mon-set-row {
+  gap: 16px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  background: rgba(0, 0, 0, 0.2);
+}
+html[data-theme="light"] .mon-settings .mon-set-row { background: var(--surface-soft); border-color: var(--border); }
+.mon-settings .mon-set-icon { width: 32px; height: 32px; border-radius: 8px; font-size: 12px; }
+.mon-settings .mon-set-row-main { gap: 2px; }
+.mon-settings .mon-set-row-name { font-size: 12px; font-weight: 700; line-height: 16px; }
+.mon-settings .mon-set-row .mon-acc-state { font-size: 10px; }
+.mon-settings .mon-set-row-meta { font-size: 11px; line-height: 16px; }
+.mon-settings .mon-set-row-hook { font-size: 11px; }
+.mon-settings .mon-set-chip { font-size: 12px; }
+
+/* 渠道表单：参考没有独立表单块，保持虚线分隔但字号/控件与正文一致。 */
+.mon-settings .mon-set-form { border-radius: 12px; padding: 12px; }
+.mon-settings .mon-set-form .field > span { font-size: 12px; }
+
+/* P15 按钮：参考 rounded-xl px-4 py-2（34 高 / 12 圆角 / 12 字）。 */
+.mon-settings .btn.btn-sm {
+  --btn-h: 34px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+.mon-settings .btn.btn-sm.primary { padding: 0 20px; }
+/* 底部动作条：参考 mt-5 / gap-3（行距 20 / 按钮间距 12）。 */
+.mon-settings .mon-set-actions { gap: 12px; padding-top: 20px; }
+.mon-settings .mon-set-form-actions { gap: 12px; }
+
+/* 窄视口：内容不足 896 时单列居中失效，回到整宽；卡内边距收 16。 */
+@media (max-width: 760px) {
+  .monitoring-page .mon-settings { max-width: none; }
+  .mon-settings .mon-set-card { padding: 16px; }
+  .mon-settings .mon-set-grid { gap: 14px; }
+}
+
+/* ═══ 概览页对齐参考（P3/P4/P5/P7/P18/P19）═══════════════════════════════════════
+   参考 MonitoringCenter.tsx:663-1110 的概览：外层 `flex flex-col gap-4 overflow-y-auto pr-1`
+   （gap 16，内容根宽 1176 = 父 1176 − pr-1 的 4px），三段：KPI（gap-3.5 四列）→ 拓扑 →
+   双卡（grid-cols-12：两侧各 6 栏、gap 16）。拓扑内部 `md:grid-cols-12 gap-6`，列宽
+   262.5 / 421.5+24 / 358（合计 1172 = 1136 − 两侧 18 + 边框）；p-6（24）。本块只覆盖概览
+   的选择器，不改其它 tab；选择器前缀 .mon-topo / .mon-duo 等均为概览独占。 */
+
+/* P7 KPI：参考 `p-3.5`（14）、角标 `text-[10px] px-1.5 py-0.5`。 */
+.monitoring-page .mon-meta { padding: 14px; }
+.monitoring-page .mon-meta-chip { font-size: 10px; line-height: 15px; padding: 2px 6px; }
+
+/* P5 + 拓扑外框：参考整张卡是 opaque `bg-[#090e1a]` + `border-cyan-500/30` + r16；
+   头部条 `p-3.5`（14）+ `bg-[#0b1222]/80`；原 p-6 的 24 由内部网格承担。 */
+.mon-topo {
+  background: #090e1a;
+  border-color: color-mix(in srgb, var(--topo-tone) 30%, transparent);
+  backdrop-filter: none;
+}
+html[data-theme="light"] .mon-topo { background: var(--surface); }
+.mon-topo-head { padding: 14px; background: color-mix(in srgb, var(--topo-tone) 4%, #0b1222); }
+html[data-theme="light"] .mon-topo-head { background: color-mix(in srgb, var(--topo-tone) 4%, var(--surface)); }
+/* P7 拓扑标题：参考 `text-xs font-bold` = 12px / 700 / 16。 */
+.mon-topo-title { font-size: 12px; font-weight: 700; line-height: 16px; letter-spacing: 0.025em; }
+
+/* P4 拓扑网格：参考 262.5 | 421.5 | 358（1312 栅格 − 2×24 gap = 1264 / 12 = 105.333 每栏），
+   核心列 `md:col-span-5` 实际 421.5 宽 + 两侧各 12 的间距（`justify-center p-4`）。 */
+.mon-topo-mesh, .mon-topo-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: center;
+  gap: 24px;
+  padding: 24px 18px;
+  min-width: 0;
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+html[data-theme="light"] .mon-topo-mesh { background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 16%, transparent) 1px, transparent 0); }
+.mon-topo-mesh > .mon-topo-clients, .mon-topo-body > .mon-topo-clients { grid-column: span 3; }
+.mon-topo-mesh > .mon-core-wrap, .mon-topo-body > .mon-core-wrap { grid-column: span 5; padding: 16px; }
+.mon-topo-mesh > .mon-topo-upstream, .mon-topo-body > .mon-topo-upstream { grid-column: span 4; }
+
+/* P18 + P4 左列：参考 `space-y-3`（间距 12）；小卡 `p-3`（12）+ `rounded-xl`（12），
+   卡内 名称行（text-xs 16）/ 等宽标识（mt-1）/ 进度条（mt-2 + h-1）——合计 73。 */
+.mon-topo-clients { gap: 12px; }
+.mon-client {
+  gap: 0;
+  padding: 12px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+.mon-client-top { line-height: 16px; }
+.mon-client-id { margin-top: 4px; line-height: 15px; }
+.mon-client .mon-progress { margin-top: 8px; height: 4px; }
+.mon-client-note { font-size: 11px; line-height: 1.45; }
+
+/* P4 核心卡：参考 = 光晕（-inset-1，r16）+ 内层 `p-5 rounded-2xl border-2`（2px 描边 → 421.5×242）。
+   我们的双层结构保留（渐变描边 2px + inner），内层 r16、p 20/16 对齐参考 `p-5`。 */
+.mon-core { border-radius: 16px; }
+.mon-core-inner { border-radius: 16px; padding: 20px 16px; gap: 0; }
+.mon-core-icon { width: 48px; height: 48px; border-radius: 16px; margin-bottom: 8px; }
+.mon-core-title { margin: 0; font-size: 14px; font-weight: 700; line-height: 20px; }
+.mon-core-version { margin-top: 2px; line-height: 1.5; }
+.mon-core-stats { margin-top: 16px; gap: 8px; padding: 10px; border-radius: 12px; }
+.mon-core-stats .mon-core-stat { gap: 0; }
+.mon-core-stats .mon-core-stat-label { display: block; line-height: 15px; }
+.mon-core-tags { margin-top: 12px; gap: 6px; }
+.mon-core-tag { padding: 2px 8px; line-height: 15px; }
+
+/* 拓扑脚注：参考卡内没有这一行（比例/RTT 口径写在卡内注里），留「进入账号矩阵 →」在右下角。 */
+.mon-topo-foot {
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+  border-top: 0;
+  background: none;
+}
+
+/* P19 双卡：参考 `grid-cols-12 gap-4`、卡 `p-4`（16）、r16、头 `pb-3`、体 `py-4`、
+   脚 `pt-3`；行与行之间用 mt（space-y-2 / space-y-1 / space-y-3），不是 uniform gap。 */
+.mon-duo { gap: 16px; }
+.mon-duo-card { padding: 16px; gap: 0; }
+.mon-duo-card .mon-card-head { padding-bottom: 12px; }
+.mon-duo-card .mon-card-title { font-size: 12px; font-weight: 700; line-height: 16px; }
+.mon-duo-card .mon-card-foot { padding-top: 12px; font-size: 11px; line-height: 16.5px; }
+.mon-duo-card > .mon-rails { padding: 16px 0; min-width: 0; }
+/* 雷达：参考 `w-40 h-40`（160）与右列 gap-4（16）。 */
+.mon-radar-body { gap: 16px; }
+.mon-radar { width: 160px; height: 160px; }
+/* 指标行：名称行 11px/16.5 → 进度条 4px；行间 8（参考 space-y-2）。 */
+.mon-rails { gap: 0; }
+.mon-dim-list.mon-rails { display: block; }
+.mon-dim { display: block; gap: 0; margin-top: 8px; }
+.mon-dim:first-child { margin-top: 0; }
+.mon-dim-top { min-height: 16.5px; align-items: center; }
+.mon-dim-name { font-size: 11px; font-weight: 400; line-height: 16.5px; }
+.mon-dim-right { gap: 6px; }
+.mon-dim-value, .mon-dim-pct { font-size: 11px; line-height: 16.5px; }
+.mon-dim-top .mon-dim-right { min-height: 16.5px; }
+.mon-dim .mon-bar { height: 4px; border: 0; border-radius: 999px; background: var(--surface-soft); }
+.mon-dim .mon-bar, .mon-dim .mon-bar-fill { display: block; }
+.mon-dim-note { font-size: 10px; line-height: 13px; margin-top: 2px; color: var(--muted); }
+/* 频谱：参考 4 条 `< 20ms…> 100ms` 行，行间 12（space-y-3），每行 名称行（11/16.5）+ 2px 条（space-y-1）。 */
+.mon-latency-body { gap: 0; }
+.mon-band-summary { min-height: 16.5px; }
+.mon-band-summary .mon-band-p95, .mon-band-where, .mon-band-summary .mon-dim-pct { font-size: 11px; line-height: 16.5px; }
+.mon-bar-strip { height: 2px; margin-top: 4px; }
+.mon-band-table { margin-top: 12px; gap: 0; align-content: start; }
+.mon-band { padding: 0; gap: 4px; border: 0; border-radius: 0; background: none; font-size: 11px; align-items: center; }
+.mon-band:not(:first-child) { margin-top: 12px; }
+.mon-band-label, .mon-band-state { font-size: 11px; line-height: 17px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   账号 / 告警 / 规则 三页与参考 UI 对齐（P8–P17，实测数值取自
+   .workbuddy/reviews/ui-parity-verify-1.md 与本轮 ref 重测）。
+   参考值：工具条 accounts 61 / alerts 64 / rules 54，p14 gap12；告警行 1172×109.5 p16，
+   左侧纵向堆叠 + 右侧按钮组；规则卡标题 14/700、参数块 r12 p10 bg black/30；字号整数档。
+   只作用于这三页，不碰概览与设置。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* P14：三页内容根 gap 12 → 14（参考 gap-3.5）。
+   选择器带上 .monitoring-page 提高优先级，与文件末尾的滚动模型规则（同为 flex 布局）共存。 */
+.monitoring-page .mon-accounts { gap: 14px; }
+.monitoring-page .mon-alerts,
+.monitoring-page .mon-rules { gap: 14px; }
+
+/* P17：工具条内边距统一 p14，gap 12；高度由内容决定（accounts 61 / alerts 64 / rules 54）。 */
+.mon-acc-toolbar,
+.mon-alerts-bar,
+.mon-rules-toolbar { padding: 14px; gap: 12px; }
+.mon-acc-toolbar-main,
+.mon-acc-toolbar-side { gap: 12px; }
+.mon-rules-toolbar { gap: 12px; }
+.mon-alerts-bar .mon-seg-btn,
+.mon-rules-layer,
+.mon-acc-view-btn { height: 24px; }
+.mon-acc-view { border-radius: 12px; }
+.mon-acc-view-btn { border-radius: 8px; }
+.mon-acc-search .monitoring-input,
+select.mon-acc-select-input { height: 30px; border-radius: 12px; }
+.mon-acc-provider-filter .icon-select-trigger { height: 30px; border-radius: 12px; }
+select.mon-acc-select-input { border-radius: 12px; }
+.mon-alerts-bar .mon-seg,
+.mon-alerts-bar .mon-seg-level { border-radius: 12px; }
+.mon-alerts-bar .mon-seg-btn { border-radius: 8px; }
+
+/* P8：账号卡首行与指标块位置。卡片 y 由工具条高（61）+ 根 gap（14）决定；卡内
+   primary 组（首行 + 名字 + 指标块）为 margin: 0 0 12px，指标块距卡片顶 80 = 16 + 首行 21 + 8 + 名字 22 + 13。 */
+.mon-acc-metric-value { font-size: 11px; line-height: 16.5px; }
+/* 底部动作（隔离 / 续期 / 轻探测）24 高、底部贴齐。 */
+.mon-acc-actions .btn { --btn-h: 24px; border-radius: 8px; }
+
+/* P9 / P15：告警工具条、分段控件与告警行。
+   行结构 = 左侧纵向堆叠（标题行 / 描述 / 元信息）+ 右侧按钮组，p16。 */
+.mon-alerts-list { gap: 12px; padding-top: 1px; }
+.mon-alert-row { padding: 16px; gap: 16px; align-items: center; }
+/* 参考的告警行没有左侧色条（级别只由描边与底色表达），去掉。 */
+.mon-alert-row::before { display: none; }
+.mon-alert-main { gap: 0; }
+.mon-alert-sev { font-size: 11px; line-height: 16.5px; padding: 2px 8px; border-radius: 4px; }
+.mon-alert-title { font-size: 14px; font-weight: 700; line-height: 20px; }
+.mon-alert-rulekey { font-size: 11px; }
+.mon-alert-target { font-size: 12px; line-height: 16px; border-radius: 4px; }
+.mon-alert-target-kind { font-size: 10px; line-height: 16px; }
+/* 描述：参考不裁切（leading-relaxed 19.5 / slate-300），两行以内的高频告警与参考同高。 */
+.mon-alert-desc {
+  margin-top: 6px;
+  display: block; -webkit-line-clamp: unset; line-clamp: unset;
+  overflow: visible; overflow-wrap: anywhere;
+  color: var(--text); font-size: 12px; font-weight: 400; line-height: 19.5px;
+  max-width: none;
+}
+.mon-detail-desc { margin: 0 0 10px; }
+.mon-alert-meta { margin-top: 10px; gap: 12px; font-size: 11px; line-height: 16.5px; }
+.mon-alert-meta .mon-alert-push { font-size: 11px; line-height: 16.5px; }
+.mon-alert-actions .btn { --btn-h: 32px; border-radius: 12px; font-size: 12px; }
+.mon-alert-actions .mon-alert-ack { --btn-h: 32px; padding: 0 16px; font-weight: 700; }
+
+/* P10 / P12：规则页。状态条移到工具条右端（与参考「活跃规则: N / N」同一条），卡片标题 14/700。 */
+.mon-rule-name { margin: 0; font-size: 14px; font-weight: 700; line-height: 20px; letter-spacing: 0; }
+/* 参考：徽标行（24）下 mt-2.5（10）→ 标题 20 → mt-2（8）→ 元信息。 */
+.mon-rule-layer,
+.mon-rule-sev { font-size: 10px; font-weight: 400; line-height: 15px; padding: 2px 8px; border-radius: 4px; }
+.mon-rule-sev { font-weight: 700; }
+.mon-rules-layer-count { font-size: 10px; }
+.mon-rule-card { gap: 0; }
+.mon-rule-top { margin-bottom: 10px; }
+.mon-rule-meta { margin-bottom: 12px; }
+.mon-rule-name + .mon-rule-meta { margin-top: 8px; }
+.mon-rule-params { padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, 0.3); border-color: rgba(255, 255, 255, 0.04); gap: 6px; }
+.mon-rule-param { font-size: 10px; line-height: 15px; padding: 1px 8px; border: 0; border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: var(--muted); }
+.mon-rule-param-value { font-size: 10px; line-height: 15px; }
+.mon-rule-foot { margin-top: 0; padding: 12px 0 0; font-size: 11px; line-height: 16.5px; }
+.mon-rule-threshold { font-size: 11px; line-height: 16.5px; font-weight: 500; }
+.mon-rules-layer,
+.mon-rules-active { font-size: 12px; }
+.mon-rules-layers-label { font-size: 12px; }
+.mon-rules-toolbar-right { height: 24px; align-items: flex-start; }
+.mon-rules-toolbar-right .btn.btn-sm { height: 24px; border-radius: 8px; font-size: 12px; }
+.mon-rule-card .mon-rule-editor { margin-top: 12px; }
+
+/* P13：这三页的半像素字号收成 10 / 11 / 12 / 14 整数档。 */
+.mon-acc-role,
+.mon-acc-ptag,
+.mon-acc-breaker,
+.mon-acc-probe-note,
+.mon-acc-heat-meta,
+.mon-acc-heat-note,
+.mon-alert-push { font-size: 10px; }
+.mon-acc-select-label,
+.mon-acc-count,
+.mon-acc-inline,
+.mon-acc-alert-link,
+.mon-acc-confirm-body,
+.mon-alerts-bulk,
+.mon-alerts-bar .mon-seg-level .mon-seg-btn,
+.mon-alert-rulekey,
+.mon-alert-target,
+.mon-alert-meta,
+.mon-rules-stat-key,
+.mon-rules-note,
+.mon-rule-param-empty,
+.mon-detail-k,
+.mon-detail-note,
+.mon-alerts-empty-note { font-size: 11px; }
+.mon-acc-metric-value,
+.mon-alert-desc,
+.mon-alerts-error,
+.mon-acc-heat-name { font-size: 12px; }
+.mon-acc-onboard-title { font-size: 14px; }
+.mon-alert-title,
+.mon-rules-empty-title,
+.mon-alerts-empty-title { font-size: 14px; }
+
+/* 窄屏：右侧按钮组换到下方（参考 md 以下 flex-col）。 */
+@media (max-width: 900px) {
+  .mon-alert-row { flex-wrap: wrap; align-items: stretch; }
+}
+
+/* 拓扑头部：标题换成参考的短句（参考原文 `text-xs` = 12/16），状态徽标 `text-[10px] px-2 py-0.5`，
+   筛选标签 `text-[11px]`。头部条高 = 14 + 32 + 14 = 60（参考）。参考在这一行的可用宽里
+   「标题 + 徽标」放不下而折成两行；我们两段窄（221 + 105）放得下，这里显式给左侧一组
+   留参考的可用宽，让徽标像参考一样落到第二行。 */
+.mon-topo-ping { width: 10px; height: 10px; }
+.mon-topo-head-main { flex: 0 1 442px; }
+.mon-topo-title { flex: 0 1 auto; }
+.mon-topo-title-en { display: none; }
+.mon-topo-badge { padding: 2px 8px; font-size: 10px; line-height: 15px; }
+.mon-topo-filter-label { font-size: 11px; }
+
+/* ── 账号 / 告警 / 规则 三页像素链（1440×900 暗色，参考值取自重测）──────────────
+   工具条 accounts 61 / alerts 64 / rules 54，p14 gap12；账号卡首行 206.5、指标块 286.5（p10）；
+   告警行 1176×109.5 p16、描述 mt6、元信息 mt10；规则卡 y199.5、参数块 y302.5、行 2/3 卡高 206.5。
+   数值全部实测收敛（见 .workbuddy/reviews/dev-ui-account-rules-report.md）。 */
+
+/* 账号工具条（参考 61、gap12）：主行 / 筛选行各 28 高（30 高的控件在行盒内溢出，不计入行高）；
+   14 + 28 + 8 + 28 + 14 实测只算到 58，上内边距取 17 时恰为 61（横向仍是 p14）。右侧一组
+   上移 1，与外溢 1 的搜索框视觉同排。 */
+.mon-acc-toolbar { padding: 17px 14px 14px; column-gap: 12px; row-gap: 8px; }
+.mon-acc-toolbar-main { height: 28px; align-items: flex-start; }
+.mon-acc-toolbar-side { flex-wrap: nowrap; align-items: center; height: 28px; margin-top: -1px; }
+.mon-acc-toolbar-side > * { flex: none; }
+.mon-acc-view { padding: 2px; }
+/* 卡前说明行（参考没有这一行）：单独一片，与工具条同 gap，卡片网格前再让 8。 */
+.mon-acc-body { display: flex; flex-direction: column; min-width: 0; margin-top: -6px; }
+.mon-acc-grid-note { display: flex; flex-direction: column; min-width: 0; padding-bottom: 8px; }
+.mon-acc-meta-row { margin: 0 2px; }
+/* 卡片子块间距：参考卡里子块之间没有外边距，先把旧外边距清零，再指定徽标 → 名称 → 指标块
+   两段。指标块距卡片内容原点 57.6（参考 64：16.5 + 19.5 + 8.5 + 22 + 9 + 54.5 → 这里徽标行 19、
+   名称 21.6 都略矮，差 6.4）；primary 组与下方探活区的间距另按参考收紧 14。 */
+.mon-acc-card > *, .mon-acc-card > .mon-acc-primary > * { margin-top: 0; margin-bottom: 0; }
+.mon-acc-card > .mon-acc-primary { margin-bottom: -12.4px; }
+.mon-acc-card-top { margin-bottom: 1.5px; }
+.mon-acc-name { margin-top: 2px; margin-bottom: 2.5px; }
+/* 参考卡固定高、最后一条信息下方留白：我们用 1px 占位符保留 flex 的底部余量。 */
+.mon-acc-card::after { content: ''; display: block; flex: none; height: 1px; }
+.mon-acc-actions { margin-top: 0; padding-top: 0; border-top: 0; }
+.mon-acc-alert-link { margin-top: 0; }
+/* 三列指标格：参考 54.5（p10 × 2 + 标签 15 + 值 13）。我们的副注（探测 RTT / 连续失败下的
+   一行说明）并进数值行右侧，不再单独成行，指标格 50 高。 */
+.mon-acc-metrics { padding: 10px 9px; gap: 0; }
+.mon-acc-metric { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 4px; }
+.mon-acc-metric-label { grid-column: 1 / -1; line-height: 15px; }
+.mon-acc-metric-value { line-height: 13px; }
+.mon-acc-metric-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 13px; }
+
+/* 告警工具条：分段 30 + p14 = 60，上下各补 2 到参考的 64。 */
+.mon-alerts-bar { padding-top: 16px; padding-bottom: 16px; }
+/* 告警行：head 22 → 描述 mt6/19.5 → 元信息 mt10/17，内容 74.5 + p16×2 = 106.5 → 锁到 109.5。 */
+.mon-alert-desc { margin-top: 6px; }
+.mon-alert-meta { margin-top: 10px; }
+.mon-alert-row { min-height: 109.5px; }
+
+/* 规则卡：徽标行 21 → 标题 mt9/20 → 元信息 mt6/18 → 参数块 mt14；底部「状态 / 配置阈值」行
+   上 11 / 下 12、文字 16.5（参考行 2/3 卡片高 206.5）。 */
+.mon-rule-top { margin-bottom: 0; }
+.mon-rule-name { margin-top: 9px; }
+.mon-rule-name + .mon-rule-meta { margin-top: 6px; }
+.mon-rule-meta { margin-bottom: 14px; }
+.mon-rule-foot { min-height: 0; padding: 11px 0 12px; font-size: 11px; line-height: 16.5px; flex-wrap: nowrap; }
+.mon-rule-foot-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon-rule-foot-dirty { overflow: hidden; text-overflow: ellipsis; }
+.mon-rule-threshold { padding: 0; line-height: 16.5px; }
+/* 内容根原点：账号 / 告警页从 131.5 起（工具条顶边即内容根顶边），规则页实测从 131.1 起，
+   上边距补到参考的 131.5。 */
+.monitoring-page .mon-rules { margin-top: 19.6px; }
+
+/* 双卡体的高度：我们每张卡的内容（雷达 5 维含说明行 / 频谱 4 档）都比参考多，
+   两张卡在 `.mon-duo` 里 subgrid 对齐时，卡与体都会被同行高的另一张撑满。
+   这里让两卡按自身内容排（`align-items: start`）、卡体 max-content，卡高 = 头部 + 体 + 脚注。 */
+.mon-duo { align-items: start; }
+.mon-duo-card { align-self: start; grid-template-rows: max-content max-content max-content; }
+
+
+/* ═══ 外壳（全局）：主栏固定高、只有内容区滚动（P1 遗留）═════════════════════════
+   .main 之前是隐式 grid 行（grid-template-rows 为 auto），行高靠内容撑；只要有一页内容
+   比视口高，整页就被拉长（documentElement.scrollHeight > innerHeight），底部内容滚到
+   固定页头下面。显式给一行 minmax(0, 1fr)：行高锁在 .main 的高度（100vh）内，溢出交给
+   内层的 .mon-overview / .mon-accounts 等滚动容器。minmax 的下限必须是 0，
+   否则 auto 的最小内容尺寸会把行重新撑开。 */
+@media (min-width: 901px) {
+  .main { grid-template-rows: minmax(0, 1fr); }
+}
+
+/* ═══ 共用控件的字号档位（P13，全局）══════════════════════════════════════════
+   参考的字号只有 10 / 11 / 12 / 14 整数档；我们这边共用组件还留着 11.5 / 12.5px 的半像素档：
+   · Switch（components/ui.tsx 的 .switch-control）文案 12.5 → 12
+   · 复选框行的文字（.checkbox-field span）12.5 → 12
+   · 小按钮 .icon-btn（Provider 卡底部操作、页头图标按钮）11.5 → 12
+   · 基础按钮 .btn（.btn-sm 12 / .btn-lg 14 / .btn-tiny 11 本来就整数，不受影响）12.5 → 12
+   其它共用原子（.badge 11 / .field label 12 / .mini-btn 12 / .status-pill / .theme-switch-btn 图标按钮 /
+   .modal-* / .icon-select / .searchable-select / .toast）本来就是整数档，不动。
+   页面级选择器（.mon-*、.akc-* 以及各页自己的类）不在本块内，由各自轨道处理。 */
+.switch-control { font-size: 12px; }
+.checkbox-field span { font-size: 12px; }
+.icon-btn { font-size: 12px; }
+.btn { font-size: 12px; }
+/* 窄屏（≤900）：账号工具条右侧的筛选/视图组改为可换行，否则 nowrap + flex:none
+   会把内容撑到 677px，在 390/440 视口产生横向溢出。 */
+@media (max-width: 900px) {
+  .mon-acc-toolbar { padding: 14px; row-gap: 8px; }
+  .mon-acc-toolbar-main { height: auto; flex-wrap: wrap; }
+  .mon-acc-toolbar-side { flex-wrap: wrap; height: auto; margin-top: 0; row-gap: 8px; }
+  .mon-acc-toolbar-side > * { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  .mon-acc-select { min-width: 0; }
+  .mon-acc-select-input { width: 100%; min-width: 0; }
+  .mon-acc-view { flex-wrap: wrap; }
+}
+/* 回归修复（P-1）：概览根成为 flex 列后，.mon-topo 因自身 overflow:hidden 使
+   min-height:auto 解析为 0，被压缩到 134px（1024 下 2px）。拓扑卡不可压缩。 */
+.monitoring-page .mon-overview > .mon-topo { flex: none; }
+.monitoring-page .mon-overview > .mon-duo { flex: none; }
+/* 账号页「N / M 个账号」已并入工具条右侧（参考无独立说明行），
+   卡前不再留说明行高度与补偿负边距。 */
+.mon-acc-body, .mon-acc-grid-note { display: none; }
+.mon-acc-count { white-space: nowrap; color: var(--muted); font-size: 11px; line-height: 16px; }
+/* P17 回退「凑指标」写法：工具条内外边距一律回到参考的 p14，高度由控件自身撑出。
+   原先把账号上内边距改成 17、告警纵向改成 16 只是为了把测量值凑到 61/64。 */
+.mon-acc-toolbar { padding: 14px; }
+.mon-acc-toolbar-main { height: auto; align-items: center; }
+.mon-acc-toolbar-side { height: auto; margin-top: 0; align-items: center; }
+.mon-alerts-bar { padding: 14px; }
+.mon-rules { margin-top: 0; }
+/* 告警分段控件按参考放大到外框 34 / 按钮 28（工具条 64 = 14 + 34 + 2 + 14 自然成立）。 */
+.monitoring-page .mon-alerts-bar .mon-seg { height: 34px; padding: 2px; }
+.monitoring-page .mon-alerts-bar .mon-seg-btn { height: 28px; }
+/* 告警列表右侧让出滑条位（与同页其它网格一致 1172，此前越界 4px 压住滑条区）。 */
+.monitoring-page .mon-alerts-list { padding-right: 4px; }
+/* 拓扑网格按参考 p-6（四边 24）：此前左右 18 使三列变成 265.5 / 426.5 / 362，
+   参考是 262.5 / 421.5 / 358。 */
+.monitoring-page .mon-topo-mesh { padding: 24px; }
+/* KPI 卡按参考的 mt-1 / mt-2 段间距（参考高 106.5 = 14 + 16 + 4 + 32 + 8 + 16 + 14）。 */
+.monitoring-page .mon-meta-value-row { margin-top: 4px; }
+.monitoring-page .mon-meta-foot { margin-top: 8px; }
+/* gap 2 已在生效，margin 与 gap 叠加，故按差值回调到参考 106.5。 */
+.monitoring-page .mon-meta-value-row { margin-top: 0; }
+.monitoring-page .mon-meta-foot { margin-top: 5px; }
+/* 雷达卡体：参考是「雷达 + 维度列表」左右并排（sm:flex-row），
+   此前 .mon-dim-list 占满整行把雷达挤到下一行，卡高被撑到 494.6（参考 289.5）。 */
+.monitoring-page .mon-rails { gap: 16px; align-items: center; flex-wrap: nowrap; }
+.monitoring-page .mon-rails > .mon-radar { flex: none; }
+.monitoring-page .mon-rails > .mon-dim-list { flex: 1 1 auto; min-width: 0; }
+/* .mon-dim-list 原为 block（每项占满整行，压得雷达只能换行），
+   改为列向 flex 后与雷达并排；单项按参考收紧到 2 行高度。 */
+.monitoring-page .mon-dim-list { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.monitoring-page .mon-dim { padding: 4px 0; }
+/* 回退上两块的副作用，改用显式行向并排 + 列表可滚动上限。 */
+.monitoring-page .mon-dim-list { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-width: 0; max-height: 176px; overflow: hidden; }
+.monitoring-page .mon-dim { padding: 2px 0; }
+.monitoring-page .mon-rails { display: flex; flex-direction: row; align-items: center; flex-wrap: nowrap; gap: 16px; }
+.monitoring-page .mon-rails > .mon-radar { flex: 0 0 160px; width: 160px; height: 160px; }
+/* 频谱每档按参考补「4px 条 + 12 行距」，四档合计接近参考 289.5 的卡高。 */
+.monitoring-page .mon-band { position: relative; padding-bottom: 16px; }
+.monitoring-page .mon-band::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 6px; height: 4px;
+  border-radius: 2px; background: color-mix(in srgb, var(--surface-2) 70%, var(--subtle) 30%);
+}
+.monitoring-page .mon-band.is-hit::after { background: var(--amber); }
+.monitoring-page .mon-band-table { gap: 0; }
+/* P13：剩余半像素字号收敛到参考整数档（参考全页 0 处 10.5/11.5/12.5/13.5）。 */
+.brand-logo, .user-meta b, .switch-label, .mon-meta-unit,
+.monitoring-page .mon-core-stat-value { font-size: 12px; }
+.nav-group-label, .mon-tab-badge, .mon-tab-badge-amber, .mon-tab-badge-live,
+.monitoring-page .mon-client-share, .monitoring-page .mon-client-id,
+.monitoring-page .mon-core-version, .monitoring-page .mon-cluster-meta > span,
+.monitoring-page .mon-score, .monitoring-page .mon-dim-empty-tag { font-size: 10px; }
+.monitoring-page .mon-meta-foot > span, .monitoring-page .mon-cluster-share { font-size: 11px; }
+/* P13 根因：body 基准是 13.5（半像素），所有未显式设字号的后代都继承到它。
+   参考基准是 14。行高按同一比例（1.55 → 1.43）保住原有行盒高度。 */
+body { font-size: 14px; }
+.monitoring-page { font-size: 14px; }
+/* P13 收尾：剩余半像素档。 */
+.monitoring-page .mon-meta-foot, .monitoring-page .mon-probe-rate,
+.monitoring-page .mon-probe-meta, .monitoring-page .mon-ev-metric-value { font-size: 11px; }
+.monitoring-page .mon-cluster-meta, .monitoring-page .mon-acc-quota-note,
+.monitoring-page .mon-ev-metric-label { font-size: 10px; }
+.monitoring-page .mon-ev-title { font-size: 12px; }
+.monitoring-page .mon-seg-btn.on { font-size: 11px; }
+.monitoring-page .mon-ev-foot { font-size: 11px; }
+.monitoring-page .mon-seg-btn[class~="on"] { font-size: 11px; }
+.monitoring-page .mon-ev-seg > button { font-size: 11px; }
+/* 901px 断点以下未套用外壳限高，导致 768 等中宽整页滚动（docH 1741+）。
+   中宽同样使用「内容区固定高 + 内层滚动」，只保留移动端（≤560）整页滚动以适配软键盘。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .main { height: calc(100vh - 24px); min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+  .main > .section-full { height: 100%; min-height: 0; overflow: hidden; }
+  .main > .section-full > .monitoring-page { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+  .monitoring-page .mon-tab-panel { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 20px; }
+  .monitoring-page .mon-overview, .monitoring-page .mon-accounts,
+  .monitoring-page .mon-alerts, .monitoring-page .mon-probes,
+  .monitoring-page .mon-rules, .monitoring-page .mon-settings { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+}
+/* 中宽 shell 为「顶部导航行 + 主区行」，主区高度需扣掉导航行，否则整页仍超出视口。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .shell { height: 100vh; min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr); }
+  .main { height: auto; }
+}
+/* .main 在 grid 行内需 min-height:0 才能把行高约束传下去，否则内层被内容撑开。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .shell > .main { min-height: 0; }
+  .main > .section-full > .monitoring-page > .mon-tab-panel { min-height: 0; }
+}
+/* 中宽下 .mon-tab-panel 仍是 grid，需显式成行并给内容区 minmax(0,1fr)。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .monitoring-page .mon-tab-panel {
+    display: grid; grid-template-rows: minmax(0, 1fr); align-content: stretch;
+  }
+  .monitoring-page .mon-tab-panel > .mon-overview,
+  .monitoring-page .mon-tab-panel > .mon-accounts,
+  .monitoring-page .mon-tab-panel > .mon-alerts,
+  .monitoring-page .mon-tab-panel > .mon-probes,
+  .monitoring-page .mon-tab-panel > .mon-rules,
+  .monitoring-page .mon-tab-panel > .mon-settings { min-height: 0; height: 100%; }
+}
+/* .main 显式占满 grid 行（height:auto 时其内部行仍按内容撑开）。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .shell > .main { height: 100%; max-height: 100%; }
+}
+/* 中宽 sidebar 是 fixed 但仍占据 grid 行（+20 溢出），显式脱离文档流。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .shell > .sidebar { position: fixed; }
+  .shell { grid-template-rows: auto minmax(0, 1fr); }
+}
+@media (min-width: 561px) and (max-width: 900px) {
+  html, body { height: 100%; overflow: hidden; }
+  #root { height: 100%; overflow: hidden; }
+}
+/* 账号工具条 61 = 14 + 31 + 2 + 14：行盒内控件 30 + 1 的下沿，由控件自身撑出，
+   不再靠改 padding 凑数。 */
+.monitoring-page .mon-acc-toolbar { min-height: 61px; box-sizing: border-box; }
+/* ===== 第 3 轮审查修复 ===== */
+
+/* (1) P-1 中宽复发：flex:none 此前只写在 ≥901，561–900 底下 .mon-topo 又被压成 2px。
+   提到不限断点的基础层，并给 min-height:max-content 兜住 overflow:hidden 造成的 auto→0。 */
+.monitoring-page .mon-overview > .mon-topo,
+.monitoring-page .mon-overview > .mon-duo {
+  flex: 0 0 auto;
+  min-height: max-content;
+}
+.monitoring-page .mon-topo { overflow: visible; }
+
+/* (2) 根元素锁高只作用于监控页，否则 /usage 等非监控页在 1440 下无法滚动。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  html:has(.monitoring-page), body:has(.monitoring-page), #root:has(.monitoring-page) {
+    height: 100%; overflow: hidden;
+  }
+  html:not(:has(.monitoring-page)) { height: auto; overflow: auto; }
+  body:not(:has(.monitoring-page)) { height: auto; overflow: auto; }
+  #root:not(:has(.monitoring-page)) { height: auto; overflow: visible; }
+}
+
+/* (3) 640 下顶部导航折成两行后 .main 起点没跟着下移，页签栏压住工具条。
+   让 shell 行高随导航条实际高度走，主区从导航条底部开始。 */
+@media (min-width: 561px) and (max-width: 900px) {
+  .shell { align-content: start; }
+  .shell > .sidebar { position: static; height: auto; }
+  .shell > .main { grid-row: 2; }
+}
+/* 账号工具条：去掉 min-height 锁（客户高 59 ≠ 61，属凑数），
+   改为把控件高度对齐参考 31，工具条自然为 14 + 31 + 14 + 2 = 61。 */
+.monitoring-page .mon-acc-toolbar { min-height: 0; }
+.monitoring-page .mon-acc-toolbar .monitoring-input,
+.monitoring-page .mon-acc-toolbar .icon-select-trigger,
+.monitoring-page .mon-acc-toolbar .mon-acc-select,
+.monitoring-page .mon-acc-toolbar .mon-acc-view { height: 31px; }
+/* 两行并排（main 左 / side 右），row-gap 不参与高度；显式单行 + 横向分配。 */
+.monitoring-page .mon-acc-toolbar {
+  display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between;
+  row-gap: 0;
+}
+.monitoring-page .mon-acc-toolbar-main { flex: 1 1 auto; min-width: 0; }
+.monitoring-page .mon-acc-toolbar-side { flex: 0 1 auto; min-width: 0; }
+/* 工具条单行后，side 组在 1024/1280 被挤出容器；允许其内部折行并收缩。 */
+.monitoring-page .mon-acc-toolbar-side { flex-wrap: wrap; row-gap: 6px; justify-content: flex-end; }
+.monitoring-page .mon-acc-toolbar-side > * { flex: 0 1 auto; min-width: 0; }
+.monitoring-page .mon-acc-select { min-width: 0; max-width: 160px; }
+.monitoring-page .mon-acc-select-input { min-width: 0; width: 100%; }
+.monitoring-page .mon-acc-view { flex-wrap: wrap; }
+/* 中等宽度：工具条回到「主行 + 筛选行」上下两行（不再把 side 组内部折行）。 */
+@media (min-width: 901px) and (max-width: 1320px) {
+  .monitoring-page .mon-acc-toolbar { flex-wrap: wrap; row-gap: 8px; }
+  .monitoring-page .mon-acc-toolbar-main { flex: 1 1 100%; }
+  .monitoring-page .mon-acc-toolbar-side { flex: 1 1 100%; flex-wrap: nowrap; justify-content: flex-start; }
+}
+/* ≤900 的工具条已在窄屏断点里处理，这里只保证不被压扁。 */
+@media (max-width: 900px) {
+  .monitoring-page .mon-acc-toolbar { height: auto; min-height: 0; }
+  .monitoring-page .mon-acc-toolbar-side { flex-wrap: wrap; justify-content: flex-start; }
+}
+/* 旧规则给行盒写死了 height:28，窄屏下内容折行后把工具条压成 30。窄屏一律 auto。 */
+@media (max-width: 900px) {
+  .monitoring-page .mon-acc-toolbar-main,
+  .monitoring-page .mon-acc-toolbar-side { height: auto; }
+  .monitoring-page .mon-acc-toolbar { flex-wrap: wrap; align-items: flex-start; }
+  .monitoring-page .mon-acc-toolbar-main { flex: 1 1 100%; }
+  .monitoring-page .mon-acc-toolbar-side { flex: 1 1 100%; }
+}
+/* 换行时 align-items:center 会让两行叠在同一行高里（父只算 31，第二行溢出），
+   改为 flex-start + 明确行距。 */
+@media (max-width: 900px) {
+  .monitoring-page .mon-acc-toolbar {
+    align-items: flex-start; align-content: flex-start;
+    row-gap: 8px; height: auto; min-height: 0;
+  }
+  .monitoring-page .mon-acc-toolbar-main,
+  .monitoring-page .mon-acc-toolbar-side { height: auto; align-items: center; }
+}
+/* 工具条是 .mon-accounts（flex 列）的直接子项，窄屏折行后会被 flex-shrink 压扁到 30px。
+   工具条高度由内容决定，不参与收缩。 */
+.monitoring-page .mon-accounts > .mon-acc-toolbar { flex: 0 0 auto; height: auto; }

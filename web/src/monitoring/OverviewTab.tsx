@@ -3,21 +3,19 @@ import type { ReactNode } from 'react';
 import { formatCostMicros } from '../lib';
 import { IconSelect } from '../components/selects';
 import type { IconSelectOption } from '../components/selects';
-import type { MonitorAccount, MonitorEvent, MonitorOverview, MonitorProbeRun } from './types';
+import type { MonitorAccount, MonitorOverview, MonitorProbeRun } from './types';
 import { hasTime } from './types';
-import { detailPairs, displayTime, displayTimeCompact, formatLatency, formatRatio } from './format';
+import { displayTime, displayTimeCompact, formatLatency, formatRatio } from './format';
 
 export interface OverviewTabProps {
   overview: MonitorOverview | null;
   accounts: MonitorAccount[];
-  /** 底部遥测条只取最近一条事件；概览不再内嵌事件列表。 */
-  events: MonitorEvent[];
   timezone: string;
   loading: boolean;
   error: string;
   onOpenAccount: (providerId: string) => void;
   /**
-   * 概览自己维护的跳转：量卡「调控熔断 →」与拓扑脚注落到账号页，状态条落到实时流。
+   * 概览自己维护的跳转：量卡「调控熔断 →」与拓扑脚注落到账号页，频谱脚注落到实时流。
    * 不传时退回账号详情，保证旧调用方不炸。
    */
   onOpenTab?: (tab: 'accounts' | 'alerts' | 'probes') => void;
@@ -269,11 +267,9 @@ function TopologyCard({
       <div className="mon-topo-head">
         <div className="mon-topo-head-main">
           <span className="mon-topo-ping" aria-hidden />
-          {/* 逐词切开允许在词间断行；整句在 1440 下是一行，窄屏折两行而不是被挤成省略号。 */}
-          <h3 className="mon-topo-title">
-            {`智能协议网关实时流量拓扑与自愈流水线 `}
-            <span className="mon-topo-title-en">{'(Live Routing Mesh)'}</span>
-          </h3>
+          {/* 标题取参考的短句（参考原文另带英文括注，参考实测这一行折成两行、头部条 60 高）；
+              窄屏时整句折行，不截断。 */}
+          <h3 className="mon-topo-title">{'智能协议网关实时流量拓扑与自愈流水线'}</h3>
           <span className={`mon-topo-badge ${status.tone}`}>{status.text}</span>
         </div>
         <div className="mon-topo-filter">
@@ -291,7 +287,7 @@ function TopologyCard({
         </div>
       </div>
 
-      <div className="mon-topo-body">
+      <div className="mon-topo-mesh">
         <div className="mon-topo-clients">
           <div className="mon-topo-group">
             <Glyph d={GLYPH.key} />
@@ -299,7 +295,7 @@ function TopologyCard({
           </div>
           {total === 0 && <div className="mon-topo-empty">{'还没有接入任何账号'}</div>}
           {clients.map((client) => (
-            <div key={client.key} className={`mon-client ${client.tone}`} title={`${client.label} · ${client.hint} · ${client.count} 个账号`}>
+            <div key={client.key} className={`mon-client ${client.tone}`} title={`${client.label} · ${client.hint} · ${client.count} 个账号（占比 = 该组账号数 ÷ 账号总数）`}>
               <div className="mon-client-top">
                 <span className="mon-client-name">{client.label}</span>
                 <span className="mon-client-share">{`${shareText(client.share)} 占比`}</span>
@@ -308,7 +304,6 @@ function TopologyCard({
               {client.share !== null && <div className="mon-progress" role="presentation"><span className="mon-progress-fill" style={{ width: `${clampPercent(client.share * 100)}%` }} /></div>}
             </div>
           ))}
-          <div className="mon-topo-note">{'占比 = 该组账号数 ÷ 账号总数'}</div>
         </div>
 
         <div className="mon-core-wrap">
@@ -417,15 +412,6 @@ const RADAR_DIMS = 5;
 const RADAR_CENTER = 100;
 const RADAR_RADIUS = 76;
 
-const KIND_TEXT: Record<string, string> = {
-  alert: '告警',
-  renewal: '续期',
-  probe: '探测',
-  checkin: '签到',
-  quota: '额度',
-  system: '系统',
-};
-
 function radarAngle(index: number): number {
   return ((-90 + (360 / RADAR_DIMS) * index) * Math.PI) / 180;
 }
@@ -522,7 +508,7 @@ function MetaCard({
 
 export function OverviewTab(props: OverviewTabProps) {
   const {
-    overview, accounts, events, timezone, loading, error, iconOf, onOpenAccount, onOpenTab, probeRuns = [],
+    overview, accounts, timezone, loading, error, iconOf, onOpenAccount, onOpenTab, probeRuns = [],
   } = props;
   const now = Date.now();
 
@@ -656,10 +642,6 @@ export function OverviewTab(props: OverviewTabProps) {
     return { p95, band, index };
   }, [req]);
 
-  const latest = events[0];
-  const latestStamp = latest ? displayTimeCompact(displayTime(latest.time, timezone).text) : '—';
-  const latestPairs = latest ? detailPairs(latest.detail, 5).map(([key, value]) => `${key}=${value}`).join(' · ') : '';
-
   return (
     <div className="mon-overview">
       {error && <div className="mon-overview-error" role="alert">{error}</div>}
@@ -752,7 +734,7 @@ export function OverviewTab(props: OverviewTabProps) {
             </div>
           )}
           {radarDims.length > 0 && (
-            <div className="mon-radar-body">
+            <div className="mon-rails">
               {/* 五边形雷达：只连有数据的维度；无数据维度不画点也不补 0。 */}
               <div className="mon-radar" aria-hidden>
                 <svg viewBox="0 0 200 200" className="mon-radar-svg">
@@ -780,7 +762,7 @@ export function OverviewTab(props: OverviewTabProps) {
                   })}
                 </svg>
               </div>
-              <div className="mon-dim-list">
+              <div className="mon-dim-list mon-rails">
                 {radarDims.map((dim) => (
                   <div className={`mon-dim${dim.percent === null ? ' is-empty' : ''}`} key={dim.key}>
                     <div className="mon-dim-top">
@@ -866,29 +848,6 @@ export function OverviewTab(props: OverviewTabProps) {
             {onOpenTab && <button type="button" className="mon-meta-link" onClick={() => onOpenTab('probes')}>{'查看实时事件流 →'}</button>}
           </div>
         </div>
-      </div>
-
-      {/* 实时状态条：最近一条事件的时间 + 等宽 payload，右侧进入实时流（参考版式的底部遥测条）。 */}
-      <div className="mon-statusbar">
-        <div className="mon-statusbar-main">
-          <span className="mon-statusbar-tag">
-            <span className="live-dot" aria-hidden />
-            {'最新遥测'}
-          </span>
-          {latest ? (
-            <p className="mon-statusbar-text">
-              <span className="mon-statusbar-time">{latestStamp}</span>
-              <span className="mon-statusbar-kind">{`[${KIND_TEXT[latest.kind] ?? latest.kind}]`}</span>
-              <span className="mon-statusbar-title">{latest.title}</span>
-              {latestPairs && <span className="mon-statusbar-payload" title={latestPairs}>{`(${latestPairs})`}</span>}
-            </p>
-          ) : (
-            <p className="mon-statusbar-text">{'还没有事件。'}</p>
-          )}
-        </div>
-        <button className="btn btn-sm mon-statusbar-btn" onClick={() => (onOpenTab ? onOpenTab('probes') : undefined)}>
-          {'进入实时事件流'}
-        </button>
       </div>
     </div>
   );

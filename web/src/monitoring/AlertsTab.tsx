@@ -606,6 +606,9 @@ export function AlertsTab(props: AlertsTabProps) {
                         <span className="m-stamp-short">{displayTimeCompact(stamp.text)}</span>
                       </span>
                     </span>
+                    {/* 参考在「更新」之后用「·」分隔推送状态；`.mon-alert-meta` 子元素之间没有 gap，
+                        分隔点必须显式给。 */}
+                    <span className="mon-alert-meta-dot" aria-hidden>{'·'}</span>
                     <span className={`mon-alert-push push-${alert.pushStatus ?? 'none'} mon-alert-sentence tone-${push.tone}`}>
                       {push.text}
                     </span>
