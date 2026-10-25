@@ -32,7 +32,7 @@ const RUN_CAP = 200;
 const RATE_WINDOW_MS = 5_000;
 
 /** 未收到 snapshot 的宽限时长：超时说明对面不是 SSE（老后端 404、反代吐 HTML），直接降级。 */
-const SNAPSHOT_GRACE_MS = 10_000;
+const SNAPSHOT_GRACE_MS = 8_000;
 
 /**
  * 测完 SSE 要把它变回「老后端」时设成非 0 的路径（浏览器控制台执行一次即可），测完设回 0。
@@ -260,6 +260,8 @@ export function ProbesTab(props: ProbesTabProps) {
   const [pinned, setPinned] = useState(true);
   const [runError, setRunError] = useState('');
   const [category, setCategory] = useState<RunCategory>('all');
+  // 记录流一屏显示多少条；「加载更多」每次再加这么多。
+  const [runLimit, setRunLimit] = useState(20);
   const [search, setSearch] = useState('');
   // 浏览器最近一次取到数据的时刻：流停住时头部必须说清楚「数据停在哪」。
   const [fetchedAt, setFetchedAt] = useState(() => Date.now());
@@ -279,6 +281,8 @@ export function ProbesTab(props: ProbesTabProps) {
   const accountFetchRef = useRef(false);
   const accountAgainRef = useRef(false);
   const degradedRef = useRef(false);
+  // 本次连接是否真的 open 过（EventSource 连上 text/event-stream 才会触发 onopen）。
+  const openedRef = useRef(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   // 合并：外层底稿 ∪ 流快照 ∪ 流增量。按 runKey 去重后时间新→旧。
@@ -396,14 +400,17 @@ export function ProbesTab(props: ProbesTabProps) {
       degrade('当前浏览器不支持 EventSource');
       return;
     }
+    openedRef.current = false;
     const source = new EventSource(streamUrl(), { withCredentials: true });
     let closed = false;
     let lastFrame = Date.now();
-    const openedAt = Date.now();
-    // 对面不是 SSE（老后端 404、反代吐 HTML）时浏览器不派发任何事件，只会静默重连：
-    // 宽限期一过仍没收到 snapshot 就降级轮询。
+    /* 浏览器对 EventSource 断线重连的处理（实测）：
+       - 404 / 5xx：不会触发 error 回调，只打印一条控制台报错并自动重连（≈3s 一次）；
+       - 200 但 Content-Type 不对：同样不派发 error（CONNECTING 状态），等头部；
+       - 只有正常 text/event-stream 才触发 onopen。
+       所以「连上但拿不到数据」只能自己判：收到 error，或者宽限期内既没 open 也没数据，都降级轮询。 */
     const guard = window.setTimeout(() => {
-      if (!gotDataRef.current) degrade('实时流无响应，已回退轮询');
+      if (!openedRef.current && !gotDataRef.current) degrade('实时流无响应，已回退轮询');
     }, SNAPSHOT_GRACE_MS);
 
     const payload = (event: MessageEvent<string>): unknown => {
@@ -420,19 +427,15 @@ export function ProbesTab(props: ProbesTabProps) {
     };
 
     source.onopen = () => {
+      // 只有 onopen 才点亮 LIVE：正在建连、被 404/HTML 挡住时 onopen 不会来，徽标保持灰。
+      openedRef.current = true;
       lastFrame = Date.now();
       enterStream();
     };
     source.onerror = () => {
-      // EventSource 自带断线重连；浏览器遇到重连回 4xx 会放弃，readyState 停在 CLOSED。
-      // 从未拿到过数据 → 宽限期内交给 guard；拿到过数据后彻底断开 → 降级轮询。
-      if (source.readyState === EventSource.CLOSED && gotDataRef.current) {
-        degrade('实时流已断开，已回退轮询');
-        return;
-      }
-      if (!gotDataRef.current && Date.now() - openedAt >= SNAPSHOT_GRACE_MS) {
-        degrade('实时流无响应，已回退轮询');
-      }
+      if (closed) return;
+      // 拿到过数据后连接出错 → 直接回轮询，不让徽标在灰/绿之间来回跳。
+      if (gotDataRef.current) degrade('实时流已断开，已回退轮询');
     };
 
     const onSnapshot = (event: MessageEvent<string>) => {
@@ -594,9 +597,9 @@ export function ProbesTab(props: ProbesTabProps) {
     if (topKey === lastTopKeyRef.current) return;
     lastTopKeyRef.current = topKey;
     if (!pinned || paused) return;
+    // 锁的只是「流动框」：用户翻到下面看账号现状时，新条目不该把整页拽回顶部。
     const el = timelineRef.current?.closest<HTMLElement>('.mon-probe-viewport');
-    // 只有内容已经滚出视口时才拉回顶部：用户在列表顶部看的时候不打扰。
-    if (el && el.scrollTop > 0) el.scrollTo({ top: 0, behavior: 'auto' });
+    if (el) el.scrollTo({ top: 0, behavior: 'auto' });
   }, [views, pinned, paused]);
 
   const run = (providerId: string) => {
@@ -646,12 +649,16 @@ export function ProbesTab(props: ProbesTabProps) {
     const name = nameOf(row.providerId).toLowerCase();
     return name.includes(keyword) || (row.errorCode ?? '').toLowerCase().includes(keyword);
   };
-  const shownRuns = filteredRuns.filter((row) => {
+  const matchedRuns = filteredRuns.filter((row) => {
     if (category === 'skip') return !!row.skipped;
     if (category === 'ok') return !row.skipped && row.ok;
     if (category === 'fail') return !row.skipped && !row.ok;
     return true;
   }).filter(matchesSearch);
+  // 一次只渲染一屏多一点的记录：58 条全展开会把页面拉到 8000px（1440 实测），
+  // 而且每条都有四列指标格 + payload，滚一趟要很久。参考同样只显示有限条数。
+  const shownRuns = matchedRuns.slice(0, runLimit);
+  const hasMoreRuns = matchedRuns.length > shownRuns.length;
 
   const newestStamp = views.reduce((best, row) => (row.time > best ? row.time : best), '');
   const lastRunStamp = newestStamp ? displayTime(newestStamp, timezone) : null;
@@ -842,6 +849,13 @@ export function ProbesTab(props: ProbesTabProps) {
                 </div>
               );
             })}
+            {hasMoreRuns && (
+              <div className="mon-tl-more">
+                <button type="button" className="btn btn-sm" onClick={() => setRunLimit((n) => n + 20)}>
+                  {`加载更多（还有 ${matchedRuns.length - shownRuns.length} 条）`}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

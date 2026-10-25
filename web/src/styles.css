@@ -7698,22 +7698,34 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-probe-search .monitoring-input { flex: 1 1 auto; min-width: 0; max-width: 420px; }
 .mon-probe-search .btn { flex: none; }
 
-/* 流动框：实时流下条目无上限，框内滚动；框高与下方「账号探测现状」平分剩余视口，
-   两块都留在首屏，谁也不把谁挤下去。视口矮时各留一个最小高度，整页照常纵向滚动。 */
+/* 流动框：实时流下条目会一直长。框定高、框内滚动，与下方「账号探测现状」平分剩余视口，
+   两块都留在首屏；视口矮时各留最小高度，整页照常纵向滚动。
+   注意：grid 的 1fr 行不会小于子项 min-content（fr 隐含 auto 下限），所以两段都要
+   写 min-height: 0，否则记录列表会把行撑成内容高度、把账号现状挤出屏幕（1440 实测过）。 */
 .mon-probe-live-grid {
   display: grid;
-  grid-template-rows: minmax(140px, 1fr) auto minmax(120px, 1fr);
-  /* 页头约 240px + 页脚约 60px + 页外边距：剩下的一半给流动框，一半给账号现状。 */
+  grid-template-rows: minmax(150px, 1fr) auto minmax(120px, 1fr);
   max-height: calc(100vh - 300px);
   margin: 2px 0 6px;
 }
-/* 流动框内滚动：细滚动条不挤内容宽度，滚到头不把滚动传给整页。 */
 .mon-probe-viewport {
+  position: relative;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   padding-right: 4px;
+}
+/* 框底渐隐：滚到底时收起（:has 不支持时只是少一层提示，不影响滚动）。 */
+.mon-probe-viewport::after {
+  content: '';
+  position: sticky;
+  bottom: 0;
+  display: block;
+  height: 28px;
+  margin-top: -28px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--surface));
 }
 .mon-probe-live-grid > .mon-section-title { margin: 10px 0 6px; }
 .mon-pa-list {
@@ -7923,6 +7935,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
   .mon-probe-bar-actions { flex: 1 1 100%; }
   /* 手机上整页都能滚，流动框不再单独限高：两层滚动条只会让人不知道自己在哪。 */
   .mon-probe-live-grid { display: block; max-height: none; }
+  .mon-probe-viewport::after { display: none; }
   .mon-probe-viewport, .mon-pa-list { overflow-y: visible; padding-right: 0; }
   /* 标题优先占第一行；账号徽标放得下就同行靠右，放不下换到下一行左缘，名称整句显示。 */
   .mon-tl-title { flex: 1 1 80px; }
@@ -9877,3 +9890,6 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
   .mon-overview-note { flex: 1 1 100%; order: 3; }
   .mon-overview-refresh { margin-left: 0; }
 }
+
+/* 记录流的「加载更多」：居中的轻按钮，不抢记录的视觉重量。 */
+.mon-tl-more { display: flex; justify-content: center; padding: 10px 0 2px; }
