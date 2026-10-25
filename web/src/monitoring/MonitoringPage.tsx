@@ -169,6 +169,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [accounts, setAccounts] = useState<MonitorAccount[]>([]);
   const [alerts, setAlerts] = useState<MonitorAlert[]>([]);
   const [alertTotal, setAlertTotal] = useState(0);
+  // 筛选条括号里的合计要全量口径：另外两个状态各查一次（pageSize=1 只要 total）。
+  const [alertCounts, setAlertCounts] = useState({ firing: 0, resolved: 0 });
   const [events, setEvents] = useState<MonitorEvent[]>([]);
   const [eventTotal, setEventTotal] = useState(0);
   const [channels, setChannels] = useState<MonitorChannelView[]>([]);
@@ -330,6 +332,23 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       cancelled = true;
     };
   }, [tab, probeConfig]);
+
+    // 告警页的两段合计（进行中 / 已恢复）不受状态筛选影响，所以单独取一次；
+  // 级别筛选照常带上，括号里的数字与当前列表同一口径。只在告警页且数据变化时重取。
+  useEffect(() => {
+    if (tab !== 'alerts') return;
+    let cancelled = false;
+    const count = (status: string) =>
+      fetchAlerts({ status, severity: severityFilter || undefined, range: '7d', pageSize: 1 })
+        .then((page) => page.total)
+        .catch(() => 0);
+    void Promise.all([count('firing'), count('resolved')]).then(([firing, resolved]) => {
+      if (!cancelled) setAlertCounts({ firing, resolved });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, severityFilter, alerts, alertTotal]);
 
   // 15 秒轮询；只有定时任务在页面隐藏时跳过，手动/操作后的刷新必须真的取数。
   useEffect(() => {
@@ -825,6 +844,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         <AlertsTab
           alerts={alerts}
           total={alertTotal}
+          firingTotal={alertCounts.firing}
+          resolvedTotal={alertCounts.resolved}
           statusFilter={statusFilter}
           severityFilter={severityFilter}
           timezone={timezone}

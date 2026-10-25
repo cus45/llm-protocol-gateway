@@ -85,17 +85,55 @@ function errorReason(errorCode: string): string {
   return tail || errorCode;
 }
 
-/** 一行记录等宽 payload 的原文分段，窄处按 · 逐段折行，不整块溢出。 */
+/** 状态码：0 是传输层失败（请求没走到上游），读成「无响应」比「0」有信息量。 */
+function runStatusText(status: number): string {
+  return status === 0 ? '无响应' : String(status);
+}
+
+/**
+ * 一行记录等宽 payload 的原文分段，窄处按 · 逐段折行，不整块溢出。
+ * 状态码在 payload 里保留原始数字（`status=0`），「无响应」的释义只给上面的指标格。
+ */
 function payloadSegments(row: MonitorProbeRun): string[] {
   const duration = row.durationMs > 0 ? `${row.durationMs}ms` : '—';
   return [
     `case=${runField(row.case)}`,
+    `ok=${row.ok}`,
     `status=${runField(row.status)}`,
     duration,
     row.model ? `model=${row.model}` : '',
     row.errorCode ? `error=${errorReason(row.errorCode)}` : '',
     row.skipped ? `skipped=${row.skipped}` : '',
   ].filter(Boolean);
+}
+
+/** 四列指标格：值都来自 run 本身，空值写「—」，不补猜。 */
+function runMetrics(row: MonitorProbeRun): Array<{ label: string; value: string; tone?: 'err' | 'muted' }> {
+  const unmapped = isUnmappedKind(row.kind);
+  return [
+    {
+      label: '状态码',
+      value: unmapped ? '—' : runStatusText(row.status),
+      tone: !unmapped && row.status === 0 ? 'err' : undefined,
+    },
+    { label: '耗时', value: row.durationMs > 0 ? formatLatency(row.durationMs) : '—' },
+    { label: '模型', value: row.model || '—', tone: row.model ? undefined : 'muted' },
+    {
+      label: '错误码',
+      value: row.errorCode ? errorReason(row.errorCode) : '—',
+      tone: row.errorCode ? 'err' : 'muted',
+    },
+  ];
+}
+
+/** 已下线的深检（CLI）沿旧字段名取值：库里老行的 status/error_code 不是这层语义，不硬套成「无响应」。 */
+function isUnmappedKind(kind: string): boolean {
+  return kind !== PROBE_KIND_LIGHT && kind !== '';
+}
+
+/** kind 徽标的底色分档：轻探测沿用主色，历史深检用紫色，和事件流里按类型分色是一个意思。 */
+function kindTone(kind: string): string {
+  return kind === PROBE_KIND_LIGHT ? 'light' : 'legacy';
 }
 
 export function ProbesTab(props: ProbesTabProps) {
@@ -289,7 +327,12 @@ export function ProbesTab(props: ProbesTabProps) {
                 {/* 时区在页头写着，行内只留日期时间；完整值与本地时间在悬停里。 */}
                 <span className="mon-tl-time" title={stamp.title}>{displayTimeCompact(stamp.text)}</span>
                 <span className={`mon-tl-verdict ${tone}`}>{verdict}</span>
-                <span className="mon-tl-kind">{probeKindText(row.kind)}</span>
+                <span
+                  className={`mon-tl-kind ${kindTone(row.kind)}`}
+                  title={row.kind === PROBE_KIND_LIGHT ? '轻探测：最小对话，不写请求日志' : `历史记录（kind=${row.kind}）：深检已下线，只作存档`}
+                >
+                  {probeKindText(row.kind)}
+                </span>
                 <span className="mon-tl-title">{probeCaseText(row.case)}</span>
                 <button
                   type="button"
@@ -302,6 +345,15 @@ export function ProbesTab(props: ProbesTabProps) {
                 </button>
               </div>
               {skipped && <div className="mon-tl-skip">{skipReason}</div>}
+              {/* 四列指标格：宽处一行，窄处 2×2；值整段换行，不省略。 */}
+              <div className="mon-tl-metrics">
+                {runMetrics(row).map((metric) => (
+                  <div className="mon-tl-metric" key={metric.label}>
+                    <span className="mon-tl-metric-label">{metric.label}</span>
+                    <span className={`mon-tl-metric-value${metric.tone ? ` ${metric.tone}` : ''}`}>{metric.value}</span>
+                  </div>
+                ))}
+              </div>
               {reason && <div className="mon-tl-reason" title={row.errorCode}>{reason}</div>}
               <div className="mon-tl-payload">
                 <span className="mon-tl-prompt" aria-hidden>&gt;</span>
@@ -431,7 +483,7 @@ export function ProbeResultBody({ result }: ProbeResultBodyProps) {
   );
 }
 
-function minutesText(value: number): string {
+export function minutesText(value: number): string {
   if (value <= 0) return '不限制';
   if (value % 1440 === 0) return `${value / 1440} 天`;
   if (value % 60 === 0) return `${value / 60} 小时`;
