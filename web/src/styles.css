@@ -9181,7 +9181,7 @@ select.mon-acc-select-input {
 .mon-acc-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   padding: 16px;
   border-radius: 16px;
@@ -10459,3 +10459,23 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    参考卡没有这一块，我们保留它作为真实数据，但不再占用独立一行。 */
 .mon-acc-card .mon-acc-quota-note { display: none; }
 .mon-acc-probe + .mon-acc-quota { gap: 3px; }
+
+/* 额度条与探活点阵并成一块：点阵标题行右侧已有「成功率」，额度条改为与它同排，
+   不再单独占一行（参考卡没有这一块，我们保留真实数据但不再多占 33px）。 */
+.mon-acc-probe + .mon-acc-quota {
+  margin-top: -10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 10px;
+}
+.mon-acc-probe + .mon-acc-quota .mon-acc-quota-row { display: contents; }
+.mon-acc-probe + .mon-acc-quota .mon-acc-quota-label { grid-column: 1; }
+.mon-acc-probe + .mon-acc-quota .mon-acc-quota-value { grid-column: 2; text-align: right; }
+.mon-acc-probe + .mon-acc-quota .mon-acc-track { grid-column: 1 / -1; }
+/* 进度条改为贴在额度行下方的一条细线（不占独立行）：参考卡没有这一块，
+   我们保留可读的进度感但不再多占一行。 */
+.mon-acc-probe + .mon-acc-quota { position: relative; padding-bottom: 5px; }
+.mon-acc-probe + .mon-acc-quota .mon-acc-track {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+}
