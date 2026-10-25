@@ -10434,7 +10434,7 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 /* 六个 tab 统一内边距：参考账号页容器 1176 = 主栏 1216 − 两侧 20，概览拓扑 1172
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
 .monitoring-page .mon-tab-panel { padding: 0; }
-.monitoring-page .mon-overview { padding: 22px; }
+.monitoring-page .mon-overview { padding: 22px 22px 0 0; }
 
 /* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
    在监控页里显得比方一点。只作用于监控页，不动全站。 */
@@ -10443,9 +10443,6 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .monitoring-page .mon-meta,
 .monitoring-page .mon-topo { border-radius: 16px; }
 
-/* 监控页需要满宽 1216（参考内容区 1172 + 两侧 22）。.main 在桌面端给所有页面补了
-   20px 左内边距来和侧栏拉开距离；监控页自己带 tab 面板内边距，这里抵消掉，
-   避免内容被连扣两次（1216 → 1196 → 1152）。 */
-@media (min-width: 901px) {
-  .main .monitoring-page { margin-left: -20px; }
-}
+/* 监控页不再抵消 .main 的 20px 左内边距：参考的内容区起点是 244（侧栏 224 + 20），
+   抵消后变成 224，KPI 卡与拓扑整体左移 20px。保留 .main 的内边距，
+   内容区起点回到 244。 */
