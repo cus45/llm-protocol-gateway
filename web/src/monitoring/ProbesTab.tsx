@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {BrandIcon, Modal, Switch} from '../components/ui';
 import type {MonitorProbeAccount, MonitorProbeConfig, MonitorProbeRun, MonitorProbeRunResult} from './types';
-import {normalizeProbeCase, probeCaseText, probeKindText, probeSkipText} from './types';
+import {ERROR_KIND_TEXT, normalizeProbeCase, probeCaseText, probeKindText, probeSkipText} from './types';
 import {displayTime, displayTimeCompact, formatLatency, relativeToNow} from './format';
 
 /** 已上线的探测种类：只有轻探测。后端对其余 kind 回 400 kind_unavailable。 */
@@ -80,6 +80,10 @@ function runField(value: string | number | undefined): string {
  * 整条 URL 塞进行内没有信息量：只取最后一个冒号之后的原因，完整原文留给悬停。
  */
 function errorReason(errorCode: string): string {
+  // 已知错误类别（network / auth_failed / rate_limited）本身就是结论，不是原始报文：
+  // 直接映射成中文，别把 "network" 原样丢给用户。
+  const known = (ERROR_KIND_TEXT as Record<string, string>)[errorCode];
+  if (known) return known;
   const at = errorCode.lastIndexOf(': ');
   const tail = at >= 0 ? errorCode.slice(at + 2).trim() : errorCode;
   return tail || errorCode;
