@@ -8357,7 +8357,7 @@ html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(
 /* grid 项的自动最小尺寸是 min-content：页签轨（nowrap、574px 宽）会经 section-full 的轨道
    一路传上来，把 390 视口整页撑到 573px。监控页自己的网格一律 minmax(0, …)，即下面这些；
    顶栏与页签也钉到整宽并以 0 宽参与，唯一的横向溢出留给 .mon-tabs 自己滚。 */
-.mon-overview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.mon-overview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 15px; }
 .mon-header, .mon-tabs, .mon-tab-panel { grid-column: 1 / -1; min-width: 0; }
 .mon-overview > .panel-header { margin-bottom: 0; }
 
@@ -10434,7 +10434,7 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 /* 六个 tab 统一内边距：参考账号页容器 1176 = 主栏 1216 − 两侧 20，概览拓扑 1172
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
 .monitoring-page .mon-tab-panel { padding: 0; }
-.monitoring-page .mon-overview { padding: 22px 22px 0 0; }
+.monitoring-page .mon-overview { padding: 21px 24px 0 0; }
 
 /* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
    在监控页里显得比方一点。只作用于监控页，不动全站。 */
