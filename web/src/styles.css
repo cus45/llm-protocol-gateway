@@ -10502,39 +10502,9 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 /* 307 → 314（参考）：内间距回到 8px。 */
 .mon-acc-card { gap: 8px; }
 
-/* 告警行对齐参考的 64px（我们是 114）：参考是「标题+描述」一行 34px + 按钮行 30px。
-   描述压成单行并收紧行高（完整文本仍在详情里）。 */
-.mon-alert-main { gap: 3px; }
-.mon-alert-desc {
-  line-height: 1.35;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1;
-  overflow: hidden;
-}
-.mon-alert-row { padding: 10px 14px 10px 17px; }
-/* 描述与标题同排（参考把「标题 + 账号」与描述放在一行 34px 里）。 */
-@media (min-width: 1101px) {
-  .mon-alert-main { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 10px; }
-  .mon-alert-main > .mon-alert-head { grid-column: 1 / -1; }
-  .mon-alert-main > .mon-alert-desc { grid-column: 1 / -1; }
-  .mon-alert-main > .mon-alert-meta { grid-column: 1 / -1; }
-}
-
-/* 告警主的第三行（持续/更新/推送状态）并进描述行：参考这一块只有标题行 + 描述行。
-   元信息改为描述行内右对齐的一段，不再独占一行——省 17px，信息不丢。 */
-@media (min-width: 1101px) {
-  .mon-alert-main { position: relative; }
-  .mon-alert-main > .mon-alert-desc { padding-right: 0; }
-  .mon-alert-main > .mon-alert-meta {
-    position: absolute; right: 0; bottom: -1px;
-    max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    background: inherit;
-  }
-  .mon-alert-main { padding-bottom: 0; }
-}
-/* 61 → 64（参考）：行内边距回到参考的 14px。 */
-.mon-alert-row { padding: 14px 14px 14px 17px; }
-/* 69 → 64：上下内边距 14 → 11.5。 */
-.mon-alert-row { padding: 11.5px 14px 11.5px 17px; }
+/* 告警行的尺寸以实测参考为准：参考的「告警行」是 1172×109.5（不是筛选条的 64）。
+   这里只保留与参考一致的圆角/内边距，结构差异（我们是三行、参考区块更紧凑）不靠压扁消除。 */
+.mon-alert-row { padding: 16px; }
 
 /* 参考的设置页没有卡片容器（内容直接铺在 p-5 的内容区里，圆角 0）。
    我们用了两张 16px 圆角卡。为保持与全站「卡片=可分区内容」的语言一致，
@@ -10559,3 +10529,13 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 html[data-theme="dark"] .monitoring-page {
   --surface: #131826;
 }
+
+/* 告警行按参考的 1172×109.5 对齐：内边距 16px + 描述单行（参考这一块也是标题行
+   + 描述行 + 元信息行，只是行距更紧）。完整描述仍在详情弹窗里。 */
+.mon-alert-desc {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1;
+  overflow: hidden; line-height: 1.45;
+}
+.mon-alert-main { gap: 4px; }
+/* 99.4 → 109.5（参考）：上下内边距 16 → 21。 */
+.mon-alert-row { padding: 21px 16px; }
