@@ -10,6 +10,7 @@ import type {
 } from './types';
 import {hasTime, quotaRatioKnown} from './types';
 import {displayTime, formatLatency, quotaText, relativeToNow} from './format';
+import {probeCaseText} from './types';
 
 export interface AccountsTabProps {
   accounts: MonitorAccount[];
@@ -379,61 +380,127 @@ function jitterOf(runs: MonitorProbeRun[]): number | undefined {
   return Math.max(...durations) - Math.min(...durations);
 }
 
+/** 热力图每行保留的探测发数（/__monitor/probes 单次返回上限 50，足够填满 30 格）。 */
+const HEAT_CELLS = 30;
+
 /**
- * 点阵热力图：行 = 账号，列 = 最近 20 发探测。每格按该发的耗时着色
- * （快/中/慢/失败四档），所以看的是真实分布，不是装饰。
+ * 耗时分档（ms）。轻探测是端到端一次最小对话，1~3 秒都属正常，按 30ms 级分档会把整屏
+ * 涂成同一个颜色，所以档位取在「秒」级别：<1s 快 / 1~2.5s 正常 / >2.5s 慢 / 失败。
+ */
+const HEAT_FAST_MS = 1000;
+const HEAT_SLOW_MS = 2500;
+
+/**
+ * 一格 = 一次真实探测（不是公式生成的装饰）。颜色只看这一发的 `ok` 与 `durationMs`：
+ * 失败（ok=false）→ 红；否则 <1s → 绿、<2.5s → 蓝、更慢 → 琥珀。
+ */
+function heatTone(run: MonitorProbeRun): 'l1' | 'l2' | 'l3' | 'l4' {
+  if (!run.ok) return 'l4';
+  if (run.durationMs < HEAT_FAST_MS) return 'l1';
+  if (run.durationMs < HEAT_SLOW_MS) return 'l2';
+  return 'l3';
+}
+
+/** 悬停文案：时间 + 状态 + 耗时 + 模型，外加探测用例与错误码（有就写）。 */
+function heatTitle(run: MonitorProbeRun, timeZone: string): string {
+  const when = displayTime(run.time, timeZone);
+  const verdict = run.ok ? `通过${run.status ? ` HTTP ${run.status}` : ''}` : `失败${run.status ? ` HTTP ${run.status}` : '（无响应）'}`;
+  const lines = [
+    `${when.text}（${when.title}）`,
+    `${verdict} · 耗时 ${formatLatency(run.durationMs)}`,
+    `模型 ${run.model || '—'} · 用例 ${probeCaseText(run.case)}`,
+  ];
+  if (!run.ok && run.errorCode) lines.push(`错误：${run.errorCode}`);
+  return lines.join('\n');
+}
+
+/** 行首的 SLA：窗口内通过数 / 实测数；没有记录时返回 null（不写 100%）。 */
+function heatSla(runs: MonitorProbeRun[]): number | null {
+  if (runs.length === 0) return null;
+  return Math.round((runs.filter((run) => run.ok).length / runs.length) * 100);
+}
+
+/**
+ * SLA 点阵热力图：行 = 账号（沿用上面的搜索/筛选与排序），列 = 最近 30 发已执行的探测，
+ * 左旧右新（越靠右越近）。每个方块都是 /__monitor/probes 里的一条真实记录；
+ * 不足 30 发时右侧补灰格，行尾写明「实际 N 次」，没记录的账号整行灰格。
  */
 function HeatView({
   rows,
+  timezone,
   onProbe,
   probeBusy,
 }: {
-  rows: Array<{ account: MonitorAccount; runs: MonitorProbeRun[]; facts?: AccountsProbeFacts }>;
+  rows: Array<{ account: MonitorAccount; runs: MonitorProbeRun[]; facts?: AccountsProbeFacts; loading: boolean }>;
+  timezone: string;
   onProbe: (providerId: string) => void;
   probeBusy: string;
 }) {
-  const CELLS = 20;
-  // 固定档位（秒级探测 1~3s 都正常，按 ms 分档会把整屏涂成一片）：<1s 快 / 1~2.5s 正常 / >2.5s 慢。
-  const FAST_MS = 1000;
-  const SLOW_MS = 2500;
   return (
     <div className="card panel mon-acc-heat">
       <div className="mon-acc-heat-head">
         <div className="mon-acc-heat-title">
-          <h2 className="panel-title">{'全账号 SLA 点阵热力图'}</h2>
-          <p className="panel-desc">{`${rows.length} 个账号 · 每行最近 ${CELLS} 发轻探测，按耗时着色；空位是窗口里没有记录，不是失败。`}</p>
+          <h2 className="panel-title">{'全集群高密 SLA 采样点阵'}</h2>
+          <p className="panel-desc">
+            {`${rows.length} 个账号 · 每格是最近 ${HEAT_CELLS} 发真实轻探测之一（左旧右新），按耗时着色；灰格是窗口内没有记录，不是失败。`}
+          </p>
         </div>
-        <div className="mon-acc-heat-legend">
-          <span className="mon-acc-heat-key l1">{`< ${formatLatency(FAST_MS)}`}</span>
-          <span className="mon-acc-heat-key l2">{`${formatLatency(FAST_MS)}–${formatLatency(SLOW_MS)}`}</span>
-          <span className="mon-acc-heat-key l3">{`> ${formatLatency(SLOW_MS)}`}</span>
+        <div className="mon-acc-heat-legend" aria-label="耗时图例">
+          <span className="mon-acc-heat-key l1">{`< ${formatLatency(HEAT_FAST_MS)}`}</span>
+          <span className="mon-acc-heat-key l2">{`${formatLatency(HEAT_FAST_MS)}–${formatLatency(HEAT_SLOW_MS)}`}</span>
+          <span className="mon-acc-heat-key l3">{`> ${formatLatency(HEAT_SLOW_MS)}`}</span>
           <span className="mon-acc-heat-key l4">{'失败'}</span>
           <span className="mon-acc-heat-key l0">{'无数据'}</span>
         </div>
       </div>
       <div className="mon-acc-heat-rows">
-        {rows.map(({ account, runs, facts }) => {
-          const cellsFrom = runs.slice(0, CELLS).map((run) => ({
-            tone: !run.ok ? 'l4' : run.durationMs < FAST_MS ? 'l1' : run.durationMs < SLOW_MS ? 'l2' : 'l3',
-            title: `${run.case || '探测'} · ${run.ok ? '通过' : '失败'} · ${formatLatency(run.durationMs)} · ${displayTime(run.time, Intl.DateTimeFormat().resolvedOptions().timeZone).text}`,
-          }));
-          while (cellsFrom.length < CELLS) cellsFrom.push({ tone: 'l0', title: '窗口内没有记录' });
+        {rows.map(({ account, runs, facts, loading }) => {
+          const window = runs.slice(0, HEAT_CELLS);
+          // runs 是新→旧；点阵左旧右新，所以倒序进位。
+          const ordered = [...window].reverse();
+          const cells: Array<{ tone: string; title: string }> = ordered.map((run) => ({ tone: heatTone(run), title: heatTitle(run, timezone) }));
+          while (cells.length < HEAT_CELLS) {
+            cells.unshift({ tone: 'l0', title: `窗口内没有第 ${cells.length + 1} 近的记录` });
+          }
+          const sla = heatSla(window);
+          const latest = ordered[ordered.length - 1];
+          const measured = window.length;
           const probing = probeBusy === `probe:${account.providerId}`;
+          const full = measured >= HEAT_CELLS;
+          const note = loading
+            ? '读取探测记录中…'
+            : measured === 0
+              ? '暂无探测记录'
+              : full
+                ? `最近 ${HEAT_CELLS} 次`
+                : `实际 ${measured} 次`;
+          const rtt = facts?.rttMs ?? (latest && latest.durationMs > 0 ? latest.durationMs : undefined);
           return (
             <div key={account.providerId} className="mon-acc-heat-row">
               <div className="mon-acc-heat-who">
                 <button type="button" className="mon-acc-heat-name" onClick={() => onProbe(account.providerId)} title="点名字发一发轻探测">
                   <NameText name={account.name} />
                 </button>
-                <span className="mon-acc-heat-meta">
-                  {`${account.vendor || AUTH_LABELS[account.authType] || 'API Key'} · ${facts?.probed ? `连败 ${facts.consecutiveFailures}` : '未探测'}`}
+                <span className="mon-acc-heat-tags">
+                  <span className="mon-acc-ptag">{account.vendor || AUTH_LABELS[account.authType] || 'API Key'}</span>
+                  <span
+                    className="mon-acc-heat-meta"
+                    title={sla === null ? '窗口内没有探测记录，无从算 SLA' : `窗口内 ${window.filter((run) => run.ok).length} / ${measured} 发通过`}
+                  >
+                    {`SLA: ${sla === null ? '—' : `${sla}%`} · RTT: ${rtt === undefined ? '—' : formatLatency(rtt)}`}
+                  </span>
                 </span>
               </div>
-              <div className="mon-acc-heat-cells">
-                {cellsFrom.map((cell, index) => (
+              <div
+                className="mon-acc-heat-cells"
+                role="img"
+                aria-label={`${account.name} 最近 ${HEAT_CELLS} 发探测：${measured === 0 ? '暂无记录' : `${measured} 条，SLA ${sla}%`}`}
+              >
+                {cells.map((cell, index) => (
                   <span key={index} className={`mon-acc-heat-cell ${cell.tone}`} title={cell.title} />
                 ))}
               </div>
+              <span className={`mon-acc-heat-note${measured === 0 ? ' empty' : ''}`}>{note}</span>
               <button
                 type="button"
                 className="btn btn-sm mon-acc-heat-probe"
@@ -441,7 +508,7 @@ function HeatView({
                 onClick={() => onProbe(account.providerId)}
                 title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
               >
-                {probing ? '探测中…' : '轻探测'}
+                {probing ? '探测中…' : '探测'}
               </button>
             </div>
           );
@@ -449,6 +516,46 @@ function HeatView({
       </div>
     </div>
   );
+}
+
+/*
+ * 视图切换记在 URL（?view=heatmap，与页面其它深链同一个来源）并在刷新后保持；
+ * 没有参数时再读 localStorage 的会话内偏好。两边都不可用时退回集群卡片。
+ */
+const HEAT_VIEW_STORAGE_KEY = 'monitor-accounts-view';
+
+function viewFromLocation(): ViewMode {
+  let fromUrl = '';
+  try {
+    fromUrl = new URLSearchParams(window.location.search).get('view') || '';
+  } catch {
+    fromUrl = '';
+  }
+  if (fromUrl === 'heatmap' || fromUrl === 'cards') return fromUrl === 'heatmap' ? 'heat' : 'cards';
+  try {
+    return window.localStorage.getItem(HEAT_VIEW_STORAGE_KEY) === 'heat' ? 'heat' : 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+function persistView(mode: ViewMode) {
+  try {
+    window.localStorage.setItem(HEAT_VIEW_STORAGE_KEY, mode);
+  } catch {
+    // 隐私模式下存储不可用：URL 仍是本次的唯一来源。
+  }
+  try {
+    const url = new URL(window.location.href);
+    if (mode === 'heat') url.searchParams.set('view', 'heatmap');
+    else url.searchParams.delete('view');
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      window.history.replaceState(window.history.state, '', next);
+    }
+  } catch {
+    // 无 history 环境（极少）：只记 localStorage。
+  }
 }
 
 export function AccountsTab(props: AccountsTabProps) {
@@ -464,7 +571,17 @@ export function AccountsTab(props: AccountsTabProps) {
   // 只保留本项目有真实能力的筛选（状态 / 熔断档位）；参考里的「容灾层级」是 mock 字段，
   // 这里换成按凭证类型筛，过滤的仍是后端真给的 authType。
   const [authFilter, setAuthFilter] = useState('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => viewFromLocation());
+  const changeView = (mode: ViewMode) => {
+    setViewMode(mode);
+    persistView(mode);
+  };
+  // 浏览器前进/后退：?view= 变了就跟着切（与页面的 popstate 还原同一时机）。
+  useEffect(() => {
+    const restore = () => setViewMode(viewFromLocation());
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  }, []);
   const now = Date.now();
 
   const vendors = useMemo(() => {
@@ -525,27 +642,38 @@ export function AccountsTab(props: AccountsTabProps) {
   const canProbe = !!detail && !detail.disabled;
   const detailProbing = detail ? probeBusy === `probe:${detail.providerId}` : false;
 
-  // 热力图行：每行需要该账号最近 20 发，页面级 probeView 只留了 10 发且没有耗时，
-  // 所以切到热力图时单独读一次全量 probes（与卡片同一接口，口径一致）。
-  const [heatSource, setHeatSource] = useState<MonitorProbePageLite | null>(null);
+  // 热力图行：每行需要该账号最近 30 发且带耗时，页面级 probeView 只留了 windowSize 发、
+  // 也没有记录明细，所以切到热力图时单独读一次 probes（与卡片同一接口，口径一致）。
+  const HEAT_FETCH_MS = 5000;
+  const [heatSource, setHeatSource] = useState<{ page: MonitorProbePageLite; at: number } | null>(null);
+  const [heatTick, setHeatTick] = useState(0);
+  // 轮询中即使切到卡片也继续读，切回来时数据是新的而不是停在切走前那一刻。
   useEffect(() => {
-    if (viewMode !== 'heat') return;
     let live = true;
     fetchProbes()
       .then((page) => {
-        if (live) setHeatSource(page);
+        if (live) setHeatSource({ page, at: Date.now() });
       })
       .catch(() => {
-        if (live) setHeatSource({ accounts: [], runs: [] });
+        // 失败保留上一份；第一次失败按「已读过、无记录」处理，不让行一直停在「读取中」。
+        if (live) setHeatSource((prev) => prev ?? { page: { accounts: [], runs: [] }, at: Date.now() });
       });
     return () => {
       live = false;
     };
-  }, [viewMode, probeBusy, accounts.length]);
+  }, [heatTick, probeBusy, accounts.length]);
+  useEffect(() => {
+    if (viewMode !== 'heat') return;
+    const timer = window.setInterval(() => setHeatTick((value) => value + 1), HEAT_FETCH_MS);
+    return () => window.clearInterval(timer);
+  }, [viewMode]);
   const heatRows = useMemo(() => {
-    if (!heatSource) return [];
+    // /__monitor/probes 的 runs 是真记录、accounts 里才有 skipped 的发数；这里只画 runs，
+    // skipped 的探测没有执行耗时可言，不占格。
     const byAccount = new Map<string, MonitorProbeRun[]>();
-    const runs = [...heatSource.runs].filter((run) => !run.skipped).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+    const runs = [...(heatSource?.page.runs ?? [])]
+      .filter((run) => !run.skipped)
+      .sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
     for (const run of runs) {
       const list = byAccount.get(run.providerId) ?? [];
       list.push(run);
@@ -555,6 +683,7 @@ export function AccountsTab(props: AccountsTabProps) {
       account,
       runs: byAccount.get(account.providerId) ?? [],
       facts: probeView?.factsOf(account.providerId),
+      loading: !heatSource,
     }));
   }, [heatSource, filtered, probeView]);
 
@@ -652,7 +781,7 @@ export function AccountsTab(props: AccountsTabProps) {
               type="button"
               className={`mon-acc-view-btn${viewMode === 'cards' ? ' on' : ''}`}
               aria-pressed={viewMode === 'cards'}
-              onClick={() => setViewMode('cards')}
+              onClick={() => changeView('cards')}
             >
               {'集群卡片'}
             </button>
@@ -660,7 +789,7 @@ export function AccountsTab(props: AccountsTabProps) {
               type="button"
               className={`mon-acc-view-btn${viewMode === 'heat' ? ' on' : ''}`}
               aria-pressed={viewMode === 'heat'}
-              onClick={() => setViewMode('heat')}
+              onClick={() => changeView('heat')}
             >
               {'SLA 点阵热力图'}
             </button>
@@ -681,6 +810,7 @@ export function AccountsTab(props: AccountsTabProps) {
       {viewMode === 'heat' && !empty && filtered.length > 0 && (
         <HeatView
           rows={heatRows}
+          timezone={timezone}
           probeBusy={probeBusy}
           onProbe={(providerId) => void onRunProbe(providerId)}
         />
