@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { BrandIcon } from '../components/ui';
 import { formatCostMicros } from '../lib';
 import type { MonitorAccount, MonitorAlert, MonitorEvent, MonitorOverview, MonitorSeverity } from './types';
@@ -57,6 +58,21 @@ function accountScore(account: MonitorAccount, now: number): number {
   return score;
 }
 
+/** 账号名过长时保留原词、在两处折行：空白处，以及中文/全角标点之后（断在「订阅（」之前，不把一个词拆成两行）。 */
+const NAME_BREAK = new RegExp('(\\s+|(?<=[\\u3000-\\u303f\\uff00-\\uffef]))', 'u');
+
+function breakableName(name: string): ReactNode[] {
+  return name
+    .split(NAME_BREAK)
+    .filter((part) => part !== '')
+    .map((part, index) => (
+      <span key={index}>
+        {part}
+        <wbr />
+      </span>
+    ));
+}
+
 /** 告警与事件里只带 ruleKey（如 key_budget_warn）；这里按规则表的中文名直出，未知 key 原样显示。
     固定成前端常量是因为概览页不额外拉规则表；与后端 `/__monitor/rules` 的 name 保持一致。 */
 const RULE_LABELS: Record<string, string> = {
@@ -78,6 +94,10 @@ const RULE_LABELS: Record<string, string> = {
   rate_limit_spike: '上游限流激增',
   server_error_spike: '上游 5xx 激增',
   ttft_regression: '首包延迟回退',
+  // 以下三条是历史告警留下的 key（规则表里已不存在，库里还留着旧指纹），按语义给中文名。
+  quota_auth_failed: '额度鉴权失败',
+  quota_stale: '额度读数滞后',
+  renewal_failed: '凭证续期失败',
 };
 
 /** 后端旧版 key 用点号（quota.auth_failed），规则表用下划线，两种都认。 */
@@ -86,6 +106,137 @@ function ruleLabel(key: string): string {
 }
 
 const EVENT_SHOWN = 20;
+
+/** 副标题只留一行短语，完整口径放在悬停里（不再占首屏）。 */
+const OVERVIEW_NOTE_TITLE = [
+  '请求指标（成功率 / P95 / 成本）取自 24h 请求日志；窗口内没有请求时三项显示「—」，不显示 0%。',
+  '雷达：百分比 = 各行悬停可见的公式，不是满意度评分；综合分只取有数据维度的均值，无数据的维度标「无数据」。',
+  '延迟分布：接口只给 P95，没有逐请求直方图，所以只报 P95 落在哪一档，不报各档次数与占比。',
+].join('\n');
+
+/**
+ * 雷达 / 频谱的取值纪律。概览接口只给「成功率、P95、成本、账号计数、告警分布」，
+ * 因此：
+ *
+ * - 能算的维度一律列出；算不出来的维度整行标「无数据」并写明缺哪个字段，不补 0、不画 0% 条；
+ * - 雷达卡按「够填满卡片」取维度数：可算的不足五维时，后面接「无数据」行占位，
+ *   卡片不会因为维度少而空着；
+ * - 百分比一律按界面上写明的公式算（悬停可查），不是拍的满意度；
+ * - 基线（参考图里「24ms / 基线 50ms」）接口没有，就只写目标，不造基线。
+ *
+ * 「响应延迟」用 P95 与首包延迟回退规则的默认阈值比（= 目标上限），
+ * 「凭证健康」用未过期凭证占比，其余公式见 radarDims。
+ */
+const TTFT_BUDGET_MS = 3000;
+
+type Tone = 'accent' | 'green' | 'amber' | 'red' | 'blue';
+
+interface RadarDim {
+  key: string;
+  name: string;
+  /** 0..100；null 表示无数据（整行以「无数据」呈现，不画进度条）。 */
+  percent: number | null;
+  /** 进度条右侧的「当前值 vs 目标」；无数据时为空。 */
+  value: string;
+  note: string;
+  tone: Tone;
+  /** 百分比 / 结论是怎么来的（悬停可查，避免读者把评分当满意度）。 */
+  formula: string;
+}
+
+/** 延迟档位：只给区间语义，不给逐档次数——接口没有直方图，凭空分次数会让合计 ≠ 总数。 */
+interface LatencyBand {
+  key: 'lt20' | '20to50' | '50to100' | 'gt100';
+  label: string;
+  hint: string;
+  max: number;
+  tone: Tone;
+}
+
+const LATENCY_BANDS: LatencyBand[] = [
+  { key: 'lt20', label: '< 20ms', hint: '极速', max: 20, tone: 'green' },
+  { key: '20to50', label: '20 – 50ms', hint: '平稳', max: 50, tone: 'accent' },
+  { key: '50to100', label: '50 – 100ms', hint: '偏慢', max: 100, tone: 'amber' },
+  { key: 'gt100', label: '> 100ms', hint: '超过 100ms', max: Infinity, tone: 'red' },
+];
+
+const KIND_TEXT: Record<string, string> = {
+  alert: '告警',
+  renewal: '续期',
+  probe: '探测',
+  checkin: '签到',
+  quota: '额度',
+  system: '系统',
+};
+
+/** 条带每段的颜色：P95 落点用该档色，其余用中性灰（只表示区间，不表示数量）。 */
+function inBandTone(index: number, hit: number): string {
+  return index === hit ? `hit ${LATENCY_BANDS[index].tone}` : 'idle';
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function pct(value: number): string {
+  return `${value.toFixed(value >= 99.95 || value < 10 ? 1 : 0)}%`;
+}
+
+/** 量卡右上角的细线图标：与侧栏 NavIcon 同一笔画语言，path 由调用方给。 */
+function Glyph({ d }: { d: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" width={16} height={16}>
+      <path d={d} />
+    </svg>
+  );
+}
+
+const GLYPH = {
+  account: 'M4 20v-1.5A4.5 4.5 0 0 1 8.5 14h7a4.5 4.5 0 0 1 4.5 4.5V20M12 10.5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
+  success: 'M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5ZM8.8 12l2.2 2.2 4.2-4.4',
+  alert: 'M12 4 2.8 20h18.4L12 4ZM12 10v4.2M12 17.2h.01',
+  cost: 'M12 3v18M16.5 7.2c-.7-1.4-2.3-2.2-4.2-2.2-2.4 0-4.3 1.2-4.3 3.1 0 4.3 8.6 2.3 8.6 6.6 0 1.9-1.9 3.1-4.3 3.1-2 0-3.7-.9-4.4-2.3',
+};
+
+function MetaCard({
+  label,
+  icon,
+  tone,
+  value,
+  unit,
+  chip,
+  chipTone,
+  note,
+  noteRight,
+}: {
+  label: string;
+  icon: ReactNode;
+  tone: Tone;
+  value: string;
+  unit?: string;
+  chip?: string;
+  chipTone?: Tone;
+  note: string;
+  noteRight?: string;
+}) {
+  return (
+    <div className={`card mon-meta mon-meta-${tone}`}>
+      <div className="mon-meta-head">
+        <span className="mon-meta-label">{label}</span>
+        <span className={`mon-meta-icon ${tone}`} aria-hidden>{icon}</span>
+      </div>
+      <div className="mon-meta-value-row">
+        <span className="mon-meta-value">{value}</span>
+        {unit && <span className="mon-meta-unit">{unit}</span>}
+        {chip && <span className={`mon-meta-chip ${chipTone ?? tone}`}>{chip}</span>}
+      </div>
+      <div className="mon-meta-foot">
+        <span>{note}</span>
+        {noteRight && <span className={`mon-meta-foot-right ${tone}`}>{noteRight}</span>}
+      </div>
+    </div>
+  );
+}
 
 export function OverviewTab(props: OverviewTabProps) {
   const {
@@ -105,18 +256,120 @@ export function OverviewTab(props: OverviewTabProps) {
     [accounts],
   );
 
-  const usable = overview ? overview.accounts.total - overview.accounts.unavailable - overview.accounts.disabled : 0;
+  const usable = overview ? Math.max(0, overview.accounts.total - overview.accounts.unavailable - overview.accounts.disabled) : 0;
+  const req = overview?.requests;
+
+  // ── 雷达维度：能算的全部列出，算不出的标「无数据」占位 ─────────────────
+  const radarDims = useMemo<RadarDim[]>(() => {
+    if (!overview) return [];
+    const dims: RadarDim[] = [];
+    const total = overview.accounts.total;
+    const active = total - overview.accounts.disabled;
+    const p95 = overview.requests.p95LatencyMs;
+    const hasTraffic = overview.requests.total > 0 && p95 > 0;
+
+    // 1) 响应延迟：100 − P95 ÷ 预算 × 50（0ms 满分、预算处 50 分、超预算 0 分）。
+    dims.push({
+      key: 'latency',
+      name: '响应延迟',
+      percent: hasTraffic ? clampPercent(100 - (p95 / TTFT_BUDGET_MS) * 50) : null,
+      value: hasTraffic ? `P95 ${formatLatency(p95)}` : '',
+      note: hasTraffic ? `目标 ≤ ${formatLatency(TTFT_BUDGET_MS)}` : '窗口内没有请求，没有 P95',
+      tone: 'accent',
+      formula: hasTraffic
+        ? `100 − P95 ÷ 预算 × 50，P95 = ${formatLatency(p95)}，预算 = ${formatLatency(TTFT_BUDGET_MS)}（首包延迟回退规则的默认阈值）`
+        : '24h 请求为 0，接口不给 P95，也没给逐请求延迟',
+    });
+
+    // 2) 容灾冗余：未停用账号 ÷ 全部账号。
+    dims.push({
+      key: 'redundancy',
+      name: '容灾冗余',
+      percent: total > 0 ? clampPercent((active / total) * 100) : null,
+      value: total > 0 ? `${active}/${total} 个可用` : '',
+      note: total > 0 ? `停用 ${overview.accounts.disabled}` : '还没有接入任何账号',
+      tone: 'green',
+      formula: '未停用账号 ÷ 全部账号',
+    });
+
+    // 3) 凭证健康：只算带到期时间的订阅凭证；一个都没有就标无数据，而不是给 100%。
+    const withExpiry = accounts.filter((account) => hasTime(account.expiresAt));
+    const valid = withExpiry.filter((account) => Date.parse(account.expiresAt as string) > now);
+    const renewalFailed = accounts.filter((account) => account.renewal?.known && account.renewal.lastOK === false);
+    dims.push({
+      key: 'credential',
+      name: '凭证健康',
+      percent: withExpiry.length > 0 ? clampPercent((valid.length / withExpiry.length) * 100) : null,
+      value: withExpiry.length > 0 ? `${valid.length}/${withExpiry.length} 未过期` : '',
+      note:
+        withExpiry.length > 0
+          ? `已过期 ${withExpiry.length - valid.length} · 续期失败 ${renewalFailed.length}`
+          : '没有带到期时间的凭证',
+      tone: 'blue',
+      formula:
+        withExpiry.length > 0
+          ? '未过期凭证 ÷ 有到期时间的凭证；续期失败数来自 renewal.lastOK'
+          : '账号里没有「凭证到期时间」（expiresAt），无从判断',
+    });
+
+    // 4) 额度余量：只统计读数可用的账号（ratio ≥ 0 且无 error）。
+    const quotaRead = accounts.filter((account) => account.quota && !account.quota.error && account.quota.ratio >= 0);
+    const quotaAvg = quotaRead.length > 0
+      ? quotaRead.reduce((sum, account) => sum + (account.quota?.ratio ?? 0), 0) / quotaRead.length
+      : null;
+    dims.push({
+      key: 'quota',
+      name: '额度余量',
+      percent: quotaAvg === null ? null : clampPercent(quotaAvg * 100),
+      value: quotaAvg === null ? '' : `均值 ${pct(quotaAvg * 100)}`,
+      note: quotaAvg === null ? '没有可用的额度读数' : `读数 ${quotaRead.length}/${accounts.length}`,
+      tone: 'amber',
+      formula: '有额度读数的账号的剩余比例均值；读数失败（error）与不可用（ratio<0）不计入',
+    });
+
+    // 5) 告警健康：当前活跃告警里 P0 越多越差；P0 每条扣 40 分，封底 0。
+    const firing = overview.firing;
+    dims.push({
+      key: 'alerts',
+      name: '告警健康',
+      percent: firing.total > 0 ? clampPercent(100 - firing.p0 * 40) : firing.total === 0 ? 100 : null,
+      value: firing.total > 0 ? `${firing.total} 条活跃` : '',
+      note: firing.total > 0 ? `P0 ${firing.p0} · P1 ${firing.p1} · P2 ${firing.p2}` : '当前没有进行中的告警',
+      tone: firing.p0 > 0 ? 'red' : firing.total > 0 ? 'amber' : 'green',
+      formula: '100 − P0 条数 × 40（封底 0）；P1/P2 在副注里列出，不参与扣分',
+    });
+
+    return dims;
+  }, [overview, accounts, now]);
+
+  // 综合分 = 有数据维度的均值；无数据维度不参与，免得把「不知道」算成低分。
+  const scored = radarDims.filter((dim) => dim.percent !== null);
+  const radarScore = scored.length > 0 ? scored.reduce((sum, dim) => sum + (dim.percent ?? 0), 0) / scored.length : null;
+
+  // ── 延迟分布：接口只有 P95，没有逐请求直方图。所以只报「P95 落在哪一档」，
+  //    不给每一档编造次数 / 占比（那样各档加起来对不上总数）。 ──
+  const spectrum = useMemo(() => {
+    if (!req || req.total <= 0 || !(req.p95LatencyMs > 0)) return null;
+    const p95 = req.p95LatencyMs;
+    const index = LATENCY_BANDS.findIndex((band, i) => p95 <= band.max && (i === 0 || p95 > LATENCY_BANDS[i - 1].max));
+    const band = LATENCY_BANDS[index >= 0 ? index : LATENCY_BANDS.length - 1];
+    return { p95, band, index };
+  }, [req]);
+
+  const latest = events[0];
+  const latestStamp = latest ? displayTimeCompact(displayTime(latest.time, timezone).text) : '—';
+  const collectorStamp = overview && hasTime(overview.collectorLastSuccess) ? displayTime(overview.collectorLastSuccess, timezone) : null;
+  const latestPairs = latest ? detailPairs(latest.detail, 5).map(([key, value]) => `${key}=${value}`).join(' · ') : '';
 
   return (
-    <div className="card panel">
+    <div className="card panel mon-overview">
       <div className="panel-header">
         <div>
           <h2 className="panel-title">{'监控中心概览'}</h2>
           <p className="panel-desc">
-            {`窗口 ${overview ? overview.windowHours : 24} 小时 · 采集器心跳 ${
-              overview ? displayTime(overview.collectorLastSuccess, timezone).text : '等待采集'
-            }`}
+            {`窗口 ${overview ? overview.windowHours : 24} 小时 · 采集器心跳 ${collectorStamp ? collectorStamp.text : '还没有成功采样'}`}
           </p>
+          <p className="panel-desc mon-overview-note" title={OVERVIEW_NOTE_TITLE}>{'雷达与延迟分布均由现有接口换算'}</p>
         </div>
         <div className="panel-header-actions">
           <button className="btn btn-sm" onClick={onRetry} disabled={loading}>
@@ -132,75 +385,159 @@ export function OverviewTab(props: OverviewTabProps) {
         </div>
       )}
 
-      {/* 量卡：与「用量统计」指标卡同一套语言（标签 + 大数字 + 副注），四卡一行。 */}
-      <div className="grid-4 monitor-metric-row">
-        <div className="card metric modern-metric-card">
-          <div className="metric-header-row">
-            <span className="metric-label">{'账号'}</span>
-            {overview && overview.accounts.subscribed > 0 && (
-              <span className="metric-badge badge-blue">{`订阅 ${overview.accounts.subscribed}`}</span>
-            )}
+      {/* 四张量卡：标签 + 图标 / 超大数字 + 小单位 + 胶囊 / 一行副注。
+          契约 §5：「没有数据」不许渲染成 0% / 0 次 / ¥0——请求三项在窗口内零请求时
+          统一显示「—」并写明原因，否则会被读成链路全挂。 */}
+      <div className="grid-4 mon-meta-row">
+        <MetaCard
+          label={'可用账号'}
+          icon={<Glyph d={GLYPH.account} />}
+          tone={overview && overview.accounts.unavailable > 0 ? 'amber' : 'green'}
+          value={overview ? String(usable) : '—'}
+          unit={overview ? `/ ${overview.accounts.total}` : undefined}
+          chip={overview && overview.accounts.total > 0 ? `${pct((usable / overview.accounts.total) * 100)} 可用` : undefined}
+          chipTone={overview && overview.accounts.unavailable > 0 ? 'amber' : 'green'}
+          note={overview ? `异常 ${overview.accounts.unavailable} · 停用 ${overview.accounts.disabled}` : '等待采集'}
+          noteRight={overview && overview.accounts.subscribed > 0 ? `订阅 ${overview.accounts.subscribed}` : undefined}
+        />
+        <MetaCard
+          label={`${overview ? overview.windowHours : 24}h 成功率`}
+          icon={<Glyph d={GLYPH.success} />}
+          tone={'accent'}
+          value={req && req.total > 0 ? formatRatio(req.successRate) : '—'}
+          chip={req && req.total > 0 && req.p95LatencyMs > 0 ? `P95 ${formatLatency(req.p95LatencyMs)}` : undefined}
+          chipTone={'blue'}
+          note={req ? (req.total > 0 ? `${req.total.toLocaleString()} 条 · 成功 ${req.success.toLocaleString()}` : '该窗口内没有请求') : '等待采集'}
+        />
+        <MetaCard
+          label={'活跃告警'}
+          icon={<Glyph d={GLYPH.alert} />}
+          tone={overview && overview.firing.p0 > 0 ? 'red' : overview && overview.firing.total > 0 ? 'amber' : 'green'}
+          value={overview ? String(overview.firing.total) : '—'}
+          chip={overview && overview.firing.p0 + overview.firing.p1 > 0 ? '需处理' : undefined}
+          chipTone={'red'}
+          note={overview ? `P0 ${overview.firing.p0} · P1 ${overview.firing.p1} · P2 ${overview.firing.p2}` : '等待采集'}
+          noteRight={overview ? `渠道 ${overview.channels.enabled}/${overview.channels.total}` : undefined}
+        />
+        <MetaCard
+          label={`${overview ? overview.windowHours : 24}h 成本`}
+          icon={<Glyph d={GLYPH.cost} />}
+          tone={'blue'}
+          /* 没有价格行时绝不能显示 $0.00：那看起来像"免费模型"，实际是"没计价"。 */
+          value={req && req.priced > 0 ? formatCostMicros(req.costMicros) : '—'}
+          chip={req && req.priced > 0 ? `计价 ${pct((req.priced / Math.max(1, req.total)) * 100)}` : undefined}
+          chipTone={'green'}
+          note={
+            req
+              ? req.total === 0
+                ? '该窗口内没有请求'
+                : req.priced > 0
+                  ? `计价覆盖 ${req.priced.toLocaleString()}/${req.total.toLocaleString()}`
+                  : '这些模型还没有价格行'
+              : '等待采集'
+          }
+        />
+      </div>
+
+      {/* 雷达（五维评分）+ 延迟分布。两卡用 subgrid 共享轨道：卡片高度跟随内容多的那张，
+          不固定撑满；某张卡内容少时，它的脚注贴底，中间留白而不是把行拉长。 */}
+      <div className="mon-duo">
+        <div className="card mon-duo-card">
+          <div className="mon-card-head">
+            <span className="mon-card-title">{'集群健康雷达'}</span>
+            {radarScore !== null && <span className="mon-score">{`综合 ${radarScore.toFixed(1)}/100`}</span>}
           </div>
-          <div className="metric-main-row">
-            <div className="metric-value">{overview ? `${usable}/${overview.accounts.total}` : '—'}</div>
-          </div>
-          <div className="metric-note">
-            {overview
-              ? `可用 ${usable} · 异常 ${overview.accounts.unavailable} · 停用 ${overview.accounts.disabled}`
-              : '等待采集'}
-          </div>
-        </div>
-        <div className="card metric modern-metric-card">
-          <div className="metric-header-row">
-            <span className="metric-label">{'活跃告警'}</span>
-            {overview && overview.firing.p0 > 0 && <span className="metric-badge badge-red">{'需要处理'}</span>}
-          </div>
-          <div className="metric-main-row">
-            <div className={`metric-value ${overview && overview.firing.p0 > 0 ? 'err' : ''}`}>
-              {overview ? String(overview.firing.total) : '—'}
+          {radarDims.length === 0 && (
+            <div className="mon-dims-empty">
+              <span className="mon-dims-empty-title">{'暂无可评估的维度'}</span>
+              <span>{'接口没有可换算的数据时这里整段留空，不用 0% 的进度条充数。'}</span>
             </div>
+          )}
+          <div className="mon-dim-list">
+            {radarDims.map((dim) => (
+              <div className={`mon-dim${dim.percent === null ? ' is-empty' : ''}`} key={dim.key}>
+                <div className="mon-dim-top">
+                  <span className="mon-dim-name" title={dim.formula}>{dim.name}</span>
+                  {dim.percent === null ? (
+                    <span className="mon-dim-empty-tag" title={dim.formula}>{'无数据'}</span>
+                  ) : (
+                    <span className="mon-dim-right">
+                      <span className="mon-dim-value">{dim.value}</span>
+                      <span className={`mon-dim-pct ${dim.tone}`}>{pct(dim.percent)}</span>
+                    </span>
+                  )}
+                </div>
+                {dim.percent === null ? (
+                  // 无数据不画进度条：一条 0% 的空槽会被读成「这项就是 0 分」。
+                  <div className="mon-dim-empty-note">{dim.note}</div>
+                ) : (
+                  <>
+                    <div className="mon-bar" role="presentation">
+                      <span className={`mon-bar-fill ${dim.tone}`} style={{ width: `${dim.percent}%` }} />
+                    </div>
+                    <div className="mon-dim-note">{dim.note}</div>
+                  </>
+                )}
+              </div>
+            ))}
           </div>
-          <div className="metric-note">
-            {overview
-              ? `P0 ${overview.firing.p0} · P1 ${overview.firing.p1} · P2 提醒 ${overview.firing.p2}（不推送）`
-              : '等待采集'}
+          <div className="mon-card-foot">
+            <span>{'综合分 = 有数据维度的均值；无数据维度不参与'}</span>
           </div>
         </div>
-        <div className="card metric modern-metric-card">
-          <div className="metric-header-row">
-            <span className="metric-label">{'24h 成功率'}</span>
+
+        <div className="card mon-duo-card">
+          <div className="mon-card-head">
+            <span className="mon-card-title">{'请求耗时分布'}</span>
+            <span className="mon-card-sub">
+              {req && req.total > 0
+                ? `24h · ${req.total.toLocaleString()} 次`
+                : req ? '该窗口内没有请求' : '等待采集'}
+            </span>
           </div>
-          <div className="metric-main-row">
-            <div className="metric-value">{overview ? formatRatio(overview.requests.successRate) : '—'}</div>
-          </div>
-          <div className="metric-note">
-            {overview
-              ? `${overview.requests.total.toLocaleString()} 条 · P95 首包 ${formatLatency(overview.requests.p95LatencyMs)}`
-              : '等待采集'}
-          </div>
-        </div>
-        <div className="card metric modern-metric-card">
-          <div className="metric-header-row">
-            <span className="metric-label">{'24h 成本'}</span>
-            {overview && overview.requests.priced === 0 && <span className="metric-badge badge-amber">{'未计价'}</span>}
-          </div>
-          <div className="metric-main-row">
-            {/* 没有价格行时绝不能显示 $0.00：那看起来像"免费模型"，实际是"没计价"。 */}
-            <div className="metric-value">
-              {overview && overview.requests.priced > 0 ? formatCostMicros(overview.requests.costMicros) : '—'}
+          {!spectrum && (
+            <div className="mon-dims-empty">
+              <span className="mon-dims-empty-title">{'该窗口内没有请求'}</span>
+              <span>{'没有请求就没有延迟样本，也没有可报告的 P95 档位。'}</span>
             </div>
-          </div>
-          <div className="metric-note">
-            {overview
-              ? overview.requests.priced > 0
-                ? `计价覆盖 ${overview.requests.priced}/${overview.requests.total}`
-                : '这些模型还没有价格行'
-              : '等待采集'}
+          )}
+          {spectrum && (
+            <>
+              {/* P95 结论单独一条：接口只有 P95，逐档次数与占比无从计算，所以不列。 */}
+              <div className="mon-band-summary">
+                <span className="mon-band-p95">{`P95 ${formatLatency(spectrum.p95)}`}</span>
+                <span className="mon-band-where">{`落在 ${spectrum.band.label} 区间`}</span>
+                <span className={`mon-dim-pct ${spectrum.band.tone}`}>{'5% 的请求 ≥ P95'}</span>
+              </div>
+              {/* 四个区间只标出 P95 落在哪一档：其余档没有任何计数，不填 0 次 / 0.0%。 */}
+              <div className="mon-bar-strip" role="img" aria-label={`P95 ${formatLatency(spectrum.p95)}，落在 ${spectrum.band.label} 区间`}>
+                {LATENCY_BANDS.map((band, index) => (
+                  <span key={band.key} className={`mon-bar-seg ${inBandTone(index, spectrum.index)}`} title={`${band.label}${index === spectrum.index ? '（P95 落点）' : ''}`} />
+                ))}
+              </div>
+              <div className="mon-band-table" role="table" aria-label="延迟区间">
+                {LATENCY_BANDS.map((band, index) => {
+                  const inBand = index === spectrum.index;
+                  return (
+                    <div className={`mon-band${inBand ? ' is-hit' : ''}`} key={band.key} role="row">
+                      <span className="mon-band-label" role="cell">
+                        <span className={`mon-dot ${inBand ? band.tone : 'muted'}`} aria-hidden />
+                        {band.label}
+                      </span>
+                      <span className="mon-band-state" role="cell">{inBand ? `P95 落点 · ${band.hint}` : '未报告'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          <div className="mon-card-foot">
+            <span>{'接口只给 P95，没有逐请求直方图；各档不报次数与占比'}</span>
           </div>
         </div>
       </div>
 
-      <div className="monitoring-cols">
+      <div className="mon-log-table">
         <div className="card panel m-col-card">
           <div className="m-panel-head">
             <div className="panel-title">{`账号健康（${ordered.length}）`}</div>
@@ -208,7 +545,7 @@ export function OverviewTab(props: OverviewTabProps) {
           </div>
           {ordered.length === 0 && <div className="m-empty">{'还没有账号。接入 Provider 后这里会出现状态矩阵。'}</div>}
           {/* 账号多时列表内部滚动：右卡同高，整页不被 26 行拉长。 */}
-          <div className="m-scroll-list">
+          <div className="m-scroll-list mon-account-list">
             {ordered.map((account) => {
               const quota = quotaText(account.quota);
               const quotaTone = account.quota?.error
@@ -225,17 +562,8 @@ export function OverviewTab(props: OverviewTabProps) {
                       <span className={`dot ${troubled ? 'err' : 'ok'}`} aria-hidden />
                       <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
                       <span className="m-acc-label" title={`${account.name}（${account.vendor || '未知厂商'}）`}>
-                        {/* 空白后的零宽断点：行宽不够时在词与词之间折行，而不是把整句挤成省略号。 */}
-                        {account.name.split(/(\s+)/).map((part, index) =>
-                          /^\s+$/.test(part) ? (
-                            <span key={index}>
-                              {part}
-                              <wbr />
-                            </span>
-                          ) : (
-                            part
-                          ),
-                        )}
+                        {/* 行宽不够时在词与词之间折行，而不是把整句挤成省略号。 */}
+                        {breakableName(account.name)}
                       </span>
                     </span>
                     {/* 续期与额度各占一行：半宽卡里横排会把「续期 24 天后」折成「剩余…」，读不出来。 */}
@@ -281,7 +609,7 @@ export function OverviewTab(props: OverviewTabProps) {
           </div>
           {alerts.length === 0 && <div className="m-empty">{'没有进行中的告警。'}</div>}
           {/* 与左卡同高、内部滚动：告警少时不留死白，多时也不把整页拉长。 */}
-          <div className="m-scroll-list">
+          <div className="m-scroll-list mon-account-list">
             {alerts.slice(0, 20).map((alert) => (
               <div className="log-row" key={alert.id}>
                 <div className="mrow mrow-alert-mini">
@@ -324,7 +652,8 @@ export function OverviewTab(props: OverviewTabProps) {
           </div>
         </div>
         {events.length === 0 && !loading && <div className="m-empty">{'这个筛选下还没有事件。'}</div>}
-        {events.slice(0, EVENT_SHOWN).map((event) => {
+        <div className="mon-log-table">
+          {events.slice(0, EVENT_SHOWN).map((event) => {
           const pairs = detailPairs(event.detail);
           const stamp = displayTime(event.time, timezone);
           return (
@@ -357,12 +686,36 @@ export function OverviewTab(props: OverviewTabProps) {
             </div>
           );
         })}
+        </div>
         {/* 拉到 20 条后先收住：概览是摘要，继续往后翻是告警页/日志页的事。 */}
         {events.length > EVENT_SHOWN && (
           <div style={{ paddingTop: 8 }}>
             <button className="btn btn-sm" onClick={onLoadMoreEvents} disabled={loading}>{'再看更多'}</button>
           </div>
         )}
+      </div>
+
+      {/* 实时状态条：最近一条事件的时间 + 等宽 payload，右侧进入事件流。 */}
+      <div className="mon-statusbar">
+        <div className="mon-statusbar-main">
+          <span className="mon-statusbar-tag">
+            <span className="live-dot" aria-hidden />
+            {'最新遥测'}
+          </span>
+          {latest ? (
+            <p className="mon-statusbar-text">
+              <span className="mon-statusbar-time">{latestStamp}</span>
+              <span className="mon-statusbar-kind">{`[${KIND_TEXT[latest.kind] ?? latest.kind}]`}</span>
+              <span className="mon-statusbar-title">{latest.title}</span>
+              {latestPairs && <span className="mon-statusbar-payload" title={latestPairs}>{`(${latestPairs})`}</span>}
+            </p>
+          ) : (
+            <p className="mon-statusbar-text">{'还没有事件。'}</p>
+          )}
+        </div>
+        <button className="btn btn-sm mon-statusbar-btn" onClick={() => onKindFilter('')}>
+          {'进入实时事件流'}
+        </button>
       </div>
     </div>
   );

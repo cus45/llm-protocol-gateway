@@ -1,11 +1,14 @@
-import {useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {BrandIcon, Modal, Switch} from '../components/ui';
 import type {MonitorProbeAccount, MonitorProbeConfig, MonitorProbeRun, MonitorProbeRunResult} from './types';
 import {normalizeProbeCase, probeCaseText, probeKindText, probeSkipText} from './types';
-import {displayTime, formatLatency, relativeToNow} from './format';
+import {displayTime, displayTimeCompact, formatLatency, relativeToNow} from './format';
 
 /** 已上线的探测种类：只有轻探测。后端对其余 kind 回 400 kind_unavailable。 */
 export const PROBE_KIND_LIGHT = 'light';
+
+/** 与 MonitoringPage 的 15 秒轮询同节奏；自动刷新关闭后记录行如实标出「数据停在哪个时刻」。 */
+const AUTO_REFRESH_MS = 15_000;
 
 export interface ProbesTabProps {
   probeAccounts: MonitorProbeAccount[];
@@ -58,6 +61,43 @@ function dailyText(account: MonitorProbeAccount): string {
   return account.maxPerDay === 0 ? `${account.usedToday} / 不限` : `${account.usedToday} / ${account.maxPerDay}`;
 }
 
+// ── 探测记录（时间轴）────────────────────────────────────────────────────
+
+/**
+ * 一个分类胶囊。计数口径与记录行的三种结果一一对应：
+ * 跳过（skipped 非空，如 quota_spent / no_model）既不算成功也不算失败。
+ */
+type RunCategory = 'all' | 'ok' | 'fail' | 'skip';
+
+/** 普通字段里的空值不显示成 `undefined` / `0`；状态 0 是传输层失败，单独写 network。 */
+function runField(value: string | number | undefined): string {
+  if (value === undefined || value === '') return '—';
+  return String(value);
+}
+
+/**
+ * 错误码的核心原因。后端把 Go 的传输层错误整段存进来（`Post "https://…": context canceled`），
+ * 整条 URL 塞进行内没有信息量：只取最后一个冒号之后的原因，完整原文留给悬停。
+ */
+function errorReason(errorCode: string): string {
+  const at = errorCode.lastIndexOf(': ');
+  const tail = at >= 0 ? errorCode.slice(at + 2).trim() : errorCode;
+  return tail || errorCode;
+}
+
+/** 一行记录等宽 payload 的原文分段，窄处按 · 逐段折行，不整块溢出。 */
+function payloadSegments(row: MonitorProbeRun): string[] {
+  const duration = row.durationMs > 0 ? `${row.durationMs}ms` : '—';
+  return [
+    `case=${runField(row.case)}`,
+    `status=${runField(row.status)}`,
+    duration,
+    row.model ? `model=${row.model}` : '',
+    row.errorCode ? `error=${errorReason(row.errorCode)}` : '',
+    row.skipped ? `skipped=${row.skipped}` : '',
+  ].filter(Boolean);
+}
+
 export function ProbesTab(props: ProbesTabProps) {
   const {
     probeAccounts, probeRuns, providerFilter, timezone, busy, error, iconOf,
@@ -68,6 +108,34 @@ export function ProbesTab(props: ProbesTabProps) {
     probeAccounts.find((item) => item.providerId === providerId)?.name || providerId;
 
   const [runError, setRunError] = useState('');
+  const [category, setCategory] = useState<RunCategory>('all');
+  const [search, setSearch] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  // 上一轮记录与取到它的时刻：自动刷新关掉后，头部必须说清楚「数据停在哪」。
+  const lastSeenRef = useRef('');
+  // 打开页面时不一定跑过轮询：首帧就把「上次读取」标出来，不留悬空状态。
+  const [fetchedAt, setFetchedAt] = useState(Date.now());
+
+  useEffect(() => {
+    const newest = probeRuns.reduce((best, row) => (row.time > best ? row.time : best), '');
+    if (newest !== lastSeenRef.current) {
+      lastSeenRef.current = newest;
+    }
+    setFetchedAt(Date.now());
+  }, [probeRuns]);
+
+  useEffect(() => {
+    if (!autoRefresh || document.hidden) return;
+    const timer = window.setInterval(() => onRefreshRuns(), AUTO_REFRESH_MS);
+    const onVisible = () => {
+      if (!document.hidden) onRefreshRuns();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [autoRefresh, onRefreshRuns]);
 
   const run = (providerId: string) => {
     setRunError('');
@@ -92,6 +160,39 @@ export function ProbesTab(props: ProbesTabProps) {
   // 调用方（MonitoringPage）已过滤掉「账号已不在账号列表里」的结果，这里不再二次判断（审查 O4）。
   const shownResult = probeResult;
 
+  // 分类计数按「筛选账号之后」的记录算：胶囊上的 N 必须等于点进去看得到的行数。
+  const countOf = (cat: RunCategory) => {
+    if (cat === 'all') return filteredRuns.length;
+    return filteredRuns.filter((row) => {
+      if (cat === 'skip') return !!row.skipped;
+      if (cat === 'ok') return !row.skipped && row.ok;
+      return !row.skipped && !row.ok;
+    }).length;
+  };
+  const CATEGORIES: Array<{ id: RunCategory; label: string; tone: string }> = [
+    { id: 'all', label: '全部', tone: 'all' },
+    { id: 'ok', label: '成功', tone: 'ok' },
+    { id: 'fail', label: '失败', tone: 'err' },
+    { id: 'skip', label: '跳过', tone: 'skip' },
+  ];
+  const keyword = search.trim().toLowerCase();
+  /** 搜索同时匹配账号名与错误码（API 里的 errorCode 原样参与匹配，显示也原样）。 */
+  const matchesSearch = (row: MonitorProbeRun) => {
+    if (!keyword) return true;
+    const name = nameOf(row.providerId).toLowerCase();
+    return name.includes(keyword) || (row.errorCode ?? '').toLowerCase().includes(keyword);
+  };
+  const shownRuns = filteredRuns.filter((row) => {
+    if (category === 'skip') return !!row.skipped;
+    if (category === 'ok') return !row.skipped && row.ok;
+    if (category === 'fail') return !row.skipped && !row.ok;
+    return true;
+  }).filter(matchesSearch);
+
+  const newestStamp = [...probeRuns].reduce((best, row) => (row.time > best ? row.time : best), '');
+  const lastRunStamp = newestStamp ? displayTime(newestStamp, timezone) : null;
+  const autoRefreshHidden = !autoRefresh || document.hidden;
+
   return (
     <div className="card panel">
       <div className="panel-header">
@@ -106,7 +207,122 @@ export function ProbesTab(props: ProbesTabProps) {
       {error && <div className="metric-value err">{error}</div>}
       {runError && <div className="metric-value err">{runError}</div>}
 
-      <div className="panel-title">{'账号'}</div>
+      {/* ① 控制条：轮询而非流式，所以读数是「刷新状态 + 手动刷新 + 自动刷新」，不是暂停/倍速。 */}
+      <div className="mon-probe-bar">
+        <div className="mon-probe-bar-main">
+          <div className={`mon-probe-live ${autoRefreshHidden ? 'paused' : ''}`}>
+            {autoRefreshHidden ? <span className="mon-probe-ind" aria-hidden /> : <i className="live-dot" aria-hidden />}
+            <span className="mon-probe-live-text">{autoRefresh ? '轮询中' : '已暂停轮询'}</span>
+            <span className="mon-probe-rate">{autoRefresh ? `${AUTO_REFRESH_MS / 1000}s/次` : '手动'}</span>
+          </div>
+          <span className="mon-probe-meta" title="浏览器最近一次取回探测数据的时刻">
+            {`上次读取 ${displayTime(new Date(fetchedAt).toISOString(), timezone).text}`}
+          </span>
+          <span className="mon-probe-meta" title={lastRunStamp?.title ?? '还没有探测记录'}>
+            {lastRunStamp ? `最新记录 ${lastRunStamp.text}` : '最新记录 —'}
+          </span>
+        </div>
+        <div className="mon-probe-bar-actions">
+          <Switch checked={autoRefresh} label="自动刷新" onChange={setAutoRefresh} />
+          <button className="btn btn-sm" onClick={() => onRefreshRuns()}>{'手动刷新'}</button>
+        </div>
+      </div>
+
+      {/* ② 分类胶囊：计数来自本轮 /__monitor/probes 的 runs（已按账号筛选）。 */}
+      <div className="mon-chips" role="group" aria-label="按结果筛选">
+        {CATEGORIES.map((item) => {
+          const active = category === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`mon-chip mon-chip-${item.tone}${active ? ' on' : ''}`}
+              aria-pressed={active}
+              onClick={() => setCategory(item.id)}
+            >
+              <span className="mon-chip-label">{item.label}</span>
+              <span className="mon-chip-count">{countOf(item.id)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ③ 搜索：账号名 / 错误码。 */}
+      <div className="mon-probe-search">
+        <input
+          className="monitoring-input"
+          type="search"
+          placeholder="搜索账号名 / 错误码"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          aria-label="按账号名或错误码搜索探测记录"
+        />
+        {providerFilter && (
+          <button className="btn btn-sm" onClick={() => onFilter('')}>{'查看全部账号'}</button>
+        )}
+      </div>
+
+      {/* ④ 时间轴：竖线 + 按结果着色的圆点，每条下方一行等宽 payload。 */}
+      <div className="mon-timeline">
+        {shownRuns.length === 0 && (
+          <div className="m-empty">
+            {filteredRuns.length === 0
+              ? providerFilter ? `${nameOf(providerFilter)} 还没有探测记录。` : '还没有探测记录，可以点「立即探测」发一发。'
+              : '没有符合筛选条件的记录。'}
+          </div>
+        )}
+        {shownRuns.map((row, index) => {
+          const skipped = probeSkipText(row.skipped);
+          // 跳过原因是给人看的结论：有中文释义就只显示释义，原始 key 留在 payload 的 skipped= 里。
+          const skipReason = !row.skipped ? ''
+            : /^已跳过（/.test(skipped) ? `本次探测跳过，原因代码 ${row.skipped}` : skipped;
+          const tone = skipped ? 'skip' : row.ok ? 'ok' : 'err';
+          const stamp = displayTime(row.time, timezone);
+          // 徽标只说「结果」，原因永远不挤进徽标（否则看不出哪段是状态、哪段是原因）。
+          const verdict = skipped ? '跳过' : row.ok ? '成功' : '失败';
+          const reason = !skipped && !row.ok
+            ? row.errorCode ? errorReason(row.errorCode) : row.status === 0 ? '网络不可达' : ''
+            : '';
+          return (
+            <div className={`mon-tl-item ${tone}`} key={`${row.time}-${row.case}-${index}`}>
+              <div className="mon-tl-head">
+                {/* 时区在页头写着，行内只留日期时间；完整值与本地时间在悬停里。 */}
+                <span className="mon-tl-time" title={stamp.title}>{displayTimeCompact(stamp.text)}</span>
+                <span className={`mon-tl-verdict ${tone}`}>{verdict}</span>
+                <span className="mon-tl-kind">{probeKindText(row.kind)}</span>
+                <span className="mon-tl-title">{probeCaseText(row.case)}</span>
+                <button
+                  type="button"
+                  className="mon-tl-account"
+                  onClick={() => onFilter(row.providerId)}
+                  title={providerFilter ? `只看 ${nameOf(row.providerId)} 的记录（已筛选）` : `只看 ${nameOf(row.providerId)} 的记录`}
+                >
+                  <BrandIcon icon={iconOf?.(row.providerId)} name={nameOf(row.providerId)} size={14} />
+                  <span className="mon-tl-account-name">{nameOf(row.providerId)}</span>
+                </button>
+              </div>
+              {skipped && <div className="mon-tl-skip">{skipReason}</div>}
+              {reason && <div className="mon-tl-reason" title={row.errorCode}>{reason}</div>}
+              <div className="mon-tl-payload">
+                <span className="mon-tl-prompt" aria-hidden>&gt;</span>
+                <span className="mon-tl-segs">
+                  {payloadSegments(row).map((segment) => (
+                    <span
+                      className={`mon-tl-seg${segment.startsWith('error=') ? ' err' : ''}`}
+                      key={segment}
+                      title={segment.startsWith('error=') ? row.errorCode : undefined}
+                    >
+                      {segment}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mon-section-title">{'账号探测现状'}</div>
       {ordered.length === 0 && <div className="muted-text">{'还没有账号。接入 Provider 后这里会出现探测矩阵。'}</div>}
       {ordered.map((account) => {
         const outcome = outcomeOf(account);
@@ -128,10 +344,18 @@ export function ProbesTab(props: ProbesTabProps) {
                 </span>
                 {outcome.skip && <span className="muted-text">{` · ${outcome.skip}`}</span>}
               </span>
-              <span className="m-clip" title={account.probed ? `最近一次成功执行：${lastStamp.title}` : '还没有可判定的探测'}>
-                {account.probed ? `${lastStamp.text}（${relativeToNow(account.lastProbeAt, now)}）` : '—'}
+              {/* 上次时间同样有长短两档：窄处去掉时区后缀，整句（含相对时间）不被省略号截断。 */}
+              <span className="mon-pa-last" title={account.probed ? `最近一次成功执行：${lastStamp.title}` : '还没有可判定的探测'}>
+                {account.probed ? (
+                  <>
+                    <span className="mon-pa-last-time">
+                      {displayTimeCompact(lastStamp.text)}
+                    </span>
+                    {`（${relativeToNow(account.lastProbeAt, now)}）`}
+                  </>
+                ) : '—'}
               </span>
-              <span className="muted-text" title={account.maxPerDay === 0 ? '当日次数不限' : '当日已探测次数 / 每日上限'}>
+              <span className="mon-pa-daily" title={account.maxPerDay === 0 ? '当日次数不限' : '当日已探测次数 / 每日上限'}>
                 {`今日 ${dailyText(account)}`}
               </span>
               <span className="m-row-num" title="最近一发探测的上游 HTTP 状态；0 表示传输层失败">
@@ -152,53 +376,6 @@ export function ProbesTab(props: ProbesTabProps) {
           </div>
         );
       })}
-
-      <div className="card" style={{ marginTop: 12 }}>
-        <div className="panel-header">
-          <div className="panel-title">{`最近探测记录（${filteredRuns.length}）`}</div>
-          {providerFilter && (
-            <div className="panel-header-actions">
-              <button className="btn btn-sm" onClick={() => onFilter('')}>{`查看全部账号（当前：${nameOf(providerFilter)}）`}</button>
-            </div>
-          )}
-        </div>
-        {filteredRuns.length === 0 && (
-          <div className="muted-text">
-            {providerFilter ? `${nameOf(providerFilter)} 还没有探测记录。` : '还没有探测记录，可以点「立即探测」发一发。'}
-          </div>
-        )}
-        {filteredRuns.map((row, index) => {
-          const skipped = probeSkipText(row.skipped);
-          const stamp = displayTime(row.time, timezone);
-          return (
-            <div className="log-row" key={`${row.time}-${row.case}-${index}`}>
-              <div className="mrow mrow-probe-run">
-                <span className="muted-text m-clip" title={stamp.title}>{stamp.text}</span>
-                <span>
-                  {!providerFilter && (
-                    <button
-                      className="status-pill-btn m-row-link"
-                      onClick={() => onFilter(row.providerId)}
-                      title={row.providerId}
-                    >
-                      {nameOf(row.providerId)}
-                    </button>
-                  )}
-                </span>
-                <span className="muted-text">{probeKindText(row.kind)}</span>
-                <span className="m-clip">{probeCaseText(row.case)}</span>
-                <span className="m-row-num">{statusCodeText(row.status)}</span>
-                <span className={`m-clip ${skipped ? 'muted-text' : row.ok ? '' : 'err'}`}>
-                  {skipped || (row.ok ? '通过' : row.status === 0 && row.errorCode === 'network' ? '失败 · 网络不可达' : '失败')}
-                </span>
-                <span className="muted-text">{formatLatency(row.durationMs)}</span>
-                <span className="muted-text m-clip" title={row.model || ''}>{row.model || '—'}</span>
-                <span className="muted-text m-clip" title={row.errorCode || ''}>{row.errorCode || '—'}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
 
       {shownResult && (
         <Modal

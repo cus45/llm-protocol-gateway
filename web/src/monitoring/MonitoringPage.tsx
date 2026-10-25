@@ -1,4 +1,8 @@
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import type {ReactNode} from 'react';
+import {NavIcon} from '../components/ui';
+import {navPathForID} from '../lib';
+import type {NavItemID} from '../types';
 import {
     acknowledgeAlert,
     createChannel,
@@ -12,6 +16,7 @@ import {
     fetchOverview,
     fetchProbeConfig,
     fetchProbes,
+    fetchRules,
     ignoreAlert,
     MonitorAPIError,
     refreshQuota,
@@ -31,14 +36,19 @@ import type {
     MonitorChannelView,
     MonitorDispatchConfig,
     MonitorEvent,
+    MonitorEventKind,
     MonitorOverview,
     MonitorProbeAccount,
     MonitorProbeConfig,
     MonitorProbeRun,
     MonitorProbeRunResult,
+    MonitorRule,
     MonitorSeverity,
 } from './types';
+import {hasTime} from './types';
+import {displayTime} from './format';
 import {AccountsTab} from './AccountsTab';
+import type {AccountsProbeView} from './AccountsTab';
 import {AlertsTab} from './AlertsTab';
 import {OverviewTab} from './OverviewTab';
 import {PROBE_KIND_LIGHT, ProbesTab} from './ProbesTab';
@@ -46,15 +56,72 @@ import {RulesTab} from './RulesTab';
 import {SettingsTab} from './SettingsTab';
 
 type TabID = 'overview' | 'accounts' | 'alerts' | 'probes' | 'rules' | 'settings';
+/** 页签图标直接借侧边栏那套 16px 线性 SVG（NavIcon），不再另拉一套图标库。 */
+type TabIconID = 'monitoring' | 'input-providers' | 'quota-keeper' | 'traffic-tokens' | 'output-providers' | 'settings';
 
-const TABS: Array<{ id: TabID; label: string }> = [
-  { id: 'overview', label: '概览' },
-  { id: 'accounts', label: '账号' },
-  { id: 'alerts', label: '告警' },
-  { id: 'probes', label: '探测' },
-  { id: 'rules', label: '规则' },
-  { id: 'settings', label: '设置' },
+const TABS: Array<{ id: TabID; label: string; icon: TabIconID }> = [
+  { id: 'overview', label: '概览', icon: 'monitoring' },
+  { id: 'accounts', label: '账号', icon: 'input-providers' },
+  { id: 'alerts', label: '告警', icon: 'quota-keeper' },
+  { id: 'probes', label: '探测', icon: 'traffic-tokens' },
+  { id: 'rules', label: '规则', icon: 'output-providers' },
+  { id: 'settings', label: '设置', icon: 'settings' },
 ];
+
+type BadgeTone = 'plain' | 'amber' | 'live' | 'paused';
+
+/** 页签徽标：普通灰 / 告警 amber / 探测实时（绿点脉冲）与暂停。 */
+function TabBadge({ tone, children }: { tone: BadgeTone; children: ReactNode }) {
+  if (tone === 'live' || tone === 'paused') {
+    return (
+      <span className={`mon-tab-badge mon-tab-badge-${tone}`}>
+        <span className="mon-tab-badge-dot" aria-hidden="true" />
+        {children}
+      </span>
+    );
+  }
+  return <span className={`mon-tab-badge${tone === 'amber' ? ' mon-tab-badge-amber' : ''}`}>{children}</span>;
+}
+
+/**
+ * 顶栏的动作按钮图标（与 NavIcon 同一条 24 网格、1.7 描边），补的只是侧边栏没有的
+ * 刷新 / 续期 / 密钥三枚。
+ */
+function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
+  const common = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.9,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+  };
+  if (id === 'key') {
+    return (
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+        <circle cx="8" cy="12" r="4.2" />
+        <path d="M12.2 12H21M17.5 12v3M20.8 12v2.2" />
+      </svg>
+    );
+  }
+  if (id === 'renew') {
+    // 续期：环形箭头 + 下方延长线，和「刷新」区分开。
+    return (
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+        <path d="M19.5 12a7.5 7.5 0 1 1-2.6-5.7" />
+        <path d="M19.8 3.6v4.2h-4.2" />
+        <path d="M12 15.5V9.5M9.6 11.9 12 9.5l2.4 2.4" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+      <path d="M19.6 8.2a8 8 0 0 0-13.8-2.6L3.6 7.8" />
+      <path d="M3.8 3.9v4h4" />
+      <path d="M4.4 15.8a8 8 0 0 0 13.8 2.6l2.2-2.2" />
+      <path d="M20.2 20.1v-4h-4" />
+    </svg>
+  );
+}
 
 const POLL_MS = 15_000;
 /**
@@ -62,6 +129,8 @@ const POLL_MS = 15_000;
  * 这个节拍只比轮询密，别让它比探测本身先停。
  */
 const PROBE_POLL_MS = 3_000;
+/** 账号卡片点阵保留的探测发数（与 /__monitor/probes 单次返回的 50 发上限配套）。 */
+const ACCOUNT_DOT_WINDOW = 10;
 const EVENT_PAGE = 30;
 const ALERT_PAGE = 50;
 
@@ -128,6 +197,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   // 抽屉里的动作要就地给反馈：账号页在 Modal 打开时，面板顶部的错误行会被抽屉挡住。
   const [drawerNote, setDrawerNote] = useState('');
   const [drawerError, setDrawerError] = useState('');
+  // 顶栏副标题与「规则」页签徽标要的是全量口径：告警列表可能被状态/级别筛选过，不能拿来数。
+  const [rules, setRules] = useState<MonitorRule[]>([]);
+  const [lastLoadedAt, setLastLoadedAt] = useState('');
 
   const generation = useRef(0);
   const timezone = dispatch?.timezone || 'Asia/Shanghai';
@@ -161,7 +233,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         if (reason instanceof MonitorAPIError && (reason.status === 401 || reason.status === 403)) throw reason;
         return null;
       });
-      const [nextOverview, nextAccounts, nextAlerts, nextEvents, nextChannels, nextDispatch, nextProbes] = await Promise.all([
+      const [nextOverview, nextAccounts, nextAlerts, nextEvents, nextChannels, nextDispatch, nextProbes, nextRules] = await Promise.all([
         fetchOverview(),
         fetchAccounts(),
         fetchAlerts({
@@ -180,6 +252,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         tab === 'settings' || tab === 'alerts' ? fetchChannels() : Promise.resolve(null),
         dispatch ? Promise.resolve(null) : fetchDispatch(),
         probesPromise,
+        // 规则表只给顶栏副标题和页签计数用；读失败不影响页面，等下一轮再试。
+        fetchRules().catch(() => null),
       ]);
       if (mine !== generation.current) return;
       setOverview(nextOverview);
@@ -195,6 +269,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         setProbeRuns(nextProbes.runs);
         setProbeConfig(nextProbes.config);
       }
+      if (nextRules) setRules(nextRules);
+      setLastLoadedAt(nextOverview.generatedAt);
       setError('');
     } catch (reason) {
       if (mine !== generation.current) return;
@@ -272,6 +348,42 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     },
     [loadVisible],
   );
+
+  /**
+   * 账号页的探测点阵：账号现状（consecutiveFailures 等）来自 `/__monitor/probes` 的 accounts，
+   * 点阵与耗时来自同一响应的 runs（按时间新→旧）。接口一次只回最近 50 发、且是全部账号混排，
+   * 所以点阵显示的是「窗口里实际有记录的发数」，不足 ACCOUNT_DOT_WINDOW 时右侧补灰点，
+   * 不拿空位冒充成功；跳过（skipped）的探测不是结论，不进点阵。
+   */
+  const accountProbeView = useMemo<AccountsProbeView>(() => {
+    const runsByAccount = new Map<string, MonitorProbeRun[]>();
+    for (const run of probeRuns) {
+      if (run.skipped) continue;
+      const list = runsByAccount.get(run.providerId);
+      if (list) list.push(run);
+      else runsByAccount.set(run.providerId, [run]);
+    }
+    const accountsById = new Map(probeAccounts.map((item) => [item.providerId, item]));
+    return {
+      windowSize: ACCOUNT_DOT_WINDOW,
+      factsOf: (providerId: string) => {
+        const account = accountsById.get(providerId);
+        // 后端按时间倒序返回；这里再排一次，避免将来换排序时点阵左右颠倒。
+        const runs = [...(runsByAccount.get(providerId) ?? [])].sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+        return {
+          probed: !!account?.probed,
+          consecutiveFailures: account?.consecutiveFailures ?? 0,
+          lastProbeAt: account?.lastProbeAt,
+          lastStatus: account?.lastStatus,
+          recent: runs.slice(0, ACCOUNT_DOT_WINDOW).map((run) => run.ok),
+          usedToday: account?.usedToday ?? 0,
+          maxPerDay: account?.maxPerDay ?? 0,
+          // RTT 只认真正跑过的一发：durationMs=0 是「没计时」，显示成 0ms 会被当成极快。
+          rttMs: runs[0] && runs[0].durationMs > 0 ? runs[0].durationMs : undefined,
+        };
+      },
+    };
+  }, [probeAccounts, probeRuns]);
 
   const alertCountOf = useCallback(
     (providerId: string) => alerts.filter((alert) => alert.targetId === providerId && alert.status === 'firing').length,
@@ -372,29 +484,122 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       .catch(() => setError('告警加载失败'));
   };
 
+  const selectTab = (next: TabID) =>
+    goTab(next, (next === 'accounts' || next === 'probes') && selectedAccount ? { account: selectedAccount } : {});
+
+  // 顶栏与页签徽标的统计口径：全部来自概览/账号/规则接口，不受告警页筛选影响。
+  const accountTotal = overview?.accounts.total ?? accounts.length;
+  const unavailableCount = accounts.filter((item) => item.healthStatus === 'unavailable').length;
+  const p0Count = overview?.firing.p0 ?? alerts.filter((alert) => alert.status === 'firing' && alert.severity === 'p0').length;
+  const firingCount = overview?.firing.total ?? alerts.filter((alert) => alert.status === 'firing').length;
+  const ruleTotal = rules.length;
+  const rulesEnabled = rules.filter((rule) => rule.enabled).length;
+  const liveProbes = probeAccounts.reduce((sum, item) => sum + item.usedToday, 0);
+  const loadedAt = lastLoadedAt ? displayTime(lastLoadedAt, timezone).text : '';
+
+  // 状态胶囊：采集器读不到 / 实时数据读失败 = 异常；采集器成功时间过期 = 告警；
+  // 其余按 P0 严重告警切换「运行中 / 需要关注」。
+  const collector = collectorState(overview?.collectorLastSuccess);
+  const chainState =
+    error || collector === 'down'
+      ? { tone: 'danger' as const, text: error ? '监控链路数据读取失败' : '监控采集器已停止上报' }
+      : collector === 'stale'
+        ? { tone: 'warn' as const, text: '监控采集器数据滞后' }
+        : p0Count > 0
+          ? { tone: 'warn' as const, text: `监控链路运行中 · ${p0Count} 条 P0 告警` }
+          : { tone: 'ok' as const, text: '监控链路运行中' };
+
+  // 徽标：探测页看「有没有实时数据在来」，规则看已启用条数，告警只看未处理。
+  const probeStale = !overview || !hasTime(overview.collectorLastSuccess) || Date.now() - Date.parse(overview.collectorLastSuccess) > STALE_MS;
+  const badges: Record<TabID, { tone: BadgeTone; text: string } | null> = {
+    overview: null,
+    accounts: { tone: 'plain', text: `${accountTotal} 节点` },
+    alerts: firingCount > 0 ? { tone: 'amber', text: String(firingCount) } : null,
+    probes: probeStale ? { tone: 'paused', text: 'PAUSED' } : { tone: 'live', text: 'LIVE' },
+    rules: ruleTotal > 0 ? { tone: 'plain', text: `${rulesEnabled} 条` } : null,
+    settings: null,
+  };
+
   return (
     <div className="monitoring-page">
-      {/* 页签与「用量统计」同构（同一套 .usage-page-tabs 视觉），不再用胶囊按钮当导航。 */}
-      <div className="usage-page-tabs monitoring-tabs" role="tablist" aria-label="监控中心">
-        {TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === item.id}
-            aria-current={tab === item.id ? 'page' : undefined}
-            className={tab === item.id ? 'active' : ''}
-            onClick={() =>
-              goTab(item.id, (item.id === 'accounts' || item.id === 'probes') && selectedAccount ? { account: selectedAccount } : {})
-            }
-          >
-            <span>{item.label}</span>
-          </button>
-        ))}
-        <span className="page-tabs-status muted-text" aria-live="polite">
-          {loading ? <><i className="live-dot" aria-hidden="true" />{'刷新中…'}</> : ''}
-        </span>
+      {/* 1. 顶栏：徽章 + 标题 + 实时副标题 ｜ 状态胶囊 ｜ 动作按钮组；与页签栏用 1px 边框分隔。 */}
+      <header className="mon-header">
+        <div className="mon-header-id">
+          <span className="mon-header-badge" aria-hidden="true">
+            <NavIcon id="monitoring" />
+          </span>
+          <div className="mon-header-text">
+            <div className="mon-header-headline">
+              <h1 className="mon-header-title">协议网关监控中心</h1>
+              <span className="mon-header-sync">
+                <i className="live-dot" aria-hidden="true" />
+                {loading ? '同步中…' : loadedAt ? `${loadedAt} 同步` : '等待首轮同步'}
+              </span>
+            </div>
+            <p className="mon-header-sub">
+              <span>可用账号 {accountTotal - unavailableCount}/{accountTotal}</span>
+              <span className="mon-dot" aria-hidden="true">·</span>
+              <span>未处理告警 {firingCount}</span>
+              <span className="mon-dot" aria-hidden="true">·</span>
+              <span>{rulesEnabled}/{ruleTotal} 条规则已启用</span>
+            </p>
+          </div>
+        </div>
+        <div className="mon-header-actions">
+          <span className={`mon-chain mon-chain-${chainState.tone}`} role="status" aria-live="polite">
+            <i className="mon-chain-dot" aria-hidden="true" />
+            <span className="mon-chain-text">{chainState.text}</span>
+          </span>
+          <div className="mon-header-btns">
+            <button type="button" className="btn btn-sm mon-header-btn" onClick={() => void loadVisible()} disabled={loading}>
+              <HeaderActionIcon id="refresh" />
+              <span>{loading ? '刷新中' : '刷新指标'}</span>
+            </button>
+            <button type="button" className="btn btn-sm mon-header-btn" onClick={() => selectTab('accounts')}>
+              <HeaderActionIcon id="renew" />
+              <span>账号续期</span>
+            </button>
+            <a className="btn btn-sm primary mon-header-btn" href={navPathForID('api-keys')} onClick={(event) => {
+              // 键盘/修饰键点击留给浏览器，普通点击走 SPA 路由，整页不重载。
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              window.history.pushState({ nav: 'api-keys' }, '', navPathForID('api-keys'));
+              window.dispatchEvent(new PopStateEvent('popstate', { state: { nav: 'api-keys' } }));
+            }}>
+              <HeaderActionIcon id="key" />
+              <span>管理 API 密钥</span>
+            </a>
+          </div>
+        </div>
+      </header>
+
+      {/* 2. 子页签：图标 + 文字 + 数量徽标；激活 = 底部 2px 强调线 + 强调色文字。整条横向可滚。 */}
+      <div className="mon-tabs" role="tablist" aria-label="监控中心">
+        <div className="mon-tabs-track">
+          {TABS.map((item) => {
+            const active = tab === item.id;
+            const badge = badges[item.id];
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                id={`mon-tab-${item.id}`}
+                aria-selected={active}
+                aria-controls="mon-tab-panel"
+                className={`mon-tab${active ? ' active' : ''}`}
+                onClick={() => selectTab(item.id)}
+              >
+                <span className="mon-tab-icon" aria-hidden="true"><NavIcon id={item.icon as NavItemID} /></span>
+                <span className="mon-tab-label">{item.label}</span>
+                {badge && <TabBadge tone={badge.tone}>{badge.text}</TabBadge>}
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      <div id="mon-tab-panel" role="tabpanel" aria-labelledby={`mon-tab-${tab}`} className="mon-tab-panel">
 
       {tab === 'overview' && (
         <OverviewTab
@@ -432,9 +637,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           onSelect={openAccount}
           note={drawerNote}
           actionError={drawerError}
-          probeOf={(providerId) => probeAccounts.find((item) => item.providerId === providerId)}
+          probeView={accountProbeView}
           probeBusy={probeRunBusy}
-          probeResult={probeResult && probeResult.providerId === selectedAccount ? probeResult.data : null}
           onRunProbe={(providerId) => {
             setDrawerError('');
             // 真实原因已由 runProbeFor 写到面板顶部错误行，这里只补一句「在哪没成」。
@@ -606,8 +810,24 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           }}
         />
       )}
+      </div>
     </div>
   );
+}
+
+/**
+ * 采集器心跳：超过 3 分钟没成功算滞后，超过 10 分钟算停了。
+ * 阈值放在前端只是为了给顶栏状态胶囊一个判断，不参与任何告警计算。
+ */
+const STALE_MS = 3 * 60_000;
+const DOWN_MS = 10 * 60_000;
+
+function collectorState(raw: string | undefined): 'ok' | 'stale' | 'down' {
+  if (!hasTime(raw)) return 'down';
+  const age = Date.now() - Date.parse(raw as string);
+  if (age > DOWN_MS) return 'down';
+  if (age > STALE_MS) return 'stale';
+  return 'ok';
 }
 
 /** 分页合并：轮询可能插进新行，按 id 去重才不会重复渲染。 */
