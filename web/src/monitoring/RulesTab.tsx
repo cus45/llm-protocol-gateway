@@ -304,24 +304,37 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
   };
 
   return (
-    <div className="card panel">
-      <div className="panel-header">
-        <div>
-          <h2 className="panel-title">{`规则（${rules.length}）`}</h2>
-          <p className="panel-desc">
-            {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
-          </p>
+    <div className="mon-rules">
+      <div className="mon-rules-bar">
+        <div className="mon-rules-stats">
+          <span className="mon-rules-stat">
+            <b className="mon-rules-stat-value">{drafts.filter((draft) => draft.enabled).length}</b>
+            <span className="mon-rules-stat-key">{'条已启用'}</span>
+          </span>
+          <span className="mon-rules-stat-sep" aria-hidden>{'/'}</span>
+          <span className="mon-rules-stat">
+            <b className="mon-rules-stat-value">{drafts.length}</b>
+            <span className="mon-rules-stat-key">{'条总数'}</span>
+          </span>
+          {dirtyKeys.size > 0 && (
+            <span className="mon-rules-dirty" title="改动只在点「保存规则」后生效；保存是整表提交">
+              <span className="mon-rules-dirty-dot" aria-hidden />
+              {`${dirtyKeys.size} 条未保存`}
+            </span>
+          )}
         </div>
-        <div className="panel-header-actions rules-header-actions">
-          {dirtyKeys.size > 0 && <span className="muted-text rules-count">{`${dirtyKeys.size} 条未保存`}</span>}
+        <div className="mon-rules-actions">
           <button className="btn btn-sm primary" disabled={saving || drafts.length === 0} onClick={() => void save()}>
             {saving ? '保存中…' : '保存规则'}
           </button>
         </div>
       </div>
+      <p className="mon-rules-note">
+        {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
+      </p>
 
-      {error && <div className="metric-value rules-err">{error}</div>}
-      {loadError && <div className="metric-value rules-err">{loadError}</div>}
+      {error && <div className="rules-inline-error" role="alert"><span className="rules-err">{error}</span></div>}
+      {loadError && <div className="rules-inline-error" role="alert"><span className="rules-err">{loadError}</span></div>}
       {notice && !saveError && (
         <div className="rules-inline-notice">
           <span className="muted-text">{notice}</span>
@@ -332,7 +345,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
           <span className="rules-err">{`未保存：${saveError}`}</span>
         </div>
       )}
-      {loading && drafts.length === 0 && <div className="muted-text">{'读取中…'}</div>}
+      {loading && drafts.length === 0 && <div className="m-empty">{'读取中…'}</div>}
 
       {drafts.map((draft) => {
         const rule = ruleOf.get(draft.key);
@@ -340,7 +353,10 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
         const paramKeys = Object.keys(baseline.get(draft.key)?.params ?? rule.defaultParams ?? {}).sort();
         const dirty = dirtyKeys.has(draft.key);
         return (
-          <div className={`log-row rules-item${dirty ? ' rules-dirty' : ''}`} key={draft.key}>
+          <div
+            className={`mon-rules-item${dirty ? ' is-dirty' : ''}${draft.enabled ? '' : ' is-off'}`}
+            key={draft.key}
+          >
             <div className="mrow mrow-rule">
               <span className="rules-switch">
                 <Switch
@@ -350,13 +366,14 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                 />
               </span>
               <span className="rules-name">
-                <span className="m-clip" title={`${rule.name}（${rule.key}）`} style={{ fontWeight: 600 }}>
+                <span className="mon-rules-name" title={`${rule.name}（${rule.key}）`}>
                   {rule.name}
+                  {dirty && <span className="mon-rules-dirty-dot" aria-hidden />}
                 </span>
-                <span className={`badge ${rule.targetType === 'api_key' ? 'purple' : rule.targetType === 'gateway' ? 'slate' : 'cyan'}`}>
-                  {TARGET_TEXT[rule.targetType] ?? rule.targetType}
+                <span className={`mon-acc-tag rules-tag-${rule.targetType}`}>
+                  {TARGET_TEXT[rule.targetType] ?? '目标'}
                 </span>
-                <span className="muted-text m-row-num rules-interval" title="引擎检查这条规则的间隔">
+                <span className="rules-interval" title="引擎检查这条规则的间隔">
                   {`每 ${rule.intervalMinutes} 分钟检查`}
                 </span>
               </span>
@@ -396,7 +413,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                 </label>
               </div>
               <span className="rules-params">
-                {paramKeys.length === 0 && <span className="muted-text">{'—'}</span>}
+                {paramKeys.length === 0 && <span className="mon-rules-param-empty">{'这条规则没有可调参数'}</span>}
                 {paramKeys.map((key) => {
                   const spec = PARAM_SPECS[key];
                   const raw = draft.params[key] ?? '';
@@ -406,7 +423,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                     return (
                       <span className="rules-param" key={key} title={`${key} · 认证失败时按该级别通知`}>
                         <span className="rules-cell-label">{'认证失败级别'}</span>
-                        <span className="m-row-num">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
+                        <span className="mon-rules-readonly">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
                       </span>
                     );
                   }
@@ -451,13 +468,9 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                 })}
               </span>
               <span className="rules-actions">
-                <span className="rules-params-summary muted-text" title={paramKeys.map((key) => {
-                  const spec = PARAM_SPECS[key];
-                  const raw = draft.params[key] ?? '';
-                  return `${spec?.label ?? key}=${raw === '' ? '—' : raw}`;
-                }).join(' · ')}>
-                  {paramKeys.map((key) => PARAM_SPECS[key]?.short).filter((short): short is string => !!short).join(' · ') || '—'}
-                </span>
+                {/* 这里曾有一个「参数简称摘要」（次数≥ · 占比≥ …）。参数改成两段式后
+                    每个参数都有自己的块，摘要是重复信息；且它和「恢复默认」挤在同一格，
+                    宽度不够时会被截成「次数≥ 占比≥ 样本≥ 窗」这种残缺文字。删掉。 */}
                 <button
                   className="btn btn-sm"
                   disabled={!dirtyKeys.has(draft.key)}
@@ -472,9 +485,9 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
         );
       })}
 
-      <div className="metric-note">
+      <p className="mon-rules-foot">
         {`恢复默认只作用于单条；保存是整表提交，同一时刻的其它改动会一起写入。时间按投递时区 ${timezone} 计算。`}
-      </div>
+      </p>
     </div>
   );
 }

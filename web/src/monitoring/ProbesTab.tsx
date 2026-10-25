@@ -472,13 +472,18 @@ export function ProbeSettingsPanel(props: ProbeSettingsPanelProps) {
   };
 
   return (
-    <div className="card">
-      <div className="panel-title">{'探测调度'}</div>
-      <p className="panel-desc">
-        {`只对已启用、24 小时内有过真实请求的账号探测；当日次数与每日窗口都按投递时区（${timezone}）计算。`}
-      </p>
+    <div className="card mon-set-card">
+      <header className="mon-set-head">
+        <div className="mon-set-head-text">
+          <h2 className="mon-card-title">{'探测调度'}</h2>
+          <p className="mon-set-desc">
+            {`只对已启用、24 小时内有过真实请求的账号探测；当日次数与每日窗口都按投递时区（${timezone}）计算。`}
+          </p>
+        </div>
+      </header>
       <div className="monitoring-cols">
-        <div className="field">
+        <div className="field mon-set-switch">
+          <span>{'轻探测开关'}</span>
           <Switch
             checked={base.eventDriven.enabled}
             label="事件驱动轻探测"
@@ -533,20 +538,20 @@ export function ProbeSettingsPanel(props: ProbeSettingsPanelProps) {
           />
         </label>
       </div>
-      <div className="metric-note">
+      <p className="mon-set-foot">
         {`当前生效：每账号每日 ${base.eventDriven.maxPerDayPerAccount === 0 ? '不限' : `${base.eventDriven.maxPerDayPerAccount} 次`} · 最小间隔 ${minutesText(base.eventDriven.minIntervalMinutes)} · 闲置阈值 ${minutesText(base.eventDriven.idleMinutes)} · 每日窗口 ${base.daily.enabled ? `${base.daily.windowStart}–${base.daily.windowEnd}` : '已关闭'}（${timezone}）`}
-      </div>
-      <div className="metric-note">
+      </p>
+      <p className="mon-set-foot">
         {base.quotaStaleMinutes > 0
           ? `额度读数超过 ${base.quotaStaleMinutes} 分钟未更新时，账号页与详情里标为「数据过期」。`
           : '额度过期判定已关闭：账号页与详情不标「数据过期」。'}
-      </div>
-      <div className="panel-actions">
+      </p>
+      <div className="mon-set-form-actions">
         <button className="btn btn-sm primary" disabled={busy} onClick={onSubmit}>
           {'保存探测配置'}
         </button>
-        {error && <span className="metric-note err">{error}</span>}
-        {notice && !error && <span className="metric-note">{notice}</span>}
+        {error && <span className="mon-set-inline err" role="alert">{error}</span>}
+        {notice && !error && <span className="mon-set-inline">{notice}</span>}
       </div>
     </div>
   );

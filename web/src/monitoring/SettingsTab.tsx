@@ -99,51 +99,88 @@ export function SettingsTab(props: SettingsTabProps) {
     else onCreateChannel(payload);
   };
 
+  const credentialReady = (channel: MonitorChannelView) => !!(channel.webhookSet || channel.secretSet || channel.tokenSet);
+  const enabledChannels = channels.filter((channel) => channel.enabled).length;
+
   return (
-    <div className="card panel">
-      <div className="panel-header">
-        <div>
-          <h2 className="panel-title">{'通知渠道与投递'}</h2>
-          <p className="panel-desc">
-            {'webhook、签名密钥与 bot token 只写不读：留空表示保留服务端已有值。规则阈值编辑属阶段 4，这里不提供。'}
-          </p>
-        </div>
-      </div>
-
-      {error && <div className="metric-value err">{error}</div>}
-      {notice && (
-        <div className="metric">
-          <div className="metric-label">{'最近操作'}</div>
-          <div className="metric-note">{notice}</div>
-          <button className="btn btn-sm" onClick={onDismissNotice}>{'收起'}</button>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="panel-title">{`渠道（${channels.length}）`}</div>
-        {channels.length === 0 && <div className="muted-text">{'还没有渠道，告警只记录不推送。'}</div>}
-        {channels.map((channel) => (
-          <div className="log-row" key={channel.id}>
-            <div className="mrow mrow-channel">
-              <span className="m-clip" style={{ fontWeight: 600 }}>{channel.name}</span>
-              <span className="badge slate">{CHANNEL_TYPES.find((item) => item.value === channel.type)?.label ?? channel.type}</span>
-              <span className={`badge ${channel.minSeverity === 'p0' ? 'red' : channel.minSeverity === 'p1' ? 'amber' : 'blue'}`}>
-                {`≥ ${channel.minSeverity.toUpperCase()}`}
-              </span>
-              <span className="muted-text">
-                {channel.webhookSet || channel.secretSet || channel.tokenSet ? '凭据已配置' : '未填凭据'}
-                {channel.chatId ? ` · chat ${channel.chatId}` : ''}
-              </span>
-              <button className="btn btn-sm" onClick={() => setDraft(draftFromChannel(channel))}>{'编辑'}</button>
-              <button className="btn btn-sm" disabled={busy === `test:${channel.id}`} onClick={() => onTestChannel(channel.id)}>{'测试'}</button>
-              <button className="btn btn-sm" disabled={busy === `del:${channel.id}`} onClick={() => onDeleteChannel(channel.id)}>{'删除'}</button>
-            </div>
+    <div className="mon-settings">
+      <section className="card mon-set-card">
+        <header className="mon-set-head">
+          <div className="mon-set-head-text">
+            <h2 className="mon-card-title">{`通知渠道（${channels.length}）`}</h2>
+            <p className="mon-set-desc">
+              {'webhook、签名密钥与 bot token 只写不读：留空表示保留服务端已有值。告警按级别投递到各渠道的最低级别以上。'}
+            </p>
           </div>
-        ))}
-      </div>
+          <div className="mon-set-chips">
+            <span className="mon-set-chip">
+              <span className={`mon-acc-state-dot ${enabledChannels > 0 ? 'ok' : 'off'}`} aria-hidden />
+              {`${enabledChannels} 个启用`}
+            </span>
+            <span className="mon-set-chip">{`${channels.length - enabledChannels} 个停用`}</span>
+          </div>
+        </header>
 
-      <div className="card">
-        <div className="panel-title">{editing ? `编辑渠道：${draft.name}` : '新增渠道'}</div>
+        {error && <div className="mon-acc-error" role="alert">{error}</div>}
+        {notice && (
+          <div className="mon-set-notice">
+            <span className="mon-set-notice-label">{'最近操作'}</span>
+            <span className="mon-set-notice-text">{notice}</span>
+            <button type="button" className="btn btn-sm mon-set-notice-btn" onClick={onDismissNotice}>{'收起'}</button>
+          </div>
+        )}
+
+        {channels.length === 0 && (
+          <div className="mon-set-empty">
+            <span className="mon-set-empty-title">{'还没有通知渠道'}</span>
+            <span className="mon-set-empty-note">{'告警仍然会记录在本地，只是不会推送到任何群。下面新建一个渠道即可开始推送。'}</span>
+          </div>
+        )}
+        {channels.length > 0 && (
+          <div className="mon-set-list">
+            {channels.map((channel) => (
+              <div className={`mon-set-row${channel.enabled ? '' : ' is-off'}`} key={channel.id}>
+                <div className="mon-set-row-main">
+                  <div className="mon-set-row-head">
+                    <span className="mon-set-row-name">{channel.name}</span>
+                    <span className="mon-acc-tag">{CHANNEL_TYPES.find((item) => item.value === channel.type)?.label ?? channel.type}</span>
+                    <span className={`mon-acc-state ${channel.minSeverity === 'p0' ? 'bad' : channel.minSeverity === 'p1' ? 'warn' : ''}`}>
+                      {`≥ ${channel.minSeverity.toUpperCase()}`}
+                    </span>
+                    <span className={`mon-acc-state ${channel.enabled ? 'ok' : 'off'}`}>
+                      <span className="mon-acc-state-dot" aria-hidden />
+                      {channel.enabled ? '启用' : '停用'}
+                    </span>
+                  </div>
+                  <div className="mon-set-row-meta">
+                    <span className={credentialReady(channel) ? 'mon-set-row-ok' : 'mon-set-row-warn'}>
+                      {credentialReady(channel) ? '凭据已配置' : '未填凭据，推送会失败'}
+                    </span>
+                    {channel.chatId && <span>{`chat ${channel.chatId}`}</span>}
+                  </div>
+                </div>
+                <div className="mon-set-row-actions">
+                  <button type="button" className="btn btn-sm" onClick={() => setDraft(draftFromChannel(channel))}>{'编辑'}</button>
+                  <button type="button" className="btn btn-sm" disabled={busy === `test:${channel.id}`} onClick={() => onTestChannel(channel.id)}>{'测试'}</button>
+                  <button type="button" className="btn btn-sm" disabled={busy === `del:${channel.id}`} onClick={() => onDeleteChannel(channel.id)}>{'删除'}</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="card mon-set-card">
+        <header className="mon-set-head">
+          <div className="mon-set-head-text">
+            <h2 className="mon-card-title">{editing ? '编辑渠道' : '新增渠道'}</h2>
+            <p className="mon-set-desc">
+              {editing
+                ? `正在编辑「${draft.name || '未命名渠道'}」；凭据留空即保留原值。`
+                : '填好名称与凭据即可创建；类型创建后不可更改。'}
+            </p>
+          </div>
+        </header>
         <div className="monitoring-cols">
           <label className="field">
             <span>{'类型'}</span>
@@ -172,7 +209,8 @@ export function SettingsTab(props: SettingsTabProps) {
               ))}
             </select>
           </label>
-          <div className="field">
+          <div className="field mon-set-switch">
+            <span>{'状态'}</span>
             <Switch checked={draft.enabled} label="启用" onChange={(value) => setDraft({ ...draft, enabled: value })} />
           </div>
         </div>
@@ -216,17 +254,24 @@ export function SettingsTab(props: SettingsTabProps) {
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <button className="btn btn-sm primary" disabled={(busy ?? '').startsWith('channel')} onClick={submitChannel}>
+        <div className="mon-set-form-actions">
+          <button type="button" className="btn btn-sm primary" disabled={(busy ?? '').startsWith('channel')} onClick={submitChannel}>
             {editing ? '保存修改' : '创建渠道'}
           </button>
-          {editing && <button className="btn btn-sm" onClick={() => setDraft(emptyDraft())}>{'取消编辑'}</button>}
+          {editing && <button type="button" className="btn btn-sm" onClick={() => setDraft(emptyDraft())}>{'取消编辑'}</button>}
         </div>
-      </div>
+      </section>
 
       {form && (
-        <div className="card">
-          <div className="panel-title">{'投递与静默'}</div>
+        <section className="card mon-set-card">
+          <header className="mon-set-head">
+            <div className="mon-set-head-text">
+              <h2 className="mon-card-title">{'投递与静默'}</h2>
+              <p className="mon-set-desc">
+                {'聚合间隔决定同类告警多久合并成一条摘要；静默时段只顺延 P1，P0 永远即时送达。'}
+              </p>
+            </div>
+          </header>
           <div className="monitoring-cols">
             <label className="field">
               <span>{'聚合间隔（分钟）'}</span>
@@ -254,20 +299,23 @@ export function SettingsTab(props: SettingsTabProps) {
               <span>{'控制台地址（消息里的深链前缀）'}</span>
               <input value={form.baseUrl} placeholder="https://…" onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
             </label>
-            <div className="field" style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-              <Switch checked={form.quietEnabled} label="启用静默时段" onChange={(value) => setForm({ ...form, quietEnabled: value })} />
-              <Switch checked={form.recoveryNotify} label="发送恢复通知" onChange={(value) => setForm({ ...form, recoveryNotify: value })} />
+            <div className="field mon-set-switch">
+              <span>{'静默与恢复'}</span>
+              <div className="mon-set-switches">
+                <Switch checked={form.quietEnabled} label="启用静默时段" onChange={(value) => setForm({ ...form, quietEnabled: value })} />
+                <Switch checked={form.recoveryNotify} label="发送恢复通知" onChange={(value) => setForm({ ...form, recoveryNotify: value })} />
+              </div>
             </div>
           </div>
-          <div className="metric-note">
-            {'静默时段只顺延 P1，P0 永远即时；阶段 1–3 逐条即时发送，聚合摘要随阶段 4 上线。'}
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <button className="btn btn-sm primary" disabled={busy === 'dispatch'} onClick={() => onUpdateDispatch(form)}>
+          <p className="mon-set-foot">
+            {'静默时段只顺延 P1，P0 永远即时；当前逐条即时发送，聚合摘要随后续阶段上线。'}
+          </p>
+          <div className="mon-set-form-actions">
+            <button type="button" className="btn btn-sm primary" disabled={busy === 'dispatch'} onClick={() => onUpdateDispatch(form)}>
               {'保存投递设置'}
             </button>
           </div>
-        </div>
+        </section>
       )}
 
       <ProbeSettingsPanel
