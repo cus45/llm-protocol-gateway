@@ -10553,3 +10553,9 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
   backdrop-filter: none;
 }
 .monitoring-page .mon-set-card:first-child { border-top: 0; padding-top: 0; }
+
+/* 监控页卡片底色对齐参考 #131826（我们的 --surface 是 #131829，差 3/255）。
+   只在监控页覆盖这个局部变量，不动全站 token。 */
+html[data-theme="dark"] .monitoring-page {
+  --surface: #131826;
+}
