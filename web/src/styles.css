@@ -265,7 +265,9 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
   .sidebar {
     position: fixed;
     top: 16px;
-    left: max(16px, calc(50% - 800px));
+    /* 与 .shell 的左缘对齐：shell 已改为贴边（margin 左右 0），所以这里不能再加
+       16px 偏移——否则侧栏右缘（16+224=240）会盖住从 224 开始的主栏 16px。 */
+    left: max(0px, calc(50% - 800px));
     width: var(--sidebar-w);
     z-index: 30;
   }
@@ -301,6 +303,11 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
 
 /* 主区卡片：实体白/暗，浮在画布上 */
 .main { display: grid; gap: 14px; min-width: 0; align-content: start; }
+/* 桌面端侧栏是 fixed（左右 0 贴边），主栏从侧栏右缘开始；不留内边距时，
+   页面标题会紧贴侧栏边框，看起来像被压住。20px 与监控页 tab 面板一致。 */
+@media (min-width: 901px) {
+  .main { padding-left: 20px; }
+}
 .main > .card,
 .main .card {
   background: var(--surface);
