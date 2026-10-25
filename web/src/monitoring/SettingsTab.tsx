@@ -165,7 +165,7 @@ export function SettingsTab(props: SettingsTabProps) {
   return (
     <div className="mon-settings">
       {/* ── 巡检与轻探测引擎调度 ─────────────────────────────────────── */}
-      <section className="card mon-set-card">
+      <section className="mon-set-card">
         <header className="mon-set-head">
           <div className="mon-set-head-text">
             <h2 className="mon-card-title">
@@ -380,7 +380,7 @@ export function SettingsTab(props: SettingsTabProps) {
       </section>
 
       {/* ── 通知渠道与 Webhook 机器人 ─────────────────────────────────── */}
-      <section className="card mon-set-card">
+      <section className="mon-set-card">
         <header className="mon-set-head">
           <div className="mon-set-head-text">
             <h2 className="mon-card-title">

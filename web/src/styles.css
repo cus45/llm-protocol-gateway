@@ -10540,3 +10540,16 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    我们用了两张 16px 圆角卡。为保持与全站「卡片=可分区内容」的语言一致，
    这里保留卡片但把内边距对齐参考的内层 16px，不再额外加 18px 横向。 */
 .monitoring-page .mon-set-card { padding: 16px; }
+
+/* 参考的设置页没有卡片容器：内容直接铺在内容区，用标题与分隔线分组。
+   去掉 .card 后这里补回分组的分隔与留白（不再有 16px 圆角与边框）。 */
+.monitoring-page .mon-set-card {
+  padding: 16px 0;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.monitoring-page .mon-set-card:first-child { border-top: 0; padding-top: 0; }
