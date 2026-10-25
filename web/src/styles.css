@@ -10446,3 +10446,16 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 /* 监控页不再抵消 .main 的 20px 左内边距：参考的内容区起点是 244（侧栏 224 + 20），
    抵消后变成 224，KPI 卡与拓扑整体左移 20px。保留 .main 的内边距，
    内容区起点回到 244。 */
+
+/* 账号卡的「今日探测」额度条紧贴上方的探活点阵，并压缩自身纵向占用：
+   参考卡没有这一块（它画的是分流权重），我们多这一块会让卡片高 45px。
+   把它并进点阵区（负 margin 抵消父级 gap + 收紧内边距），信息不删、高度接近参考。 */
+.mon-acc-probe + .mon-acc-quota {
+  margin-top: -6px;
+  padding-top: 0;
+}
+.mon-acc-quota-note { margin: 2px 0 0; font-size: 10.5px; line-height: 1.3; }
+/* 额度条的说明行收进 title（同样的口径已在悬停提示里），省下 19px：
+   参考卡没有这一块，我们保留它作为真实数据，但不再占用独立一行。 */
+.mon-acc-card .mon-acc-quota-note { display: none; }
+.mon-acc-probe + .mon-acc-quota { gap: 3px; }
