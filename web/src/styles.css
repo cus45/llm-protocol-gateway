@@ -226,7 +226,7 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
    2. Shell 布局：深色侧栏 + 浅色画布
    ---------------------------------------------------------------- */
 .shell {
-  width: min(1600px, calc(100% - 32px));
+  width: min(1600px, 100%);
   margin: 16px auto;
   display: grid;
   grid-template-columns: var(--sidebar-w, 248px) minmax(0, 1fr);
