@@ -343,6 +343,35 @@ export function ProbesTab(props: ProbesTabProps) {
     setFetchedAt(Date.now());
   }, []);
 
+  /**
+   * 重读记录历史（resync 后补缺口）。只增量合并、不重置「已上屏」集合：
+   * resync 说明中间丢过帧，用 GET /probes 的最新一批把记录补齐；已经上过屏的键保持原样，
+   * 补回来的新键按新条目高亮。
+   */
+  const backfillRuns = useCallback(() => {
+    void fetchProbes()
+      .then((page) => {
+        const rows = page.runs
+          .map(parseProbeRun)
+          .filter((row): row is MonitorProbeRun => row !== null);
+        const fresh = rows.filter((row) => !seenRef.current.has(runKey(row)));
+        if (pausedRef.current) {
+          // 暂停中：只记进 backlog，恢复时和流里的增量一起补上。
+          backlogRef.current = mergeRuns(backlogRef.current, fresh).rows;
+          setBacklogCount(backlogRef.current.length);
+          for (const row of fresh) seenRef.current.add(runKey(row));
+          return;
+        }
+        if (fresh.length === 0) return;
+        for (const row of fresh) seenRef.current.add(runKey(row));
+        streamRunsRef.current = mergeRuns(streamRunsRef.current, fresh).rows;
+        setStreamRuns(streamRunsRef.current);
+        setFetchedAt(Date.now());
+        highlight(fresh.map(runKey));
+      })
+      .catch(() => undefined);
+  }, [highlight]);
+
   /** 降级到轮询：清掉流专属状态，数据回到外层轮询。只生效一次。 */
   const degrade = useCallback((note: string) => {
     if (degradedRef.current) return;
@@ -471,9 +500,12 @@ export function ProbesTab(props: ProbesTabProps) {
       touch();
       refreshAccountViews();
     };
-    // 后端丢了一段（慢消费者 / 快照失败）：补齐后再重读现状。记录本身由下一次快照收敛。
+    // 后端丢了一段（慢消费者 / 快照失败）：resync 之后**不会**再来一次快照，而 probe
+    // 增量也不参与 Last-Event-ID 重放（见 monitor_stream.go 的契约）。所以这里必须
+    // 主动重拉一次探测历史，否则丢的那几条记录永远不会补上，只有账号现状会更新。
     const onResync = () => {
       touch();
+      backfillRuns();
       refreshAccountViews();
     };
 
@@ -511,7 +543,7 @@ export function ProbesTab(props: ProbesTabProps) {
       pausedRef.current = false;
       backlogRef.current = [];
     };
-  }, [attempt, degrade, enterStream, ingest, refreshAccountViews, replaceRuns]);
+  }, [attempt, backfillRuns, degrade, enterStream, ingest, refreshAccountViews, replaceRuns]);
 
   // 降级后的轮询：与原「自动刷新」同节奏，页面隐藏时跳过。流活着时这条路径完全不走。
   useEffect(() => {
