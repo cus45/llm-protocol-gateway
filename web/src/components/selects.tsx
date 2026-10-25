@@ -449,6 +449,9 @@ export type IconSelectOption = {
   group?: string;
   // 分组键：同一个键的选项收在同一个品牌下。缺省用 group 本身。
   groupKey?: string;
+  // 「整个分组」那一项（如「全部 claude 账号」）：左栏的品牌计数只数真实账号，
+  // 不把它算进去。
+  groupAll?: boolean;
 };
 
 type IconSelectGroup = {
@@ -745,7 +748,7 @@ export function IconSelect({
                 >
                   <BrandIcon icon={group.icon} name={group.title} size={16} className="filter-option-icon" />
                   <span className="icon-select-group-title">{group.title}</span>
-                  <span className="icon-select-group-count">{group.options.length}</span>
+                  <span className="icon-select-group-count">{group.options.filter((option) => !option.groupAll).length}</span>
                 </div>
               );
             })}

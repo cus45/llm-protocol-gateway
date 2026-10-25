@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { formatCostMicros } from '../lib';
+import { IconSelect } from '../components/selects';
+import type { IconSelectOption } from '../components/selects';
 import type { MonitorAccount, MonitorEvent, MonitorOverview, MonitorProbeRun } from './types';
 import { hasTime } from './types';
 import { detailPairs, displayTime, displayTimeCompact, formatLatency, formatRatio } from './format';
@@ -22,6 +24,8 @@ export interface OverviewTabProps {
   /** 轻探测记录：拓扑的 RTT 用它。概览页不拉一次探测接口（只在探测页拉），
       所以这里通常为空——RTT 缺失时集群行显示「RTT —」，不编造毫秒数。 */
   probeRuns?: MonitorProbeRun[];
+  /** 品牌图标键（与账号页同一套，见 AccountsTab 同名说明）；不传就退回名字首字母。 */
+  iconOf?: (providerId: string) => string | undefined;
 }
 
 type Tone = 'accent' | 'green' | 'amber' | 'red' | 'blue';
@@ -42,6 +46,12 @@ const AUTH_LABELS: Record<string, string> = {
 };
 
 const UNKNOWN_VENDOR = '未标注厂商';
+
+// 拓扑筛选值：全部 / 某厂商全部账号 / 单个账号。与日志页、账号页同一套二级筛选，
+// 只额外保留「整个厂商」这一档，点一下就能看这家所有节点的分流。
+const VENDOR_FILTER_ALL = 'all';
+const VENDOR_FILTER_PREFIX = 'vendor:';
+const PROVIDER_FILTER_PREFIX = 'provider:';
 
 const STATUS_TEXT: Record<'full' | 'degraded' | 'down', string> = {
   full: '全速运行',
@@ -105,6 +115,7 @@ function TopologyCard({
   probeRuns,
   timezone,
   loading,
+  iconOf,
   onOpenAccount,
   onOpenAllAccounts,
 }: {
@@ -113,12 +124,13 @@ function TopologyCard({
   probeRuns: MonitorProbeRun[];
   timezone: string;
   loading: boolean;
+  iconOf?: (providerId: string) => string | undefined;
   onOpenAccount: (providerId: string) => void;
   onOpenAllAccounts: () => void;
 }) {
   // 没有厂商名的账号各自成组会让筛选按钮刷出一长串「未标注厂商」，按 label 折叠成一簇。
   const keyOf = (account: MonitorAccount) => account.vendor || (AUTH_LABELS[account.authType] || account.authType || '').trim() || UNKNOWN_VENDOR;
-  const [vendorFilter, setVendorFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState(VENDOR_FILTER_ALL);
   const req = overview?.requests;
   const total = accounts.length;
   const windowHours = overview ? overview.windowHours : 24;
@@ -174,8 +186,59 @@ function TopologyCard({
     [vendors, rttByAccount, probeStats, total],
   );
 
-  // 厂商筛选收窄调用端占比；集群行保留并置灰（参考实现同样保留行）。
-  const scopedAccounts = vendorFilter === 'all' ? accounts : accounts.filter((account) => keyOf(account) === vendorFilter);
+  const providerOptions = useMemo<IconSelectOption[]>(() => {
+    const options: IconSelectOption[] = [{ value: VENDOR_FILTER_ALL, label: '全部 Provider' }];
+    for (const [vendor, list] of vendors) {
+      const groupKey = `${VENDOR_FILTER_PREFIX}${vendor}`;
+      options.push({
+        value: groupKey,
+        label: `全部 ${vendor} 账号`,
+        icon: list.map((account) => iconOf?.(account.providerId)).find(Boolean),
+        description: `${list.length} 个账号`,
+        keywords: `${vendor} 全部`,
+        group: vendor,
+        groupKey,
+        groupAll: true,
+      });
+      for (const account of [...list].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+        options.push({
+          value: `${PROVIDER_FILTER_PREFIX}${account.providerId}`,
+          label: account.name,
+          icon: iconOf?.(account.providerId),
+          description: AUTH_LABELS[account.authType] || account.authType || 'API Key',
+          keywords: `${account.providerId} ${vendor} ${account.name}`,
+          group: vendor,
+          groupKey,
+        });
+      }
+    }
+    return options;
+  }, [vendors, iconOf]);
+
+  // 筛选收窄调用端占比；集群行保留并置灰（参考实现同样保留行）。
+  const inScope = (account: MonitorAccount) => {
+    if (providerFilter === VENDOR_FILTER_ALL) return true;
+    if (providerFilter.startsWith(PROVIDER_FILTER_PREFIX)) {
+      return account.providerId === providerFilter.slice(PROVIDER_FILTER_PREFIX.length);
+    }
+    return keyOf(account) === providerFilter.slice(VENDOR_FILTER_PREFIX.length);
+  };
+  const scopedAccounts = accounts.filter(inScope);
+  const scopeVendor =
+    providerFilter === VENDOR_FILTER_ALL
+      ? null
+      : providerFilter.startsWith(VENDOR_FILTER_PREFIX)
+        ? providerFilter.slice(VENDOR_FILTER_PREFIX.length)
+        : (() => {
+            const account = accounts.find((item) => item.providerId === providerFilter.slice(PROVIDER_FILTER_PREFIX.length));
+            return account ? keyOf(account) : null;
+          })();
+  const scopeName =
+    providerFilter === VENDOR_FILTER_ALL
+      ? ''
+      : providerFilter.startsWith(VENDOR_FILTER_PREFIX)
+        ? providerFilter.slice(VENDOR_FILTER_PREFIX.length)
+        : accounts.find((account) => account.providerId === providerFilter.slice(PROVIDER_FILTER_PREFIX.length))?.name ?? '该账号';
   const clients = CLIENT_VIEWS.map((view, index) => {
     const group = scopedAccounts.filter((account) => groupOf(account) === view.key);
     const authTypes = [...new Set(group.map((account) => AUTH_LABELS[account.authType] || account.authType || 'API Key'))];
@@ -213,23 +276,18 @@ function TopologyCard({
           </h3>
           <span className={`mon-topo-badge ${status.tone}`}>{status.text}</span>
         </div>
-        <div className="mon-topo-filter" role="group" aria-label="按厂商查看节点分流">
+        <div className="mon-topo-filter">
           <span className="mon-topo-filter-label">{'查看节点分流'}</span>
-          <button type="button" className={`mon-topo-chip${vendorFilter === 'all' ? ' on' : ''}`} aria-pressed={vendorFilter === 'all'} onClick={() => setVendorFilter('all')}>
-            {'全部'}
-          </button>
-          {vendors.map(([vendor, list]) => (
-            <button
-              key={vendor}
-              type="button"
-              className={`mon-topo-chip${vendorFilter === vendor ? ' on' : ''}`}
-              aria-pressed={vendorFilter === vendor}
-              title={`只看「${vendor}」的 ${list.length} 个账号`}
-              onClick={() => setVendorFilter(vendor)}
-            >
-              {vendor}
-            </button>
-          ))}
+          <div className="mon-topo-select">
+            <IconSelect
+              value={providerFilter}
+              options={providerOptions}
+              onChange={setProviderFilter}
+              placeholder="全部 Provider"
+              searchable
+              renderPortal={false}
+            />
+          </div>
         </div>
       </div>
 
@@ -293,7 +351,7 @@ function TopologyCard({
           <div className="mon-cluster-list">
             {clusters.length === 0 && <div className="mon-topo-empty">{'还没有接入任何厂商'}</div>}
             {clusters.map((cluster) => {
-              const dim = vendorFilter !== 'all' && vendorFilter !== cluster.vendor;
+              const dim = scopeVendor !== null && scopeVendor !== cluster.vendor;
               return (
                 <div key={cluster.vendor} className={`mon-cluster${dim ? ' is-dim' : ''}`}>
                   <button
@@ -343,9 +401,9 @@ function TopologyCard({
 
       <div className="mon-topo-foot">
         <span>
-          {vendorFilter === 'all'
+          {providerFilter === VENDOR_FILTER_ALL
             ? `${total} 个账号 · ${clusters.length} 个厂商；RTT 取最近一次轻探测，有请求时 SLA 为全局 24h`
-            : `只看「${vendorFilter}」：${scopedAccounts.length} 个账号；其余集群置灰`}
+            : `只看「${scopeName}」：${scopedAccounts.length} 个账号；其余集群置灰`}
         </span>
         <button type="button" className="mon-topo-link" onClick={onOpenAllAccounts}>
           {'进入账号矩阵 →'}
@@ -464,7 +522,7 @@ function MetaCard({
 
 export function OverviewTab(props: OverviewTabProps) {
   const {
-    overview, accounts, events, timezone, loading, error, onOpenAccount, onOpenTab, probeRuns = [],
+    overview, accounts, events, timezone, loading, error, iconOf, onOpenAccount, onOpenTab, probeRuns = [],
   } = props;
   const now = Date.now();
 
@@ -673,6 +731,7 @@ export function OverviewTab(props: OverviewTabProps) {
         probeRuns={probeRuns}
         timezone={timezone}
         loading={loading}
+        iconOf={iconOf}
         onOpenAccount={onOpenAccount}
         onOpenAllAccounts={() => (onOpenTab ? onOpenTab('accounts') : onOpenAccount(accounts[0]?.providerId ?? ''))}
       />

@@ -110,6 +110,9 @@ html[data-theme="dark"] .usage-page {
 .usage-search { width: 200px; min-width: 0; height: var(--control-h-sm); padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 11px; }
 .usage-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
 .usage-filter-row select { max-width: 190px; height: var(--control-h-sm); padding: 0 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 11px; }
+/* Provider 筛选：日志页同款二级下拉，尺寸对齐同一行的原生下拉。 */
+.usage-provider-select { flex: 0 1 190px; min-width: 150px; }
+.usage-provider-select .icon-select-trigger { height: var(--control-h-sm); padding-left: 9px; background-position: right 9px center; font-size: 11px; }
 .usage-export-btn { margin-left: auto; }
 .usage-filter-row select:focus-visible, .usage-search:focus-visible, .usage-date-inputs input:focus-visible, .usage-page .mini-btn:focus-visible, .usage-page-tabs button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
 .usage-scope-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 12px 15px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 var(--r-md) var(--r-md) 0; margin-bottom: 20px; color: var(--muted); font-size: 11px; line-height: 1.7; }
@@ -350,6 +353,9 @@ html[data-theme="dark"] .perf-rate.is-bad { color: #fda4af; }
   /* min-width:0 是必须的：<option> 文本会把 select 的 min-content 撑到 400px 以上，
      flex-basis 再小也缩不下来，390 下右侧 43px 被裁出视口。 */
   .usage-filter-row select { flex: 1 1 140px; max-width: none; min-width: 0; }
+  .usage-provider-select { flex: 1 1 140px; min-width: 0; }
+  /* 窄屏双栏菜单收成触发器宽度，避免 520px 最小宽顶出视口。 */
+  .usage-provider-select .searchable-select-menu.inline { left: 0; right: 0; min-width: 0; }
   .usage-search { width: 100%; }
   .usage-export-btn { margin-left: 0; }
   .usage-ranking-summary { gap: 18px; flex-wrap: wrap; }

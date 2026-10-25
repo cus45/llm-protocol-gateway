@@ -1,5 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {BrandIcon, Modal} from '../components/ui';
+import {IconSelect} from '../components/selects';
+import type {IconSelectOption} from '../components/selects';
 import {fetchProbes, isolateAccount, restoreAccount} from './api';
 import type {
   MonitorAccount,
@@ -112,6 +114,24 @@ const AUTH_LABELS: Record<string, string> = {
   trae_global: 'Trae Global 订阅',
   opencode_zen: 'OpenCode Zen',
 };
+
+const UNKNOWN_VENDOR = '未知厂商';
+// Provider 筛选值：全部 / 某厂商全部账号 / 单个账号。与日志页的二级筛选同一套交互，
+// 只是这里多一档「整个厂商」，避免为了看一家账号还得逐个点。
+const PROVIDER_FILTER_ALL = 'all';
+const VENDOR_FILTER_PREFIX = 'vendor:';
+const PROVIDER_FILTER_PREFIX = 'provider:';
+
+function matchesProviderFilter(account: MonitorAccount, filter: string): boolean {
+  if (filter === PROVIDER_FILTER_ALL) return true;
+  if (filter.startsWith(PROVIDER_FILTER_PREFIX)) {
+    return account.providerId === filter.slice(PROVIDER_FILTER_PREFIX.length);
+  }
+  if (filter.startsWith(VENDOR_FILTER_PREFIX)) {
+    return (account.vendor || UNKNOWN_VENDOR) === filter.slice(VENDOR_FILTER_PREFIX.length);
+  }
+  return true;
+}
 
 const CAPABILITY_LABELS: Array<{ key: keyof MonitorAccount['capabilities']; label: string }> = [
   { key: 'oauth', label: '凭证续期' },
@@ -774,7 +794,7 @@ export function AccountsTab(props: AccountsTabProps) {
     selectedId, onSelect, onCloseDrawer, onIsolationChange,
   } = props;
   const [search, setSearch] = useState('');
-  const [vendor, setVendor] = useState('all');
+  const [providerFilter, setProviderFilter] = useState(PROVIDER_FILTER_ALL);
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [breakerFilter, setBreakerFilter] = useState<BreakerFilter>('all');
   // 只保留本项目有真实能力的筛选（状态 / 熔断档位）；参考里的「容灾层级」是 mock 字段，
@@ -831,14 +851,47 @@ export function AccountsTab(props: AccountsTabProps) {
   };
   const pendingAccount = pending ? accounts.find((account) => account.providerId === pending.providerId) : undefined;
 
-  const vendors = useMemo(() => {
-    const seen = new Map<string, number>();
+  const providerOptions = useMemo<IconSelectOption[]>(() => {
+    const groups = new Map<string, MonitorAccount[]>();
     for (const account of accounts) {
-      const label = account.vendor || '未知厂商';
-      seen.set(label, (seen.get(label) ?? 0) + 1);
+      const label = account.vendor || UNKNOWN_VENDOR;
+      const list = groups.get(label);
+      if (list) list.push(account);
+      else groups.set(label, [account]);
     }
-    return [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
-  }, [accounts]);
+    const options: IconSelectOption[] = [{ value: PROVIDER_FILTER_ALL, label: '全部 Provider' }];
+    for (const [vendor, list] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))) {
+      const groupKey = `${VENDOR_FILTER_PREFIX}${vendor}`;
+      options.push({
+        value: groupKey,
+        label: `全部 ${vendor} 账号`,
+        icon: list.map((account) => iconOf?.(account.providerId)).find(Boolean),
+        description: `${list.length} 个账号`,
+        keywords: `${vendor} 全部`,
+        group: vendor,
+        groupKey,
+        groupAll: true,
+      });
+      for (const account of [...list].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+        options.push({
+          value: `${PROVIDER_FILTER_PREFIX}${account.providerId}`,
+          label: account.name,
+          icon: iconOf?.(account.providerId),
+          description: AUTH_LABELS[account.authType] || account.authType || 'API Key',
+          keywords: `${account.providerId} ${vendor} ${account.name}`,
+          group: vendor,
+          groupKey,
+        });
+      }
+    }
+    return options;
+  }, [accounts, iconOf]);
+
+  // 账号被删除 / 改名后旧筛选值会悬空：回到「全部」，否则列表恒空且看不出为什么。
+  useEffect(() => {
+    if (providerFilter === PROVIDER_FILTER_ALL) return;
+    if (!providerOptions.some((option) => option.value === providerFilter)) setProviderFilter(PROVIDER_FILTER_ALL);
+  }, [providerFilter, providerOptions]);
 
   const authTypes = useMemo(() => {
     const seen = new Set<string>();
@@ -849,7 +902,7 @@ export function AccountsTab(props: AccountsTabProps) {
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return accounts
-      .filter((account) => (vendor === 'all' ? true : (account.vendor || '未知厂商') === vendor))
+      .filter((account) => matchesProviderFilter(account, providerFilter))
       .filter((account) => {
         const state = stateOf(account, alertCountOf(account.providerId));
         if (stateFilter === 'problem') return state === 'bad' || state === 'warn';
@@ -875,7 +928,7 @@ export function AccountsTab(props: AccountsTabProps) {
         if (delta !== 0) return delta;
         return a.name.localeCompare(b.name, 'zh-CN');
       });
-  }, [accounts, search, vendor, stateFilter, breakerFilter, authFilter, alertCountOf, probeView]);
+  }, [accounts, search, providerFilter, stateFilter, breakerFilter, authFilter, alertCountOf, probeView]);
 
   const detail = accounts.find((account) => account.providerId === selectedId) ?? null;
   const windowSize = probeView?.windowSize ?? 10;
@@ -944,26 +997,15 @@ export function AccountsTab(props: AccountsTabProps) {
             />
           </label>
 
-          <div className="mon-acc-vendors" role="group" aria-label="厂商">
-            <button
-              type="button"
-              className={`mon-acc-vendor${vendor === 'all' ? ' on' : ''}`}
-              aria-pressed={vendor === 'all'}
-              onClick={() => setVendor('all')}
-            >
-              {'全部'}
-            </button>
-            {vendors.map(([label]) => (
-              <button
-                key={label}
-                type="button"
-                className={`mon-acc-vendor${vendor === label ? ' on' : ''}`}
-                aria-pressed={vendor === label}
-                onClick={() => setVendor(label)}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="mon-acc-provider-filter">
+            <IconSelect
+              value={providerFilter}
+              options={providerOptions}
+              onChange={setProviderFilter}
+              placeholder="全部 Provider"
+              searchable
+              renderPortal={false}
+            />
           </div>
         </div>
 

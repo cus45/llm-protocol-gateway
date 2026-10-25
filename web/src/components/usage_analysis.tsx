@@ -3,6 +3,9 @@ import type {LogEntry, Provider, StatusBucketStats, UsageAnalysisResponse} from 
 import {API_BASE, formatBytes, formatCostMicros, formatTokenCount, localDateToRFC3339, providerUsageLabel} from '../lib';
 import {downloadCSV, UsageDonutChart, UsageStatusChart} from './charts';
 import {ProviderRefLabel} from './provider_label';
+import {IconSelect} from './selects';
+import type {IconSelectOption} from './selects';
+import {providerSelectOptions} from './provider_select';
 
 type AnalysisState = {
   key: string;
@@ -168,6 +171,19 @@ export function RequestAnalysisPanel({rows, providers, onOpenLogs}: {rows: LogEn
   const [reasoning, setReasoning] = useState('');
   const models = useMemo(() => [...new Set(rows.map(r => r.model))].filter(Boolean).sort(), [rows]);
   const providersInRows = useMemo(() => [...new Set(rows.map(r => r.providerId))].filter(Boolean).sort(), [rows]);
+  // Provider 筛选与日志页同一个二级下拉：左边品牌、右边账号；只列当前区间真有请求的账号。
+  const providerFilterOptions = useMemo<IconSelectOption[]>(() => {
+    const present = new Set(providersInRows);
+    const known = providers.filter((item) => present.has(item.id));
+    const options: IconSelectOption[] = [{value: '', label: '全部 Provider'}];
+    options.push(...providerSelectOptions(known, {withProtocol: false}));
+    // 已删除的 Provider 仍可能留在历史日志里：补一条无图标的素项，别让它们选不到。
+    const knownIds = new Set(known.map((item) => item.id));
+    for (const id of providersInRows) {
+      if (!knownIds.has(id)) options.push({value: id, label: providerUsageLabel(id, providers)});
+    }
+    return options;
+  }, [providers, providersInRows]);
   const keys = useMemo(() => [...new Map(rows.filter(r => r.apiKeyId).map(r => [r.apiKeyId!, r.apiKeyName || r.apiKeyId!])).entries()], [rows]);
   const reasoningOptions = useMemo(() => [...new Set(rows.map(r => r.reasoningEffort).filter((v): v is string => !!v))].sort(), [rows]);
   const filtered = useMemo(() => rows.filter(r => (!model || r.model === model) && (!provider || r.providerId === provider) && (!key || r.apiKeyId === key) && (!reasoning || r.reasoningEffort === reasoning) && (!status || Math.floor(r.status / 100).toString() === status) && `${r.model} ${r.apiKeyName} ${r.protocolFlow}`.toLowerCase().includes(search.toLowerCase())), [rows, model, provider, key, reasoning, status, search]);
@@ -202,7 +218,15 @@ export function RequestAnalysisPanel({rows, providers, onOpenLogs}: {rows: LogEn
     <div className="usage-filter-row">
       <input className="usage-search" aria-label="搜索请求" placeholder="模型、密钥、协议流" value={search} onChange={e => setSearch(e.target.value)} />
       {selects('模型', model, setModel, models.map(v => [v, v]))}
-      {selects('Provider', provider, setProvider, providersInRows.map(v => [v, providerUsageLabel(v, providers)]))}
+      <div className="usage-provider-select">
+        <IconSelect
+          value={provider}
+          options={providerFilterOptions}
+          onChange={setProvider}
+          searchable
+          renderPortal={false}
+        />
+      </div>
       {selects('密钥', key, setKey, keys)}
       {selects('状态', status, setStatus, [['2', '2xx 成功'], ['4', '4xx 请求错误'], ['5', '5xx 上游错误']])}
       {selects('推理设置', reasoning, setReasoning, reasoningOptions.map(v => [v, v]))}

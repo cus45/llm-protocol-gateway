@@ -726,7 +726,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   };
 
   return (
-    <div className="monitoring-page">
+    <div className={`monitoring-page${tab === 'probes' ? ' mon-stream-fill' : ''}`}>
       {/* 1. 顶栏：徽章 + 标题（右挂同步时间）+ 状态胶囊 ｜ 业务摘要 ｜ 动作按钮组；与页签栏用 1px 边框分隔。
           参考 `MonitoringCenter.tsx:520-618`：第一行标题+胶囊，第二行业务摘要，时间由 tooltip 承载。 */}
       <header className="mon-header">
@@ -848,6 +848,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           timezone={timezone}
           loading={loading}
           error={error}
+          iconOf={iconOf}
           onOpenAccount={openAccount}
           onOpenTab={(next) => goTab(next, {})}
           probeRuns={probeRuns}
