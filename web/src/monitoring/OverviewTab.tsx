@@ -723,19 +723,17 @@ export function OverviewTab(props: OverviewTabProps) {
 
   return (
     <div className="card panel mon-overview">
-      <div className="panel-header">
-        <div>
-          <h2 className="panel-title">{'监控中心概览'}</h2>
-          <p className="panel-desc">
-            {`窗口 ${overview ? overview.windowHours : 24} 小时 · 采集器心跳 ${collectorStamp ? collectorStamp.text : '还没有成功采样'}`}
-          </p>
-          <p className="panel-desc mon-overview-note" title={OVERVIEW_NOTE_TITLE}>{'雷达与延迟分布均由现有接口换算'}</p>
-        </div>
-        <div className="panel-header-actions">
-          <button className="btn btn-sm" onClick={onRetry} disabled={loading}>
-            {loading ? '刷新中…' : '立即刷新'}
-          </button>
-        </div>
+      {/* 参考的概览没有页内标题条：tab 下面直接是 KPI 卡。原来这层「监控中心概览 +
+          描述 + 刷新」占掉约 100px 首屏，而同一份信息（窗口、心跳、刷新）在 Header 与
+          KPI 副注里已有。这里只留一条极轻的口径说明，跟着内容一起流动。 */}
+      <div className="mon-overview-strip">
+        <span className="mon-overview-stamp">
+          {`窗口 ${overview ? overview.windowHours : 24} 小时 · 采集器心跳 ${collectorStamp ? collectorStamp.text : '还没有成功采样'}`}
+        </span>
+        <span className="mon-overview-note" title={OVERVIEW_NOTE_TITLE}>{'雷达与延迟分布均由现有接口换算'}</span>
+        <button className="btn btn-sm mon-overview-refresh" onClick={onRetry} disabled={loading}>
+          {loading ? '刷新中…' : '立即刷新'}
+        </button>
       </div>
 
       {error && (

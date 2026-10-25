@@ -7519,23 +7519,53 @@ select.rules-control {
 .mon-probe-bar-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-width: 0; }
 .mon-probe-bar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mon-probe-bar-actions .switch-control { min-height: var(--control-h-sm); }
+/* LIVE 徽标：连上时主色实底光感的浅底 + 7px 呼吸绿点（与 .live-dot 同节奏）；
+   暂停 / 轮询降级时换成灰底灰点，状态文字永远同现，不靠颜色单独表意。 */
 .mon-probe-live {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: var(--control-h-sm);
-  padding: 0 10px;
+  min-height: var(--control-h-sm);
+  padding: 3px 10px;
+  box-sizing: border-box;
   border-radius: var(--r-sm);
   border: 1px solid var(--accent-border);
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 600;
-  white-space: nowrap;
 }
-.mon-probe-live.paused { border-color: var(--border-strong); background: var(--surface-sunken); color: var(--muted); }
-/* 暂停时的静态指示点：与 .live-dot 同尺寸，不呼吸。 */
-.mon-probe-ind { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); }
+.mon-probe-live.off { border-color: var(--border-strong); background: var(--surface-sunken); color: var(--muted); }
+.mon-probe-live-text { white-space: nowrap; }
+/* 绿点：实心点 + 外圈呼吸环；环只扩到 14px，待在徽标的 min-height 内，不会被裁。 */
+.mon-probe-pulse {
+  position: relative;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.mon-probe-pulse::before {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.mon-probe-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  border: 1px solid var(--green);
+  opacity: 0.35;
+  animation: mon-pulse 1.8s ease-out infinite;
+}
+@keyframes mon-pulse {
+  0% { transform: scale(0.55); opacity: 0.55; }
+  70%, 100% { transform: scale(1); opacity: 0; }
+}
+/* 暂停时的静态指示点：与「LIVE」的绿点同尺寸，不呼吸。 */
+.mon-probe-ind { display: inline-block; flex: none; width: 7px; height: 7px; margin: 0 3.5px; border-radius: 50%; background: var(--subtle); }
 .mon-probe-rate {
   padding: 0 5px;
   border-radius: 4px;
@@ -7545,8 +7575,26 @@ select.rules-control {
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.mon-probe-live.paused .mon-probe-rate { border-color: var(--border); color: var(--muted); }
+.mon-probe-live.off .mon-probe-rate { border-color: var(--border); color: var(--muted); }
+.mon-probe-pending {
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+html[data-theme="light"] .mon-probe-pending { color: color-mix(in srgb, var(--amber) 82%, #000); }
+/* 降级原因：跟在「轮询模式」后面的一句短说明，窄处换行不溢出。 */
+.mon-probe-note { color: var(--muted); font-size: 11.5px; font-weight: 500; overflow-wrap: anywhere; }
+/* 暂停按钮：暂停中换成琥珀底，与参考里「暂停/继续」的语义色一致。 */
+.mon-probe-pause.on { border-color: color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--amber); }
+html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--amber) 82%, #000); }
 .mon-probe-meta {
   color: var(--muted);
   font-size: 11.5px;
@@ -7648,6 +7696,16 @@ select.rules-control {
 .mon-tl-item.err { border-color: var(--red-soft); }
 .mon-tl-item.err::before { background: var(--red); box-shadow: 0 0 0 1px var(--red); }
 .mon-tl-item.skip::before { background: var(--slate); box-shadow: 0 0 0 1px var(--slate); }
+/* 新条目入场：一道主色底从浅到透明渐隐 + 左侧色条压深，1.6s 后（React 摘掉 .fresh）回到常态。
+   只用 background-color / border-color 过渡，不改布局尺寸，插入时不推挤相邻行。 */
+.mon-tl-item.fresh {
+  animation: mon-tl-fresh 1.6s ease-out forwards;
+}
+@keyframes mon-tl-fresh {
+  0% { background: var(--accent-soft); border-color: var(--accent-border); }
+  60% { background: var(--accent-soft); border-color: var(--border); }
+  100% { background: var(--surface); border-color: var(--border); }
+}
 
 .mon-tl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
 .mon-tl-time {
@@ -7786,6 +7844,9 @@ select.rules-control {
 }
 @media (max-width: 560px) {
   .mon-probe-bar { padding: 8px 10px; }
+  /* LIVE 徽标整行独占（状态 + 速率 + 降级说明），操作按钮换到下一行左对齐。 */
+  .mon-probe-live { flex: 1 1 100%; flex-wrap: wrap; row-gap: 2px; }
+  .mon-probe-bar-actions { flex: 1 1 100%; }
   /* 标题优先占第一行；账号徽标放得下就同行靠右，放不下换到下一行左缘，名称整句显示。 */
   .mon-tl-title { flex: 1 1 80px; }
   .mon-tl-account { flex: 0 1 auto; }
@@ -8175,8 +8236,8 @@ html[data-theme="light"] .mon-topo-body { background-image: radial-gradient(circ
 /* 调用端小卡：名称 + 占比 / 等宽标识 / 1px 进度条，每卡一个色系。 */
 .mon-client {
   display: grid;
-  gap: 5px;
-  padding: 10px 12px;
+  gap: 3px;
+  padding: 8px 11px;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
@@ -9723,4 +9784,19 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
   .mon-rules-toolbar-right { width: 100%; justify-content: space-between; }
   .mon-rule-card { padding: 12px; }
   .mon-rule-editor-row, .mon-rule-editor-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 概览页不再有页内标题条（参考里 tab 下面直接是 KPI 卡）：窗口/心跳/刷新收成
+   一条 28px 高的轻量信息行，不占首屏的主导位置。 */
+.mon-overview-strip {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  min-width: 0; margin-bottom: 10px;
+}
+.mon-overview-stamp { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.mon-overview-note { color: var(--subtle); font-size: 11.5px; min-width: 0; }
+.mon-overview-refresh { margin-left: auto; flex: none; }
+@media (max-width: 640px) {
+  .mon-overview-strip { gap: 6px; }
+  .mon-overview-note { flex: 1 1 100%; order: 3; }
+  .mon-overview-refresh { margin-left: 0; }
 }
