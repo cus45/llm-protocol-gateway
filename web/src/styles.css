@@ -6950,8 +6950,8 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   flex: none;
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 12px;
   background: var(--accent-grad);
   color: #fff;
@@ -8063,6 +8063,14 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
   border: 1px solid var(--border);
   background: var(--surface-soft);
 }
+/* 事件流页：桌面端把整页撑到与 fixed 侧栏同高（shell 上下各 16px），
+   视窗吃掉剩余高度，脚注正好落在侧栏底缘；窄屏侧栏在文档流里，保持整页滚动。 */
+@media (min-width: 901px) {
+  .monitoring-page.mon-stream-fill { display: flex; flex-direction: column; height: calc(100dvh - 32px); }
+  .monitoring-page.mon-stream-fill > .mon-tab-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .monitoring-page.mon-stream-fill .mon-ev { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .monitoring-page.mon-stream-fill .mon-ev-viewport { height: auto; flex: 1 1 0; min-height: 240px; }
+}
 
 /* 脉冲流：左侧一条渐变光轨，每张卡片用一颗珠子吸附在轨上。 */
 .mon-ev-stream { position: relative; padding: 14px 14px 14px 38px; }
@@ -8358,7 +8366,7 @@ html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(
   position: relative;
   display: grid;
   gap: 2px;
-  padding: 14px;
+  padding: 18px 14px;
   min-width: 0;
   background: linear-gradient(180deg, color-mix(in srgb, var(--mon-tone) 5%, var(--surface)) 0%, var(--surface) 72%);
   transition: border-color 0.15s ease;
@@ -8380,16 +8388,15 @@ html[data-theme="dark"] .mon-meta { box-shadow: var(--shadow-soft), 0 12px 30px 
 .mon-meta-blue { --mon-tone: var(--blue); }
 .mon-meta-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .mon-meta-label { color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+/* 参考的 KPI 角标是 16px 纯图标（无底色方块、无边框，只取主题色）。
+   我们原来是 24px 带底色和边框的方块——视觉重量比标题还重，与参考的克制感相反。 */
 .mon-meta-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  border: 1px solid color-mix(in srgb, var(--mon-tone) 28%, transparent);
-  background: color-mix(in srgb, var(--mon-tone) 10%, var(--surface));
+  width: 16px;
+  height: 16px;
   color: var(--mon-tone);
 }
 /* 数字与单位同一基线：数字 28px / 700，单位 12.5px / 500，胶囊 10.5px 等宽。 */
@@ -8656,6 +8663,9 @@ html[data-theme="dark"] .mon-topo { box-shadow: 0 18px 44px -32px var(--topo-ton
   padding: 11px 14px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 72%, transparent);
+  /* 筛选下拉在头部：抬高层级，双栏菜单才不会被下面的拓扑集群盖住。 */
+  position: relative;
+  z-index: 5;
 }
 .mon-topo-head-main { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; flex: 1 1 520px; }
 /* 呼吸圆点：核心点 + 向外扩散的光环（2s 一次），与 .live-dot 同一语言但更醒目。 */
@@ -8692,40 +8702,17 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
 
 .mon-topo-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .mon-topo-filter-label { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
-.mon-topo-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* 与日志页 / 账号页同一个二级下拉；高度对齐拓扑头部的小号控件。 */
+.mon-topo-select { flex: 0 1 240px; min-width: 180px; }
+.mon-topo-select .icon-select-trigger {
   height: var(--control-h-sm);
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 60%, transparent);
-  color: var(--muted);
-  font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.13s ease, border-color 0.13s ease, color 0.13s ease;
+  padding-left: 10px;
+  background-color: color-mix(in srgb, var(--surface) 60%, transparent);
+  background-position: right 10px center;
 }
-.mon-topo-chip:hover { border-color: var(--border-strong); color: var(--text); }
-.mon-topo-chip:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-.mon-topo-chip-count {
-  min-width: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--surface-sunken);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 15px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.mon-topo-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.mon-topo-chip.on .mon-topo-chip-count { background: color-mix(in srgb, #fff 22%, transparent); color: #fff; }
+/* 筛选器在卡片右端：菜单右对齐向左展开，避免 520px 宽的双栏菜单顶出视口。 */
+.mon-topo-select .searchable-select-menu.inline { left: auto; right: 0; }
 
 .mon-topo-body {
   position: relative;
@@ -8733,7 +8720,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
-  padding: 35px 20px 33px;
+  padding: 23px 20px 21px;
   min-width: 0;
   /* 点阵底纹：参考图里的一层极淡网格，用 --topo-tone 推导，明色下压低到 4%。 */
   background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
@@ -8984,6 +8971,11 @@ html[data-theme="light"] .mon-cluster-status.down { color: color-mix(in srgb, va
   .mon-topo-head { padding: 10px 12px; }
   .mon-topo-filter-label { display: none; }
   .mon-topo-foot { padding: 8px 12px; }
+  /* 窄屏筛选器占满一行：180px 的触发器会把双栏菜单挤成「150 + 30」。 */
+  .mon-topo-filter { flex: 1 1 100%; }
+  .mon-topo-select { flex: 1 1 100%; min-width: 0; }
+  /* 窄屏双栏菜单收成触发器宽度：520px 的固定最小宽会顶出视口 1~2px。 */
+  .mon-topo-select .searchable-select-menu.inline { left: 0; right: 0; min-width: 0; }
 }
 
 @media (max-width: 1180px) {
@@ -9087,35 +9079,18 @@ html[data-theme="light"] .mon-cluster-status.down { color: color-mix(in srgb, va
   background: color-mix(in srgb, var(--surface) 90%, transparent);
   backdrop-filter: blur(8px);
   min-width: 0;
+  /* backdrop-filter 自带层叠上下文：不抬高层级的话，内联二级下拉会被后面的账号卡盖住。 */
+  position: relative;
+  z-index: 5;
 }
 .mon-acc-toolbar-main { display: flex; align-items: center; gap: 10px; flex: 1 1 420px; min-width: 0; }
 .mon-acc-toolbar-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .mon-acc-search { position: relative; display: flex; align-items: center; flex: 1 1 200px; max-width: 320px; min-width: 0; }
 .mon-acc-search .monitoring-input { width: 100%; height: var(--control-h-sm); padding-left: 32px; border-radius: var(--r-md); }
 .mon-acc-search-icon { position: absolute; left: 11px; color: var(--subtle); pointer-events: none; }
-.mon-acc-vendors { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
-.mon-acc-vendors::-webkit-scrollbar { display: none; }
-.mon-acc-vendor {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: var(--control-h-sm);
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  background: var(--surface-sunken);
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.13s ease, border-color 0.13s ease, color 0.13s ease;
-}
-.mon-acc-vendor:hover { border-color: var(--border-strong); color: var(--text); }
-.mon-acc-vendor:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-.mon-acc-vendor.on { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); font-weight: 600; }
+/* Provider 筛选：与日志页同一个二级下拉（左品牌 / 右账号），高度对齐旁边的小号筛选件。 */
+.mon-acc-provider-filter { flex: 0 1 240px; min-width: 170px; }
+.mon-acc-provider-filter .icon-select-trigger { height: var(--control-h-sm); font-size: 12px; padding-left: 10px; background-position: right 10px center; }
 
 .mon-acc-select { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .mon-acc-select-label { color: var(--subtle); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
@@ -9195,10 +9170,10 @@ select.mon-acc-select-input {
 }
 @container (max-width: 600px) {
   .mon-acc-grid { grid-template-columns: minmax(0, 1fr); }
-  /* 窄屏厂商胶囊换行而不是横滚：滚出去的「claude」看不见就等于没有这个筛选项。 */
   .mon-acc-toolbar-main { flex-wrap: wrap; }
   .mon-acc-search { flex: 1 1 100%; max-width: none; }
-  .mon-acc-vendors { flex: 1 1 100%; flex-wrap: wrap; overflow-x: visible; }
+  .mon-acc-provider-filter { flex: 1 1 100%; min-width: 0; }
+  .mon-acc-provider-filter .searchable-select-menu.inline { left: 0; right: 0; min-width: 0; }
 }
 
 .mon-acc-card {
@@ -10456,8 +10431,8 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    参考拓扑卡 1172 = 主栏 1216 − 两侧 21 + 边框。 */
 /* 六个 tab 统一内边距：参考账号页容器 1176 = 主栏 1216 − 两侧 20，概览拓扑 1172
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
-.monitoring-page .mon-tab-panel { padding: 0 20px; }
-.monitoring-page .mon-overview { padding: 2px; }
+.monitoring-page .mon-tab-panel { padding: 0; }
+.monitoring-page .mon-overview { padding: 22px; }
 
 /* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
    在监控页里显得比方一点。只作用于监控页，不动全站。 */
@@ -10465,3 +10440,10 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .monitoring-page .mon-set-card,
 .monitoring-page .mon-meta,
 .monitoring-page .mon-topo { border-radius: 16px; }
+
+/* 监控页需要满宽 1216（参考内容区 1172 + 两侧 22）。.main 在桌面端给所有页面补了
+   20px 左内边距来和侧栏拉开距离；监控页自己带 tab 面板内边距，这里抵消掉，
+   避免内容被连扣两次（1216 → 1196 → 1152）。 */
+@media (min-width: 901px) {
+  .main .monitoring-page { margin-left: -20px; }
+}
