@@ -242,12 +242,14 @@ export interface ProbesTabProps {
   onDismissResult: () => void;
   onRunProbe: (providerId: string) => Promise<MonitorProbeRunResult | null>;
   onFilter: (providerId: string) => void;
+  /** 流状态上报给外层：页签上的 LIVE / PAUSED 徽标与页面里的状态保持一致。 */
+  onModeChange?: (mode: MonitorProbeStreamMode) => void;
 }
 
 export function ProbesTab(props: ProbesTabProps) {
   const {
     probeAccounts, providerFilter, timezone, busy, error, iconOf,
-    probeResult, onDismissResult, onRunProbe, onFilter,
+    probeResult, onDismissResult, onRunProbe, onFilter, onModeChange,
   } = props;
 
   // ── 实时流 ────────────────────────────────────────────────────────────
@@ -306,6 +308,7 @@ export function ProbesTab(props: ProbesTabProps) {
   const pinnedRef = useRef(true);
   const pausedStateRef = useRef(false);
 
+  useEffect(() => { onModeChange?.(mode); }, [mode, onModeChange]);
   useEffect(() => { providerRef.current = providerFilter; }, [providerFilter]);
   useEffect(() => { clearedAtRef.current = clearedAt; }, [clearedAt]);
   useEffect(() => { pageShownRef.current = pageShown; }, [pageShown]);
@@ -743,7 +746,7 @@ export function ProbesTab(props: ProbesTabProps) {
               {'极速终端'}
             </button>
           </div>
-          <Switch checked={pinned} label="置顶锁定最新" disabled={mode === 'poll'} onChange={setPinned} />
+          <Switch checked={pinned} label="置顶锁定最新" onChange={setPinned} />
           <span className="mon-probe-meta" title={newestStamp?.title ?? '还没有事件'}>
             {newestStamp ? `最新事件 ${newestStamp.text}` : '最新事件 —'}
           </span>
@@ -771,7 +774,12 @@ export function ProbesTab(props: ProbesTabProps) {
 
       {/* ② 分类页签（带计数）+ 搜索：与参考的 Category Filter Tabs 同构。 */}
       <div className="mon-ev-filters">
-        <div className="mon-ev-cats" role="group" aria-label="按事件类型筛选">
+        <div
+          className="mon-ev-cats"
+          role="group"
+          aria-label="按事件类型筛选"
+          title="计数只统计已载入的 24h 事件（不含尚未加载的历史页）"
+        >
           {EVENT_CATEGORIES.map((item) => {
             const active = category === item.id;
             return (

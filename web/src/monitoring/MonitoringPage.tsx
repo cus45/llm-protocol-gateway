@@ -41,6 +41,7 @@ import type {
     MonitorProbeConfig,
     MonitorProbeRun,
     MonitorProbeRunResult,
+    MonitorProbeStreamMode,
     MonitorRule,
     MonitorSeverity,
 } from './types';
@@ -186,6 +187,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const probeRunSeq = useRef(0);
   // 弹层里的探测结果按 providerId 存：轮询换新数据时结果不跟着丢，新的探测覆盖旧的。
   const [probeResult, setProbeResult] = useState<{ providerId: string; data: MonitorProbeRunResult } | null>(null);
+  // 页签徽标跟随事件流自身的状态（暂停 / 轮询降级都算非 LIVE），而不是只看采集器时间。
+  const [probeStreamMode, setProbeStreamMode] = useState<MonitorProbeStreamMode>('live');
   /*
    * 配置表单的编辑草稿。只在「首次拿到后端配置」与「保存成功」时重置，
    * 之后的 15 秒轮询不覆盖未保存的编辑；null = 跟随后端值。
@@ -597,7 +600,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     overview: null,
     accounts: { tone: 'plain', text: `${accountTotal} 节点` },
     alerts: firingCount > 0 ? { tone: 'amber', text: String(firingCount) } : null,
-    probes: probeStale ? { tone: 'paused', text: 'PAUSED' } : { tone: 'live', text: 'LIVE' },
+    probes: tab === 'probes'
+      ? probeStreamMode === 'live' ? { tone: 'live', text: 'LIVE' } : { tone: 'paused', text: 'PAUSED' }
+      : probeStale ? { tone: 'paused', text: 'PAUSED' } : { tone: 'live', text: 'LIVE' },
     rules: ruleTotal > 0 ? { tone: 'plain', text: `${rulesEnabled} 条` } : null,
     settings: null,
   };
@@ -810,6 +815,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           onDismissResult={() => setProbeResult(null)}
           onRunProbe={runProbeFor}
           onFilter={filterProbes}
+          onModeChange={setProbeStreamMode}
         />
       )}
 
