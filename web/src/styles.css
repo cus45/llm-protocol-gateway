@@ -7988,8 +7988,8 @@ html[data-theme="dark"] .mon-meta { box-shadow: var(--shadow-soft), 0 12px 30px 
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--r-sm);
   border: 1px solid color-mix(in srgb, var(--mon-tone) 28%, transparent);
   background: color-mix(in srgb, var(--mon-tone) 10%, var(--surface));
