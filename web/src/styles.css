@@ -7952,7 +7952,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 /* grid 项的自动最小尺寸是 min-content：页签轨（nowrap、574px 宽）会经 section-full 的轨道
    一路传上来，把 390 视口整页撑到 573px。监控页自己的网格一律 minmax(0, …)，即下面这些；
    顶栏与页签也钉到整宽并以 0 宽参与，唯一的横向溢出留给 .mon-tabs 自己滚。 */
-.mon-overview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.mon-overview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .mon-header, .mon-tabs, .mon-tab-panel { grid-column: 1 / -1; min-width: 0; }
 .mon-overview > .panel-header { margin-bottom: 0; }
 
@@ -8060,6 +8060,16 @@ html[data-theme="light"] .mon-meta-foot-right.accent { color: var(--accent-stron
    会各自按内容宽度收缩；这里统一成一列网格，与 .log-table 同间距。 */
 .mon-log-table { display: grid; gap: 8px; min-width: 0; }
 .mon-overview-note { margin-top: 2px; font-size: 11.5px; color: var(--muted); }
+.mon-overview-error {
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--red-soft);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
 
 /* 账号 / 告警 / 事件 三张卡都只是行列表的容器：不加 minwidth-fit 时，卡片会按
    「最长一行」的最小内容宽度撑开，桌面全宽看不出，390 下整页被顶到 700px+。 */
@@ -8078,7 +8088,7 @@ html[data-theme="light"] .mon-meta-foot-right.accent { color: var(--accent-stron
 }
 .mon-duo-card {
   display: grid;
-  grid-template-rows: max-content max-content max-content;
+  grid-template-rows: max-content minmax(0, 1fr) max-content;
   align-content: start;
   gap: 10px;
   padding: 14px 16px 12px;
@@ -8153,6 +8163,31 @@ html[data-theme="light"] .mon-meta-foot-right.accent { color: var(--accent-stron
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+/* 雷达卡：左五边形雷达 + 右维度条（对齐参考的 Cluster Resilience Radar）。
+   雷达只连有数据的维度；无数据维度在圆心画一枚空心点，不补 0。 */
+.mon-radar-body { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.mon-radar { flex: none; display: grid; place-items: center; width: 190px; height: 190px; min-width: 0; }
+.mon-radar-svg { width: 100%; height: 100%; overflow: visible; }
+.mon-radar-grid { fill: none; stroke: var(--border); stroke-width: 1; }
+.mon-radar-axis { stroke: var(--border); stroke-width: 1; }
+.mon-radar-shape {
+  fill: color-mix(in srgb, var(--accent) 20%, transparent);
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  transition: opacity 0.2s ease;
+}
+.mon-radar-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5; }
+.mon-radar-dot.green { fill: var(--green); }
+.mon-radar-dot.amber { fill: var(--amber); }
+.mon-radar-dot.red { fill: var(--red); }
+.mon-radar-dot.blue { fill: var(--blue); }
+.mon-radar-dot.is-empty { fill: var(--surface); stroke: var(--subtle); stroke-dasharray: 2 2; stroke-width: 1; }
+@media (max-width: 900px) {
+  .mon-radar-body { flex-direction: column; align-items: stretch; }
+  .mon-radar { width: 170px; height: 170px; align-self: center; }
 }
 
 /* 实时状态条：左侧呼吸点 + 时间 + 等宽 payload；payload 允许折行，主信息不省略。 */
@@ -8239,6 +8274,7 @@ html[data-theme="dark"] .mon-topo { box-shadow: 0 18px 44px -32px var(--topo-ton
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 .mon-topo-title { margin: 0; color: var(--text-strong); font-size: 13px; font-weight: 700; letter-spacing: 0.01em; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+.mon-topo-title-en { color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0; white-space: nowrap; }
 .mon-topo-badge {
   padding: 1px 8px;
   border-radius: var(--r-xs);
@@ -8261,7 +8297,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   align-items: center;
   gap: 6px;
   height: var(--control-h-sm);
-  padding: 0 5px 0 10px;
+  padding: 0 10px;
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 60%, transparent);
@@ -8297,7 +8333,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
-  padding: 28px 20px 26px;
+  padding: 24px 20px 22px;
   min-width: 0;
   /* 点阵底纹：参考图里的一层极淡网格，用 --topo-tone 推导，明色下压低到 4%。 */
   background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
@@ -9963,4 +9999,4 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 
 /* 概览外层卡的内边距收窄到 14px：参考的内容区宽 1172（1440 视口、侧栏 230），
    我们用 18/20 时只剩 1098，拓扑三栏因此被压窄 74px。 */
-.monitoring-page .mon-overview.card.panel { padding: 14px; }
+.monitoring-page .mon-overview.card.panel { padding: 21px; }
