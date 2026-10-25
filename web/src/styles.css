@@ -6860,11 +6860,12 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .monitoring-cols {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  /* 子卡用 subgrid 共享这两条轨道：两卡等高，且高度随内容走；账号一多，整块封顶 690px，
-     两卡列表各自在卡内滚动（不把概览页拉成几千像素，也不留死白）。
-     封顶栏是 minmax(36px, 690px)：直接用 max-height 会让子网格里 auto 的轨道、flex:1 0
-     的滚动区退化成 0 高（卡片只剩标题）。 */
-  grid-template-rows: max-content minmax(36px, 690px);
+  /* 子卡用 subgrid 共享这两条轨道：两卡等高，且高度随内容走；账号一多，整块封顶约一屏
+     （690px），两卡列表各自在卡内滚动（不把概览页拉成几千像素，也不留死白）。
+     封顶栏用 minmax(0, 690px)：直接写 max-height 会让子网格里 auto 的轨道、flex:1 0
+     的滚动区退化成 0 高（卡片只剩标题）。最小 0 也不能省：minmax(auto, …) 的自动下限
+     按内容算，会绕过 690px 上限。 */
+  grid-template-rows: max-content minmax(0, 690px);
   gap: 12px;
 }
 
@@ -7002,7 +7003,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   .monitoring-cols {
     grid-template-columns: minmax(0, 1fr);
     /* 单列上下排：两张卡各自封顶，告警多时卡内滚动，账号卡不被推到很下面。 */
-    grid-template-rows: minmax(36px, 690px) minmax(36px, 480px);
+    grid-template-rows: minmax(0, 690px) minmax(0, 480px);
   }
 }
 
