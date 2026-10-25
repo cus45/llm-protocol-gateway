@@ -2,11 +2,7 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './styles.css';
-import {
-    ApiKeyEditableField,
-    ApiKeyFixedModelField,
-    ApiKeyModelMappingControl
-} from './components/apikeys';
+import {ApiKeyEditableField, ApiKeyFixedModelField, ApiKeyModelMappingControl} from './components/apikeys';
 import {LogTimingWaterfall, MachineMetric, UsageRangeCalendar} from './components/charts';
 import {
     ApiKeyBatchBar,
@@ -15,19 +11,20 @@ import {
     ApiKeyFleetPane,
     ApiKeyFullTable,
     ApiKeysTopBar,
-    buildApiKeyUsageMap,
     type ApiKeyUsageSource,
-    type ApiKeyViewMode
+    type ApiKeyViewMode,
+    buildApiKeyUsageMap
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
-import {mergeModelsAcrossAccounts, type MergedModel} from './model_merge';
+import {type MergedModel, mergeModelsAcrossAccounts} from './model_merge';
 import {
     activePublicBaseURL,
     activeUIPublicBaseURL,
+    aggregateScheduleAttempts,
     antiAutofillProps,
     API_BASE,
-    API_KEYS_PAGE_SIZE,
     API_KEY_VIEW_STORAGE_KEY,
+    API_KEYS_PAGE_SIZE,
     apiKeyReferencesProvider,
     BACKEND_FAIL_STREAK_LIMIT,
     BACKEND_POLL_MS_LOCAL,
@@ -77,7 +74,6 @@ import {
     isTraeConnectKind,
     isTrafficLogError,
     isVisionModel,
-    aggregateScheduleAttempts,
     isWorkBuddyConnectKind,
     isZCodeConnectKind,
     loadBootSession,
@@ -159,7 +155,7 @@ import {groupProvidersByBrand, providerSelectOptions} from './components/provide
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
 import {ReplayPanel, ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
-import {IconSelect, MultiSelectFilter, SearchableModelSelect} from './components/selects';
+import {IconSelect, MultiSelectFilter} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
 import {
@@ -216,7 +212,13 @@ import {
     URLRow
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
-import {CURRENT_APP_VERSION, dismissUpgrade, fetchLatestAppVersion, isNewerVersion, reloadToVersion} from './app_version';
+import {
+    CURRENT_APP_VERSION,
+    dismissUpgrade,
+    fetchLatestAppVersion,
+    isNewerVersion,
+    reloadToVersion
+} from './app_version';
 
 // 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
 const ALL_PROVIDERS_VALUE = '__all_providers__';
@@ -227,6 +229,13 @@ function App() {
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() => resolveTheme(readStoredTheme()));
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredSidebarCollapsed());
   useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 360);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   const [bootSession] = useState(loadBootSession);
   const [state, setState] = useState<GatewayState>(() => bootSession.state || fallbackState);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -4553,7 +4562,7 @@ function App() {
 
         <main className="main">
           {activeNav === 'api-keys' && (
-          <section className="section-full akc-page">
+          <section className={`section-full akc-page${apiKeyViewMode === 'split' ? ' akc-page-split' : ''}`}>
             <ApiKeysTopBar
               totalKeys={(state.apiKeys || []).length}
               enabledKeys={(state.apiKeys || []).filter((key) => key.enabled).length}
@@ -6429,6 +6438,24 @@ function App() {
           )}
         </main>
       </div>
+
+      {showScrollTop ? (
+        <button
+          type="button"
+          className="back-to-top"
+          title="回到顶部"
+          aria-label="回到顶部"
+          onClick={() => {
+            const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+            window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+          }}
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 19V6" />
+            <path d="M6 12l6-6 6 6" />
+          </svg>
+        </button>
+      ) : null}
 
       {trafficLogDetail && (() => {
         const statusInfo = explainHttpStatus(trafficLogDetail.status);

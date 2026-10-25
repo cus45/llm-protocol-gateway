@@ -1,5 +1,5 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {NavIcon} from '../components/ui';
 import {navPathForID} from '../lib';
 import type {NavItemID} from '../types';
@@ -36,7 +36,6 @@ import type {
     MonitorChannelView,
     MonitorDispatchConfig,
     MonitorEvent,
-    MonitorEventKind,
     MonitorOverview,
     MonitorProbeAccount,
     MonitorProbeConfig,
@@ -47,8 +46,8 @@ import type {
 } from './types';
 import {hasTime} from './types';
 import {displayTime} from './format';
-import {AccountsTab} from './AccountsTab';
 import type {AccountsProbeView} from './AccountsTab';
+import {AccountsTab} from './AccountsTab';
 import {AlertsTab} from './AlertsTab';
 import {OverviewTab} from './OverviewTab';
 import {PROBE_KIND_LIGHT, ProbesTab} from './ProbesTab';
@@ -63,7 +62,7 @@ const TABS: Array<{ id: TabID; label: string; icon: TabIconID }> = [
   { id: 'overview', label: '概览', icon: 'monitoring' },
   { id: 'accounts', label: '集群容灾与 SLA 矩阵', icon: 'input-providers' },
   { id: 'alerts', label: '告警中心', icon: 'quota-keeper' },
-  { id: 'probes', label: '探测', icon: 'traffic-tokens' },
+  { id: 'probes', label: '事件流 (实时流式)', icon: 'traffic-tokens' },
   { id: 'rules', label: '规则引擎', icon: 'output-providers' },
   { id: 'settings', label: '设置与调度', icon: 'settings' },
 ];
@@ -800,7 +799,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       {tab === 'probes' && (
         <ProbesTab
           probeAccounts={probeAccounts}
-          probeRuns={probeRuns}
           providerFilter={probeFilter}
           timezone={timezone}
           busy={probeRunBusy}
@@ -811,13 +809,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           }
           onDismissResult={() => setProbeResult(null)}
           onRunProbe={runProbeFor}
-          onRefreshRuns={() => void loadVisible()}
-          onClearRuns={() => {
-            probeRunsClearedRef.current = true;
-            setProbeRuns([]);
-          }}
           onFilter={filterProbes}
-          onOpenAccount={openAccount}
         />
       )}
 

@@ -1,25 +1,25 @@
-import { API_BASE, fetchWithTimeout } from '../lib';
+import {API_BASE, fetchWithTimeout} from '../lib';
 import type {
-  MonitorAccount,
-  MonitorIsolationResult,
-  MonitorAlert,
-  MonitorAlertDetail,
-  MonitorChannelInput,
-  MonitorChannelTestResult,
-  MonitorChannelView,
-  MonitorDispatchConfig,
-  MonitorEvent,
-  MonitorOverview,
-  MonitorPage,
-  MonitorProbeAccount,
-  MonitorProbeConfig,
-  MonitorProbePage,
-  MonitorProbeRun,
-  MonitorProbeRunResult,
-  MonitorQuotaResult,
-  MonitorRenewalResult,
-  MonitorRule,
-  MonitorSeverity,
+    MonitorAccount,
+    MonitorAlert,
+    MonitorAlertDetail,
+    MonitorChannelInput,
+    MonitorChannelTestResult,
+    MonitorChannelView,
+    MonitorDispatchConfig,
+    MonitorEvent,
+    MonitorIsolationResult,
+    MonitorOverview,
+    MonitorPage,
+    MonitorProbeAccount,
+    MonitorProbeConfig,
+    MonitorProbePage,
+    MonitorProbeRun,
+    MonitorProbeRunResult,
+    MonitorQuotaResult,
+    MonitorRenewalResult,
+    MonitorRule,
+    MonitorSeverity,
 } from './types';
 
 /**
@@ -392,5 +392,40 @@ export function parseStreamProbeFrame(raw: unknown): MonitorStreamProbeFrame | n
     : [];
   if (runs.length === 0) return null;
   return { providerId: asString(row.providerId) || runs[0].providerId, runs };
+}
+
+/**
+ * `event: events` 帧是一批事件行（与 GET /events 同形，可能缺 count/firstSeen 这类聚合字段）。
+ * 只收 id / time / title 都在的行，其余按系统事件补齐默认值；形状不对的行直接丢，
+ * 不让一条坏帧带崩整段增量。
+ */
+export function parseStreamEventsFrame(raw: unknown): MonitorEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: MonitorEvent[] = [];
+  for (const item of raw) {
+    const row = asRecord(item);
+    if (!row) continue;
+    const id = asNumber(row.id);
+    const time = asString(row.time);
+    const title = asString(row.title);
+    if (!id || !time || !title) continue;
+    rows.push({
+      id,
+      time,
+      kind: (asString(row.kind) || 'system') as MonitorEvent['kind'],
+      severity: (asString(row.severity) || 'info') as MonitorSeverity,
+      ruleKey: asString(row.ruleKey) || undefined,
+      targetType: asString(row.targetType),
+      targetId: asString(row.targetId) || undefined,
+      targetName: asString(row.targetName) || undefined,
+      title,
+      detail: asRecord(row.detail) ?? {},
+      status: (asString(row.status) || 'info') as MonitorEvent['status'],
+      count: asNumber(row.count) || 1,
+      firstSeen: asString(row.firstSeen) || time,
+      lastSeen: asString(row.lastSeen) || time,
+    });
+  }
+  return rows;
 }
 

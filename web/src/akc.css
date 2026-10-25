@@ -7,6 +7,24 @@
    ============================================================ */
 .akc-page { gap: 12px; }
 
+/* 双栏工作台吃满可视高度：卡片底边与侧栏底边齐平，密钥队列 / 详情在卡内滚动，
+   否则内容不足一屏时卡片下方会残留一条空带（底部对不齐）。
+   高度用 height 固定而非 min-height：详情内容很长（如 18 个备选 Provider）时
+   只让右侧面板内部滚动，整页不再被撑高、左侧队列也不会跟着拉长。 */
+@media (min-width: 1181px) {
+  .section-full.akc-page-split {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 32px);
+  }
+  .section-full.akc-page-split > *:not(.akc-split) { flex: 0 0 auto; }
+  .section-full.akc-page-split > .akc-split { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  /* .shell 的 16px 上下外边距会从 body 塌陷出去，body 仍是 100dvh，
+     结果文档比视口多 16px（全站历史遗留）。这里只在本页建立 BFC 掐掉，
+     否则页面还能往下滚 16px，滚动后底边又会错开。 */
+  body:has(.akc-page-split) { display: flow-root; }
+}
+
 /* — 顶部条 — */
 .akc-topbar {
   display: flex;

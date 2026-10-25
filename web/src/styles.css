@@ -7952,6 +7952,386 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
   .mon-probe-search .monitoring-input { max-width: none; }
 }
 
+/* ── 事件流页（对齐参考「事件流（实时流式）」）──────────────────────────────
+   控制条复用 .mon-probe-bar 的骨架；下面是分类页签、流式视窗与脚注。
+   分类色只表达「哪一类事件」，级别色（P0/P1/P2）另起一枚胶囊，两者都不单独表意：
+   卡片上永远有分类文字、级别文字和标题。 */
+.mon-ev { display: grid; gap: 10px; min-width: 0; }
+
+/* 控制条保持单行：状态 / 暂停 / 视图 / 置顶在左，动作在右。
+   「最新事件」是次要信息，1280 以下让位给动作按钮，避免整条折成两行。 */
+.mon-ev-bar .mon-probe-bar-main { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.mon-ev-bar .mon-probe-bar-main .mon-probe-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mon-ev-bar .mon-probe-bar-actions { flex: none; }
+@media (max-width: 1360px) {
+  .mon-ev-bar .mon-probe-meta { display: none; }
+}
+
+/* 视图分段控件：脉冲流图 / 极速终端 */
+.mon-ev-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+}
+.mon-ev-seg button {
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mon-ev-seg button:hover { color: var(--text); }
+.mon-ev-seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* 分类页签 + 搜索：页签一行，窄处换行；搜索固定 220px，放不下时整行换到下一行。 */
+.mon-ev-filters { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; min-width: 0; }
+.mon-ev-cats { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.mon-ev-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h-sm);
+  padding: 0 6px 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.mon-ev-cat:hover { color: var(--text); border-color: var(--border-strong); }
+.mon-ev-cat.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+/* 账号续期沿用参考里的绿色选中态；其余分类统一走主色。 */
+.mon-ev-cat.is-renewal.on { background: var(--green); border-color: var(--green); }
+.mon-ev-cat-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--subtle);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mon-ev-cat.on .mon-ev-cat-count { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.mon-ev-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h-sm);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--subtle);
+  min-width: 0;
+}
+.mon-ev-search:focus-within { border-color: var(--accent-border); }
+.mon-ev-search input {
+  width: 220px;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.mon-ev-search input::placeholder { color: var(--subtle); }
+
+/* 视窗：框内滚动，页面不被事件数量撑长；高度按视口扣掉顶栏 / 页签 / 控制条。 */
+.mon-ev-viewport {
+  position: relative;
+  height: clamp(300px, calc(100vh - 360px), 640px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+
+/* 脉冲流：左侧一条渐变光轨，每张卡片用一颗珠子吸附在轨上。 */
+.mon-ev-stream { position: relative; padding: 14px 14px 14px 38px; }
+.mon-ev-rail {
+  position: absolute;
+  left: 18px;
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  border-radius: 1px;
+  background: linear-gradient(to bottom, var(--accent) 0%, var(--blue) 45%, var(--green) 100%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.mon-ev-list { display: grid; gap: 8px; align-content: start; min-width: 0; }
+
+.mon-ev-card {
+  position: relative;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  transition: border-color 0.15s ease;
+}
+.mon-ev-card:hover { border-color: var(--border-strong); }
+.mon-ev-card.k-alert { border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }
+.mon-ev-card.k-renewal { border-color: color-mix(in srgb, var(--green) 30%, var(--border)); }
+/* 新条目入场：一次 0.9s 的主色描边 + 底色闪动，不改变布局。 */
+.mon-ev-card.fresh { animation: mon-ev-flash 0.9s ease-out 1; }
+@keyframes mon-ev-flash {
+  0% { border-color: var(--accent); background: var(--accent-soft); }
+  100% { border-color: var(--border); background: var(--surface); }
+}
+.mon-ev-bead {
+  position: absolute;
+  left: -26px;
+  top: 15px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--surface-soft);
+  background: var(--blue);
+}
+.mon-ev-card.k-alert .mon-ev-bead { background: var(--amber); }
+.mon-ev-card.k-renewal .mon-ev-bead { background: var(--green); }
+.mon-ev-card.k-checkin .mon-ev-bead { background: var(--purple); }
+.mon-ev-card.k-system .mon-ev-bead { background: var(--slate); }
+.mon-ev-card.s-p0 .mon-ev-bead { background: var(--red); }
+
+.mon-ev-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.mon-ev-time {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.mon-ev-sev,
+.mon-ev-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.mon-ev-sev.p0 { color: var(--red); background: var(--red-soft); }
+.mon-ev-sev.p1 { color: var(--amber); background: var(--amber-soft); }
+.mon-ev-sev.p2 { color: var(--blue); background: var(--blue-soft); }
+.mon-ev-sev.info { color: var(--slate); background: var(--slate-soft); }
+.mon-ev-kind.k-probe { color: var(--blue); background: var(--blue-soft); }
+.mon-ev-kind.k-alert { color: var(--amber); background: var(--amber-soft); }
+.mon-ev-kind.k-renewal { color: var(--green); background: var(--green-soft); }
+.mon-ev-kind.k-checkin { color: var(--purple); background: var(--purple-soft); }
+.mon-ev-kind.k-system { color: var(--slate); background: var(--slate-soft); }
+html[data-theme="dark"] .mon-ev-sev.p0 { color: #fca5a5; }
+html[data-theme="dark"] .mon-ev-sev.p1 { color: #fcd34d; }
+html[data-theme="dark"] .mon-ev-sev.p2 { color: #93c5fd; }
+html[data-theme="dark"] .mon-ev-kind.k-probe { color: #93c5fd; }
+html[data-theme="dark"] .mon-ev-kind.k-alert { color: #fcd34d; }
+html[data-theme="dark"] .mon-ev-kind.k-renewal { color: #6ee7b7; }
+html[data-theme="dark"] .mon-ev-kind.k-checkin { color: #c4b5fd; }
+html[data-theme="light"] .mon-ev-sev.p0 { color: color-mix(in srgb, var(--red) 88%, #000); }
+html[data-theme="light"] .mon-ev-sev.p1 { color: color-mix(in srgb, var(--amber) 88%, #000); }
+html[data-theme="light"] .mon-ev-kind.k-probe { color: color-mix(in srgb, var(--blue) 88%, #000); }
+html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(--green) 82%, #000); }
+
+.mon-ev-title { min-width: 0; color: var(--text); font-size: 12.5px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.mon-ev-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.mon-ev-target:hover { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-strong); }
+.mon-ev-target span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 指标格：只有探测 / 续期这类有结构化 detail 的事件才会出现，四列等宽。 */
+.mon-ev-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+.mon-ev-metric { display: grid; gap: 1px; min-width: 0; }
+.mon-ev-metric-label { color: var(--muted); font-size: 10.5px; }
+.mon-ev-metric-value {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.mon-ev-metric-value.err { color: var(--red); }
+.mon-ev-metric-value.muted { color: var(--subtle); }
+
+/* 原始 payload：等宽一行，按空格断行；error= 段标红。 */
+.mon-ev-payload {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.mon-ev-payload-prompt { flex: none; color: var(--subtle); user-select: none; }
+.mon-ev-segs { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
+.mon-ev-seg { color: var(--muted); overflow-wrap: anywhere; }
+.mon-ev-seg.err { color: var(--red); }
+
+/* 极速终端：高密度单行，整块可选中复制；标题行钉在顶部。 */
+.mon-ev-terminal {
+  min-height: 100%;
+  padding: 8px 10px;
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  user-select: text;
+}
+.mon-ev-term-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0 -10px 6px;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.mon-ev-term-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  min-width: 0;
+}
+.mon-ev-term-row:hover { background: var(--hover); }
+.mon-ev-term-time { flex: none; color: var(--subtle); font-variant-numeric: tabular-nums; }
+.mon-ev-term-sev { flex: none; font-weight: 700; }
+.mon-ev-term-sev.p0 { color: var(--red); }
+.mon-ev-term-sev.p1 { color: var(--amber); }
+.mon-ev-term-sev.p2 { color: var(--blue); }
+.mon-ev-term-sev.info { color: var(--subtle); }
+.mon-ev-term-kind { flex: none; font-weight: 600; }
+.mon-ev-term-kind.k-probe { color: var(--blue); }
+.mon-ev-term-kind.k-alert { color: var(--amber); }
+.mon-ev-term-kind.k-renewal { color: var(--green); }
+.mon-ev-term-kind.k-checkin { color: var(--purple); }
+.mon-ev-term-kind.k-system { color: var(--slate); }
+.mon-ev-term-title { flex: none; max-width: 42%; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon-ev-term-detail { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+
+.mon-ev-empty {
+  display: grid;
+  gap: 4px;
+  place-content: center;
+  justify-items: center;
+  min-height: 100%;
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.mon-ev-empty-title { color: var(--text); font-size: 13px; font-weight: 600; }
+
+.mon-ev-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.mon-ev-foot-actions { display: flex; align-items: center; gap: 8px; }
+
+/* 手动探测选择器：输入框 + 账号行（品牌图标 / 名称 / 上次 / 今日额度 / 触发）。 */
+.mon-ev-picker { display: grid; gap: 10px; }
+.mon-ev-picker .monitoring-input { width: 100%; }
+.mon-ev-picker-list {
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.mon-ev-picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border-bottom: 1px solid var(--border);
+}
+.mon-ev-picker-row:last-child { border-bottom: 0; }
+.mon-ev-picker-row:hover { background: var(--surface-soft); }
+.mon-ev-picker-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; }
+.mon-ev-picker-meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mon-ev-picker-note { margin: 0; color: var(--muted); font-size: 11.5px; }
+
+@media (max-width: 900px) {
+  .mon-ev-viewport { height: clamp(280px, calc(100vh - 330px), 520px); }
+  .mon-ev-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  /* 手机上整页滚动：框内再套一条滚动只会让人不知道自己在哪。 */
+  .mon-ev-viewport { height: auto; max-height: none; }
+  .mon-ev-stream { padding: 12px 10px 12px 32px; }
+  .mon-ev-rail { left: 14px; }
+  .mon-ev-bead { left: -22px; }
+  .mon-ev-search { width: 100%; }
+  .mon-ev-search input { width: 100%; }
+  .mon-ev-target { margin-left: 0; }
+  .mon-ev-term-row { flex-wrap: wrap; gap: 2px 6px; }
+  .mon-ev-term-title { max-width: 100%; white-space: normal; }
+  .mon-ev-picker-row { grid-template-columns: auto minmax(0, 1fr) auto; row-gap: 4px; }
+  .mon-ev-picker-row > .mon-ev-picker-meta:nth-of-type(2) { grid-column: 2 / -1; }
+}
+
 /* ── 概览页（v2，对齐参考「概览」）：四张量卡 / 五维评分 / 延迟分布 / 实时状态条 ──
    颜色只取既有 tokens（主调 --accent，正常 --green，偏高 --amber，超限 --red，
    信息 --blue）。量卡左侧一道色条 + 同色图标底标出归属；明色下用 --surface 打底，
