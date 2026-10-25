@@ -6939,7 +6939,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   gap: 12px 16px;
   min-width: 0;
   /* 与页签条同一条边距：参考里两行都从 24px 起，卡片通栏内边距是 16，这里各补 8。 */
-  padding: 11px 8px;
+  padding: 13px 8px;
   border-bottom: 1px solid var(--border);
 }
 /* flex-basis 必须给 0：auto 会让副标题按内容撑到 960px+，把右侧按钮组挤到下一行，
