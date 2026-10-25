@@ -7957,6 +7957,9 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
    分类色只表达「哪一类事件」，级别色（P0/P1/P2）另起一枚胶囊，两者都不单独表意：
    卡片上永远有分类文字、级别文字和标题。 */
 .mon-ev { display: grid; gap: 10px; min-width: 0; }
+.mon-ev-error { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.mon-ev-error span { min-width: 0; }
+.mon-ev-error .btn { flex: none; }
 
 /* 控制条保持单行：状态 / 暂停 / 视图 / 置顶在左，动作在右。
    「最新事件」是次要信息，1280 以下让位给动作按钮，避免整条折成两行。 */
@@ -8320,6 +8323,9 @@ html[data-theme="light"] .mon-ev-kind.k-renewal { color: color-mix(in srgb, var(
 @media (max-width: 560px) {
   /* 手机上整页滚动：框内再套一条滚动只会让人不知道自己在哪。 */
   .mon-ev-viewport { height: auto; max-height: none; }
+  /* 桌面端的「单行不换行」在窄处必须放开，否则 min-content 会把整页撑宽。 */
+  .mon-ev-bar .mon-probe-bar-main { flex-wrap: wrap; overflow: visible; }
+  .mon-ev-bar .mon-probe-bar-actions { flex: 1 1 100%; }
   .mon-ev-stream { padding: 12px 10px 12px 32px; }
   .mon-ev-rail { left: 14px; }
   .mon-ev-bead { left: -22px; }

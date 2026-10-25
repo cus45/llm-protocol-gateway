@@ -262,6 +262,8 @@ export function ProbesTab(props: ProbesTabProps) {
   const [totalCount, setTotalCount] = useState(0);
   const [pageShown, setPageShown] = useState(1);
   const [mode, setMode] = useState<MonitorProbeStreamMode>('live');
+  // 只有 onopen / 收到第一帧才算真的连上；建连期间不点亮绿色 LIVE。
+  const [connected, setConnected] = useState(false);
   const [streamNote, setStreamNote] = useState('');
   // 自增即重建 EventSource（轮询降级后点「重试实时流」）。
   const [attempt, setAttempt] = useState(0);
@@ -301,6 +303,8 @@ export function ProbesTab(props: ProbesTabProps) {
   const degradedRef = useRef(false);
   // 本次连接是否真的 open 过（EventSource 连上 text/event-stream 才会触发 onopen）。
   const openedRef = useRef(false);
+  // 降级到轮询时要主动关掉这条连接：否则浏览器会按自己的节奏无限重连 404/5xx。
+  const sourceRef = useRef<EventSource | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const providerRef = useRef(providerFilter);
   const clearedAtRef = useRef(0);
@@ -309,6 +313,8 @@ export function ProbesTab(props: ProbesTabProps) {
   const pausedStateRef = useRef(false);
 
   useEffect(() => { onModeChange?.(mode); }, [mode, onModeChange]);
+  // 结果一到就收起选择器：两层 Modal 叠在一起时点哪里都不对。
+  useEffect(() => { if (probeResult) setPickerOpen(false); }, [probeResult]);
   useEffect(() => { providerRef.current = providerFilter; }, [providerFilter]);
   useEffect(() => { clearedAtRef.current = clearedAt; }, [clearedAt]);
   useEffect(() => { pageShownRef.current = pageShown; }, [pageShown]);
@@ -420,11 +426,14 @@ export function ProbesTab(props: ProbesTabProps) {
   const degrade = useCallback((note: string) => {
     if (degradedRef.current) return;
     degradedRef.current = true;
+    sourceRef.current?.close();
+    sourceRef.current = null;
     pausedRef.current = false;
     backlogRef.current = [];
     setBacklogCount(0);
     setPaused(false);
     setMode('poll');
+    setConnected(false);
     setStreamNote(note);
     rateRef.current = [];
     setRateCount(0);
@@ -444,7 +453,9 @@ export function ProbesTab(props: ProbesTabProps) {
       return;
     }
     openedRef.current = false;
+    setConnected(false);
     const source = new EventSource(streamUrl(), { withCredentials: true });
+    sourceRef.current = source;
     let closed = false;
     let lastFrame = Date.now();
     /* 浏览器对 EventSource 断线重连的处理（实测）：
@@ -466,6 +477,7 @@ export function ProbesTab(props: ProbesTabProps) {
     const touch = () => {
       lastFrame = Date.now();
       gotDataRef.current = true;
+      setConnected(true);
       enterStream();
     };
 
@@ -473,6 +485,7 @@ export function ProbesTab(props: ProbesTabProps) {
       // 只有 onopen 才点亮 LIVE：正在建连、被 404/HTML 挡住时 onopen 不会来，徽标保持灰。
       openedRef.current = true;
       lastFrame = Date.now();
+      setConnected(true);
       enterStream();
     };
     source.onerror = () => {
@@ -538,6 +551,7 @@ export function ProbesTab(props: ProbesTabProps) {
       source.onopen = null;
       source.onerror = null;
       source.close();
+      if (sourceRef.current === source) sourceRef.current = null;
       gotDataRef.current = false;
       pausedRef.current = false;
       backlogRef.current = [];
@@ -634,11 +648,13 @@ export function ProbesTab(props: ProbesTabProps) {
       .finally(() => setLoadingMore(false));
   };
 
+  // 探测期间选择器保持打开（行内显示「探测中…」），成功后再收起、由外层弹结果；
+  // 请求本身失败就留在列表里给一句原因，不把人甩回事件流。
   const run = (providerId: string) => {
-    setPickerOpen(false);
     setRunError('');
     void onRunProbe(providerId).then((data) => {
-      if (!data) setRunError(`${nameOf(providerId)}：探测请求失败，请稍后重试`);
+      if (data) setPickerOpen(false);
+      else setRunError(`${nameOf(providerId)}：探测请求失败，请稍后重试`);
     });
   };
 
@@ -692,28 +708,46 @@ export function ProbesTab(props: ProbesTabProps) {
 
   return (
     <div className="mon-ev">
-      {(error || loadError) && <div className="mon-overview-error" role="alert">{loadError || error}</div>}
+      {(error || loadError) && (
+        <div className="mon-overview-error mon-ev-error" role="alert">
+          <span>{loadError || error}</span>
+          {loadError && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setReloadSeq((value) => value + 1)}
+            >
+              {'重试'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ① 控制条：LIVE 状态 + 暂停 + 两种视图 + 置顶 + 手动探测 + 清空（对齐参考的 Living Stream Pipeline）。 */}
       <div className="mon-ev-bar mon-probe-bar">
         <div className="mon-probe-bar-main" role="group" aria-label="事件实时流状态">
           <div
-            className={`mon-probe-live${mode === 'live' ? ' on' : ' off'}`}
+            className={`mon-probe-live${mode === 'live' && connected ? ' on' : ' off'}`}
             role="status"
             aria-live="polite"
             title={mode === 'poll'
               ? `实时流不可用${streamNote ? `（${streamNote}）` : ''}，已按 ${POLL_FALLBACK_MS / 1000} 秒轮询取数`
-              : mode === 'paused' ? '连接保持中，新事件已暂存，点「继续采集」一次补上' : 'SSE 实时流已连上'}
+              : mode === 'paused'
+                ? '连接保持中，新事件已暂存，点「继续采集」一次补上'
+                : connected ? 'SSE 实时流已连上' : '正在建立 SSE 连接，还没收到数据'}
           >
-            {mode === 'live'
+            {mode === 'live' && connected
               ? <span className="mon-probe-pulse" aria-hidden />
               : <span className="mon-probe-ind" aria-hidden />}
             <span className="mon-probe-live-text">{
-              mode === 'live' ? 'LIVE TAIL 流式采集'
+              mode === 'live'
+                ? connected ? 'LIVE TAIL 流式采集' : '正在连接实时流'
                 : mode === 'paused' ? 'STREAM PAUSED'
                 : '轮询模式'
             }</span>
-            <span className="mon-probe-rate" title="最近 5 秒收到的事件速率">{`${rateText(rateCount)} 条/秒`}</span>
+            {mode !== 'live' || connected
+              ? <span className="mon-probe-rate" title="最近 5 秒收到的事件速率">{`${rateText(rateCount)} 条/秒`}</span>
+              : null}
             {mode === 'paused' && backlogCount > 0 && (
               <span className="mon-probe-pending" title="恢复后一次补上">{`+${backlogCount} 待上屏`}</span>
             )}
@@ -885,7 +919,9 @@ export function ProbesTab(props: ProbesTabProps) {
         {!loading && filteredEvents.length > 0 && view === 'terminal' && (
           <div className="mon-ev-terminal">
             <div className="mon-ev-term-head">
-              <span>{`# NEXUS_GATEWAY_TELEMETRY_TAIL_SOCKET // ${mode === 'live' ? 'CONNECTED' : mode === 'paused' ? 'PAUSED' : 'POLLING'}`}</span>
+              <span>{`# NEXUS_GATEWAY_TELEMETRY_TAIL_SOCKET // ${
+                mode === 'live' ? (connected ? 'CONNECTED' : 'CONNECTING') : mode === 'paused' ? 'PAUSED' : 'POLLING'
+              }`}</span>
               <span>{`RATE: ${rateText(rateCount)} ops/sec`}</span>
             </div>
             {filteredEvents.map((ev) => {
@@ -957,7 +993,7 @@ export function ProbesTab(props: ProbesTabProps) {
                     <button
                       type="button"
                       className="btn btn-sm"
-                      disabled={probing}
+                      disabled={busy !== ''}
                       onClick={() => run(account.providerId)}
                       title={account.disabled ? '账号已停用；探测会记为「账号已停用，未探测」' : '现在就发一发最小对话探测'}
                     >
