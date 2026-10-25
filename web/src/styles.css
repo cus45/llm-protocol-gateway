@@ -10004,4 +10004,4 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    我们用 18/20 时只剩 1098，拓扑三栏因此被压窄 74px。 */
 /* 概览外层不再带 .card.panel（结构已改为 mon-overview 自身做容器）：直接给它内边距。
    参考拓扑卡 1172 = 主栏 1216 − 两侧 21 + 边框。 */
-.monitoring-page .mon-overview { padding: 21px; }
+.monitoring-page .mon-overview { padding: 22px; }
