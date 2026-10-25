@@ -8123,6 +8123,7 @@ html[data-theme="light"] .mon-meta-foot-right.accent { color: var(--accent-stron
   font-variant-numeric: tabular-nums;
 }
 .mon-card-sub { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.mon-score.is-muted { border-color: var(--border-strong); background: var(--surface-soft); color: var(--muted); }
 .mon-dim-list { display: grid; gap: 10px; min-width: 0; }
 .mon-dim { display: grid; gap: 4px; min-width: 0; }
 .mon-dim-top { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; min-width: 0; }
@@ -8167,6 +8168,8 @@ html[data-theme="light"] .mon-meta-foot-right.accent { color: var(--accent-stron
 
 /* 雷达卡：左五边形雷达 + 右维度条（对齐参考的 Cluster Resilience Radar）。
    雷达只连有数据的维度；无数据维度在圆心画一枚空心点，不补 0。 */
+.mon-latency-body { display: grid; grid-template-rows: max-content max-content minmax(0, 1fr); align-content: start; gap: 10px; min-width: 0; }
+.mon-duo-card > .mon-dims-empty { align-self: start; }
 .mon-radar-body { display: flex; align-items: center; gap: 18px; min-width: 0; }
 .mon-radar { flex: none; display: grid; place-items: center; width: 190px; height: 190px; min-width: 0; }
 .mon-radar-svg { width: 100%; height: 100%; overflow: visible; }
@@ -8333,7 +8336,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
-  padding: 24px 20px 22px;
+  padding: 35px 20px 33px;
   min-width: 0;
   /* 点阵底纹：参考图里的一层极淡网格，用 --topo-tone 推导，明色下压低到 4%。 */
   background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
@@ -9159,7 +9162,7 @@ html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); colo
 .mon-band-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
 .mon-band-p95 { color: var(--text-strong); font-family: var(--mono); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mon-band-where { color: var(--muted); font-size: 12px; }
-.mon-band-table { display: grid; gap: 4px; min-width: 0; }
+.mon-band-table { display: grid; align-content: space-evenly; gap: 4px; min-width: 0; }
 .mon-band {
   display: grid;
   grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
@@ -9999,4 +10002,6 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 
 /* 概览外层卡的内边距收窄到 14px：参考的内容区宽 1172（1440 视口、侧栏 230），
    我们用 18/20 时只剩 1098，拓扑三栏因此被压窄 74px。 */
-.monitoring-page .mon-overview.card.panel { padding: 21px; }
+/* 概览外层不再带 .card.panel（结构已改为 mon-overview 自身做容器）：直接给它内边距。
+   参考拓扑卡 1172 = 主栏 1216 − 两侧 21 + 边框。 */
+.monitoring-page .mon-overview { padding: 21px; }

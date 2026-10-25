@@ -61,11 +61,11 @@ type TabIconID = 'monitoring' | 'input-providers' | 'quota-keeper' | 'traffic-to
 
 const TABS: Array<{ id: TabID; label: string; icon: TabIconID }> = [
   { id: 'overview', label: '概览', icon: 'monitoring' },
-  { id: 'accounts', label: '账号', icon: 'input-providers' },
-  { id: 'alerts', label: '告警', icon: 'quota-keeper' },
+  { id: 'accounts', label: '集群容灾与 SLA 矩阵', icon: 'input-providers' },
+  { id: 'alerts', label: '告警中心', icon: 'quota-keeper' },
   { id: 'probes', label: '探测', icon: 'traffic-tokens' },
-  { id: 'rules', label: '规则', icon: 'output-providers' },
-  { id: 'settings', label: '设置', icon: 'settings' },
+  { id: 'rules', label: '规则引擎', icon: 'output-providers' },
+  { id: 'settings', label: '设置与调度', icon: 'settings' },
 ];
 
 type BadgeTone = 'plain' | 'amber' | 'live' | 'paused';
@@ -172,7 +172,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   // 筛选条括号里的合计要全量口径：另外两个状态各查一次（pageSize=1 只要 total）。
   const [alertCounts, setAlertCounts] = useState({ firing: 0, resolved: 0 });
   const [events, setEvents] = useState<MonitorEvent[]>([]);
-  const [eventTotal, setEventTotal] = useState(0);
   const [channels, setChannels] = useState<MonitorChannelView[]>([]);
   const [dispatch, setDispatch] = useState<MonitorDispatchConfig | null>(null);
   const [probeAccounts, setProbeAccounts] = useState<MonitorProbeAccount[]>([]);
@@ -202,7 +201,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const probeFilter = tab === 'probes' ? selectedAccount : '';
   const [statusFilter, setStatusFilter] = useState('firing');
   const [severityFilter, setSeverityFilter] = useState<MonitorSeverity | ''>('');
-  const [kindFilter, setKindFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [settingsError, setSettingsError] = useState('');
@@ -259,8 +257,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           pageSize: ALERT_PAGE,
         }),
         fetchEvents({
-          kind: kindFilter || undefined,
-          severity: severityFilter || undefined,
           range: '24h',
           pageSize: EVENT_PAGE,
         }),
@@ -277,7 +273,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       setAlerts(nextAlerts.items);
       setAlertTotal(nextAlerts.total);
       setEvents(nextEvents.items);
-      setEventTotal(nextEvents.total);
       if (nextChannels) setChannels(nextChannels);
       if (nextDispatch) setDispatch(nextDispatch);
       if (nextProbes) {
@@ -296,7 +291,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     } finally {
       if (mine === generation.current) setLoading(false);
     }
-  }, [dispatch, kindFilter, probeFilter, severityFilter, statusFilter, tab]);
+  }, [dispatch, probeFilter, severityFilter, statusFilter, tab]);
 
   useEffect(() => {
     void loadVisible();
@@ -509,21 +504,6 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
     void fetchAlert(id).then(setAlertDetail).catch(() => setError('告警详情读取失败'));
   }, [tab]);
 
-  const loadMoreEvents = () => {
-    void fetchEvents({
-      kind: kindFilter || undefined,
-      severity: severityFilter || undefined,
-      range: '24h',
-      page: Math.floor(events.length / EVENT_PAGE) + 1,
-      pageSize: EVENT_PAGE,
-    })
-      .then((page) => {
-        setEvents((current) => mergeByID(current, page.items));
-        setEventTotal(page.total);
-      })
-      .catch(() => setError('事件加载失败'));
-  };
-
   const loadMoreAlerts = () => {
     void fetchAlerts({
       status: statusFilter || undefined,
@@ -733,25 +713,13 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
         <OverviewTab
           overview={overview}
           accounts={accounts}
-          alerts={alerts}
-          alertTotal={alertTotal}
           events={events}
-          eventTotal={eventTotal}
-          kindFilter={kindFilter}
-          severityFilter={severityFilter}
           timezone={timezone}
-          iconOf={iconOf}
           loading={loading}
           error={error}
-          onKindFilter={setKindFilter}
-          onSeverityFilter={setSeverityFilter}
-          onLoadMoreEvents={loadMoreEvents}
           onOpenAccount={openAccount}
-          onOpenAlert={openAlert}
           onOpenTab={(next) => goTab(next, {})}
-          onOpenAlerts={() => goTab('alerts', {})}
           probeRuns={probeRuns}
-          onRetry={() => void loadVisible()}
         />
       )}
 
