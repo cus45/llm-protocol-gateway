@@ -6884,7 +6884,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   gap: 12px 16px;
   min-width: 0;
   /* 与页签条同一条边距：参考里两行都从 24px 起，卡片通栏内边距是 16，这里各补 8。 */
-  padding: 14px 8px;
+  padding: 12px 8px;
   border-bottom: 1px solid var(--border);
 }
 /* flex-basis 必须给 0：auto 会让副标题按内容撑到 960px+，把右侧按钮组挤到下一行，
@@ -6974,9 +6974,9 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   gap: 6px;
   flex: none;
   height: 30px;
-  padding: 0 12px;
+  padding: 0 14px;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 12px;
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -7849,7 +7849,7 @@ html[data-theme="dark"] .mon-meta { box-shadow: var(--shadow-soft), 0 12px 30px 
 .mon-meta-value {
   color: var(--text-strong);
   font-family: var(--mono);
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.05;
   letter-spacing: -0.02em;
