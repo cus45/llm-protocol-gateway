@@ -6966,26 +6966,40 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   .mrow-probe > :nth-child(6) { grid-column: 1 / -1; justify-self: stretch; }
 }
 
-/* 规则页（阶段 4）：开关 / 名称+目标徽标+检查间隔 / 级别 / 冷却 / 参数 / 恢复默认。
-   参数格按 defaultParams 动态渲染，条数在 1–4 之间浮动，所以参数列是 grid 子网格，
-   窄屏时整块折到下一行自己排；控制件只用 36/28 两档高度里的 28（行内档）。 */
+/* 规则页（阶段 4）。两行式规则行：
+   第一行（信息与固定列）：开关 / 名称+徽标+检查间隔 / 级别 / 冷却 / 恢复默认（行尾固定）。每一列
+   在所有行、所有断点下位置固定，「恢复默认」永远在行尾同一个格子里，不被参数条数挤动。
+   第二行（参数带）：整行铺开，每个参数一块（标签在上、控件在下，块宽固定 96/116px），
+   从参数带最左起排；参数再多也只会在这条带内向右延伸，不会回到行首、也不会漂到别的列。
+   控制件只用 36/28 两档高度里的 28（行内档）。 */
 .mrow-rule {
-  /* 级别列 88px：选项文案「P0 · 严重」实测约 47px，加上左右内边距与 24px 的
-     下拉箭头，64px 只剩 32px 可用宽度，会把文字裁成「P0 · 严」。 */
-  grid-template-columns: 76px minmax(0, 1.3fr) 88px 112px minmax(0, 2fr) 84px;
+  grid-template-columns: 76px minmax(0, 1fr) 96px 116px 116px 88px;
+  /* 控件 cell 默认 justify-self:stretch 且不收缩，宽内容会把网格撑出轨道两侧；统一改成 start。 */
+  justify-items: start;
+  grid-template-rows: auto auto;
+  row-gap: 8px;
 }
-.mrow-rule > .rules-actions { justify-self: end; }
-.rules-switch { display: flex; align-items: center; min-width: 0; }
-.rules-name { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
-.rules-name > .badge { flex: 0 0 auto; }
-.rules-name > .m-row-num { flex: 0 0 auto; }
+/* 第一行：开关 · 名称 · [级别+冷却] · 恢复默认。每一列在所有行、所有断点位置固定。 */
+.mrow-rule > .rules-name { grid-column: 2; grid-row: 1; min-width: 0; }
+.mrow-rule > .rules-fields { grid-column: 3 / 5; grid-row: 1; align-self: start; }
+.mrow-rule > .rules-actions { grid-column: 6; grid-row: 1; justify-self: end; align-self: start; }
+.mrow-rule > .rules-params { grid-column: 1 / -1; grid-row: 2; }
+.rules-switch { display: flex; align-items: center; min-width: 0; grid-column: 1; grid-row: 1; align-self: start; }
+.rules-fields { display: grid; grid-template-columns: 96px 116px; gap: 12px; min-width: 0; }
+/* 单行排：名称优先占宽（它是这一行的唯一标识），徽标与检查间隔可被截断，但不能把名称挤没。 */
+.rules-name { justify-self: stretch; display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; }
+.rules-name > .m-clip { flex: 1 1 auto; min-width: 4em; }
+.rules-name > .rules-interval { font-size: 11px; }
+.rules-name > .badge,
+.rules-name > .rules-interval { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rules-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rules-cell-label { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.3; }
 .rules-cell-note { color: var(--muted); font-size: 11px; line-height: 1.3; }
 /* 冷却与「分钟」同处一行：输入框与单位都用 .rules-control 的 28px 行高，单位只占文字高度。 */
-.rules-cooldown > .rules-control { flex: 1 1 auto; }
 .rules-cooldown { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.rules-cooldown > .rules-control { flex: 1 1 auto; }
 .rules-cooldown > .muted-text { flex: 0 0 auto; }
+/* 参数带：每个参数一块，块内标签在上、控件在下，块宽固定，块与块 gap 一致。 */
 .rules-params { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
 .rules-param { display: flex; flex-direction: column; gap: 2px; min-width: 0; width: 96px; }
 .rules-param-wide { width: 116px; }
@@ -7011,29 +7025,54 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 select.rules-control {
   appearance: none;
   -webkit-appearance: none;
-  padding-right: 24px;
+  padding-right: 20px;
   background-image: var(--select-caret);
   background-repeat: no-repeat;
-  background-position: right 8px center;
+  background-position: right 6px center;
   background-size: 12px;
   cursor: pointer;
 }
 .rules-num { font-variant-numeric: tabular-nums; }
 .rules-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.rules-dirty { border-color: var(--accent-border); }
+/* 参数带右侧的简短摘要（悬停给全量），宽度随内容但不能把按钮挤出列。
+   摘要自己占满剩余宽度，按钮因此贴在这一格的右缘：摘要长短不同时右缘不再漂
+   40px（审查 M1）。 */
+.rules-params-summary { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.rules-actions > .btn { flex: 0 0 auto; margin-left: auto; }
+/* 页头的「N 条未保存 + 保存规则」：别复用行内 .rules-actions（那个是行尾单格的布局），
+   用 panel-header-actions 原本的横排，计数不被按钮挤掉。 */
+.rules-header-actions { flex-wrap: nowrap; }
+.rules-header-actions > .btn { flex: 0 0 auto; }
+/* .muted-text 平台样式带 overflow:hidden，窄容器里会被压成 0 宽；计数必须一直看得见。 */
+.rules-header-actions > .rules-count { flex: 0 0 auto; overflow: visible; }
+.rules-header-actions > .muted-text { white-space: nowrap; }
+.log-row.rules-dirty { border-color: var(--accent-border); }
+/* 下拉里的 <option> 会继承 .log-row 的透明底，暗色主题下字色和弹层底色一个色，选中值看不见。 */
+/* 下拉弹层的选项：暗色下 --surface 与页面底色同值，选项看起来像浮在页面上。
+   用高一层级的 --surface-strong，明暗两主题下都与页面有边界。 */
+.rules-control option { color: var(--text); background: var(--surface-strong); }
 .rules-inline-error { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; min-width: 0; flex-wrap: wrap; }
+.rules-inline-notice { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; min-width: 0; flex-wrap: wrap; }
 .rules-err { color: var(--red); }
+/* ≤1100：第一行「开关 / 名称 / 级别 / 冷却」，「恢复默认」让到第二行开头（参数带之上），
+   仍然是每行同一位置；≤860 参数带整宽，摘要在窄处不显示（行尾按钮保持 88px 可点）。 */
 @media (max-width: 1100px) {
-  /* .mrow 的两列档把首尾格铺满整行；规则行自己排：开关+名称一行，级别/冷却/恢复默认
-     一行，参数整行铺开。 */
-  .mrow-rule { grid-template-columns: 76px minmax(0, 1fr) 88px 112px; }
-  .mrow-rule > .rules-switch,
-  .mrow-rule > .rules-actions { grid-column: auto; }
-  .mrow-rule > .rules-params { grid-column: 1 / -1; }
-  .rules-actions > .btn { white-space: nowrap; }
+  /* 第一行：开关 / 名称 / 级别+冷却；「恢复默认」固定到第二行行尾（仍在参数带上方，
+     每行同一位置），参数带整行铺开。 */
+  .mrow-rule { grid-template-columns: 76px minmax(0, 1fr) 96px 116px; }
+  .mrow-rule > .rules-fields { grid-column: 3 / 5; }
+  .mrow-rule > .rules-actions { grid-column: 1 / -1; grid-row: 2; justify-self: end; }
+  .mrow-rule > .rules-params { grid-row: 3; }
 }
-@media (max-width: 640px) {
-  .mrow-rule { grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1fr); }
-  .mrow-rule > .rules-params { grid-column: 1 / -1; }
-  .mrow-rule > .rules-actions { grid-column: 1 / -1; justify-self: start; }
+@media (max-width: 860px) {
+  /* 开关+名称第一行；级别+冷却第二行；恢复默认第三行行尾；参数带第四行。
+     名称独占一行：徽标与检查间隔换到名称下方，名称永远不会被挤成 0 宽。 */
+  .mrow-rule { grid-template-columns: 72px minmax(0, 1fr); }
+  .mrow-rule > .rules-fields { grid-column: 1 / -1; grid-row: 2; }
+  .mrow-rule > .rules-actions { grid-row: 3; }
+  .mrow-rule > .rules-params { grid-row: 4; }
+  .rules-params-summary { display: none; }
+  .rules-name { flex-wrap: wrap; align-items: center; overflow: visible; }
+  .rules-name > .m-clip { flex: 1 0 100%; min-width: 0; }
+  .rules-actions > .btn { white-space: nowrap; }
 }

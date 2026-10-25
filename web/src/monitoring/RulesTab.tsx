@@ -1,8 +1,8 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Switch} from '../components/ui';
 import {fetchRules, MonitorAPIError, saveRules} from './api';
 import type {MonitorRule, MonitorRuleSeverity} from './types';
-import {SEVERITY_TEXT} from './types';
+import {SEVERITY_SHORT} from './types';
 
 /**
  * 规则页。保存是整表替换（PUT 全部规则），所以草稿必须是整张表：
@@ -28,21 +28,6 @@ const SEVERITY_LABEL: Record<MonitorRuleSeverity, string> = { p0: 'P0', p1: 'P1'
 const WINDOW_CHOICES = [5, 10, 15];
 const COOLDOWN_MIN = 5;
 const COOLDOWN_MAX = 1440;
-/** 与 internal/monitoring/config.go 的 DefaultRules / defaultSeverity 保持一致。 */
-const DEFAULT_COOLDOWN_MINUTES = 60;
-const DEFAULT_SEVERITY: Record<string, MonitorRuleSeverity> = {
-  oauth_expiring: 'p0',
-  oauth_refresh_failed: 'p0',
-  auth_invalid: 'p0',
-  multi_ip: 'p0',
-  concurrent_ip: 'p0',
-  key_budget_warn: 'p2',
-  credit_expiring: 'p2',
-  ttft_regression: 'p2',
-  model_unavailable: 'p2',
-  collector_stale: 'p2',
-  checkin_failed: 'p2',
-};
 
 /**
  * 参数名文案与量纲。带 Ratio 的占比是指 0–1；minSamples / minCount / maxCount / minIPs
@@ -51,29 +36,31 @@ const DEFAULT_SEVERITY: Record<string, MonitorRuleSeverity> = {
  */
 interface ParamSpec {
   label: string;
+  /** 行尾「恢复默认」左侧的简短说明；空 = 不显示。 */
+  short: string;
   unit: string;
   kind: 'ratio' | 'int' | 'number';
 }
 
 const PARAM_SPECS: Record<string, ParamSpec> = {
-  leadMinutes: { label: '提前提醒', unit: '分钟', kind: 'int' },
-  leadHours: { label: '提前提醒', unit: '小时', kind: 'int' },
-  consecutiveFailures: { label: '连续失败', unit: '次', kind: 'int' },
-  consecutiveDays: { label: '连续失败', unit: '天', kind: 'int' },
-  windowMinutes: { label: '统计窗口', unit: '', kind: 'int' },
-  minCount: { label: '最少次数', unit: '次', kind: 'int' },
-  minSamples: { label: '最少样本', unit: '次', kind: 'int' },
-  maxCount: { label: '次数上限', unit: '次', kind: 'int' },
-  minIPs: { label: 'IP 数', unit: '个', kind: 'int' },
-  maxAgeMinutes: { label: '最大滞后', unit: '分钟', kind: 'int' },
-  minRatio: { label: '最低占比', unit: '', kind: 'ratio' },
-  maxRatio: { label: '占比上限', unit: '', kind: 'ratio' },
-  maxSuccessRatio: { label: '成功率下限', unit: '', kind: 'ratio' },
-  maxErrorRatio: { label: '错误率上限', unit: '', kind: 'ratio' },
-  warnRatio: { label: '预警占比', unit: '', kind: 'ratio' },
-  criticalRatio: { label: '耗尽占比', unit: '', kind: 'ratio' },
-  floorMs: { label: '延迟地板', unit: 'ms', kind: 'int' },
-  factor: { label: '回退倍数', unit: '倍', kind: 'number' },
+  leadMinutes: { label: '提前提醒', short: '提前', unit: '分钟', kind: 'int' },
+  leadHours: { label: '提前提醒', short: '提前', unit: '小时', kind: 'int' },
+  consecutiveFailures: { label: '连续失败', short: '连败≥', unit: '次', kind: 'int' },
+  consecutiveDays: { label: '连续失败', short: '连败≥', unit: '天', kind: 'int' },
+  windowMinutes: { label: '统计窗口', short: '窗口', unit: '', kind: 'int' },
+  minCount: { label: '最少次数', short: '次数≥', unit: '次', kind: 'int' },
+  minSamples: { label: '最少样本', short: '样本≥', unit: '次', kind: 'int' },
+  maxCount: { label: '次数上限', short: '次数≤', unit: '次', kind: 'int' },
+  minIPs: { label: 'IP 数', short: 'IP≥', unit: '个', kind: 'int' },
+  maxAgeMinutes: { label: '最大滞后', short: '滞后≤', unit: '分钟', kind: 'int' },
+  minRatio: { label: '最低占比', short: '占比≥', unit: '', kind: 'ratio' },
+  maxRatio: { label: '占比上限', short: '占比≤', unit: '', kind: 'ratio' },
+  maxSuccessRatio: { label: '成功率下限', short: '成功率≥', unit: '', kind: 'ratio' },
+  maxErrorRatio: { label: '错误率上限', short: '错误率≤', unit: '', kind: 'ratio' },
+  warnRatio: { label: '预警占比', short: '预警≤', unit: '', kind: 'ratio' },
+  criticalRatio: { label: '耗尽占比', short: '耗尽≥', unit: '', kind: 'ratio' },
+  floorMs: { label: '延迟地板', short: '地板', unit: 'ms', kind: 'int' },
+  factor: { label: '回退倍数', short: '倍数≥', unit: '倍', kind: 'number' },
 };
 
 /** targetType 徽标文案。 */
@@ -86,6 +73,21 @@ const TARGET_TEXT: Record<string, string> = {
 /** 草稿里参数一律按字符串存：type=number 清空时是 ''，直接转数字会变成 0。 */
 interface RuleDraft {
   key: string;
+  enabled: boolean;
+  severity: MonitorRuleSeverity;
+  cooldownMinutes: string;
+  params: Record<string, string>;
+}
+
+/** updateDraft 的 patch：只允许整字段，params 必须走 paramPatch（避免整块覆盖成 {}）。 */
+type RulePatch = Partial<Omit<RuleDraft, 'key' | 'params'>>;
+
+/**
+ * 「改没改」与「恢复默认」共用的基线：首次 GET（或保存成功后）那一刻的后端值。
+ * 参数默认值取 GET 的 defaultParams（参数块的键集合也来自它）；开关/级别/冷却直接取
+ * 当时的 GET 值——不在前端另存一份默认常量，免得和 config.go 漂移。
+ */
+interface RuleBaseline {
   enabled: boolean;
   severity: MonitorRuleSeverity;
   cooldownMinutes: string;
@@ -108,9 +110,14 @@ function toRequest(draft: RuleDraft): MonitorRule {
   } as MonitorRule;
 }
 
-function toDraft(rule: MonitorRule): RuleDraft {
+/** 一条规则 → 草稿。rule 缺失（键对不上）返回 null，调用方跳过，不抛。 */
+function toDraft(rule: MonitorRule | undefined): RuleDraft | null {
+  if (!rule) return null;
   const params: Record<string, string> = {};
-  for (const key of Object.keys(rule.defaultParams ?? {}).sort()) {
+  // 参数块的键集合取 defaultParams 与当前 params 的并集：老存储里可能缺某个键（那时 GET 的 params
+  // 没有它，显式给出 defaultParams 的键越多越安全），两边都列出来才不会漏掉可编辑的参数。
+  const keys = new Set([...Object.keys(rule.defaultParams ?? {}), ...Object.keys(rule.params ?? {})]);
+  for (const key of [...keys].sort()) {
     const value = rule.params?.[key];
     // 未配置/不适用留空，渲染成「—」；写 0 会被后端当成缺项而静默补默认值。
     params[key] = typeof value === 'number' && value > 0 ? String(value) : '';
@@ -124,8 +131,33 @@ function toDraft(rule: MonitorRule): RuleDraft {
   };
 }
 
+/** 一条草稿相对 GET 原值是否改过。GET 原值经 toDraft→toRequest 归一化，两边同口径。 */
+function dirtyOf(draft: RuleDraft, rules: MonitorRule[]): boolean {
+  const rule = rules.find((item) => item.key === draft.key);
+  const base = toDraft(rule);
+  if (!base) return false;
+  return !sameRule(toRequest(draft), toRequest(base));
+}
+
 function toDrafts(rules: MonitorRule[]): RuleDraft[] {
-  return rules.map(toDraft);
+  return rules.map((rule) => toDraft(rule)).filter((draft): draft is RuleDraft => draft !== null);
+}
+
+function baselineOf(rules: MonitorRule[]): Map<string, RuleBaseline> {
+  const out = new Map<string, RuleBaseline>();
+  for (const rule of rules) {
+    const params: Record<string, string> = {};
+    for (const key of Object.keys(rule.defaultParams ?? {})) {
+      params[key] = rule.defaultParams[key] > 0 ? String(rule.defaultParams[key]) : '';
+    }
+    out.set(rule.key, {
+      enabled: rule.enabled,
+      severity: rule.severity === 'p0' || rule.severity === 'p2' ? rule.severity : 'p1',
+      cooldownMinutes: String(rule.cooldownMinutes),
+      params,
+    });
+  }
+  return out;
 }
 
 /** 两条规则配置是否相同。不用 JSON.stringify 比：参数对象的键顺序不受控。 */
@@ -175,7 +207,14 @@ function paramHint(key: string, spec: ParamSpec | undefined): string {
 
 export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
   const [rules, setRules] = useState<MonitorRule[]>([]);
-  const [drafts, setDrafts] = useState<RuleDraft[]>([]);
+  /*
+   * 草稿放 ref：同一拍里连续两次改动，state 里的旧值会被后一次覆盖（读不到前一次）。
+   * 每次写 ref 后再 bump 一个版本号触发重渲染。渲染里读的 drafts 永远是最新写入。
+   */
+  const draftsRef = useRef<RuleDraft[]>([]);
+  const [, setDraftVersion] = useState(0);
+  const drafts = draftsRef.current;
+  const [baseline, setBaseline] = useState<Map<string, RuleBaseline>>(() => new Map());
   const [loadError, setLoadError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -189,7 +228,8 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
       .then((next) => {
         if (cancelled) return;
         setRules(next);
-        setDrafts(toDrafts(next));
+        writeDrafts(toDrafts(next));
+        setBaseline(baselineOf(next));
         setLoadError('');
       })
       .catch((reason: unknown) => {
@@ -204,36 +244,37 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
     };
   }, []);
 
-  const ruleOf = useMemo(() => new Map(rules.map((rule) => [rule.key, rule])), [rules]);
-  // 「改没改」的比较：两侧都过 toRequest（只留填了值的参数），参数键顺序不同不会被当成脏。
-  const cleanOf = new Map(rules.map((rule) => [rule.key, toRequest(toDraft(rule))]));
+  const ruleOf = new Map(rules.map((rule) => [rule.key, rule]));
+  // 「改没改」：GET 原样值过 toDraft → toRequest 归一化后与草稿逐字段比（同源同口径，参数键顺序无关）。
+  // 「改没改」只看 GET 原值：每次渲染现算（规则 18 条，开销可忽略；缓存键漏字段会让行永远「未保存」）。
   const dirtyKeys = new Set(
-    drafts.filter((draft) => !sameRule(toRequest(draft), cleanOf.get(draft.key))).map((draft) => draft.key),
+    drafts.filter((draft) => dirtyOf(draft, rules)).map((draft) => draft.key),
   );
 
-  const updateDraft = (key: string, patch: Partial<RuleDraft>, paramPatch?: Record<string, string>) => {
+  const writeDrafts = (next: RuleDraft[]) => {
+    draftsRef.current = next;
+    setDraftVersion((version) => version + 1);
+  };
+  const updateDraft = (key: string, patch: RulePatch, paramPatch?: Record<string, string>) => {
     setSaveError('');
-    setDrafts((current) =>
-      current.map((draft) =>
-        draft.key === key ? { ...draft, ...patch, params: paramPatch ? { ...draft.params, ...paramPatch } : draft.params } : draft,
-      ),
+    const current = draftsRef.current;
+    const next = current.map((draft) =>
+      draft.key === key ? { ...draft, ...patch, params: paramPatch ? { ...draft.params, ...paramPatch } : draft.params } : draft,
     );
+    writeDrafts(next);
   };
 
   /**
-   * 恢复默认：只重置这一条。参数取这一条的 defaultParams；开关/级别/冷却的默认值
-   * 后端没有随 rules GET 下发（响应里只有 defaultParams），所以在前端常量里照抄
-   * internal/monitoring/config.go 的 DefaultRules / defaultSeverity。
+   * 恢复默认：只重置这一条。参数用 GET 的 defaultParams，开关/级别/冷却用首次 GET 记下的
+   * 基线值——前端不另存一份默认常量，免得和 config.go 漂移。
    */
   const restoreOne = (key: string) => {
-    const rule = ruleOf.get(key);
-    if (!rule) return;
-    updateDraft(key, {
-      enabled: true,
-      severity: DEFAULT_SEVERITY[rule.key] ?? 'p1',
-      cooldownMinutes: String(DEFAULT_COOLDOWN_MINUTES),
-      params: Object.fromEntries(Object.entries(rule.defaultParams ?? {}).map(([name, value]) => [name, String(value)])),
-    });
+    const base = baseline.get(key);
+    if (!base) return;
+    // 基线里的参数是 GET 回来的**当前** params（不是 defaultParams）：恢复默认要回的是
+    // 「打开页面时服务端的样子」，其中可能含界面不渲染的键（probe_failed.authSeverity）。
+    // 用按键合并而不是整块替换，任何未在界面上暴露的参数都不会被这一下抹掉。
+    updateDraft(key, { enabled: base.enabled, severity: base.severity, cooldownMinutes: base.cooldownMinutes }, base.params);
   };
 
   const save = async () => {
@@ -250,7 +291,8 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
     try {
       const saved = await saveRules(drafts.map(toRequest));
       setRules(saved);
-      setDrafts(toDrafts(saved));
+      writeDrafts(toDrafts(saved));
+      setBaseline(baselineOf(saved));
       setSaveError('');
       onNotice(`规则已保存（${saved.length} 条），下一拍调度生效`);
     } catch (reason) {
@@ -270,8 +312,8 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
             {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
           </p>
         </div>
-        <div className="panel-header-actions rules-actions">
-          {dirtyKeys.size > 0 && <span className="muted-text">{`${dirtyKeys.size} 条未保存`}</span>}
+        <div className="panel-header-actions rules-header-actions">
+          {dirtyKeys.size > 0 && <span className="muted-text rules-count">{`${dirtyKeys.size} 条未保存`}</span>}
           <button className="btn btn-sm primary" disabled={saving || drafts.length === 0} onClick={() => void save()}>
             {saving ? '保存中…' : '保存规则'}
           </button>
@@ -281,7 +323,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
       {error && <div className="metric-value rules-err">{error}</div>}
       {loadError && <div className="metric-value rules-err">{loadError}</div>}
       {notice && !saveError && (
-        <div className="rules-inline-error">
+        <div className="rules-inline-notice">
           <span className="muted-text">{notice}</span>
         </div>
       )}
@@ -295,10 +337,10 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
       {drafts.map((draft) => {
         const rule = ruleOf.get(draft.key);
         if (!rule) return null;
-        const paramKeys = Object.keys(rule.defaultParams ?? {}).sort();
+        const paramKeys = Object.keys(baseline.get(draft.key)?.params ?? rule.defaultParams ?? {}).sort();
         const dirty = dirtyKeys.has(draft.key);
         return (
-          <div className={`log-row${dirty ? ' rules-dirty' : ''}`} key={draft.key}>
+          <div className={`log-row rules-item${dirty ? ' rules-dirty' : ''}`} key={draft.key}>
             <div className="mrow mrow-rule">
               <span className="rules-switch">
                 <Switch
@@ -314,43 +356,45 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                 <span className={`badge ${rule.targetType === 'api_key' ? 'purple' : rule.targetType === 'gateway' ? 'slate' : 'cyan'}`}>
                   {TARGET_TEXT[rule.targetType] ?? rule.targetType}
                 </span>
-                <span className="muted-text m-row-num" title="引擎检查这条规则的间隔">
+                <span className="muted-text m-row-num rules-interval" title="引擎检查这条规则的间隔">
                   {`每 ${rule.intervalMinutes} 分钟检查`}
                 </span>
               </span>
-              <label className="rules-cell">
-                <span className="rules-cell-label">{'级别'}</span>
-                <select
-                  className="rules-control"
-                  aria-label={`${rule.name} 级别`}
-                  value={draft.severity}
-                  onChange={(event) => updateDraft(draft.key, { severity: event.target.value as MonitorRuleSeverity })}
-                >
-                  {RULE_SEVERITIES.map((value) => (
-                    <option key={value} value={value}>
-                      {`${SEVERITY_LABEL[value]} · ${SEVERITY_TEXT[value].split(' ')[1]}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="rules-cell">
-                <span className="rules-cell-label" title="同一条告警在这段时间内不重复通知；5–1440 分钟">
-                  {'冷却'}
-                </span>
-                <span className="rules-cooldown">
-                  <input
-                    className="rules-control rules-num"
-                    type="number"
-                    min={COOLDOWN_MIN}
-                    max={COOLDOWN_MAX}
-                    step={1}
-                    aria-label={`${rule.name} 冷却分钟`}
-                    value={draft.cooldownMinutes}
-                    onChange={(event) => updateDraft(draft.key, { cooldownMinutes: event.target.value })}
-                  />
-                  <span className="muted-text">{'分钟'}</span>
-                </span>
-              </label>
+              <div className="rules-fields">
+                <label className="rules-cell">
+                  <span className="rules-cell-label">{'级别'}</span>
+                  <select
+                    className="rules-control"
+                    aria-label={`${rule.name} 级别`}
+                    value={draft.severity}
+                    onChange={(event) => updateDraft(draft.key, { severity: event.target.value as MonitorRuleSeverity })}
+                  >
+                    {RULE_SEVERITIES.map((value) => (
+                      <option key={value} value={value}>
+                        {`${SEVERITY_LABEL[value]} · ${SEVERITY_SHORT[value]}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="rules-cell">
+                  <span className="rules-cell-label" title="同一条告警在这段时间内不重复通知；5–1440 分钟">
+                    {'冷却'}
+                  </span>
+                  <span className="rules-cooldown">
+                    <input
+                      className="rules-control rules-num"
+                      type="number"
+                      min={COOLDOWN_MIN}
+                      max={COOLDOWN_MAX}
+                      step={1}
+                      aria-label={`${rule.name} 冷却分钟`}
+                      value={draft.cooldownMinutes}
+                      onChange={(event) => updateDraft(draft.key, { cooldownMinutes: event.target.value })}
+                    />
+                    <span className="muted-text">{'分钟'}</span>
+                  </span>
+                </label>
+              </div>
               <span className="rules-params">
                 {paramKeys.length === 0 && <span className="muted-text">{'—'}</span>}
                 {paramKeys.map((key) => {
@@ -407,9 +451,16 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
                 })}
               </span>
               <span className="rules-actions">
+                <span className="rules-params-summary muted-text" title={paramKeys.map((key) => {
+                  const spec = PARAM_SPECS[key];
+                  const raw = draft.params[key] ?? '';
+                  return `${spec?.label ?? key}=${raw === '' ? '—' : raw}`;
+                }).join(' · ')}>
+                  {paramKeys.map((key) => PARAM_SPECS[key]?.short).filter((short): short is string => !!short).join(' · ') || '—'}
+                </span>
                 <button
                   className="btn btn-sm"
-                  disabled={!dirty}
+                  disabled={!dirtyKeys.has(draft.key)}
                   title="只把这一条恢复成默认值；保存后才生效"
                   onClick={() => restoreOne(draft.key)}
                 >

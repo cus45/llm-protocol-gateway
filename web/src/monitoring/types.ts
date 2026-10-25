@@ -237,6 +237,14 @@ export const SEVERITY_TEXT: Record<MonitorSeverity, string> = {
   info: '信息',
 };
 
+/** 级别短文案（规则页三档选择器用；不依赖 SEVERITY_TEXT 的格式）。 */
+export const SEVERITY_SHORT: Record<MonitorSeverity, string> = {
+  p0: '严重',
+  p1: '重要',
+  p2: '提醒',
+  info: '信息',
+};
+
 export const ERROR_KIND_TEXT: Record<MonitorErrorKind, string> = {
   auth_failed: '登录凭证已失效，需重新授权',
   rate_limited: '上游限流',
