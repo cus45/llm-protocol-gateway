@@ -7960,7 +7960,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-meta {
   position: relative;
   display: grid;
-  gap: 5px;
+  gap: 2px;
   padding: 14px;
   min-width: 0;
   background: linear-gradient(180deg, color-mix(in srgb, var(--mon-tone) 5%, var(--surface)) 0%, var(--surface) 72%);
@@ -7982,7 +7982,7 @@ html[data-theme="dark"] .mon-meta { box-shadow: var(--shadow-soft), 0 12px 30px 
 .mon-meta-red { --mon-tone: var(--red); }
 .mon-meta-blue { --mon-tone: var(--blue); }
 .mon-meta-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
-.mon-meta-label { color: var(--muted); font-size: 12px; font-weight: 500; }
+.mon-meta-label { color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; }
 .mon-meta-icon {
   display: inline-flex;
   align-items: center;
@@ -8002,7 +8002,7 @@ html[data-theme="dark"] .mon-meta { box-shadow: var(--shadow-soft), 0 12px 30px 
   font-family: var(--mono);
   font-size: 24px;
   font-weight: 700;
-  line-height: 1.05;
+  line-height: 32px;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
