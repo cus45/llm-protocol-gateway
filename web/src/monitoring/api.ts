@@ -3,7 +3,6 @@ import type {
   MonitorAccount,
   MonitorAlert,
   MonitorAlertDetail,
-  MonitorAlertStatus,
   MonitorChannelInput,
   MonitorChannelTestResult,
   MonitorChannelView,
@@ -373,10 +372,5 @@ export function parseStreamProbeFrame(raw: unknown): MonitorStreamProbeFrame | n
     : [];
   if (runs.length === 0) return null;
   return { providerId: asString(row.providerId) || runs[0].providerId, runs };
-}
-
-/** 告警页只展示 firing / resolved 两档；未知状态（后端新加）不硬塞进列表。 */
-export function isListedAlertStatus(status: string): status is MonitorAlertStatus {
-  return status === 'firing' || status === 'resolved';
 }
 
