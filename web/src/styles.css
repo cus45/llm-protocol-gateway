@@ -229,7 +229,7 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
   width: min(1600px, calc(100% - 32px));
   margin: 16px auto;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w, 248px) minmax(0, 1fr);
   gap: 20px;
   align-items: start;
   transition: grid-template-columns 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
@@ -260,7 +260,7 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
    侧栏不会再随页面滚走。left 用百分比而不是 100vw 计算，避免 Windows
    纵向滚动条占宽时和 .shell 的左边缘错开。 */
 @media (min-width: 901px) {
-  .shell { --sidebar-w: 248px; }
+  .shell { --sidebar-w: 224px; }
   .shell.sidebar-collapsed { --sidebar-w: 76px; }
   .sidebar {
     position: fixed;
