@@ -8956,7 +8956,8 @@ html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); colo
 
 .mon-acc-drawer-dots { margin-top: 10px; }
 
-/* 点阵热力图视图：每行一个账号，列 = 最近 20 发，按耗时四档着色。 */
+/* SLA 点阵热力图视图：每行一个账号（圆角卡），中间 30 格 = 最近 30 发真实探测，
+   左旧右新，按耗时四档着色。颜色只来自记录本身，没有记录就是灰格。 */
 .mon-acc-heat { min-width: 0; }
 .mon-acc-heat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 12px; min-width: 0; }
 .mon-acc-heat-title { min-width: 0; }
@@ -8964,42 +8965,61 @@ html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); colo
 .mon-acc-heat-legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mon-acc-heat-key { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
 .mon-acc-heat-key::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--border); }
-.mon-acc-heat-key.l1::before { background: var(--green); box-shadow: none; }
-.mon-acc-heat-key.l2::before { background: var(--accent); box-shadow: none; }
-.mon-acc-heat-key.l3::before { background: var(--amber); box-shadow: none; }
+.mon-acc-heat-key.l1::before { background: var(--green-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent); }
+.mon-acc-heat-key.l2::before { background: var(--green); box-shadow: none; }
+.mon-acc-heat-key.l3::before { background: var(--accent); box-shadow: none; }
 .mon-acc-heat-key.l4::before { background: var(--red); box-shadow: none; }
 .mon-acc-heat-rows { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .mon-acc-heat-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 10px 12px;
+  padding: 9px 12px;
   border-radius: var(--r-lg);
   border: 1px solid var(--border);
   background: var(--surface-soft);
   min-width: 0;
 }
-.mon-acc-heat-who { flex: 0 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mon-acc-heat-who { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .mon-acc-heat-name { padding: 0; border: 0; background: none; color: var(--text-strong); font: inherit; font-size: 12.5px; font-weight: 700; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
 .mon-acc-heat-name:hover { color: var(--accent-strong); }
 .mon-acc-heat-name:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--r-xs); }
-.mon-acc-heat-meta { color: var(--subtle); font-family: var(--mono); font-size: 10.5px; overflow-wrap: anywhere; }
-.mon-acc-heat-cells { flex: 1 1 auto; display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 4px; min-width: 0; }
-.mon-acc-heat-cell { height: 22px; border-radius: 3px; background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--border); transition: transform 0.12s ease; }
-.mon-acc-heat-cell:hover { transform: scale(1.15); }
-.mon-acc-heat-cell.l1 { background: var(--green); box-shadow: none; }
-.mon-acc-heat-cell.l2 { background: var(--accent); box-shadow: none; }
-.mon-acc-heat-cell.l3 { background: var(--amber); box-shadow: none; }
+.mon-acc-heat-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.mon-acc-heat-meta { color: var(--muted); font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
+.mon-acc-heat-cells {
+  flex: 1 1 420px;
+  display: grid;
+  grid-template-columns: repeat(30, minmax(0, 1fr));
+  gap: 3px;
+  min-width: 0;
+}
+.mon-acc-heat-cell {
+  height: 22px;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: transform 0.12s ease;
+}
+.mon-acc-heat-cell:hover { transform: scale(1.18); position: relative; z-index: 1; }
+.mon-acc-heat-cell.l1 { background: var(--green-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent); }
+.mon-acc-heat-cell.l2 { background: var(--green); box-shadow: none; }
+.mon-acc-heat-cell.l3 { background: var(--accent); box-shadow: none; }
 .mon-acc-heat-cell.l4 { background: var(--red); box-shadow: none; }
-.mon-acc-heat-probe { flex: none; --btn-h: 28px; font-size: 12px; }
-@container (max-width: 900px) {
-  .mon-acc-heat-row { flex-wrap: wrap; }
+.mon-acc-heat-note { flex: 0 0 auto; color: var(--subtle); font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
+.mon-acc-heat-note.empty { color: var(--muted); }
+.mon-acc-heat-probe { flex: none; --btn-h: 26px; height: 26px; padding: 0 10px; font-size: 12px; }
+@container (max-width: 1100px) {
   .mon-acc-heat-who { flex: 1 1 auto; }
+  .mon-acc-heat-row { flex-wrap: wrap; }
   .mon-acc-heat-cells { flex: 1 1 100%; order: 3; }
+  .mon-acc-heat-note { order: 2; }
 }
 @container (max-width: 600px) {
   .mon-acc-heat-key { font-size: 10px; }
-  .mon-acc-heat-cell { height: 16px; }
+  .mon-acc-heat-row { padding: 8px 10px; }
+  .mon-acc-heat-cells { gap: 2px; }
+  .mon-acc-heat-cell { height: 14px; }
+  .mon-acc-heat-note { margin-left: auto; }
 }
 
 /* 概览 v2（账号/告警两卡的窄屏补充）：≤420px 时账号名按整行宽度排，名称行只放
@@ -9287,23 +9307,26 @@ html[data-theme="light"] .mon-alert-sev.tone-p2 { color: color-mix(in srgb, var(
 .mon-alert-state-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 html[data-theme="light"] .mon-alert-state.firing { color: color-mix(in srgb, var(--red) 88%, #000); }
 .mon-alert-push {
-  padding: 0 6px;
-  border-radius: var(--r-xs);
-  border: 1px solid var(--border);
+  padding: 0;
+  border: 0;
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 16px;
-  white-space: nowrap;
 }
-.mon-alert-push.push-sent { border-color: color-mix(in srgb, var(--green) 34%, transparent); background: var(--green-soft); color: var(--green); }
-.mon-alert-push.push-failed { border-color: color-mix(in srgb, var(--red) 34%, transparent); background: var(--red-soft); color: var(--red); }
+/* 推送状态是**一句话**，不是徽标：参考里就是绿色纯文字「已向企业群组派发通知」。
+   早先这里给了 green-soft / red-soft 底色和边框，改文案后颜色没跟着撤，结果整行
+   右半截被涂成粉/绿色块（1440 实测 663px 宽）。现在只留文字色，且允许折行——推送
+   报错会带上游原文，可能很长。 */
+.mon-alert-push.mon-alert-sentence { white-space: normal; font-weight: 500; }
+.mon-alert-push.push-sent { color: var(--green); }
+.mon-alert-push.push-failed { color: var(--red); }
 .mon-alert-push.push-partial,
-.mon-alert-push.push-pending { border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: var(--amber-soft); color: var(--amber); }
-html[data-theme="light"] .mon-alert-push.push-sent { color: color-mix(in srgb, var(--green) 72%, #000); background: color-mix(in srgb, var(--green-soft) 50%, #fff); }
-html[data-theme="light"] .mon-alert-push.push-failed { color: color-mix(in srgb, var(--red) 85%, #000); background: color-mix(in srgb, var(--red-soft) 60%, #fff); }
+.mon-alert-push.push-pending { color: var(--amber); }
+html[data-theme="light"] .mon-alert-push.push-sent { color: color-mix(in srgb, var(--green) 72%, #000); }
+html[data-theme="light"] .mon-alert-push.push-failed { color: color-mix(in srgb, var(--red) 85%, #000); }
 html[data-theme="light"] .mon-alert-push.push-partial,
-html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb, var(--amber) 88%, #000); background: color-mix(in srgb, var(--amber-soft) 60%, #fff); }
+html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb, var(--amber) 88%, #000); }
 .mon-alert-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: none; margin-left: auto; }
 /* 「处理并标记恢复」是行主操作：绿底实心（= .btn.success 的语义），只在进行中可用。 */
 .mon-alert-ack { --btn-bg: var(--green); --btn-fg: #fff; --btn-border: var(--green); gap: 5px; font-weight: 600; }

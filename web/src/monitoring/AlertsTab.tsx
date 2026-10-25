@@ -597,7 +597,9 @@ export function AlertsTab(props: AlertsTabProps) {
                   <button
                     type="button"
                     className="btn btn-sm mon-alert-ack"
-                    disabled={!firing || ackBusy}
+                    // 已确认后不再可点：按钮和右侧的状态徽标同时写「已确认」是重复信息，
+                    // 而且让人以为可以再确认一次。状态由徽标表达，按钮只在待处置时出现。
+                    disabled={!firing || ackBusy || alert.disposition === 'acknowledged'}
                     title={
                       alert.disposition === 'acknowledged'
                         ? '已确认（只影响推送，不停止检测）'
@@ -610,7 +612,7 @@ export function AlertsTab(props: AlertsTabProps) {
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" width={13} height={13} aria-hidden>
                       <path d="m5 12.5 4.5 4.5L19 7" />
                     </svg>
-                    {ackBusy ? '处理中…' : alert.disposition === 'acknowledged' && firing ? '已确认' : '处理并标记恢复'}
+                    {ackBusy ? '处理中…' : '处理并标记恢复'}
                   </button>
                   <button
                     type="button"
