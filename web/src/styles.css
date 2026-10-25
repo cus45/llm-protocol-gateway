@@ -10535,3 +10535,8 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .mon-alert-row { padding: 14px 14px 14px 17px; }
 /* 69 → 64：上下内边距 14 → 11.5。 */
 .mon-alert-row { padding: 11.5px 14px 11.5px 17px; }
+
+/* 参考的设置页没有卡片容器（内容直接铺在 p-5 的内容区里，圆角 0）。
+   我们用了两张 16px 圆角卡。为保持与全站「卡片=可分区内容」的语言一致，
+   这里保留卡片但把内边距对齐参考的内层 16px，不再额外加 18px 横向。 */
+.monitoring-page .mon-set-card { padding: 16px; }
