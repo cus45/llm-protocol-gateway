@@ -1,7 +1,13 @@
 import {useEffect, useMemo, useState} from 'react';
 import {BrandIcon, Modal} from '../components/ui';
 import {fetchProbes} from './api';
-import type {MonitorAccount, MonitorProbeAccount, MonitorProbeRun, MonitorQuota} from './types';
+import type {
+  MonitorAccount,
+  MonitorProbeAccount,
+  MonitorProbeConfig,
+  MonitorProbeRun,
+  MonitorQuota,
+} from './types';
 import {hasTime, quotaRatioKnown} from './types';
 import {displayTime, formatLatency, quotaText, relativeToNow} from './format';
 
@@ -31,6 +37,8 @@ export interface AccountsTabProps {
   onRunProbe: (providerId: string) => Promise<unknown> | void;
   /** `/__monitor/probes` 归一后的每账号点阵与指标；不传时点阵退回「无记录」。 */
   probeView?: AccountsProbeView;
+  /** 探测全局配置：今日探测下限条在 maxPerDay=0（不限）时借它说明上限来源。 */
+  probeConfig?: MonitorProbeConfig | null;
   /** 抽屉受控：概览「详情」与深链 ?account= 都要能直接打开某个账号。 */
   selectedId: string;
   onSelect: (providerId: string) => void;
@@ -141,16 +149,19 @@ function roleOf(account: MonitorAccount, alerts: number, state: AccountState, br
 /**
  * 熔断档位。本项目没有用户可干预的熔断器，只有探测侧的连续失败 streak：
  * 连续失败 ≥ BREAKER_TRIP_STREAK 视为熔断阻断（OPEN），失败但未到阈值是半开试探（HALF_OPEN），
- * 其余闭合（CLOSED）。灰点为停用（不参与调度与探测）。
+ * 其余闭合（CLOSED）。停用只算 OFF（不参与调度与探测），但停用前已经连续失败至少 BREAKER_WARN_STREAK
+ * 次的账号仍标 OPEN：档位是「真实门槛」的事实，不因为停用就伪装成闭合。
  */
 const BREAKER_TRIP_STREAK = 5;
+/** 卡片右上角徽标的「异常」门槛：连续失败到 2 次就算，比 5 次熔断线更早提醒。 */
+const BREAKER_WARN_STREAK = 2;
 type Breaker = 'CLOSED' | 'HALF_OPEN' | 'OPEN' | 'OFF';
 
 function breakerOf(account: MonitorAccount, facts: AccountsProbeFacts | undefined): Breaker {
+  const streak = facts?.probed ? facts.consecutiveFailures : 0;
+  if (streak >= BREAKER_TRIP_STREAK) return 'OPEN';
   if (account.disabled) return 'OFF';
-  if (!facts || !facts.probed) return 'CLOSED';
-  if (facts.consecutiveFailures >= BREAKER_TRIP_STREAK) return 'OPEN';
-  if (facts.consecutiveFailures > 0) return 'HALF_OPEN';
+  if (streak > 0) return 'HALF_OPEN';
   return 'CLOSED';
 }
 
@@ -162,10 +173,56 @@ const BREAKER_TEXT: Record<Breaker, string> = {
 };
 
 const BREAKER_HINT: Record<Breaker, string> = {
-  CLOSED: '探测闭合：最近没有连续失败',
-  HALF_OPEN: `探测半开：有连续失败，未到 ${BREAKER_TRIP_STREAK} 次熔断线`,
-  OPEN: `探测熔断：连续失败已达 ${BREAKER_TRIP_STREAK} 次`,
+  CLOSED: `CLOSED：探测闭合——最近一发轻探测通过或还没有记录（本项目不会主动隔离账号）`,
+  HALF_OPEN: `HALF_OPEN：连续失败 1~${BREAKER_TRIP_STREAK - 1} 次，未到 ${BREAKER_TRIP_STREAK} 次熔断线`,
+  OPEN: `OPEN：连续失败已达 ${BREAKER_TRIP_STREAK} 次（熔断线），本卡判为异常`,
   OFF: '停用：不参与自动调度，也不会发探测',
+};
+
+/**
+ * 右上角徽标的文案。与 breakerOf 一一对应：
+ * OFF→停用，OPEN→异常，HALF_OPEN 且连续失败 ≥2→异常，否则看活跃告警→告警，其余→正常。
+ */
+type HealthCode = 'normal' | 'alert' | 'abnormal' | 'off';
+
+const HEALTH_TEXT: Record<HealthCode, string> = {
+  normal: '正常',
+  alert: '告警',
+  abnormal: '异常',
+  off: '停用',
+};
+
+function healthOf(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined): HealthCode {
+  if (breaker === 'OFF') return 'off';
+  if (breaker === 'OPEN') return 'abnormal';
+  if (facts?.probed && facts.consecutiveFailures >= BREAKER_WARN_STREAK) return 'abnormal';
+  if (alerts > 0) return 'alert';
+  return 'normal';
+}
+
+/** 徽标的判定依据：悬停即可看到每一条门槛的当前值，不让人猜「异常」从哪来。 */
+function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined): string {
+  const lines =
+    breaker === 'OFF'
+      ? ['账号已停用 → 停用（不参与调度与探测）']
+      : breaker === 'OPEN'
+        ? [`探测连续失败 ${facts?.consecutiveFailures ?? 0} 次 ≥ ${BREAKER_TRIP_STREAK} 次熔断线 → 异常`]
+        : [
+            `未恢复告警 ${alerts} 条${alerts > 0 ? ' → 告警' : ''}`,
+            facts?.probed
+              ? `探测连续失败 ${facts.consecutiveFailures} 次${
+                  facts.consecutiveFailures >= BREAKER_WARN_STREAK ? ` ≥ ${BREAKER_WARN_STREAK} 次 → 异常` : ''
+                }`
+              : '还没有可用探测记录（不计入连续失败）',
+            `请求健康判定：${HEALTH_STATUS_TEXT[account.healthStatus] || account.healthStatus || '未检测'}`,
+          ];
+  return `${lines.join('\n')}\n判定顺序：停用 → 连续失败 ≥${BREAKER_TRIP_STREAK} 次 → 连续失败 ≥${BREAKER_WARN_STREAK} 次 → 有未恢复告警`;
+}
+
+const HEALTH_STATUS_TEXT: Record<string, string> = {
+  healthy: '健康',
+  unavailable: '不可用',
+  unknown: '未检测',
 };
 
 type BreakerFilter = 'all' | 'CLOSED' | 'HALF_OPEN' | 'OPEN';
@@ -222,6 +279,7 @@ function todayProgress(facts: AccountsProbeFacts): number | null {
   if (facts.maxPerDay <= 0) return null;
   return Math.min(1, Math.max(0, facts.usedToday / facts.maxPerDay));
 }
+
 
 /** 最近一发的结论。没有状态码就是网络层失败，0 与 200 不是一回事，要分开写。 */
 function lastProbeText(facts: AccountsProbeFacts): string {
@@ -396,7 +454,7 @@ function HeatView({
 export function AccountsTab(props: AccountsTabProps) {
   const {
     accounts, timezone, iconOf, alertCountOf, busy, error, note, actionError,
-    onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, probeBusy, onRunProbe, probeView,
+    onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, probeBusy, onRunProbe, probeView, probeConfig,
     selectedId, onSelect, onCloseDrawer,
   } = props;
   const [search, setSearch] = useState('');
@@ -640,6 +698,7 @@ export function AccountsTab(props: AccountsTabProps) {
               ? 'warn'
               : '';
           const breaker = breakerOf(account, facts);
+          const health = healthOf(account, alerts, breaker, facts);
           const role = roleOf(account, alerts, state, breaker);
           const cardProbing = probeBusy === `probe:${account.providerId}`;
           const renewing = busy === `renew:${account.providerId}`;
@@ -657,9 +716,12 @@ export function AccountsTab(props: AccountsTabProps) {
                 </span>
                 <span className="mon-acc-card-tags">
                   <span className="mon-acc-ptag">{account.vendor || AUTH_LABELS[account.authType] || 'API Key'}</span>
-                  <span className={`mon-acc-breaker ${breaker.toLowerCase()}`} title={BREAKER_HINT[breaker]}>
+                  <span
+                    className={`mon-acc-breaker ${health}`}
+                    title={`${HEALTH_TEXT[health]}\n${healthHint(account, alerts, breaker, facts)}\n\n探测档位 ${BREAKER_TEXT[breaker]}：${BREAKER_HINT[breaker]}`}
+                  >
                     <span className="mon-acc-breaker-dot" aria-hidden />
-                    {BREAKER_TEXT[breaker]}
+                    {HEALTH_TEXT[health]}
                   </span>
                 </span>
               </div>
@@ -720,19 +782,46 @@ export function AccountsTab(props: AccountsTabProps) {
                 </div>
               )}
 
-              <div className="mon-acc-quota" title="按投递时区计的当日探测次数 / 每日上限；上限 0 表示不限">
+              {/* 取代参考图的「分流权重」滑条：本项目调度按失败冷却自动选账号，没有可调的权重，
+                  所以这里画的是真实的「今日探测 3/4」额度条（只读，分母 = maxPerDayPerAccount）。 */}
+              <div
+                className="mon-acc-quota"
+                title={
+                  facts
+                    ? facts.maxPerDay === 0
+                      ? `不限次数：探测配置的每账号每日上限为 0${probeConfig ? '（设置 → 探测）' : ''}`
+                      : `按投递时区计的当日轻探测次数 / 每账号每日上限（${facts.maxPerDay}）`
+                    : '探测现状读取中'
+                }
+              >
                 <div className="mon-acc-quota-row">
                   <span className="mon-acc-quota-label">{'今日探测'}</span>
-                  <span className="mon-acc-quota-value">{facts ? usedTodayText(facts) : '—'}</span>
+                  <span className="mon-acc-quota-value">
+                    {facts
+                      ? `${facts.usedToday}${facts.maxPerDay === 0 ? ' 次 · 不限' : ` / ${facts.maxPerDay}`}`
+                      : probeConfig
+                        ? `— / ${probeConfig.eventDriven.maxPerDayPerAccount || '不限'}`
+                        : '—'}
+                  </span>
                 </div>
-                <div className="mon-acc-track" aria-hidden="true">
+                <div
+                  className={`mon-acc-track${progress !== null && progress >= 1 ? ' is-full' : ''}`}
+                  role="progressbar"
+                  aria-label={`${account.name} 今日探测额度`}
+                  aria-valuemin={0}
+                  aria-valuemax={facts && facts.maxPerDay > 0 ? facts.maxPerDay : undefined}
+                  aria-valuenow={facts ? facts.usedToday : undefined}
+                  aria-valuetext={facts ? (facts.maxPerDay === 0 ? `已探测 ${facts.usedToday} 次，不限次数` : `已探测 ${facts.usedToday} 次，上限 ${facts.maxPerDay} 次`) : undefined}
+                >
                   <span className={progress === null ? 'is-open' : ''} style={{ width: `${(progress ?? 1) * 100}%` }} />
                 </div>
                 <p className="mon-acc-quota-note">
                   {facts
                     ? facts.maxPerDay === 0
-                      ? '每日探测不限次数'
-                      : progress !== null && progress >= 1 ? '今日探测次数已用完' : '每日探测额度占用'
+                      ? '每日探测不限次数（只读额度条）'
+                      : facts.usedToday > facts.maxPerDay
+                        ? '已超过当前上限：上限是刚改的，今日计数不回溯'
+                        : progress !== null && progress >= 1 ? '今日探测次数已用完，今天不再发轻探测' : '只读：按探测配置的每日上限'
                     : '探测现状读取中'}
                 </p>
               </div>

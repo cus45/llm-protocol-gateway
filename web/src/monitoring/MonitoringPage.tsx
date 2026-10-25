@@ -87,7 +87,7 @@ function TabBadge({ tone, children }: { tone: BadgeTone; children: ReactNode }) 
  * 顶栏的动作按钮图标（与 NavIcon 同一条 24 网格、1.7 描边），补的只是侧边栏没有的
  * 刷新 / 续期 / 密钥三枚。
  */
-function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
+function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' | 'mute' }) {
   const common = {
     fill: 'none',
     stroke: 'currentColor',
@@ -95,6 +95,15 @@ function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
   };
+  if (id === 'mute') {
+    // 喇叭 + 斜杠：「告警静音」的开关态由按钮底色表达，图标本身不变。
+    return (
+      <svg className="mon-header-btn-icon" viewBox="0 0 24 24" aria-hidden="true" {...common}>
+        <path d="M4 9.5h3.2L12 6v12l-4.8-3.5H4z" />
+        <path d="M16.2 9.2 20.6 14.8M20.6 9.2 16.2 14.8" />
+      </svg>
+    );
+  }
   if (id === 'key') {
     return (
       <svg className="mon-header-btn-icon" viewBox="0 0 24 24" aria-hidden="true" {...common}>
@@ -512,13 +521,61 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
 
   // 顶栏与页签徽标的统计口径：全部来自概览/账号/规则接口，不受告警页筛选影响。
   const accountTotal = overview?.accounts.total ?? accounts.length;
-  const unavailableCount = accounts.filter((item) => item.healthStatus === 'unavailable').length;
   const p0Count = overview?.firing.p0 ?? alerts.filter((alert) => alert.status === 'firing' && alert.severity === 'p0').length;
   const firingCount = overview?.firing.total ?? alerts.filter((alert) => alert.status === 'firing').length;
   const ruleTotal = rules.length;
   const rulesEnabled = rules.filter((rule) => rule.enabled).length;
+  // 副标题「N 个厂商」只数真正有厂商名的账号；厂商名解析不到的单独写成「未标注」，
+  // 不把它们并进某个厂商，也不凭空造厂商名。
+  const vendorLabels = new Set(accounts.map((item) => item.vendor.trim()).filter(Boolean));
+  const vendorless = accounts.filter((item) => !item.vendor.trim()).length;
   const liveProbes = probeAccounts.reduce((sum, item) => sum + item.usedToday, 0);
   const loadedAt = lastLoadedAt ? displayTime(lastLoadedAt, timezone).text : '';
+
+  // 告警静音：直接开关投递配置的 quietEnabled（PUT /__monitor/dispatch 的返回值就是新的完整配置）。
+  // 静默时段内 P1 摘要延后、非 P0 通知排队，P0 仍即时发——这是后端 dispatcher 的真实语义。
+  const quiet = dispatch?.quietEnabled ?? false;
+  const toggleQuiet = () => {
+    if (!dispatch) return;
+    setError('');
+    void run('quiet', async () => setDispatch(await updateDispatch({ quietEnabled: !dispatch.quietEnabled })));
+  };
+  // 静默窗口按投递时区判断，不在浏览器时区里算：后端就是按 cfg.dispatch.Location() 切的。
+  const inQuietWindow = (() => {
+    if (!dispatch?.quietEnabled) return false;
+    const parse = (raw: string) => {
+      const match = /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
+      return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+    };
+    const start = parse(dispatch.quietStart);
+    const end = parse(dispatch.quietEnd);
+    if (start === null || end === null || start === end) return false;
+    let minutes: number;
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: dispatch.timezone || 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(new Date());
+      const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
+      const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
+      minutes = hour * 60 + minute;
+    } catch {
+      return false;
+    }
+    return start < end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
+  })();
+  const quietWindowText = dispatch
+    ? `${timezone} ${dispatch.quietStart || '—'}–${dispatch.quietEnd || '—'}`
+    : '读取中';
+  const quietTitle = dispatch
+    ? !quiet
+      ? `告警静音未开启：所有级别通知即时投递。点击开启后，${quietWindowText} 内非 P0 通知延后、P1 进摘要（P0 始终即时）。`
+      : inQuietWindow
+        ? `已静音，当前正处静默时段（${quietWindowText}）：非 P0 通知延后，P0 仍即时。点击关闭。`
+        : `已静音，静默时段（${quietWindowText}）之外的通知照常即时投递，所以现在不会延后。点击关闭。`
+    : '告警静音状态读取中';
 
   // 状态胶囊：采集器读不到 / 实时数据读失败 = 异常；采集器成功时间过期 = 告警；
   // 其余按 P0 严重告警切换「运行中 / 需要关注」。
@@ -545,7 +602,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
 
   return (
     <div className="monitoring-page">
-      {/* 1. 顶栏：徽章 + 标题（右挂状态胶囊）+ 实时副标题 ｜ 动作按钮组；与页签栏用 1px 边框分隔。 */}
+      {/* 1. 顶栏：徽章 + 标题（右挂同步时间）+ 状态胶囊 ｜ 业务摘要 ｜ 动作按钮组；与页签栏用 1px 边框分隔。
+          参考 `MonitoringCenter.tsx:520-618`：第一行标题+胶囊，第二行业务摘要，时间由 tooltip 承载。 */}
       <header className="mon-header">
         <div className="mon-header-id">
           <span className="mon-header-badge" aria-hidden="true">
@@ -554,26 +612,48 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           <div className="mon-header-text">
             <div className="mon-header-headline">
               <h1 className="mon-header-title">协议网关监控中心</h1>
+              <span
+                className={`mon-chain mon-chain-${chainState.tone}`}
+                role="status"
+                aria-live="polite"
+                title={`采集器最近一次成功上报：${hasTime(overview?.collectorLastSuccess) ? displayTime(overview!.collectorLastSuccess as string, timezone).text : '无记录'} · 页面数据生成于 ${loadedAt || '—'}`}
+              >
+                <i className="mon-chain-dot" aria-hidden="true" />
+                <span className="mon-chain-text">{chainState.text}</span>
+              </span>
               <span className="mon-header-sync">
                 <i className="live-dot" aria-hidden="true" />
                 {loading ? '同步中…' : loadedAt ? `${loadedAt} 同步` : '等待首轮同步'}
               </span>
             </div>
             <p className="mon-header-sub">
-              <span className={`mon-chain mon-chain-${chainState.tone}`} role="status" aria-live="polite">
-                <i className="mon-chain-dot" aria-hidden="true" />
-                <span className="mon-chain-text">{chainState.text}</span>
+              <span className="mon-header-summary" title="账号与厂商数取自 /__monitor/accounts，告警取自 /__monitor/overview">
+                <span>{`覆盖 ${accountTotal} 个账号`}</span>
+                <span className="mon-dot" aria-hidden="true">·</span>
+                <span>{`${vendorLabels.size} 个厂商${vendorless > 0 ? `（另 ${vendorless} 个未标注）` : ''}`}</span>
+                <span className="mon-dot" aria-hidden="true">·</span>
+                <span>{firingCount > 0 ? `${firingCount} 条未处理告警` : '暂无未处理告警'}</span>
               </span>
-              <span>可用账号 {accountTotal - unavailableCount}/{accountTotal}</span>
               <span className="mon-dot" aria-hidden="true">·</span>
-              <span>未处理告警 {firingCount}</span>
+              <span title={`${rulesEnabled}/${ruleTotal} 条规则已启用`}>{`${rulesEnabled}/${ruleTotal} 条规则已启用`}</span>
               <span className="mon-dot" aria-hidden="true">·</span>
-              <span>{rulesEnabled}/{ruleTotal} 条规则已启用</span>
+              <span title="今日已发出的轻探测总数（各账号 usedToday 之和，按投递时区计）">{`今日探测 ${liveProbes} 发`}</span>
             </p>
           </div>
         </div>
         <div className="mon-header-btns">
-          <button type="button" className="mon-header-btn" onClick={() => void loadVisible()} disabled={loading}>
+          <button
+            type="button"
+            className={`mon-header-btn mon-header-mute${quiet ? ' is-on' : ''}`}
+            aria-pressed={quiet}
+            onClick={toggleQuiet}
+            disabled={!dispatch || busy === 'quiet'}
+            title={quietTitle}
+          >
+            <HeaderActionIcon id="mute" />
+            <span>{busy === 'quiet' ? '保存中…' : quiet ? (inQuietWindow ? '已静音' : '静音中·时段外') : '告警静音'}</span>
+          </button>
+          <button type="button" className="mon-header-btn mon-header-refresh" onClick={() => void loadVisible()} disabled={loading}>
             <HeaderActionIcon id="refresh" />
             <span>{loading ? '刷新中' : '刷新指标'}</span>
           </button>
@@ -666,6 +746,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           note={drawerNote}
           actionError={drawerError}
           probeView={accountProbeView}
+          probeConfig={probeConfig}
           probeBusy={probeRunBusy}
           onRunProbe={(providerId) => {
             setDrawerError('');

@@ -205,6 +205,35 @@ function paramHint(key: string, spec: ParamSpec | undefined): string {
   return '';
 }
 
+/** 筛选条的四档：全部 + 三种 targetType。 */
+type LayerFilter = 'all' | 'provider' | 'api_key' | 'gateway';
+const LAYER_FILTERS: Array<{ id: LayerFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'provider', label: '账号' },
+  { id: 'api_key', label: '密钥' },
+  { id: 'gateway', label: '网关' },
+];
+
+const SEVERITY_CLASS: Record<MonitorRuleSeverity, string> = { p0: 'p0', p1: 'p1', p2: 'p2' };
+
+/** 时钟图标：卡片元信息行「每 N 分钟检查」。 */
+function ClockIcon() {
+  return (
+    <svg className="mon-rule-clock" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+/** 卡片网格里的只读参数值：比率换算成百分比，其余带量纲；空值显示「—」而不是 0。 */
+function paramValueText(key: string, raw: string, spec: ParamSpec | undefined): string {
+  if (raw.trim() === '') return '—';
+  if (!spec) return SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw;
+  if (spec.kind === 'ratio') return ratioText(raw);
+  return `${raw}${spec.unit}`;
+}
+
 export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
   const [rules, setRules] = useState<MonitorRule[]>([]);
   /*
@@ -219,6 +248,11 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
+  /** 当前展开编辑区的规则键；同一时刻只展开一张卡。 */
+  const [editingKey, setEditingKey] = useState('');
+  /** 点「保存」但表单预检没过的规则键：用于把错误聚焦到那张卡。 */
+  const [badKey, setBadKey] = useState('');
+  const [layer, setLayer] = useState<LayerFilter>('all');
 
   // 首次进入规则页读一次。之后只有保存成功才用响应覆盖——页面轮询不覆盖草稿。
   useEffect(() => {
@@ -257,6 +291,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
   };
   const updateDraft = (key: string, patch: RulePatch, paramPatch?: Record<string, string>) => {
     setSaveError('');
+    setBadKey('');
     const current = draftsRef.current;
     const next = current.map((draft) =>
       draft.key === key ? { ...draft, ...patch, params: paramPatch ? { ...draft.params, ...paramPatch } : draft.params } : draft,
@@ -277,13 +312,21 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
     updateDraft(key, { enabled: base.enabled, severity: base.severity, cooldownMinutes: base.cooldownMinutes }, base.params);
   };
 
-  const save = async () => {
+  /**
+   * 保存是整表 PUT。单卡「保存」与页头「保存规则」走同一路径：先跑前端预检，
+   * 过的写草稿，再整表提交——所以一张卡出错不会把其它卡的改动一起丢掉。
+   */
+  const save = async (onlyKey?: string) => {
     setSaveError('');
+    setBadKey('');
     for (const draft of drafts) {
       const rule = ruleOf.get(draft.key);
       const problem = rule ? checkDraft(draft) : '规则定义缺失';
       if (problem) {
         setSaveError(`${rule?.name ?? draft.key}：${problem}`);
+        setBadKey(draft.key);
+        // 出错的那条如果不在展开态，自动展开，用户能直接看到输入框。
+        if (onlyKey === undefined || onlyKey === draft.key) setEditingKey(draft.key);
         return;
       }
     }
@@ -294,6 +337,7 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
       writeDrafts(toDrafts(saved));
       setBaseline(baselineOf(saved));
       setSaveError('');
+      if (onlyKey) setEditingKey('');
       onNotice(`规则已保存（${saved.length} 条），下一拍调度生效`);
     } catch (reason) {
       // 保留编辑：只显示错误，不把草稿换回后端值。
@@ -303,12 +347,117 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
     }
   };
 
+  // 页头「N 条已启用 / N 条总数」按全量算（不受层级筛选影响），右侧「活跃规则」同理。
+  const enabledCount = drafts.filter((draft) => draft.enabled).length;
+  const visible = drafts.filter((draft) => layer === 'all' || ruleOf.get(draft.key)?.targetType === layer);
+
+  const renderParam = (rule: MonitorRule, draft: RuleDraft, key: string) => {
+    const spec = PARAM_SPECS[key];
+    const raw = draft.params[key] ?? '';
+    // 界面不认识的参数（probe_failed.authSeverity 是「认证失败时按该级别通知」）只读展示级别文字。
+    if (!spec) {
+      return (
+        <span className="mon-rule-param" key={key} title={key}>
+          <span className="mon-rule-param-label">{'认证失败级别'}</span>
+          <span className="mon-rule-param-value">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
+        </span>
+      );
+    }
+    const hint = paramHint(key, spec);
+    return (
+      <span className="mon-rule-param" key={key} title={`${key}${hint ? ` · ${hint}` : ''}`}>
+        <span className="mon-rule-param-label">{spec.label}</span>
+        <span className={`mon-rule-param-value${spec.kind === 'ratio' && raw !== '' ? ' is-ratio' : ''}`}>
+          {paramValueText(key, raw, spec)}
+        </span>
+      </span>
+    );
+  };
+
+  const renderEditorField = (rule: MonitorRule, draft: RuleDraft, key: string) => {
+    const spec = PARAM_SPECS[key];
+    const raw = draft.params[key] ?? '';
+    if (!spec) {
+      return (
+        <div className="mon-rule-field" key={key}>
+          <span className="mon-rule-field-label">{'认证失败级别'}</span>
+          <span className="mon-rule-param-value">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
+        </div>
+      );
+    }
+    const hint = paramHint(key, spec);
+    return (
+      <label className="mon-rule-field" key={key} title={`${key}${hint ? ` · ${hint}` : ''}`}>
+        <span className="mon-rule-field-label">
+          {spec.label}
+          {spec.unit ? `（${spec.unit}）` : ''}
+          {spec.kind === 'ratio' && raw !== '' && <span className="rules-ratio-note">{ratioText(raw)}</span>}
+        </span>
+        {key === 'windowMinutes' ? (
+          <select
+            className="rules-control"
+            aria-label={`${rule.name} ${key}`}
+            value={raw}
+            onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
+          >
+            {WINDOW_CHOICES.map((value) => (
+              <option key={value} value={String(value)}>{`${value} 分钟`}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className={`rules-control ${spec.kind === 'int' ? 'rules-num' : ''}`}
+            type="number"
+            step={spec.kind === 'int' ? 1 : 'any'}
+            min={0}
+            aria-label={`${rule.name} ${key}`}
+            placeholder="—"
+            value={raw}
+            onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
+          />
+        )}
+      </label>
+    );
+  };
+
   return (
     <div className="mon-rules">
-      <div className="mon-rules-bar">
+      {/* 筛选条：检测层级胶囊 + 活跃规则计数。与参考同一条，计数器常驻右侧。 */}
+      <div className="mon-rules-toolbar">
+        <div className="mon-rules-layers" role="group" aria-label="检测层级">
+          <span className="mon-rules-layers-label">{'检测层级:'}</span>
+          {LAYER_FILTERS.map((item) => {
+            const count = item.id === 'all' ? drafts.length : drafts.filter((draft) => ruleOf.get(draft.key)?.targetType === item.id).length;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`mon-rules-layer${layer === item.id ? ' on' : ''}`}
+                aria-pressed={layer === item.id}
+                onClick={() => setLayer(item.id)}
+              >
+                {item.label}
+                <span className="mon-rules-layer-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mon-rules-toolbar-right">
+          <span className="mon-rules-active">
+            {'活跃规则: '}
+            <b className="mon-rules-active-value">{enabledCount}</b>
+            {` / ${drafts.length}`}
+          </span>
+          <button className="btn btn-sm primary" disabled={saving || drafts.length === 0} onClick={() => void save()}>
+            {saving ? '保存中…' : '保存规则'}
+          </button>
+        </div>
+      </div>
+
+      <div className="mon-rules-statusbar">
         <div className="mon-rules-stats">
           <span className="mon-rules-stat">
-            <b className="mon-rules-stat-value">{drafts.filter((draft) => draft.enabled).length}</b>
+            <b className="mon-rules-stat-value">{enabledCount}</b>
             <span className="mon-rules-stat-key">{'条已启用'}</span>
           </span>
           <span className="mon-rules-stat-sep" aria-hidden>{'/'}</span>
@@ -317,21 +466,16 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
             <span className="mon-rules-stat-key">{'条总数'}</span>
           </span>
           {dirtyKeys.size > 0 && (
-            <span className="mon-rules-dirty" title="改动只在点「保存规则」后生效；保存是整表提交">
+            <span className="mon-rules-dirty" title="改动只在点「保存规则」或卡片上的「保存」后生效；保存是整表提交">
               <span className="mon-rules-dirty-dot" aria-hidden />
               {`${dirtyKeys.size} 条未保存`}
             </span>
           )}
         </div>
-        <div className="mon-rules-actions">
-          <button className="btn btn-sm primary" disabled={saving || drafts.length === 0} onClick={() => void save()}>
-            {saving ? '保存中…' : '保存规则'}
-          </button>
-        </div>
+        <p className="mon-rules-note">
+          {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
+        </p>
       </div>
-      <p className="mon-rules-note">
-        {'每条规则只在命中时通知，不会自动处置账号或密钥。保存时整表提交，参数在服务端校验，非法值不会落库。'}
-      </p>
 
       {error && <div className="rules-inline-error" role="alert"><span className="rules-err">{error}</span></div>}
       {loadError && <div className="rules-inline-error" role="alert"><span className="rules-err">{loadError}</span></div>}
@@ -347,143 +491,133 @@ export function RulesTab({ onNotice, error, notice, timezone }: RulesTabProps) {
       )}
       {loading && drafts.length === 0 && <div className="m-empty">{'读取中…'}</div>}
 
-      {drafts.map((draft) => {
-        const rule = ruleOf.get(draft.key);
-        if (!rule) return null;
-        const paramKeys = Object.keys(baseline.get(draft.key)?.params ?? rule.defaultParams ?? {}).sort();
-        const dirty = dirtyKeys.has(draft.key);
-        return (
-          <div
-            className={`mon-rules-item${dirty ? ' is-dirty' : ''}${draft.enabled ? '' : ' is-off'}`}
-            key={draft.key}
-          >
-            <div className="mrow mrow-rule">
-              <span className="rules-switch">
-                <Switch
-                  checked={draft.enabled}
-                  label={draft.enabled ? '启用' : '停用'}
-                  onChange={(value) => updateDraft(draft.key, { enabled: value })}
-                />
-              </span>
-              <span className="rules-name">
-                <span className="mon-rules-name" title={`${rule.name}（${rule.key}）`}>
-                  {rule.name}
-                  {dirty && <span className="mon-rules-dirty-dot" aria-hidden />}
+      <div className="mon-rules-grid">
+        {visible.map((draft) => {
+          const rule = ruleOf.get(draft.key);
+          if (!rule) return null;
+          const paramKeys = Object.keys(baseline.get(draft.key)?.params ?? rule.defaultParams ?? {}).sort();
+          const dirty = dirtyKeys.has(draft.key);
+          const editing = editingKey === draft.key;
+          const layerText = TARGET_TEXT[rule.targetType] ?? '目标';
+          return (
+            <div
+              className={`mon-rule-card${dirty ? ' is-dirty' : ''}${draft.enabled ? '' : ' is-off'}${editing ? ' is-editing' : ''}${badKey === draft.key ? ' is-bad' : ''}`}
+              key={draft.key}
+            >
+              <div className="mon-rule-top">
+                <span className="mon-rule-layer">{`${layerText}层规则`}</span>
+                <span className={`mon-rule-sev ${SEVERITY_CLASS[draft.severity]}`}>{`${SEVERITY_LABEL[draft.severity]} · ${SEVERITY_SHORT[draft.severity]}`}</span>
+                {dirty && <span className="mon-rule-dirty" title="这条规则有未保存的改动"><span className="mon-rules-dirty-dot" aria-hidden />{'未保存'}</span>}
+                <span className="mon-rule-top-actions">
+                  <button
+                    type="button"
+                    className={`mon-rule-toggle${editing ? ' on' : ''}`}
+                    aria-expanded={editing}
+                    aria-controls={`mon-rule-edit-${rule.key}`}
+                    onClick={() => setEditingKey(editing ? '' : rule.key)}
+                  >
+                    {editing ? '收起' : '配置阈值'}
+                  </button>
+                  <Switch
+                    checked={draft.enabled}
+                    label={draft.enabled ? '启用' : '停用'}
+                    onChange={(value) => updateDraft(draft.key, { enabled: value })}
+                  />
                 </span>
-                <span className={`mon-acc-tag rules-tag-${rule.targetType}`}>
-                  {TARGET_TEXT[rule.targetType] ?? '目标'}
-                </span>
-                <span className="rules-interval" title="引擎检查这条规则的间隔">
+              </div>
+
+              <h3 className="mon-rule-name" title={rule.key}>{rule.name}</h3>
+
+              <div className="mon-rule-meta">
+                <span className="mon-rule-meta-item">
+                  <ClockIcon />
                   {`每 ${rule.intervalMinutes} 分钟检查`}
                 </span>
-              </span>
-              <div className="rules-fields">
-                <label className="rules-cell">
-                  <span className="rules-cell-label">{'级别'}</span>
-                  <select
-                    className="rules-control"
-                    aria-label={`${rule.name} 级别`}
-                    value={draft.severity}
-                    onChange={(event) => updateDraft(draft.key, { severity: event.target.value as MonitorRuleSeverity })}
-                  >
-                    {RULE_SEVERITIES.map((value) => (
-                      <option key={value} value={value}>
-                        {`${SEVERITY_LABEL[value]} · ${SEVERITY_SHORT[value]}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="rules-cell">
-                  <span className="rules-cell-label" title="同一条告警在这段时间内不重复通知；5–1440 分钟">
-                    {'冷却'}
-                  </span>
-                  <span className="rules-cooldown">
-                    <input
-                      className="rules-control rules-num"
-                      type="number"
-                      min={COOLDOWN_MIN}
-                      max={COOLDOWN_MAX}
-                      step={1}
-                      aria-label={`${rule.name} 冷却分钟`}
-                      value={draft.cooldownMinutes}
-                      onChange={(event) => updateDraft(draft.key, { cooldownMinutes: event.target.value })}
-                    />
-                    <span className="muted-text">{'分钟'}</span>
-                  </span>
-                </label>
+                <span className="mon-rule-meta-sep" aria-hidden>{'·'}</span>
+                <span className="mon-rule-meta-item">{`静默 ${draft.cooldownMinutes || '—'} 分钟`}</span>
               </div>
-              <span className="rules-params">
-                {paramKeys.length === 0 && <span className="mon-rules-param-empty">{'这条规则没有可调参数'}</span>}
-                {paramKeys.map((key) => {
-                  const spec = PARAM_SPECS[key];
-                  const raw = draft.params[key] ?? '';
-                  if (!spec) {
-                    // 界面不认识的参数（probe_failed.authSeverity 是「认证失败时按该级别通知」）：
-                    // 按级别文字显示，既不出现裸数字，也不变成 0。
-                    return (
-                      <span className="rules-param" key={key} title={`${key} · 认证失败时按该级别通知`}>
-                        <span className="rules-cell-label">{'认证失败级别'}</span>
-                        <span className="mon-rules-readonly">{raw === '' ? '—' : SEVERITY_LABEL[raw as MonitorRuleSeverity] ?? raw}</span>
-                      </span>
-                    );
-                  }
-                  const hint = paramHint(key, spec);
-                  const ratio = spec.kind === 'ratio' && raw !== '' && raw !== '0';
-                  return (
-                    <label
-                      className={`rules-param${key === 'windowMinutes' ? ' rules-param-wide' : ''}`}
-                      key={key}
-                      title={`${key}${hint ? ` · ${hint}` : ''}`}
-                    >
-                      <span className="rules-cell-label">
-                        {spec.label}
-                        {spec.unit ? `（${spec.unit}）` : ''}
-                        {ratio && <span className="rules-ratio-note">{` ${ratioText(raw)}`}</span>}
-                      </span>
-                      {key === 'windowMinutes' ? (
-                        <select
-                          className="rules-control"
-                          aria-label={`${rule.name} ${key}`}
-                          value={raw}
-                          onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
-                        >
-                          {WINDOW_CHOICES.map((value) => (
-                            <option key={value} value={String(value)}>{`${value} 分钟`}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          className={`rules-control ${spec.kind === 'int' ? 'rules-num' : ''}`}
-                          type="number"
-                          step={spec.kind === 'int' ? 1 : 'any'}
-                          min={0}
-                          aria-label={`${rule.name} ${key}`}
-                          placeholder="—"
-                          value={raw}
-                          onChange={(event) => updateDraft(draft.key, {}, { [key]: event.target.value })}
-                        />
-                      )}
+
+              <div className="mon-rule-params">
+                {paramKeys.length === 0 && <span className="mon-rule-param-empty">{'这条规则没有可调参数'}</span>}
+                {paramKeys.map((key) => renderParam(rule, draft, key))}
+              </div>
+
+              {editing && (
+                <div className="mon-rule-editor" id={`mon-rule-edit-${rule.key}`}>
+                  <div className="mon-rule-editor-head">
+                    <span className="mon-rule-editor-title">{'配置阈值'}</span>
+                    <span className="mon-rule-editor-hint">{'保存后随整表提交，下一拍调度生效'}</span>
+                  </div>
+                  <div className="mon-rule-editor-row">
+                    <label className="mon-rule-field">
+                      <span className="mon-rule-field-label">{'级别'}</span>
+                      <select
+                        className="rules-control"
+                        aria-label={`${rule.name} 级别`}
+                        value={draft.severity}
+                        onChange={(event) => updateDraft(draft.key, { severity: event.target.value as MonitorRuleSeverity })}
+                      >
+                        {RULE_SEVERITIES.map((value) => (
+                          <option key={value} value={value}>
+                            {`${SEVERITY_LABEL[value]} · ${SEVERITY_SHORT[value]}`}
+                          </option>
+                        ))}
+                      </select>
                     </label>
-                  );
-                })}
-              </span>
-              <span className="rules-actions">
-                {/* 这里曾有一个「参数简称摘要」（次数≥ · 占比≥ …）。参数改成两段式后
-                    每个参数都有自己的块，摘要是重复信息；且它和「恢复默认」挤在同一格，
-                    宽度不够时会被截成「次数≥ 占比≥ 样本≥ 窗」这种残缺文字。删掉。 */}
-                <button
-                  className="btn btn-sm"
-                  disabled={!dirtyKeys.has(draft.key)}
-                  title="只把这一条恢复成默认值；保存后才生效"
-                  onClick={() => restoreOne(draft.key)}
-                >
-                  {'恢复默认'}
-                </button>
-              </span>
+                    <label className="mon-rule-field" title="同一条告警在这段时间内不重复通知；5–1440 分钟">
+                      <span className="mon-rule-field-label">{'冷却（分钟）'}</span>
+                      <input
+                        className="rules-control rules-num"
+                        type="number"
+                        min={COOLDOWN_MIN}
+                        max={COOLDOWN_MAX}
+                        step={1}
+                        aria-label={`${rule.name} 冷却分钟`}
+                        value={draft.cooldownMinutes}
+                        onChange={(event) => updateDraft(draft.key, { cooldownMinutes: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <div className="mon-rule-editor-grid">
+                    {paramKeys.map((key) => renderEditorField(rule, draft, key))}
+                  </div>
+                  <div className="mon-rule-editor-actions">
+                    <button
+                      className="btn btn-sm"
+                      disabled={!dirty}
+                      title="只把这一条恢复成打开页面时的服务端值；保存后才生效"
+                      onClick={() => restoreOne(draft.key)}
+                    >
+                      {'恢复默认'}
+                    </button>
+                    <button className="btn btn-sm" disabled={saving} onClick={() => setEditingKey('')}>
+                      {'收起'}
+                    </button>
+                    <button className="btn btn-sm primary" disabled={saving} onClick={() => void save(draft.key)}>
+                      {saving ? '保存中…' : dirty ? '保存' : '保存（无改动）'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="mon-rule-foot">
+                <span className="mon-rule-foot-state">
+                  {`状态：${draft.enabled ? '已加载到检测队列' : '已暂停'}`}
+                </span>
+                <span className="mon-rule-foot-actions">
+                  {dirty && <span className="mon-rule-foot-dirty">{'有未保存改动'}</span>}
+                  <button type="button" className="mon-rule-threshold" onClick={() => setEditingKey(editing ? '' : rule.key)}>
+                    {editing ? '收起编辑' : '配置阈值'}
+                  </button>
+                </span>
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+      {!loading && drafts.length > 0 && visible.length === 0 && (
+        <div className="m-empty">{`没有检测层级为「${LAYER_FILTERS.find((item) => item.id === layer)?.label ?? ''}」的规则`}</div>
+      )}
 
       <p className="mon-rules-foot">
         {`恢复默认只作用于单条；保存是整表提交，同一时刻的其它改动会一起写入。时间按投递时区 ${timezone} 计算。`}

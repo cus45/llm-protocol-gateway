@@ -6903,9 +6903,14 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 }
 .mon-header-badge-glyph { display: inline-flex; color: #fff; }
 .mon-header-badge-glyph svg { width: 20px; height: 20px; }
-.mon-header-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mon-header-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
 /* 标题行 = 15px 标题 + 11px 同步胶囊；胶囊贴着标题右侧，不抢标题的字重。 */
 .mon-header-headline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+/* 同步时间贴着标题行的右尾：参考把时间放在 tooltip 与右上角，这里保持 11px 弱色胶囊，
+   不占副标题那一行（副标题留给业务摘要）。 */
+/* 刷新中与「同步」是两个字，比标题右侧剩下的宽度长，允许它换到第二行也不裁切
+   （手机档会落到独立一行，见 media 640）。 */
+.mon-header-sync { flex: 0 1 auto; margin-left: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .mon-header-sync {
   display: inline-flex;
   align-items: center;
@@ -6944,6 +6949,10 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   font-variant-numeric: tabular-nums;
 }
 .mon-header-sub .mon-chain { margin-right: 2px; }
+/* 业务摘要做成一个整体胶囊组：每一项连同紧随其后的「·」一起断行，不会把分隔点丢在行首。
+   手机上整组按词折行（keep-all 只在标点与空格处断），宽屏一行展示。 */
+.mon-header-summary { display: contents; }
+.mon-header-fact { white-space: nowrap; }
 .mon-dot { color: var(--subtle); }
 .mon-header-btns { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; margin-left: auto; }
 /* 动作按钮：30px 高圆角胶囊，图标 14px。三档色系——中性描边 / 绿渐变（续期）/ 主色渐变（密钥）。 */
@@ -6973,8 +6982,16 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .mon-header-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
 .mon-header-btn:disabled { opacity: 0.55; cursor: default; }
 .mon-header-btn-icon { flex: none; width: 14px; height: 14px; color: var(--subtle); }
-.mon-header-btn:first-child .mon-header-btn-icon { color: var(--accent); }
-.mon-header-btn:first-child:hover:not(:disabled) .mon-header-btn-icon { color: var(--accent); }
+.mon-header-btn.mon-header-refresh .mon-header-btn-icon { color: var(--accent); }
+/* 告警静音：关 = 中性描边（与刷新同档）；开 = amber 底色描边，文字写明「已静音」。 */
+.mon-header-mute.is-on {
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-weight: 600;
+}
+.mon-header-mute.is-on .mon-header-btn-icon { color: var(--amber); }
+.mon-header-mute.is-on:hover:not(:disabled) { border-color: var(--amber); background: var(--amber-soft); }
 .mon-header-btn.is-green,
 .mon-header-btn.is-accent {
   padding: 0 14px;
@@ -7129,9 +7146,12 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
   /* 390：徽章 + 标题一行，胶囊与副标题占满下一行；按钮组一行、按比例收缩、不外溢。 */
   .mon-header { padding: 12px 8px; gap: 10px; }
   .mon-header-id { flex: 1 0 100%; }
-  .mon-header-btns { flex: 1 1 100%; flex-wrap: nowrap; min-width: 0; margin-left: 0; gap: 8px; }
-  .mon-header-btn { flex: 1 1 auto; min-width: 0; padding: 0 8px; }
-  .mon-header-btn > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 手机档标题与胶囊共用一行后，同步时间已没有余地，单独落到下一行左端（order 让它排在胶囊之后）。 */
+  .mon-header-sync { order: 3; flex-basis: 100%; width: max-content; margin-left: 0; }
+  /* 四个动作按钮在 390 一行 80px 装不下（实测每个文字要 48~75px），改成 2×2 网格：
+     标签完整显示，不截断、不缩字号。 */
+  .mon-header-btns { flex: 1 1 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; margin-left: 0; gap: 8px; }
+  .mon-header-btn { width: 100%; min-width: 0; padding: 0 8px; }
   /* 手机档不做通栏出血：负外边距会让滚动容器右缘超出视口 2px，整页跟着横向滚。
      页签条就留在卡片内宽里，多出来的部分由它自己横向滚。 */
   .mon-tab { padding: 0 11px; gap: 6px; }
@@ -7345,45 +7365,9 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
   .mrow-probe > :nth-child(6) { grid-column: 1 / -1; justify-self: stretch; }
 }
 
-/* 规则页（阶段 4）。两行式规则行：
-   第一行（信息与固定列）：开关 / 名称+徽标+检查间隔 / 级别 / 冷却 / 恢复默认（行尾固定）。每一列
-   在所有行、所有断点下位置固定，「恢复默认」永远在行尾同一个格子里，不被参数条数挤动。
-   第二行（参数带）：整行铺开，每个参数一块（标签在上、控件在下，块宽固定 96/116px），
-   从参数带最左起排；参数再多也只会在这条带内向右延伸，不会回到行首、也不会漂到别的列。
-   控制件只用 36/28 两档高度里的 28（行内档）。 */
-.mrow-rule {
-  grid-template-columns: 76px minmax(0, 1fr) 96px 116px 116px 88px;
-  /* 控件 cell 默认 justify-self:stretch 且不收缩，宽内容会把网格撑出轨道两侧；统一改成 start。 */
-  justify-items: start;
-  grid-template-rows: auto auto;
-  row-gap: 8px;
-}
-/* 第一行：开关 · 名称 · [级别+冷却] · 恢复默认。每一列在所有行、所有断点位置固定。 */
-.mrow-rule > .rules-name { grid-column: 2; grid-row: 1; min-width: 0; }
-.mrow-rule > .rules-fields { grid-column: 3 / 5; grid-row: 1; align-self: start; }
-.mrow-rule > .rules-actions { grid-column: 6; grid-row: 1; justify-self: end; align-self: start; }
-.mrow-rule > .rules-params { grid-column: 1 / -1; grid-row: 2; }
-.rules-switch { display: flex; align-items: center; min-width: 0; grid-column: 1; grid-row: 1; align-self: start; }
-.rules-fields { display: grid; grid-template-columns: 96px 116px; gap: 12px; min-width: 0; }
-/* 单行排：名称优先占宽（它是这一行的唯一标识），徽标与检查间隔可被截断，但不能把名称挤没。 */
-.rules-name { justify-self: stretch; display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; }
-.rules-name > .m-clip { flex: 1 1 auto; min-width: 4em; }
-.rules-name > .rules-interval { font-size: 11px; }
-.rules-name > .badge,
-.rules-name > .rules-interval { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rules-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.rules-cell-label { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.3; }
-.rules-cell-note { color: var(--muted); font-size: 11px; line-height: 1.3; }
-/* 冷却与「分钟」同处一行：输入框与单位都用 .rules-control 的 28px 行高，单位只占文字高度。 */
-.rules-cooldown { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.rules-cooldown > .rules-control { flex: 1 1 auto; }
-.rules-cooldown > .muted-text { flex: 0 0 auto; }
-/* 参数带：每个参数一块，块内标签在上、控件在下，块宽固定，块与块 gap 一致。 */
-.rules-params { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
-.rules-param { display: flex; flex-direction: column; gap: 2px; min-width: 0; width: 96px; }
-.rules-param-wide { width: 116px; }
-.rules-ratio-note { color: var(--subtle); font-variant-numeric: tabular-nums; }
-.rules-param > .m-row-num { font-size: 12px; }
+/* 规则页编辑态控件（阈值编辑区里的下拉/数字框，28px 行内档）。
+   卡片级的只读参数格见监控段落的 .mon-rule-param*。 */
+.mon-rule-editor .rules-ratio-note { color: var(--muted); font-variant-numeric: tabular-nums; }
 .rules-control {
   width: 100%;
   min-width: 0;
@@ -7412,50 +7396,12 @@ select.rules-control {
   cursor: pointer;
 }
 .rules-num { font-variant-numeric: tabular-nums; }
-.rules-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-/* 参数带右侧的简短摘要（悬停给全量），宽度随内容但不能把按钮挤出列。
-   摘要自己占满剩余宽度，按钮因此贴在这一格的右缘：摘要长短不同时右缘不再漂
-   40px（审查 M1）。 */
-.rules-params-summary { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
-.rules-actions > .btn { flex: 0 0 auto; margin-left: auto; }
-/* 页头的「N 条未保存 + 保存规则」：别复用行内 .rules-actions（那个是行尾单格的布局），
-   用 panel-header-actions 原本的横排，计数不被按钮挤掉。 */
-.rules-header-actions { flex-wrap: nowrap; }
-.rules-header-actions > .btn { flex: 0 0 auto; }
-/* .muted-text 平台样式带 overflow:hidden，窄容器里会被压成 0 宽；计数必须一直看得见。 */
-.rules-header-actions > .rules-count { flex: 0 0 auto; overflow: visible; }
-.rules-header-actions > .muted-text { white-space: nowrap; }
-.log-row.rules-dirty { border-color: var(--accent-border); }
-/* 下拉里的 <option> 会继承 .log-row 的透明底，暗色主题下字色和弹层底色一个色，选中值看不见。 */
 /* 下拉弹层的选项：暗色下 --surface 与页面底色同值，选项看起来像浮在页面上。
    用高一层级的 --surface-strong，明暗两主题下都与页面有边界。 */
 .rules-control option { color: var(--text); background: var(--surface-strong); }
 .rules-inline-error { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; min-width: 0; flex-wrap: wrap; }
 .rules-inline-notice { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; min-width: 0; flex-wrap: wrap; }
 .rules-err { color: var(--red); }
-/* ≤1100：第一行「开关 / 名称 / 级别 / 冷却」，「恢复默认」让到第二行开头（参数带之上），
-   仍然是每行同一位置；≤860 参数带整宽，摘要在窄处不显示（行尾按钮保持 88px 可点）。 */
-@media (max-width: 1100px) {
-  /* 第一行：开关 / 名称 / 级别+冷却；「恢复默认」固定到第二行行尾（仍在参数带上方，
-     每行同一位置），参数带整行铺开。 */
-  .mrow-rule { grid-template-columns: 76px minmax(0, 1fr) 96px 116px; }
-  .mrow-rule > .rules-fields { grid-column: 3 / 5; }
-  .mrow-rule > .rules-actions { grid-column: 1 / -1; grid-row: 2; justify-self: end; }
-  .mrow-rule > .rules-params { grid-row: 3; }
-}
-@media (max-width: 860px) {
-  /* 开关+名称第一行；级别+冷却第二行；恢复默认第三行行尾；参数带第四行。
-     名称独占一行：徽标与检查间隔换到名称下方，名称永远不会被挤成 0 宽。 */
-  .mrow-rule { grid-template-columns: 72px minmax(0, 1fr); }
-  .mrow-rule > .rules-fields { grid-column: 1 / -1; grid-row: 2; }
-  .mrow-rule > .rules-actions { grid-row: 3; }
-  .mrow-rule > .rules-params { grid-row: 4; }
-  .rules-params-summary { display: none; }
-  .rules-name { flex-wrap: wrap; align-items: center; overflow: visible; }
-  .rules-name > .m-clip { flex: 1 0 100%; min-width: 0; }
-  .rules-actions > .btn { white-space: nowrap; }
-}
-
 /* 概览页在窄处的行布局。≤1100 时 .mrow 把首尾格铺满整行，这里把账号/告警/事件行改回
    自己的排法：账号行 = 名称 / 续期+额度 / 状态+详情 依次三行（全宽时一段才够放长名，
    硬挤成两行会把名称押回省略号）；告警与事件行标题整宽，其余并排。 */
@@ -8668,8 +8614,9 @@ select.mon-acc-select-input {
   white-space: nowrap;
 }
 .mon-acc-breaker-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
-.mon-acc-breaker.half_open { background: var(--amber-soft); color: var(--amber); }
-.mon-acc-breaker.open { background: var(--red-soft); color: var(--red); }
+/* 徽标按「健康判定」上色（不是熔断档位名）：正常=绿、告警=amber、异常=红、停用=灰。
+   判定依据写在 title 里；档位（CLOSED/HALF_OPEN/OPEN）仍用于筛选下拉。 */
+.mon-acc-breaker.alert { background: var(--amber-soft); color: var(--amber); }
 .mon-acc-breaker.off { background: var(--slate-soft); color: var(--slate); }
 
 /* 账号名：16px/700，按词（wbr）与字（anywhere）折行，不设 clamp、不加省略号。 */
@@ -8685,6 +8632,10 @@ select.mon-acc-select-input {
   letter-spacing: -0.01em;
   color: var(--text-strong);
 }
+/* 异常：实心红底 + 白字。卡片背景已被 --red / --amber 软底染过一轮，红色淡底徽标压在上面
+   对比度不够（实测 ~3:1），异常是必须一眼看到的，这里用最高对比。 */
+html:not([data-theme="dark"]) .mon-acc-breaker.abnormal { background: var(--red-soft); color: var(--red); border-color: color-mix(in srgb, var(--red) 60%, transparent); }
+html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); color: #0b1220; border-color: var(--red); }
 .mon-acc-name > .brand-icon { flex: none; flex-shrink: 0; margin-top: 3px; }
 .mon-acc-name-text { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
 
@@ -8721,7 +8672,7 @@ select.mon-acc-select-input {
 .mon-acc-dot.ok { background: var(--green); box-shadow: none; }
 .mon-acc-dot.err { background: var(--red); box-shadow: none; }
 
-/* 今日探测额度（替代参考的「分流权重」滑条：本项目没有权重数据，不伪造）。 */
+/* 今日探测额度条（替代参考的「分流权重」滑条：本项目没有权重数据，画真实额度，只读不可拖）。 */
 .mon-acc-quota { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .mon-acc-quota-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
 .mon-acc-quota-label { color: var(--muted); font-size: 11px; font-weight: 500; }
@@ -8729,6 +8680,9 @@ select.mon-acc-select-input {
 .mon-acc-track { position: relative; height: 4px; border-radius: 999px; background: var(--surface-sunken); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
 .mon-acc-track > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--accent); }
 .mon-acc-track > span.is-open { background: repeating-linear-gradient(90deg, var(--accent) 0 6px, color-mix(in srgb, var(--accent) 35%, transparent) 6px 10px); }
+/* 额度用完：条变红灯，与「异常」同一套语义。 */
+.mon-acc-track.is-full > span { background: var(--red); }
+.mon-acc-track.is-full > span.is-open { background: repeating-linear-gradient(90deg, var(--red) 0 6px, color-mix(in srgb, var(--red) 35%, transparent) 6px 10px); }
 .mon-acc-quota-note { margin: 0; color: var(--subtle); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 
 .mon-acc-facts {
@@ -9168,21 +9122,74 @@ html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb
 .mon-detail-actions > .mon-detail-note { flex: 1 1 100%; }
 .mon-detail-select { height: var(--control-h-sm); padding: 0 10px; font-size: 12px; }
 
-/* 规则页：工具条（统计 + 保存）+ 两行式规则卡。行的网格结构仍由 .mrow-rule 决定，
-   这里只管卡片外观：--r-lg 圆角、14px 内边距、停用行降为 --surface-soft、改动行强调描边。 */
-.mon-rules-bar {
+/* 规则页（v4）：筛选条 + 3 列卡片网格，对齐参考「规则引擎」。
+   每张卡：首行「层级胶囊 + 级别胶囊 + 未保存标记 + 开关」→ 规则名（不截断）→ 检查/静默元信息
+   → 只读参数格 → 底部「状态 + 配置阈值」。阈值编辑收在卡内展开区，不再整页摆输入框。
+   列数按容器宽退档（与账号页同一套容器查询阈值）。 */
+.mon-rules-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px 16px;
   padding: 10px 14px;
-  border-radius: var(--r-lg);
+  border-radius: 16px;
   border: 1px solid var(--border);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
   box-shadow: var(--shadow-soft);
   min-width: 0;
 }
+.mon-rules-layers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.mon-rules-layers-label { color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.mon-rules-layer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h-sm);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.13s ease, border-color 0.13s ease, color 0.13s ease;
+}
+.mon-rules-layer:hover { border-color: var(--border-strong); color: var(--text); }
+.mon-rules-layer:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.mon-rules-layer.on { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); font-weight: 600; }
+.mon-rules-layer-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.mon-rules-layer.on .mon-rules-layer-count { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.mon-rules-toolbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
+.mon-rules-active { color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mon-rules-active-value { color: var(--green); font-weight: 700; }
+html[data-theme="light"] .mon-rules-active-value { color: color-mix(in srgb, var(--green) 78%, #000); }
+.mon-rules-toolbar-right > .btn { flex: 0 0 auto; }
+
+.mon-rules-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  min-width: 0;
+}
+.mon-rules-statusbar > .mon-rules-note { flex: 1 1 320px; min-width: 0; margin: 0; }
 .mon-rules-stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
 .mon-rules-stat { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
 .mon-rules-stat-value {
@@ -9190,10 +9197,10 @@ html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb
   font-family: var(--mono);
   font-size: 18px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
 }
-.mon-rules-stat-key { color: var(--muted); font-size: 11.5px; }
+.mon-rules-stat-key { color: var(--muted); font-size: 11.5px; line-height: 1.6; }
 .mon-rules-stat-sep { color: var(--subtle); font-family: var(--mono); font-size: 14px; }
 .mon-rules-dirty {
   display: inline-flex;
@@ -9210,50 +9217,206 @@ html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb
 }
 html[data-theme="light"] .mon-rules-dirty { color: color-mix(in srgb, var(--amber) 88%, #000); }
 .mon-rules-dirty-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.mon-rules-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mon-rules-note { margin: -2px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.mon-rules-note { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
 .mon-rules-foot { margin: 2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; }
 
-.mon-rules-item {
-  padding: 12px 14px;
-  border-radius: var(--r-lg);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: var(--shadow-soft);
-  min-width: 0;
-  transition: border-color 0.13s ease, background-color 0.13s ease;
+.mon-rules-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
 }
-.mon-rules-item:hover { border-color: var(--border-strong); }
-.mon-rules-item.is-dirty { border-color: var(--accent-border); box-shadow: 0 0 0 1px var(--accent-border), var(--shadow-soft); }
-.mon-rules-item.is-off { background: var(--surface-soft); }
-.mon-rules-item.is-off .mon-rules-name { color: var(--muted); font-weight: 500; }
-.mon-rules-name {
-  display: inline;
+@container (max-width: 900px) {
+  .mon-rules-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 600px) {
+  .mon-rules-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.mon-rule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-soft);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.mon-rule-card:hover { border-color: var(--accent-border); }
+.mon-rule-card.is-dirty { border-color: var(--accent-border); box-shadow: 0 0 0 1px var(--accent-border), var(--shadow-soft); }
+.mon-rule-card.is-editing { box-shadow: 0 0 0 1px var(--accent-border), var(--shadow-med); }
+.mon-rule-card.is-bad { border-color: var(--red); box-shadow: 0 0 0 1px color-mix(in srgb, var(--red) 60%, transparent), var(--shadow-soft); }
+.mon-rule-card.is-off { background: var(--surface-soft); opacity: 0.88; }
+.mon-rule-card.is-off .mon-rule-name { color: var(--muted); font-weight: 600; }
+
+.mon-rule-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.mon-rule-layer {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.mon-rule-sev {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--r-xs);
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.mon-rule-sev.p0 { border-color: color-mix(in srgb, var(--red) 34%, transparent); background: var(--red-soft); color: var(--red); }
+.mon-rule-sev.p1 { border-color: color-mix(in srgb, var(--amber) 34%, transparent); background: var(--amber-soft); color: var(--amber); }
+.mon-rule-sev.p2 { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-strong); }
+html[data-theme="light"] .mon-rule-sev.p0 { color: color-mix(in srgb, var(--red) 86%, #000); }
+html[data-theme="light"] .mon-rule-sev.p1 { color: color-mix(in srgb, var(--amber) 84%, #000); }
+.mon-rule-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+html[data-theme="light"] .mon-rule-dirty { color: color-mix(in srgb, var(--amber) 88%, #000); }
+.mon-rule-top-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+/* 平台开关带 36px min-height / 标签；卡片首行里只要 20px 的小开关，标签由开关的 aria 承担。 */
+.mon-rule-top-actions > .switch-control { min-height: 20px; }
+.mon-rule-top-actions > .switch-control .switch-label { display: none; }
+.mon-rule-toggle {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mon-rule-toggle:hover { border-color: var(--accent-border); color: var(--accent-strong); }
+.mon-rule-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.mon-rule-toggle.on { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-strong); }
+
+/* 规则名是卡片主信息：整句折行，不限行数，不加省略号。 */
+.mon-rule-name {
+  margin: 2px 0 0;
   min-width: 0;
   color: var(--text-strong);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.4;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
   overflow-wrap: anywhere;
   word-break: normal;
 }
-.mon-rules-name > .mon-rules-dirty-dot { display: inline-block; margin-left: 6px; vertical-align: middle; }
-.mon-rules-readonly { color: var(--text); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.mon-rules-param-empty { color: var(--muted); font-size: 11.5px; }
-/* 规则名是主信息：按整行宽度折行（不限行数），徽标与检查间隔跟在名字后面；窄了先换行。 */
-.mon-rules-item .rules-name { flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow: visible; }
-.mon-rules-item .rules-name > .mon-rules-name { flex: 0 1 auto; }
-.mon-rules-item .rules-name > .badge,
-.mon-rules-item .rules-name > .mon-acc-tag,
-.mon-rules-item .rules-name > .rules-interval { flex: none; white-space: nowrap; }
-.mon-rules-item .rules-interval { color: var(--subtle); font-size: 11px; font-variant-numeric: tabular-nums; }
-.mon-rules-item .rules-tag-api_key { border-color: color-mix(in srgb, var(--accent) 34%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); color: var(--accent-strong); }
-.mon-rules-item .rules-tag-gateway { border-color: var(--border-strong); background: var(--surface-sunken); color: var(--muted); }
-.mon-rules-item .rules-params-summary { color: var(--muted); font-size: 11px; }
-.mon-rules-item .rules-cell-label { color: var(--muted); }
-.mon-rules-item .rules-control { background-color: var(--surface-soft); }
-.mon-rules-item.is-dirty .rules-control { background-color: var(--surface); }
-.mon-rules-item .rules-actions > .btn { height: var(--control-h-sm); }
+.mon-rule-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; min-width: 0; }
+.mon-rule-meta-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.mon-rule-clock { flex: none; color: var(--subtle); }
+.mon-rule-meta-sep { color: var(--subtle); }
+
+.mon-rule-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  min-width: 0;
+}
+.mon-rule-param {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.mon-rule-param-label { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.mon-rule-param-label::after { content: ':'; }
+.mon-rule-param-value { color: var(--accent-strong); font-family: var(--mono); font-size: 11px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mon-rule-param-empty { color: var(--muted); font-size: 11.5px; }
+
+.mon-rule-editor {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  min-width: 0;
+}
+.mon-rule-editor-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.mon-rule-editor-title { color: var(--accent-strong); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.mon-rule-editor-hint { color: var(--muted); font-size: 11px; line-height: 1.4; min-width: 0; }
+.mon-rule-editor-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.mon-rule-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.mon-rule-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mon-rule-field-label { display: flex; flex-wrap: wrap; gap: 0 4px; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.3; }
+.mon-rule-field .rules-control { background-color: var(--surface); }
+.mon-rule-editor-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mon-rule-editor-actions > .btn { height: var(--control-h-sm); }
+.mon-rule-editor-actions > .btn.primary { margin-left: auto; }
+
+.mon-rule-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  min-width: 0;
+}
+.mon-rule-foot-state { color: var(--muted); line-height: 1.5; }
+.mon-rule-card.is-off .mon-rule-foot-state { color: var(--subtle); }
+.mon-rule-foot-actions { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; }
+.mon-rule-foot-dirty { color: var(--amber); font-weight: 600; white-space: nowrap; }
+html[data-theme="light"] .mon-rule-foot-dirty { color: color-mix(in srgb, var(--amber) 88%, #000); }
+.mon-rule-threshold {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mon-rule-threshold:hover { text-decoration: underline; }
+.mon-rule-threshold:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--r-xs); }
 
 /* 设置页：渠道 / 表单 / 投递 / 探测调度同一套卡片；表单控件维持 36px 一档。 */
 .mon-set-card { display: grid; gap: 12px; padding: 16px 18px; min-width: 0; }
@@ -9354,8 +9517,9 @@ html[data-theme="light"] .mon-set-row-warn { color: color-mix(in srgb, var(--amb
   .mon-alerts-filter { flex-wrap: wrap; }
   .mon-alerts-stat { padding: 4px 8px; }
   .mon-alerts-stat-value { font-size: 15px; }
-  .mon-rules-bar { padding: 10px 12px; }
-  .mon-rules-actions { width: 100%; }
-  .mon-rules-actions > .btn { flex: 1 1 auto; }
-  .mon-rules-item { padding: 12px; }
+  .mon-rules-toolbar { padding: 8px 10px; }
+  .mon-rules-layers-label { display: none; }
+  .mon-rules-toolbar-right { width: 100%; justify-content: space-between; }
+  .mon-rule-card { padding: 12px; }
+  .mon-rule-editor-row, .mon-rule-editor-grid { grid-template-columns: minmax(0, 1fr); }
 }
