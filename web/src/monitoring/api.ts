@@ -3,6 +3,7 @@ import type {
   MonitorAccount,
   MonitorAlert,
   MonitorAlertDetail,
+  MonitorAlertStatus,
   MonitorChannelInput,
   MonitorChannelTestResult,
   MonitorChannelView,
@@ -10,8 +11,10 @@ import type {
   MonitorEvent,
   MonitorOverview,
   MonitorPage,
+  MonitorProbeAccount,
   MonitorProbeConfig,
   MonitorProbePage,
+  MonitorProbeRun,
   MonitorProbeRunResult,
   MonitorQuotaResult,
   MonitorRenewalResult,
@@ -251,3 +254,129 @@ export function fetchRules(): Promise<MonitorRule[]> {
 export function saveRules(rules: Array<Partial<MonitorRule> & { key: string }>): Promise<MonitorRule[]> {
   return request<MonitorRule[]>('/rules', { method: 'PUT', body: JSON.stringify(rules) });
 }
+
+// ── 实时流（SSE）────────────────────────────────────────────────────────
+/*
+ * `GET /__monitor/stream`（text/event-stream）。原生的 EventSource：浏览器自带断线重连
+ * 与 Last-Event-ID 续传，不引第三方库。帧格式见后端 monitor_stream.go：
+ *
+ *   event: snapshot  {generatedAt, overview, accounts, alerts, probes, eventCursor}
+ *   event: events    [MonitorEvent…]                     id = 最新事件行 id
+ *   event: alert     {id, reason, alert?}                 id = 告警 id
+ *   event: probe     {providerId, runs: [MonitorProbeRun]} id = 探测轮的毫秒时间戳
+ *   event: resync    {reason, cursor}                    被丢掉一段，按 cursor 重读
+ *   :heartbeat                                            注释行，EventSource 不派发
+ *
+ * 事件名集中在这里：后端改名只动这一处。未知事件一律忽略（将来加事件不炸老前端）。
+ */
+export const MONITOR_STREAM_PATH = '/__monitor/stream';
+
+export type MonitorStreamEventName = 'snapshot' | 'events' | 'alert' | 'probe' | 'resync';
+
+export const MONITOR_STREAM_EVENTS: readonly MonitorStreamEventName[] = ['snapshot', 'events', 'alert', 'probe', 'resync'];
+
+export interface MonitorStreamSnapshot {
+  generatedAt?: string;
+  /** 字段与 REST 同名接口一致，只是可能被截断（只带 firing 告警等），按「部分视图」用。 */
+  overview?: MonitorOverview;
+  accounts?: MonitorAccount[];
+  alerts?: MonitorAlert[];
+  probes?: MonitorProbePage;
+  eventCursor?: number;
+}
+
+export interface MonitorStreamAlertFrame {
+  id: number;
+  reason: string;
+  alert?: MonitorAlert;
+}
+
+export interface MonitorStreamProbeFrame {
+  providerId: string;
+  runs: MonitorProbeRun[];
+}
+
+export interface MonitorStreamResyncFrame {
+  reason: string;
+  cursor?: number;
+  dropped?: number;
+}
+
+/** 后端行形状是 Go 结构体的下限：缺字段时补默认值，渲染层不用到处判 undefined。 */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+export function parseProbeRun(raw: unknown): MonitorProbeRun | null {
+  const row = asRecord(raw);
+  if (!row || !asString(row.providerId)) return null;
+  return {
+    providerId: asString(row.providerId),
+    kind: asString(row.kind),
+    case: asString(row.case),
+    ok: row.ok === true,
+    status: asNumber(row.status),
+    skipped: asString(row.skipped) || undefined,
+      durationMs: asNumber(row.durationMs),
+      model: asString(row.model) || undefined,
+      errorCode: asString(row.errorCode) || undefined,
+      day: asString(row.day),
+      time: asString(row.time),
+    };
+}
+
+export function parseProbeAccount(raw: unknown): MonitorProbeAccount | null {
+  const row = asRecord(raw);
+  if (!row || !asString(row.providerId)) return null;
+  return {
+    providerId: asString(row.providerId),
+    name: asString(row.name) || asString(row.providerId),
+    vendor: asString(row.vendor) || undefined,
+    disabled: row.disabled === true,
+    probed: row.probed === true,
+    consecutiveFailures: asNumber(row.consecutiveFailures),
+    lastProbeAt: asString(row.lastProbeAt) || undefined,
+    lastStatus: typeof row.lastStatus === 'number' ? row.lastStatus : undefined,
+    skipped: asString(row.skipped) || undefined,
+    usedToday: asNumber(row.usedToday),
+    maxPerDay: asNumber(row.maxPerDay),
+  };
+}
+
+export function parseProbePage(raw: unknown): MonitorProbePage | null {
+  const row = asRecord(raw);
+  if (!row) return null;
+  const accounts = Array.isArray(row.accounts)
+    ? row.accounts.map(parseProbeAccount).filter((item): item is MonitorProbeAccount => item !== null)
+    : [];
+  const runs = Array.isArray(row.runs)
+    ? row.runs.map(parseProbeRun).filter((item): item is MonitorProbeRun => item !== null)
+    : [];
+  const config = asRecord(row.config) as unknown as MonitorProbeConfig | null;
+  if (!config) return null;
+  return { accounts, runs, config };
+}
+
+export function parseStreamProbeFrame(raw: unknown): MonitorStreamProbeFrame | null {
+  const row = asRecord(raw);
+  if (!row) return null;
+  const runs = Array.isArray(row.runs)
+    ? row.runs.map(parseProbeRun).filter((item): item is MonitorProbeRun => item !== null)
+    : [];
+  if (runs.length === 0) return null;
+  return { providerId: asString(row.providerId) || runs[0].providerId, runs };
+}
+
+/** 告警页只展示 firing / resolved 两档；未知状态（后端新加）不硬塞进列表。 */
+export function isListedAlertStatus(status: string): status is MonitorAlertStatus {
+  return status === 'firing' || status === 'resolved';
+}
+

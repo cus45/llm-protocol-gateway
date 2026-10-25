@@ -109,6 +109,11 @@ type Server struct {
 	monitoring       *monitoring.Service
 	monitoringEngine *monitoring.Engine
 	monitoringSrc    *monitoringSource
+	// monitorHub fans monitoring increments out to /__monitor/stream
+	// subscribers. Built lazily by monitorStreamHub (sync.Once, so the route
+	// and StartMonitoring may race to first use it).
+	monitorHub     *monitorStreamHub
+	monitorHubOnce sync.Once
 	// log2xxBodies mirrors GatewayState.Log2xxBodies; guarded by log2xxBodiesMu
 	// because it is read on every request-log write and toggled from a handler.
 	log2xxBodies   bool
@@ -262,6 +267,10 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		}
 		if ms, ok := stateSaver[0].(monitoringStore); ok {
 			server.monitoringStore = ms
+			// Decorate from the start, not only once StartMonitoring runs: the
+			// stream and every writer share this one field, and a write that
+			// slips past the hub would leave a connected console stale.
+			server.EnableMonitorStream()
 		}
 		if pins, ok := stateSaver[0].(sessionPinSaver); ok {
 			server.sessionPins.setSaver(pins)
@@ -355,6 +364,7 @@ func (s *Server) Handler() http.Handler {
 	// the monitoring collector, and MigrateMonitoringV1 still folds the frozen
 	// `alerts` history into monitor_events on startup.
 	mux.HandleFunc("GET /__monitor/overview", s.handleMonitorOverview)
+	mux.HandleFunc("GET /__monitor/stream", s.handleMonitorStream)
 	mux.HandleFunc("GET /__monitor/accounts", s.handleMonitorAccounts)
 	mux.HandleFunc("GET /__monitor/accounts/{providerId}", s.handleMonitorAccount)
 	mux.HandleFunc("POST /__monitor/accounts/{providerId}/refresh", s.handleMonitorAccountRefresh)

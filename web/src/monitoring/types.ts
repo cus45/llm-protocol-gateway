@@ -296,6 +296,14 @@ export interface MonitorProbePage {
 }
 
 /**
+ * 探测页的实时流状态（探测页自己维护，不经过 MonitoringPage 的状态）：
+ * - live：SSE 已连上，条目随流追加
+ * - paused：用户暂停采集，连接仍在，新条目先攒着，恢复时一次补上
+ * - poll：SSE 不可用（老后端 / 网络 / 浏览器不支持），降级为定时轮询
+ */
+export type MonitorProbeStreamMode = 'live' | 'paused' | 'poll';
+
+/**
  * 一轮探测返回里每个 case 的结果（后端 probeCaseResult 的 JSON 视图）。
  * 没有 json tag（解析时大小写不敏感），实测字段名是 `Case`/`OK`/`Status`/`Duration`……，
  * 所以这里按真实响应写；小写键是将来补了 tag 之后的形态，两种都接。

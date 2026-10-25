@@ -1092,3 +1092,28 @@ func (s *Store) LatestMonitorProbeRuns(providerID string, limit int) ([]monitori
 	}
 	return out, rows.Err()
 }
+
+// MonitorEventRowsAfter returns up to limit event rows with id > afterID, oldest
+// first. It is the catch-up read behind GET /__monitor/stream: Last-Event-ID is
+// an event id, and the console's own query sorts newest-first by time, which a
+// resume window does not need.
+func (s *Store) MonitorEventRowsAfter(afterID int64, limit int) ([]monitoring.Event, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.reader().Query(`SELECT `+monitorEventColumns+` FROM monitor_events WHERE id > ?
+		ORDER BY id ASC LIMIT ?`, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]monitoring.Event, 0, limit)
+	for rows.Next() {
+		event, err := scanMonitorEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}

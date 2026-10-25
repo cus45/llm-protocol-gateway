@@ -133,11 +133,23 @@ func (s *Server) handleMonitorOverview(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.monitorGate(w, r); !ok {
 		return
 	}
+	view, err := s.monitorOverviewOf(s.monitorProviders())
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// monitorOverview builds the summary card payload. The stream snapshot reuses
+// it so the two endpoints cannot drift apart.
+// monitorOverviewOf builds the summary card payload for a provider list the caller
+// already read, so the stream snapshot can freeze one list across all sections.
+func (s *Server) monitorOverviewOf(providers []domain.Provider) (monitorOverviewView, error) {
 	now := time.Now().UTC()
 	summary, err := s.monitoringStore.MonitorRequestSummary(now.Add(-monitorOverviewWindow), now)
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "读取请求汇总失败")
-		return
+		return monitorOverviewView{}, fmt.Errorf("读取请求汇总失败")
 	}
 	view := monitorOverviewView{GeneratedAt: now.Format(time.RFC3339), WindowHours: 24}
 	view.Requests.Total = summary.Total
@@ -149,7 +161,7 @@ func (s *Server) handleMonitorOverview(w http.ResponseWriter, r *http.Request) {
 		view.Requests.SuccessRate = roundRatio(float64(summary.Success) / float64(summary.Total))
 	}
 
-	for _, provider := range s.monitorProviders() {
+	for _, provider := range providers {
 		view.Accounts.Total++
 		if provider.Disabled {
 			view.Accounts.Disabled++
@@ -186,18 +198,17 @@ func (s *Server) handleMonitorOverview(w http.ResponseWriter, r *http.Request) {
 
 	events, err := s.monitoringStore.QueryMonitorEvents(monitoring.EventQuery{Page: 1, PageSize: 20})
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "读取事件失败")
-		return
+		return monitorOverviewView{}, fmt.Errorf("读取事件失败")
 	}
 	view.RecentEvents = events.Items
-	writeJSON(w, http.StatusOK, view)
+	return view, nil
 }
 
 func (s *Server) handleMonitorAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.monitorGate(w, r); !ok {
 		return
 	}
-	accounts := s.monitorAccountViews()
+	accounts := s.monitorAccountViewsOf(s.monitorProviders())
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "total": len(accounts)})
 }
 
@@ -206,7 +217,7 @@ func (s *Server) handleMonitorAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	providerID := strings.TrimSpace(r.PathValue("providerId"))
-	for _, account := range s.monitorAccountViews() {
+	for _, account := range s.monitorAccountViewsOf(s.monitorProviders()) {
 		if account.ProviderID == providerID {
 			writeJSON(w, http.StatusOK, account)
 			return
@@ -932,7 +943,7 @@ func (s *Server) monitorFiringAlerts() []monitoring.AlertView {
 	return page.Items
 }
 
-func (s *Server) monitorAccountViews() []monitorAccountView {
+func (s *Server) monitorAccountViewsOf(providers []domain.Provider) []monitorAccountView {
 	now := time.Now().UTC()
 	samples := map[string]monitoring.MetricSample{}
 	if latest, err := s.monitoringStore.LatestProviderMetricSamples(); err == nil {
@@ -945,7 +956,6 @@ func (s *Server) monitorAccountViews() []monitorAccountView {
 			alertCounts[alert.TargetID]++
 		}
 	}
-	providers := s.monitorProviders()
 	out := make([]monitorAccountView, 0, len(providers))
 	for _, provider := range providers {
 		view := monitorAccountView{
@@ -1221,37 +1231,22 @@ func (s *Server) handleMonitorProbes(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.monitorGate(w, r); !ok {
 		return
 	}
-	cfg := monitoring.NewConfig(s.monitoringStore).Probe()
-	day := monitorProbeDay(s, time.Now().UTC())
-	state := s.router.State()
-	accounts := make([]monitorProbeAccount, 0, len(state.Providers))
-	for _, provider := range state.Providers {
-		if provider.Deleted {
-			continue
-		}
-		row := monitorProbeAccount{
-			ProviderID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
-			Disabled: provider.Disabled, MaxPerDay: cfg.EventDriven.MaxPerDayPerAccount,
-		}
-		outcome, used, err := s.monitoringStore.MonitorProbeOutcome(provider.ID, day)
-		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "探测记录读取失败")
-			return
-		}
-		row.Probed = outcome.Known
-		row.ConsecutiveFailures = outcome.Consecutive
-		row.LastProbeAt = outcome.LastAt
-		row.LastStatus = outcome.LastStatus
-		row.Skipped = outcome.Skipped
-		row.UsedToday = used
-		accounts = append(accounts, row)
-	}
-	runs, err := s.monitoringStore.LatestMonitorProbeRuns(strings.TrimSpace(r.URL.Query().Get("providerId")), 50)
+	snapshot, err := s.monitorProbeSnapshotOf(s.monitorProviders())
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "探测记录读取失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "runs": runs, "config": cfg})
+	// The snapshot's run list is the newest across every provider; a
+	// providerId filter narrows it, which is what the per-account drawer reads.
+	if providerID := strings.TrimSpace(r.URL.Query().Get("providerId")); providerID != "" {
+		runs, err := s.monitoringStore.LatestMonitorProbeRuns(providerID, 50)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "探测记录读取失败")
+			return
+		}
+		snapshot.Runs = runs
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": snapshot.Accounts, "runs": snapshot.Runs, "config": snapshot.Config})
 }
 
 // handleMonitorProbeRun 手动跑一发，用于排障。同账号已有探测在跑时回 409 而不是

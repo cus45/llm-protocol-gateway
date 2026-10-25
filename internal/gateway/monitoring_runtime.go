@@ -31,6 +31,9 @@ func (s *Server) StartMonitoring(ctx context.Context) {
 	s.monitoringSrc = src
 	s.monitoring = svc
 	s.monitoringEngine = engine
+	// Publish beyond NewServer: a Server assembled any other way still gets
+	// its monitoring writes onto /__monitor/stream.
+	s.EnableMonitorStream()
 	if _, err := s.monitoringStore.InsertMonitorEvent(monitoring.Event{
 		Time: time.Now().UTC(), Kind: monitoring.EventKindSystem, Severity: monitoring.SeverityInfo,
 		Title: "监控中心已启动", TargetType: monitoring.TargetGateway, Status: monitoring.StatusInfo,

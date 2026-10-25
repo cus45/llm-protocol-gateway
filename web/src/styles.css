@@ -256,6 +256,49 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
 }
 .sidebar.collapsed { padding: 18px 10px 16px; align-items: stretch; }
 
+/* 桌面端：侧栏脱离文档流并钉在视口里，右栏多长都只由窗口滚动，
+   侧栏不会再随页面滚走。left 用百分比而不是 100vw 计算，避免 Windows
+   纵向滚动条占宽时和 .shell 的左边缘错开。 */
+@media (min-width: 901px) {
+  .shell { --sidebar-w: 248px; }
+  .shell.sidebar-collapsed { --sidebar-w: 76px; }
+  .sidebar {
+    position: fixed;
+    top: 16px;
+    left: max(16px, calc(50% - 800px));
+    width: var(--sidebar-w);
+    z-index: 30;
+  }
+  /* 侧栏 fixed 后不再占网格单元，主栏需显式落在第 2 列 */
+  .main { grid-column: 2; }
+}
+
+/* 长内容回到顶部：右下角悬浮按钮，滚过一屏后出现 */
+.back-to-top {
+  position: fixed;
+  right: max(20px, calc(50% - 796px));
+  bottom: 24px;
+  z-index: 900;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  box-shadow: var(--shadow-pop);
+  transition: color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+  animation: back-to-top-in 0.18s ease-out;
+}
+.back-to-top:hover { color: var(--accent-strong); border-color: var(--accent-border); transform: translateY(-2px); }
+.back-to-top:active { transform: translateY(0); }
+@keyframes back-to-top-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
 /* 主区卡片：实体白/暗，浮在画布上 */
 .main { display: grid; gap: 14px; min-width: 0; align-content: start; }
 .main > .card,
@@ -3780,7 +3823,12 @@ details:not([open]) > *:not(summary) { display: none !important; }
 /* 768–1240px：导航降为 76px 图标栏，主区保留纵向空间；
    比把侧栏折成三行横条（约 260px 高）可读得多。 */
 @media (max-width: 1240px) {
-  .shell, .shell.sidebar-collapsed { grid-template-columns: 76px minmax(0, 1fr); gap: 16px; }
+  .shell, .shell.sidebar-collapsed {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 16px;
+    /* 图标栏宽度跟着收，fixed 侧栏与第 1 列保持一致 */
+    --sidebar-w: 76px;
+  }
   .sidebar { padding: 18px 10px 16px; overflow: visible; }
   .sidebar .brand { flex-direction: column; align-items: center; justify-content: center; padding: 0; gap: 4px; }
   .sidebar .brand-text,
@@ -7650,6 +7698,32 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
 .mon-probe-search .monitoring-input { flex: 1 1 auto; min-width: 0; max-width: 420px; }
 .mon-probe-search .btn { flex: none; }
 
+/* 流动框：实时流下条目无上限，框内滚动；框高与下方「账号探测现状」平分剩余视口，
+   两块都留在首屏，谁也不把谁挤下去。视口矮时各留一个最小高度，整页照常纵向滚动。 */
+.mon-probe-live-grid {
+  display: grid;
+  grid-template-rows: minmax(140px, 1fr) auto minmax(120px, 1fr);
+  /* 页头约 240px + 页脚约 60px + 页外边距：剩下的一半给流动框，一半给账号现状。 */
+  max-height: calc(100vh - 300px);
+  margin: 2px 0 6px;
+}
+/* 流动框内滚动：细滚动条不挤内容宽度，滚到头不把滚动传给整页。 */
+.mon-probe-viewport {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-right: 4px;
+}
+.mon-probe-live-grid > .mon-section-title { margin: 10px 0 6px; }
+.mon-pa-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-right: 4px;
+}
+.mon-probe-viewport .mon-timeline { margin: 0; }
 /* 时间轴：左侧一条竖线贯穿整列，每条的圆点压在线。竖线用 ::before 画在容器上，
    不参与布局；圆点靠负外边距吸附到线上。 */
 .mon-timeline {
@@ -7847,6 +7921,9 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
   /* LIVE 徽标整行独占（状态 + 速率 + 降级说明），操作按钮换到下一行左对齐。 */
   .mon-probe-live { flex: 1 1 100%; flex-wrap: wrap; row-gap: 2px; }
   .mon-probe-bar-actions { flex: 1 1 100%; }
+  /* 手机上整页都能滚，流动框不再单独限高：两层滚动条只会让人不知道自己在哪。 */
+  .mon-probe-live-grid { display: block; max-height: none; }
+  .mon-probe-viewport, .mon-pa-list { overflow-y: visible; padding-right: 0; }
   /* 标题优先占第一行；账号徽标放得下就同行靠右，放不下换到下一行左缘，名称整句显示。 */
   .mon-tl-title { flex: 1 1 80px; }
   .mon-tl-account { flex: 0 1 auto; }

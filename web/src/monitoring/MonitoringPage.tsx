@@ -177,6 +177,8 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   const [dispatch, setDispatch] = useState<MonitorDispatchConfig | null>(null);
   const [probeAccounts, setProbeAccounts] = useState<MonitorProbeAccount[]>([]);
   const [probeRuns, setProbeRuns] = useState<MonitorProbeRun[]>([]);
+  // 探测页「清空」过列表：下一次 /probes 响应的 runs 丢弃一次，之后照常跟随服务端。
+  const probeRunsClearedRef = useRef(false);
   const [probeConfig, setProbeConfig] = useState<MonitorProbeConfig | null>(null);
   const [probeRunBusy, setProbeRunBusy] = useState('');
   /*
@@ -280,7 +282,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       if (nextDispatch) setDispatch(nextDispatch);
       if (nextProbes) {
         setProbeAccounts(nextProbes.accounts);
-        setProbeRuns(nextProbes.runs);
+        // 探测页自己清空过列表时，旧轮次的响应不再把记录带回来（账号现状照常更新）。
+        setProbeRuns((prev) => (probeRunsClearedRef.current ? prev : nextProbes.runs));
+        probeRunsClearedRef.current = false;
         setProbeConfig(nextProbes.config);
       }
       if (nextRules) setRules(nextRules);
@@ -834,6 +838,10 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           onDismissResult={() => setProbeResult(null)}
           onRunProbe={runProbeFor}
           onRefreshRuns={() => void loadVisible()}
+          onClearRuns={() => {
+            probeRunsClearedRef.current = true;
+            setProbeRuns([]);
+          }}
           onFilter={filterProbes}
           onOpenAccount={openAccount}
         />
