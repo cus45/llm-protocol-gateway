@@ -8297,7 +8297,7 @@ html[data-theme="light"] .mon-topo-badge.warn { color: color-mix(in srgb, var(--
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
-  padding: 20px 20px 18px;
+  padding: 28px 20px 26px;
   min-width: 0;
   /* 点阵底纹：参考图里的一层极淡网格，用 --topo-tone 推导，明色下压低到 4%。 */
   background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--topo-tone) 26%, transparent) 1px, transparent 0);
@@ -8326,8 +8326,8 @@ html[data-theme="light"] .mon-topo-body { background-image: radial-gradient(circ
 /* 调用端小卡：名称 + 占比 / 等宽标识 / 1px 进度条，每卡一个色系。 */
 .mon-client {
   display: grid;
-  gap: 3px;
-  padding: 8px 11px;
+  gap: 5px;
+  padding: 11px 12px;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
@@ -9960,3 +9960,7 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 
 /* 记录流的「加载更多」：居中的轻按钮，不抢记录的视觉重量。 */
 .mon-tl-more { display: flex; justify-content: center; padding: 10px 0 2px; }
+
+/* 概览外层卡的内边距收窄到 14px：参考的内容区宽 1172（1440 视口、侧栏 230），
+   我们用 18/20 时只剩 1098，拓扑三栏因此被压窄 74px。 */
+.monitoring-page .mon-overview.card.panel { padding: 14px; }
