@@ -9637,7 +9637,7 @@ html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); colo
   align-items: center;
   gap: 10px 16px;
   padding: 12px 14px 12px 17px;
-  border-radius: var(--r-lg);
+  border-radius: 16px;
   /* 级别色描边：参考里是按级别换卡边色，这里用级别色与 --border 混出，明暗两套都成立。 */
   border: 1px solid color-mix(in srgb, var(--mon-tone, var(--slate)) 38%, var(--border));
   background: color-mix(in srgb, var(--mon-tone, var(--slate)) 5%, var(--surface));
@@ -10501,3 +10501,20 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
 .mon-acc-facts { padding-top: 0; }
 /* 307 → 314（参考）：内间距回到 8px。 */
 .mon-acc-card { gap: 8px; }
+
+/* 告警行对齐参考的 64px（我们是 114）：参考是「标题+描述」一行 34px + 按钮行 30px。
+   描述压成单行并收紧行高（完整文本仍在详情里）。 */
+.mon-alert-main { gap: 3px; }
+.mon-alert-desc {
+  line-height: 1.35;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1;
+  overflow: hidden;
+}
+.mon-alert-row { padding: 10px 14px 10px 17px; }
+/* 描述与标题同排（参考把「标题 + 账号」与描述放在一行 34px 里）。 */
+@media (min-width: 1101px) {
+  .mon-alert-main { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 10px; }
+  .mon-alert-main > .mon-alert-head { grid-column: 1 / -1; }
+  .mon-alert-main > .mon-alert-desc { grid-column: 1 / -1; }
+  .mon-alert-main > .mon-alert-meta { grid-column: 1 / -1; }
+}
