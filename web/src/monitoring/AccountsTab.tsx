@@ -1,8 +1,9 @@
 import {useEffect, useMemo, useState} from 'react';
 import {BrandIcon, Modal} from '../components/ui';
-import {fetchProbes} from './api';
+import {fetchProbes, isolateAccount, restoreAccount} from './api';
 import type {
   MonitorAccount,
+  MonitorIsolationResult,
   MonitorProbeAccount,
   MonitorProbeConfig,
   MonitorProbeRun,
@@ -44,6 +45,11 @@ export interface AccountsTabProps {
   selectedId: string;
   onSelect: (providerId: string) => void;
   onCloseDrawer: () => void;
+  /**
+   * 强制熔断隔离 / 恢复调度成功后由页面把新的账号行交给它，避免等下一轮轮询才变样。
+   * busy 键是 `isolate:<providerId>` / `restore:<providerId>`。
+   */
+  onIsolationChange?: (result: MonitorIsolationResult) => void;
 }
 
 /**
@@ -70,6 +76,26 @@ export interface AccountsProbeView {
   /** 卡片点阵保留的探测发数。 */
   windowSize: number;
   factsOf: (providerId: string) => AccountsProbeFacts;
+}
+
+export interface AccountsDrawerProps {
+  account: MonitorAccount;
+  timezone: string;
+  alertCount: number;
+  drawerError: string;
+  note: string;
+  busy: string;
+  probeBusy: string;
+  windowSize: number;
+  onRenew: (providerId: string) => void;
+  onRefreshQuota: (providerId: string) => void;
+  onRunProbe: (providerId: string) => void;
+  onOpenAlerts: (providerId: string) => void;
+  onOpenLogs: (providerId: string) => void;
+  onClose: () => void;
+  /** 隔离 / 恢复：由页面执行并在成功后就地刷新账号行。 */
+  onIsolate: (account: MonitorAccount) => void;
+  onRestore: (account: MonitorAccount) => void;
 }
 
 const AUTH_LABELS: Record<string, string> = {
@@ -108,7 +134,7 @@ type ViewMode = 'cards' | 'heat';
 
 /**
  * 卡片与筛选共用的账号状态。判定顺序必须与概览页一致（概览说异常、这里说正常就是自相矛盾）：
- * 停用 → 有 firing 告警 → 请求判定异常 → 否则正常。
+ * 停用（含强制隔离）→ 有 firing 告警 → 请求判定异常 → 否则正常。
  */
 function stateOf(account: MonitorAccount, alerts: number): AccountState {
   if (account.disabled) return 'off';
@@ -122,7 +148,7 @@ const STATE_RANK: Record<AccountState, number> = { bad: 0, warn: 1, off: 2, ok: 
 /**
  * 容灾角色。本项目没有「主路由 / 热备 / 兜底」的持久化字段，也没有分流权重，
  * 所以角色只按能证实的事实推导，并在卡片副注里写明依据（不让推导看起来像配置）：
- * 停用=退出调度；健康且无告警=主路由（当前会被调度）；有告警或判定异常=降级兜底
+ * 停用（含隔离）=退出调度；健康且无告警=主路由（当前会被调度）；有告警或判定异常=降级兜底
  * （只作最后手段）；没被判定过健康=待确认（还没被调度验证）。
  */
 type ResilienceRole = 'standby' | 'fallback' | 'hold';
@@ -148,10 +174,10 @@ function roleOf(account: MonitorAccount, alerts: number, state: AccountState, br
 }
 
 /**
- * 熔断档位。本项目没有用户可干预的熔断器，只有探测侧的连续失败 streak：
- * 连续失败 ≥ BREAKER_TRIP_STREAK 视为熔断阻断（OPEN），失败但未到阈值是半开试探（HALF_OPEN），
- * 其余闭合（CLOSED）。停用只算 OFF（不参与调度与探测），但停用前已经连续失败至少 BREAKER_WARN_STREAK
- * 次的账号仍标 OPEN：档位是「真实门槛」的事实，不因为停用就伪装成闭合。
+ * 熔断档位。档位按探测侧的连续失败 streak 推导：连续失败 ≥ BREAKER_TRIP_STREAK 视为
+ * 熔断阻断（OPEN），失败但未到阈值是半开试探（HALF_OPEN），其余闭合（CLOSED）。
+ * 停用（含强制隔离）只算 OFF（不参与调度与探测），但停用前已经连续失败至少
+ * BREAKER_WARN_STREAK 次的账号仍标 OPEN：档位是「真实门槛」的事实，不因为停用就伪装成闭合。
  */
 const BREAKER_TRIP_STREAK = 5;
 /** 卡片右上角徽标的「异常」门槛：连续失败到 2 次就算，比 5 次熔断线更早提醒。 */
@@ -174,26 +200,28 @@ const BREAKER_TEXT: Record<Breaker, string> = {
 };
 
 const BREAKER_HINT: Record<Breaker, string> = {
-  CLOSED: `CLOSED：探测闭合——最近一发轻探测通过或还没有记录（本项目不会主动隔离账号）`,
+  CLOSED: `CLOSED：探测闭合——最近一发轻探测通过或还没有记录（没有任何失败阈值会在后端自动隔离账号）`,
   HALF_OPEN: `HALF_OPEN：连续失败 1~${BREAKER_TRIP_STREAK - 1} 次，未到 ${BREAKER_TRIP_STREAK} 次熔断线`,
   OPEN: `OPEN：连续失败已达 ${BREAKER_TRIP_STREAK} 次（熔断线），本卡判为异常`,
-  OFF: '停用：不参与自动调度，也不会发探测',
+  OFF: '停用（含强制隔离）：不参与自动调度，也不会发探测',
 };
 
 /**
  * 右上角徽标的文案。与 breakerOf 一一对应：
- * OFF→停用，OPEN→异常，HALF_OPEN 且连续失败 ≥2→异常，否则看活跃告警→告警，其余→正常。
+ * 强制隔离→已隔离，OFF→停用，OPEN→异常，HALF_OPEN 且连续失败 ≥2→异常，否则看活跃告警→告警，其余→正常。
  */
-type HealthCode = 'normal' | 'alert' | 'abnormal' | 'off';
+type HealthCode = 'normal' | 'alert' | 'abnormal' | 'off' | 'isolated';
 
 const HEALTH_TEXT: Record<HealthCode, string> = {
   normal: '正常',
   alert: '告警',
   abnormal: '异常',
   off: '停用',
+  isolated: '已隔离',
 };
 
 function healthOf(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined): HealthCode {
+  if (account.isolated) return 'isolated';
   if (breaker === 'OFF') return 'off';
   if (breaker === 'OPEN') return 'abnormal';
   if (facts?.probed && facts.consecutiveFailures >= BREAKER_WARN_STREAK) return 'abnormal';
@@ -203,6 +231,13 @@ function healthOf(account: MonitorAccount, alerts: number, breaker: Breaker, fac
 
 /** 徽标的判定依据：悬停即可看到每一条门槛的当前值，不让人猜「异常」从哪来。 */
 function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined): string {
+  if (account.isolated) {
+    const when = hasTime(account.isolatedAt) ? displayTime(account.isolatedAt as string, '').text : '';
+    return [
+      `已被 ${account.isolatedBy || '管理员'} 强制熔断隔离${when ? `（${when}）` : ''} → 已隔离（不参与调度与探测）`,
+      '隔离只有人工「恢复调度」能解除，不会自动恢复',
+    ].join('\n');
+  }
   const lines =
     breaker === 'OFF'
       ? ['账号已停用 → 停用（不参与调度与探测）']
@@ -217,7 +252,7 @@ function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, f
               : '还没有可用探测记录（不计入连续失败）',
             `请求健康判定：${HEALTH_STATUS_TEXT[account.healthStatus] || account.healthStatus || '未检测'}`,
           ];
-  return `${lines.join('\n')}\n判定顺序：停用 → 连续失败 ≥${BREAKER_TRIP_STREAK} 次 → 连续失败 ≥${BREAKER_WARN_STREAK} 次 → 有未恢复告警`;
+  return `${lines.join('\n')}\n判定顺序：隔离 → 停用 → 连续失败 ≥${BREAKER_TRIP_STREAK} 次 → 连续失败 ≥${BREAKER_WARN_STREAK} 次 → 有未恢复告警`;
 }
 
 const HEALTH_STATUS_TEXT: Record<string, string> = {
@@ -506,7 +541,7 @@ function HeatView({
                 className="btn btn-sm mon-acc-heat-probe"
                 disabled={probing || account.disabled}
                 onClick={() => onProbe(account.providerId)}
-                title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
+                title={account.isolated ? '账号已强制隔离，探测跳过' : account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
               >
                 {probing ? '探测中…' : '探测'}
               </button>
@@ -558,11 +593,185 @@ function persistView(mode: ViewMode) {
   }
 }
 
+/**
+ * 账号抽屉。由 AccountsTab 在打开时渲染，关闭即卸载——上一轮的隔离提示、
+ * 探测结论都随卸载一起作废，重开同一账号不会「复活」旧结果。
+ * 探测现状自己读一次（页面轮询里没有记录明细），已打开时随页面刷新同步。
+ */
+export function AccountsDrawer(props: AccountsDrawerProps) {
+  const {
+    account, timezone, alertCount, drawerError, note, busy, probeBusy, windowSize,
+    onRenew, onRefreshQuota, onRunProbe, onOpenAlerts, onOpenLogs, onClose, onIsolate, onRestore,
+  } = props;
+  const detail = account;
+  const detailProbe = useAccountProbeDetail(account.providerId, probeBusy, windowSize);
+  const detailWindow = detailProbe;
+  // 能用的功能才出现：停用或隔离的账号自动调度会跳过，手动探测也只会写一条 skipped，没有排障
+  // 价值，所以直接不给入口。其余账号都给——「没配模型」由后端在按下时以 skipped 结果
+  // 回给抽屉，界面如实展示那一句，不在前端猜（前端拿不到 model 字段）。
+  const canProbe = !detail.disabled;
+  const detailProbing = probeBusy === `probe:${detail.providerId}`;
+
+  return (
+    <Modal
+      title={detail.name}
+      description={`${AUTH_LABELS[detail.authType] || detail.authType || 'API Key'} · ${detail.vendor || '未知厂商'} · ${detail.providerId}`}
+      onClose={onClose}
+      size="wide"
+    >
+      <div className="monitoring-cols">
+        <div className="card">
+          <div className="panel-title">{'凭证'}</div>
+          <div className="metric-label">{'到期时间'}</div>
+          <div className="metric-value" title={detail.expiresAt ?? ''}>
+            {hasTime(detail.expiresAt)
+              ? `${displayTime(detail.expiresAt, timezone).text}（${relativeToNow(detail.expiresAt, Date.now())}）`
+              : '不适用'}
+          </div>
+          <div className="metric-label" style={{ marginTop: 10 }}>{'最近续期'}</div>
+          <div className="metric-note">
+            {detail.renewal?.known
+              ? `${detail.renewal.lastOK ? '成功' : '失败'} · ${relativeToNow(detail.renewal.lastAt, Date.now())}${
+                  detail.renewal.consecutive > 0 ? ` · 连续失败 ${detail.renewal.consecutive} 次` : ''
+                }`
+              : '还没有续期记录'}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="panel-title">{'额度 / 积分'}</div>
+          <div className="metric-value">{quotaText(detail.quota).primary}</div>
+          <div className="metric-note">
+            {detail.quota
+              ? `${quotaText(detail.quota).note} · 采样 ${displayTime(detail.quota.observedAt, timezone).text}`
+              : '该厂商没有额度接口'}
+          </div>
+          {detail.quota?.error && <div className="metric-note err">{`读取失败：${detail.quota.error}`}</div>}
+        </div>
+
+        <div className="card">
+          <div className="panel-title">{'轻探测'}</div>
+          {detailWindow ? (
+            <>
+              <div className={`metric-value ${detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 ? 'err' : ''}`}>
+                {detailWindow.facts.probed
+                  ? detailWindow.facts.consecutiveFailures > 0
+                    ? `连续失败 ${detailWindow.facts.consecutiveFailures} 次（最近一发：${lastProbeText(detailWindow.facts)}）`
+                    : `通过（最近一发：${lastProbeText(detailWindow.facts)}）`
+                  : '暂无数据'}
+              </div>
+              <div className="metric-note">
+                {hasTime(detailWindow.facts.lastProbeAt)
+                  ? `最近一次执行 ${displayTime(detailWindow.facts.lastProbeAt, timezone).text}（${relativeToNow(detailWindow.facts.lastProbeAt, Date.now())}）`
+                  : '还没有探测记录'}
+              </div>
+              <div className="metric-note" title="当日次数 / 每日上限，按投递时区计算">
+                {`当日次数 ${usedTodayText(detailWindow.facts)} · 连续失败 ${detailWindow.facts.consecutiveFailures} 次`}
+              </div>
+              <div className="metric-note" title="最近几发探测耗时的极差；不足两发无从谈抖动">
+                {`探测 RTT ${detailWindow.facts.rttMs === undefined ? '—' : formatLatency(detailWindow.facts.rttMs)} · 抖动 ${
+                  jitterOf(detailWindow.runs) === undefined ? '—（样本不足）' : `±${formatLatency(jitterOf(detailWindow.runs) as number)}`
+                }`}
+              </div>
+              <div className="mon-acc-drawer-dots">
+                <ProbeStrip facts={detailWindow.facts} windowSize={windowSize} />
+              </div>
+              {detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 && (
+                <div className={`metric-note ${detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK ? 'err' : ''}`}>
+                  {detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK
+                    ? `连续失败已达 ${BREAKER_TRIP_STREAK} 次，卡片判为熔断（OPEN）`
+                    : '探测未跑通，已进入 probe_failed 判定'}
+                </div>
+              )}
+              {detail.isolated && <div className="metric-note">{'账号已强制熔断隔离：调度跳过它，也不会发探测；恢复调度后才能继续探测。'}</div>}
+              {!detail.isolated && detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它，也不会发探测。'}</div>}
+            </>
+          ) : (
+            <div className="metric-note">{'探测现状读取中'}</div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="panel-title">{'健康与能力'}</div>
+          <div className="metric-note">
+            {`状态 ${detail.healthStatus || '未检测'} · 模型列表连续失败 ${detail.modelFailures} 次 · 活跃告警 ${alertCount}`}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            {CAPABILITY_LABELS.map((item) => (
+              <span key={item.key} className={`badge ${detail.capabilities[item.key] ? 'green' : 'slate'}`}>
+                {`${item.label}：${detail.capabilities[item.key] ? '支持' : '不适用'}`}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="panel-title">{'操作'}</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-sm"
+              disabled={busy === `renew:${detail.providerId}` || !detail.capabilities.oauth}
+              onClick={() => onRenew(detail.providerId)}
+              title={detail.capabilities.oauth ? '按厂商自己的窗口续期；未到窗口不会强行轮换' : '该账号没有可续期凭证'}
+            >
+              {'立即续期'}
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={busy === `quota:${detail.providerId}` || !detail.capabilities.quota}
+              onClick={() => onRefreshQuota(detail.providerId)}
+              title={detail.capabilities.quota ? '强制读一次厂商用量接口' : '该账号没有额度接口'}
+            >
+              {'刷新额度'}
+            </button>
+            {canProbe && (
+              <button
+                className="btn btn-sm"
+                disabled={detailProbing}
+                onClick={() => onRunProbe(detail.providerId)}
+                title={'现在就发一发最小对话探测；同账号同时只跑一发'}
+              >
+                {detailProbing ? '探测中…' : '立即探测'}
+              </button>
+            )}
+            {detail.isolated ? (
+              <button
+                className="btn btn-sm mon-acc-btn-restore"
+                disabled={busy === `restore:${detail.providerId}`}
+                onClick={() => onRestore(detail)}
+                title="解除强制熔断隔离，账号回到调度"
+              >
+                {busy === `restore:${detail.providerId}` ? '恢复中…' : '恢复调度'}
+              </button>
+            ) : (
+              <button
+                className="btn btn-sm mon-acc-btn-isolate"
+                disabled={detail.disabled || busy === `isolate:${detail.providerId}`}
+                onClick={() => onIsolate(detail)}
+                title={detail.disabled ? '该账号已被手工停用，请先在 Providers 页启用' : '临时停用并排除出调度，只有人工恢复才会解除'}
+              >
+                {busy === `isolate:${detail.providerId}` ? '隔离中…' : '强制熔断隔离'}
+              </button>
+            )}
+            <button className="btn btn-sm" onClick={() => onOpenAlerts(detail.providerId)}>{'查看告警'}</button>
+            <button className="btn btn-sm" onClick={() => onOpenLogs(detail.providerId)}>{'查看请求日志'}</button>
+          </div>
+          {drawerError && <div className="metric-note err" style={{ marginTop: 8 }}>{drawerError}</div>}
+          {note && !drawerError && <div className="metric-note" style={{ marginTop: 8 }}>{note}</div>}
+          <div className="metric-note" style={{ marginTop: 8 }}>
+            {'「强制熔断隔离」= 临时停用账号并排除出调度，带操作者记录、不会自动恢复；「恢复调度」才解除。'}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export function AccountsTab(props: AccountsTabProps) {
   const {
     accounts, timezone, iconOf, alertCountOf, busy, error, note, actionError,
     onRenew, onRefreshQuota, onOpenAlerts, onOpenLogs, probeBusy, onRunProbe, probeView, probeConfig,
-    selectedId, onSelect, onCloseDrawer,
+    selectedId, onSelect, onCloseDrawer, onIsolationChange,
   } = props;
   const [search, setSearch] = useState('');
   const [vendor, setVendor] = useState('all');
@@ -583,6 +792,44 @@ export function AccountsTab(props: AccountsTabProps) {
     return () => window.removeEventListener('popstate', restore);
   }, []);
   const now = Date.now();
+
+  // 隔离 / 恢复：二次确认 → 调接口 → 成功就地把新的账号行交给页面。
+  // 隔离 / 恢复自己发请求而不是走页面的 run()，因为结果要回到这里就地显示在卡片上；
+  // 失败原因（如「已被手工停用」）由后端给出，原样展示。
+  const [pending, setPending] = useState<{ providerId: string; action: 'isolate' | 'restore' } | null>(null);
+  const [isolationBusy, setIsolationBusy] = useState('');
+  const [isolationNote, setIsolationNote] = useState<Record<string, { tone: 'ok' | 'err'; text: string }>>({});
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPending(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pending]);
+  const confirmIsolation = async () => {
+    if (!pending) return;
+    const { providerId, action } = pending;
+    setPending(null);
+    setIsolationBusy(providerId);
+    try {
+      const result = action === 'isolate' ? await isolateAccount(providerId) : await restoreAccount(providerId);
+      onIsolationChange?.(result);
+      setIsolationNote((prev) => ({
+        ...prev,
+        [providerId]: {
+          tone: 'ok',
+          text: action === 'isolate' ? '已强制熔断隔离，调度将跳过该账号' : '已恢复调度，账号回到调度池',
+        },
+      }));
+    } catch (reason) {
+      const text = reason instanceof Error && reason.message ? reason.message : '操作失败，请稍后重试';
+      setIsolationNote((prev) => ({ ...prev, [providerId]: { tone: 'err', text } }));
+    } finally {
+      setIsolationBusy('');
+    }
+  };
+  const pendingAccount = pending ? accounts.find((account) => account.providerId === pending.providerId) : undefined;
 
   const vendors = useMemo(() => {
     const seen = new Map<string, number>();
@@ -631,16 +878,7 @@ export function AccountsTab(props: AccountsTabProps) {
   }, [accounts, search, vendor, stateFilter, breakerFilter, authFilter, alertCountOf, probeView]);
 
   const detail = accounts.find((account) => account.providerId === selectedId) ?? null;
-  const detailFacts = detail && probeView ? probeView.factsOf(detail.providerId) : undefined;
-  const probing = !!detail && probeBusy === `probe:${detail.providerId}`;
   const windowSize = probeView?.windowSize ?? 10;
-  const detailProbe = useAccountProbeDetail(detail?.providerId ?? '', probeBusy, windowSize);
-  const detailWindow = detailProbe ?? (detailFacts ? { facts: detailFacts, runs: [] } : null);
-  // 能用的功能才出现：停用账号自动调度会跳过，手动探测也只会写一条 skipped，没有排障
-  // 价值，所以直接不给入口。其余账号都给——「没配模型」由后端在按下时以 skipped 结果
-  // 回给抽屉，界面如实展示那一句，不在前端猜（前端拿不到 model 字段）。
-  const canProbe = !!detail && !detail.disabled;
-  const detailProbing = detail ? probeBusy === `probe:${detail.providerId}` : false;
 
   // 热力图行：每行需要该账号最近 30 发且带耗时，页面级 probeView 只留了 windowSize 发、
   // 也没有记录明细，所以切到热力图时单独读一次 probes（与卡片同一接口，口径一致）。
@@ -669,7 +907,7 @@ export function AccountsTab(props: AccountsTabProps) {
   }, [viewMode]);
   const heatRows = useMemo(() => {
     // /__monitor/probes 的 runs 是真记录、accounts 里才有 skipped 的发数；这里只画 runs，
-    // skipped 的探测没有执行耗时可言，不占格。
+    // skipped 的探测没有执行耗可言，不占格。
     const byAccount = new Map<string, MonitorProbeRun[]>();
     const runs = [...(heatSource?.page.runs ?? [])]
       .filter((run) => !run.skipped)
@@ -799,8 +1037,8 @@ export function AccountsTab(props: AccountsTabProps) {
 
       <div className="mon-acc-meta-row">
         <span className="mon-acc-count">{`${filtered.length} / ${accounts.length} 个账号`}</span>
-        <span className="mon-acc-meta-note" title="角色按健康与告警推导；熔断档位按探测连续失败推导；本项目没有手工隔离/复位接口">
-          {'角色、熔断档位按健康与探测结果推导，不是手工配置'}
+        <span className="mon-acc-meta-note" title="角色按健康与告警推导；熔断档位按探测连续失败推导；强制隔离需人工恢复">
+          {'角色、熔断档位按健康与探测结果推导；强制隔离由人工发起并需人工恢复'}
         </span>
       </div>
 
@@ -834,10 +1072,16 @@ export function AccountsTab(props: AccountsTabProps) {
           const renewing = busy === `renew:${account.providerId}`;
           const fresh = selectedId === account.providerId;
           const progress = facts ? todayProgress(facts) : null;
+          const isolationBusyHere = isolationBusy === account.providerId;
+          const flash = isolationNote[account.providerId];
+          const isolatedAtText =
+            account.isolated && hasTime(account.isolatedAt)
+              ? `${account.isolatedBy || '管理员'} · ${displayTime(account.isolatedAt as string, timezone).text}`
+              : '';
           return (
             <article
               key={account.providerId}
-              className={`mon-acc-card state-${state}${fresh ? ' is-open' : ''}`}
+              className={`mon-acc-card state-${state}${fresh ? ' is-open' : ''}${account.isolated ? ' is-isolated' : ''}`}
               aria-label={`账号 ${account.name}`}
             >
               <div className="mon-acc-card-top">
@@ -957,12 +1201,14 @@ export function AccountsTab(props: AccountsTabProps) {
               </div>
 
               <div className="mon-acc-facts">
-                <div className="mon-acc-fact" title={`凭证到期：${account.expiresAt ?? '无凭证或不过期'}`}>
+                <div className="mon-acc-fact" title={isolatedAtText ? `隔离于 ${isolatedAtText}` : `凭证到期：${account.expiresAt ?? '无凭证或不过期'}`}>
                   <span className="mon-acc-fact-key">
                     <ClockIcon />
-                    {'续期'}
+                    {account.isolated ? '隔离于' : '续期'}
                   </span>
-                  <span className="mon-acc-fact-value">{expiryText(account, now)}</span>
+                  <span className={`mon-acc-fact-value${account.isolated ? ' err' : ''}`}>
+                    {account.isolated ? isolatedAtText || '已隔离' : expiryText(account, now)}
+                  </span>
                 </div>
                 <div className="mon-acc-fact right" title={quota.note}>
                   <span className="mon-acc-fact-key">{'额度'}</span>
@@ -974,9 +1220,32 @@ export function AccountsTab(props: AccountsTabProps) {
               </div>
 
               <div className="mon-acc-actions">
+                {account.isolated ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm mon-acc-btn mon-acc-btn-restore"
+                    disabled={isolationBusyHere}
+                    onClick={() => setPending({ providerId: account.providerId, action: 'restore' })}
+                    title="解除强制熔断隔离，账号回到调度"
+                  >
+                    <PowerIcon />
+                    {isolationBusyHere ? '恢复中…' : '恢复调度'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-sm mon-acc-btn mon-acc-btn-isolate"
+                    disabled={isolationBusyHere || account.disabled}
+                    onClick={() => setPending({ providerId: account.providerId, action: 'isolate' })}
+                    title={account.disabled ? '该账号已被手工停用，请先在 Providers 页启用' : '临时停用并排除出调度；只有人工恢复才会解除'}
+                  >
+                    <SlashIcon />
+                    {isolationBusyHere ? '隔离中…' : '强制熔断隔离'}
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="btn btn-sm mon-acc-btn mon-acc-btn-ghost"
+                  className="btn btn-sm mon-acc-btn mon-acc-btn-ghost mon-acc-btn-detail"
                   onClick={() => onSelect(account.providerId)}
                   title="打开账号抽屉：凭证、额度、探测与全部操作"
                 >
@@ -1001,16 +1270,15 @@ export function AccountsTab(props: AccountsTabProps) {
                   className="btn btn-sm mon-acc-btn"
                   disabled={cardProbing || account.disabled}
                   onClick={() => void onRunProbe(account.providerId)}
-                  title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
+                  title={account.isolated ? '账号已强制隔离，探测跳过' : account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
                 >
                   <ZapIcon />
                   {cardProbing ? '探测中…' : '轻探测'}
                 </button>
               </div>
-              {selectedId === account.providerId && actionError && (
-                <div className="mon-acc-inline err">{actionError}</div>
-              )}
-              {selectedId === account.providerId && !actionError && note && <div className="mon-acc-inline">{note}</div>}
+              {flash && <div className={`mon-acc-inline ${flash.tone}`}>{flash.text}</div>}
+              {fresh && actionError && <div className="mon-acc-inline err">{actionError}</div>}
+              {fresh && !actionError && note && <div className="mon-acc-inline">{note}</div>}
               {alerts > 0 && (
                 <button type="button" className="mon-acc-alert-link" onClick={() => onOpenAlerts(account.providerId)}>
                   {`${alerts} 条未恢复告警，查看 →`}
@@ -1022,137 +1290,58 @@ export function AccountsTab(props: AccountsTabProps) {
       </div>
 
       {detail && (
-        <Modal
-          title={detail.name}
-          description={`${AUTH_LABELS[detail.authType] || detail.authType || 'API Key'} · ${detail.vendor || '未知厂商'} · ${detail.providerId}`}
+        <AccountsDrawer
+          account={detail}
+          timezone={timezone}
+          alertCount={alertCountOf(detail.providerId)}
+          drawerError={actionError}
+          note={note}
+          busy={busy}
+          probeBusy={probeBusy}
+          windowSize={windowSize}
+          onRenew={onRenew}
+          onRefreshQuota={onRefreshQuota}
+          onRunProbe={(providerId) => void onRunProbe(providerId)}
+          onOpenAlerts={onOpenAlerts}
+          onOpenLogs={onOpenLogs}
           onClose={onCloseDrawer}
-          size="wide"
-        >
-          <div className="monitoring-cols">
-            <div className="card">
-              <div className="panel-title">{'凭证'}</div>
-              <div className="metric-label">{'到期时间'}</div>
-              <div className="metric-value" title={detail.expiresAt ?? ''}>
-                {hasTime(detail.expiresAt)
-                  ? `${displayTime(detail.expiresAt, timezone).text}（${relativeToNow(detail.expiresAt, Date.now())}）`
-                  : '不适用'}
-              </div>
-              <div className="metric-label" style={{ marginTop: 10 }}>{'最近续期'}</div>
-              <div className="metric-note">
-                {detail.renewal?.known
-                  ? `${detail.renewal.lastOK ? '成功' : '失败'} · ${relativeToNow(detail.renewal.lastAt, Date.now())}${
-                      detail.renewal.consecutive > 0 ? ` · 连续失败 ${detail.renewal.consecutive} 次` : ''
-                    }`
-                  : '还没有续期记录'}
-              </div>
-            </div>
+          onIsolate={(account) => setPending({ providerId: account.providerId, action: 'isolate' })}
+          onRestore={(account) => setPending({ providerId: account.providerId, action: 'restore' })}
+        />
+      )}
 
-            <div className="card">
-              <div className="panel-title">{'额度 / 积分'}</div>
-              <div className="metric-value">{quotaText(detail.quota).primary}</div>
-              <div className="metric-note">
-                {detail.quota
-                  ? `${quotaText(detail.quota).note} · 采样 ${displayTime(detail.quota.observedAt, timezone).text}`
-                  : '该厂商没有额度接口'}
-              </div>
-              {detail.quota?.error && <div className="metric-note err">{`读取失败：${detail.quota.error}`}</div>}
-            </div>
-
-            <div className="card">
-              <div className="panel-title">{'轻探测'}</div>
-              {detailWindow ? (
-                <>
-                  <div className={`metric-value ${detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 ? 'err' : ''}`}>
-                    {detailWindow.facts.probed
-                      ? detailWindow.facts.consecutiveFailures > 0
-                        ? `连续失败 ${detailWindow.facts.consecutiveFailures} 次（最近一发：${lastProbeText(detailWindow.facts)}）`
-                        : `通过（最近一发：${lastProbeText(detailWindow.facts)}）`
-                      : '暂无数据'}
-                  </div>
-                  <div className="metric-note">
-                    {hasTime(detailWindow.facts.lastProbeAt)
-                      ? `最近一次执行 ${displayTime(detailWindow.facts.lastProbeAt, timezone).text}（${relativeToNow(detailWindow.facts.lastProbeAt, Date.now())}）`
-                      : '还没有探测记录'}
-                  </div>
-                  <div className="metric-note" title="当日次数 / 每日上限，按投递时区计算">
-                    {`当日次数 ${usedTodayText(detailWindow.facts)} · 连续失败 ${detailWindow.facts.consecutiveFailures} 次`}
-                  </div>
-                  <div className="metric-note" title="最近几发探测耗时的极差；不足两发无从谈抖动">
-                    {`探测 RTT ${detailWindow.facts.rttMs === undefined ? '—' : formatLatency(detailWindow.facts.rttMs)} · 抖动 ${
-                      jitterOf(detailWindow.runs) === undefined ? '—（样本不足）' : `±${formatLatency(jitterOf(detailWindow.runs) as number)}`
-                    }`}
-                  </div>
-                  <div className="mon-acc-drawer-dots">
-                    <ProbeStrip facts={detailWindow.facts} windowSize={windowSize} />
-                  </div>
-                  {detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 && (
-                    <div className={`metric-note ${detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK ? 'err' : ''}`}>
-                      {detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK
-                        ? `连续失败已达 ${BREAKER_TRIP_STREAK} 次，卡片判为熔断（OPEN）`
-                        : '探测未跑通，已进入 probe_failed 判定'}
-                    </div>
-                  )}
-                  {detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它，也不会发探测。'}</div>}
-                </>
-              ) : (
-                <div className="metric-note">{'探测现状读取中'}</div>
-              )}
-            </div>
-
-            <div className="card">
-              <div className="panel-title">{'健康与能力'}</div>
-              <div className="metric-note">
-                {`状态 ${detail.healthStatus || '未检测'} · 模型列表连续失败 ${detail.modelFailures} 次 · 活跃告警 ${alertCountOf(detail.providerId)}`}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                {CAPABILITY_LABELS.map((item) => (
-                  <span key={item.key} className={`badge ${detail.capabilities[item.key] ? 'green' : 'slate'}`}>
-                    {`${item.label}：${detail.capabilities[item.key] ? '支持' : '不适用'}`}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="panel-title">{'操作'}</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="btn btn-sm"
-                  disabled={busy === `renew:${detail.providerId}` || !detail.capabilities.oauth}
-                  onClick={() => onRenew(detail.providerId)}
-                  title={detail.capabilities.oauth ? '按厂商自己的窗口续期；未到窗口不会强行轮换' : '该账号没有可续期凭证'}
-                >
-                  {'立即续期'}
-                </button>
-                <button
-                  className="btn btn-sm"
-                  disabled={busy === `quota:${detail.providerId}` || !detail.capabilities.quota}
-                  onClick={() => onRefreshQuota(detail.providerId)}
-                  title={detail.capabilities.quota ? '强制读一次厂商用量接口' : '该账号没有额度接口'}
-                >
-                  {'刷新额度'}
-                </button>
-                {canProbe && (
-                  <button
-                    className="btn btn-sm"
-                    disabled={detailProbing}
-                    onClick={() => void onRunProbe(detail.providerId)}
-                    title={'现在就发一发最小对话探测；同账号同时只跑一发'}
-                  >
-                    {detailProbing ? '探测中…' : '立即探测'}
-                  </button>
-                )}
-                <button className="btn btn-sm" onClick={() => onOpenAlerts(detail.providerId)}>{'查看告警'}</button>
-                <button className="btn btn-sm" onClick={() => onOpenLogs(detail.providerId)}>{'查看请求日志'}</button>
-              </div>
-              {actionError && <div className="metric-note err" style={{ marginTop: 8 }}>{actionError}</div>}
-              {note && !actionError && <div className="metric-note" style={{ marginTop: 8 }}>{note}</div>}
-              <div className="metric-note" style={{ marginTop: 8 }}>
-                {'监控中心不提供停用、熔断隔离/复位或改配置的按钮；处置只在请求调度里做。'}
-              </div>
+      {pending && pendingAccount && (
+        <div className="mon-acc-confirm-layer" role="presentation" onClick={() => setPending(null)}>
+          <div
+            className="mon-acc-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mon-acc-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="mon-acc-confirm-title" className="mon-acc-confirm-title">
+              {pending.action === 'isolate' ? '强制熔断隔离该账号？' : '恢复该账号的调度？'}
+            </h3>
+            <p className="mon-acc-confirm-body">
+              {pending.action === 'isolate'
+                ? `「${pendingAccount.name}」将被临时停用，所有 Key 的调度都会跳过它，也不会再发探测。隔离带操作者记录，且不会自动恢复。`
+                : `「${pendingAccount.name}」将解除强制熔断隔离，重新回到调度池并可能立刻接到请求。`}
+            </p>
+            <div className="mon-acc-confirm-actions">
+              <button type="button" className="btn btn-sm" onClick={() => setPending(null)}>
+                {'取消'}
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${pending.action === 'isolate' ? 'mon-acc-btn-isolate' : 'mon-acc-btn-restore'}`}
+                onClick={() => void confirmIsolation()}
+                autoFocus
+              >
+                {pending.action === 'isolate' ? '确认隔离' : '确认恢复'}
+              </button>
             </div>
           </div>
-        </Modal>
+        </div>
       )}
     </div>
   );
@@ -1196,6 +1385,26 @@ function ZapIcon() {
   return (
     <svg className="mon-acc-btn-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
       <path d="M13.2 3 6.5 13h4.6L10 21l7-10.4h-4.6L13.2 3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 隔离：斜杠圆环，表示「把这条线掐掉」。 */
+function SlashIcon() {
+  return (
+    <svg className="mon-acc-btn-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M6.2 17.8 17.8 6.2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 恢复：电源键，表示「放回调度」。 */
+function PowerIcon() {
+  return (
+    <svg className="mon-acc-btn-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <path d="M12 3.5v8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M7.4 6.6a7.4 7.4 0 1 0 9.2 0" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
     </svg>
   );
 }

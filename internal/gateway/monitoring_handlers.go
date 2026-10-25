@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -69,11 +70,18 @@ func channelViews(channels []monitoring.Channel) []monitorChannelView {
 }
 
 type monitorAccountView struct {
-	ProviderID    string                     `json:"providerId"`
-	Name          string                     `json:"name"`
-	Vendor        string                     `json:"vendor"`
-	AuthType      string                     `json:"authType"`
-	Disabled      bool                       `json:"disabled"`
+	ProviderID string `json:"providerId"`
+	Name       string `json:"name"`
+	Vendor     string `json:"vendor"`
+	AuthType   string `json:"authType"`
+	Disabled   bool   `json:"disabled"`
+	// Isolated marks a disabled account whose switch was thrown by the
+	// console's forced circuit-break (not by the admin's own 停用). It is the
+	// same Disabled flag for scheduling; the marker only says why it is off, and
+	// it is what 「恢复调度」 clears.
+	Isolated      bool                       `json:"isolated,omitempty"`
+	IsolatedAt    string                     `json:"isolatedAt,omitempty"`
+	IsolatedBy    string                     `json:"isolatedBy,omitempty"`
 	HealthStatus  string                     `json:"healthStatus"`
 	Capabilities  monitoring.Capabilities    `json:"capabilities"`
 	ExpiresAt     string                     `json:"expiresAt,omitempty"`
@@ -265,8 +273,197 @@ func (s *Server) handleMonitorAccountRefresh(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleMonitorQuotaRefresh forces one vendor usage read and persists it, so the
-// console can show a fresh number instead of the last sampled hour.
+// ── 强制熔断隔离 ─────────────────────────────────────────────────────────
+//
+// 隔离就是「临时停用」：调度看的仍是域模型里的 Disabled 开关，这一节不引入
+// 第二套状态机。多出来的只有两样东西——一条隔离标记（谁、什么时候）和「只由
+// 人工恢复」的语义。标记不进 Provider（避免动持久化 schema），而是落在
+// settings 表的一个 JSON 键里；它和 Disabled 由同一把隔离锁一起改，所以「标了
+// 隔离但没停用」这种半截状态不会出现在读者眼里。
+
+const (
+	// monitorIsolationSettingKey 是隔离标记在 settings 表里的键：
+	// {providerId: {at, by}}。恢复时删掉对应条目。
+	monitorIsolationSettingKey = "monitor_provider_isolation"
+	// monitorIsolationActionHeader 让写操作带上发起它的纯文本请求头；浏览器
+	// 跨站表单发不出这个头，CSRF 也就写不进来。
+	monitorIsolationActionHeader = "X-Monitor-Action"
+)
+
+type monitorIsolationMark struct {
+	At string `json:"at"`
+	By string `json:"by"`
+}
+
+func (s *Server) monitorIsolationMarks() map[string]monitorIsolationMark {
+	marks := map[string]monitorIsolationMark{}
+	raw := s.monitoringStore.Setting(monitorIsolationSettingKey)
+	if strings.TrimSpace(raw) == "" {
+		return marks
+	}
+	if err := json.Unmarshal([]byte(raw), &marks); err != nil {
+		return map[string]monitorIsolationMark{}
+	}
+	return marks
+}
+
+func (s *Server) monitorIsolationMark(providerID string) (monitorIsolationMark, bool) {
+	mark, ok := s.monitorIsolationMarks()[providerID]
+	return mark, ok
+}
+
+func (s *Server) saveMonitorIsolationMarks(marks map[string]monitorIsolationMark) error {
+	raw, err := json.Marshal(marks)
+	if err != nil {
+		return err
+	}
+	return s.monitoringStore.SetSetting(monitorIsolationSettingKey, string(raw))
+}
+
+// monitorIsolationAccountView rebuilds one account row after a write. It goes
+// through the same builder as the list so the button's reply and the next poll
+// cannot disagree about what the card shows.
+func (s *Server) monitorIsolationAccountView(providerID string) (monitorAccountView, bool) {
+	for _, account := range s.monitorAccountViewsOf(s.monitorProviders()) {
+		if account.ProviderID == providerID {
+			return account, true
+		}
+	}
+	return monitorAccountView{}, false
+}
+
+// handleMonitorIsolateAccount 强制熔断隔离一个账号。已经被手工停用的账号回 409：
+// 再标一层隔离会把「谁停的」搅混，恢复时也不知道该不该重新启用。重复隔离同样
+// 409，幂等由调用方按 409 当「已经是隔离态」处理。
+func (s *Server) handleMonitorIsolateAccount(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.monitorGate(w, r)
+	if !ok {
+		return
+	}
+	if r.Header.Get(monitorIsolationActionHeader) == "" {
+		writeOpenAIError(w, http.StatusForbidden, "写操作需要 "+monitorIsolationActionHeader+" 请求头")
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	s.monitorIsolationMu.Lock()
+	defer s.monitorIsolationMu.Unlock()
+	marks := s.monitorIsolationMarks()
+	if _, isolated := marks[provider.ID]; isolated {
+		writeOpenAIError(w, http.StatusConflict, "该账号已处于强制熔断隔离中")
+		return
+	}
+	if provider.Disabled {
+		writeOpenAIError(w, http.StatusConflict, "该账号已被手工停用，请先在 Providers 页启用，再执行熔断隔离")
+		return
+	}
+	now := time.Now().UTC()
+	if _, err := s.router.SetProviderDisabled(provider.ID, true); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	// 先后顺序：先落 Provider（调度立即跳过它），再落标记。标记写失败就回滚停用，
+	// 不留下一个「停了但不知道谁停的」账号。
+	if err := s.saveState(); err != nil {
+		_, _ = s.router.SetProviderDisabled(provider.ID, false)
+		writeOpenAIError(w, http.StatusInternalServerError, "保存配置失败："+err.Error())
+		return
+	}
+	marks[provider.ID] = monitorIsolationMark{At: now.Format(time.RFC3339), By: identity.Username}
+	if err := s.saveMonitorIsolationMarks(marks); err != nil {
+		_, _ = s.router.SetProviderDisabled(provider.ID, false)
+		_ = s.saveState()
+		writeOpenAIError(w, http.StatusInternalServerError, "保存隔离标记失败")
+		return
+	}
+	// 与 Providers 页的停用同一条路径：停用即停止可用性重探。
+	s.markProviderAvailable(provider.ID)
+	s.logs.AddApp("warn", "provider isolated", fmt.Sprintf("provider=%s by=%s", provider.ID, identity.Username))
+	s.monitorRecordIsolationEvent(provider, "账号已强制熔断隔离", map[string]any{
+		"action": "isolate", "operator": identity.Username, "isolatedAt": now.Format(time.RFC3339), "disabled": true,
+	})
+	writeJSON(w, http.StatusOK, s.monitorIsolationView(provider.ID))
+}
+
+// handleMonitorRestoreAccount 解除隔离：清标记并把 Disabled 翻回 false。本来就没
+// 隔离、也没停用的账号回 409——恢复只针对隔离态，不兼做「启用手工停用的账号」。
+func (s *Server) handleMonitorRestoreAccount(w http.ResponseWriter, r *http.Request) {
+	identity, ok := s.monitorGate(w, r)
+	if !ok {
+		return
+	}
+	if r.Header.Get(monitorIsolationActionHeader) == "" {
+		writeOpenAIError(w, http.StatusForbidden, "写操作需要 "+monitorIsolationActionHeader+" 请求头")
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	s.monitorIsolationMu.Lock()
+	defer s.monitorIsolationMu.Unlock()
+	marks := s.monitorIsolationMarks()
+	if _, isolated := marks[provider.ID]; !isolated {
+		if provider.Disabled {
+			writeOpenAIError(w, http.StatusConflict, "该账号是手工停用而非熔断隔离，请在 Providers 页启用")
+			return
+		}
+		writeOpenAIError(w, http.StatusConflict, "该账号没有处于强制熔断隔离中")
+		return
+	}
+	if _, err := s.router.SetProviderDisabled(provider.ID, false); err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	if err := s.saveState(); err != nil {
+		_, _ = s.router.SetProviderDisabled(provider.ID, true)
+		writeOpenAIError(w, http.StatusInternalServerError, "保存配置失败："+err.Error())
+		return
+	}
+	delete(marks, provider.ID)
+	if err := s.saveMonitorIsolationMarks(marks); err != nil {
+		// 账号已经回到调度里，标记留着只会让卡片显示「已隔离」，要写回原样。
+		marks[provider.ID] = monitorIsolationMark{At: time.Now().UTC().Format(time.RFC3339), By: identity.Username}
+		writeOpenAIError(w, http.StatusInternalServerError, "清除隔离标记失败")
+		return
+	}
+	s.logs.AddApp("info", "provider is restored to scheduling", fmt.Sprintf("provider=%s by=%s", provider.ID, identity.Username))
+	s.monitorRecordIsolationEvent(provider, "账号已恢复调度", map[string]any{
+		"action": "restore", "operator": identity.Username, "disabled": false,
+	})
+	writeJSON(w, http.StatusOK, s.monitorIsolationView(provider.ID))
+}
+
+func (s *Server) monitorIsolationView(providerID string) map[string]any {
+	account, found := s.monitorIsolationAccountView(providerID)
+	if !found {
+		return map[string]any{"providerId": providerID}
+	}
+	return map[string]any{"account": account}
+}
+
+// monitorRecordIsolationEvent 写一条系统事件到事件流。写失败不改变操作结果——
+// 隔离已经生效，少一条事件不值得报错。
+func (s *Server) monitorRecordIsolationEvent(provider domain.Provider, title string, detail map[string]any) {
+	now := time.Now().UTC()
+	detail["providerId"] = provider.ID
+	if _, err := s.monitoringStore.InsertMonitorEvent(monitoring.Event{
+		Time: now, Kind: monitoring.EventKindSystem, Severity: monitoring.SeverityInfo,
+		TargetType: monitoring.TargetProvider, TargetID: provider.ID, TargetName: provider.Name,
+		Title: title, Status: monitoring.StatusInfo, Detail: detail,
+		FirstSeen: now, LastSeen: now,
+	}); err != nil {
+		slog.Warn("monitoring isolation event failed", "provider", provider.ID, "error", err)
+	}
+}
+
+// handleMonitorQuotaRefresh forces one vendor usage read and persists it, so the// console can show a fresh number instead of the last sampled hour.
 func (s *Server) handleMonitorQuotaRefresh(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.monitorGate(w, r); !ok {
 		return
@@ -956,6 +1153,7 @@ func (s *Server) monitorAccountViewsOf(providers []domain.Provider) []monitorAcc
 			alertCounts[alert.TargetID]++
 		}
 	}
+	isolation := s.monitorIsolationMarks()
 	out := make([]monitorAccountView, 0, len(providers))
 	for _, provider := range providers {
 		view := monitorAccountView{
@@ -970,6 +1168,13 @@ func (s *Server) monitorAccountViewsOf(providers []domain.Provider) []monitorAcc
 			},
 			ActiveAlerts:  alertCounts[provider.ID],
 			ModelFailures: s.monitorModelFailures(provider.ID),
+		}
+		// 隔离标记只在账号确实停用时才挂出去：手工启用过的历史标记不能把卡片
+		// 画成「已隔离」。标记读取失败按「没隔离」处理，不影响列表。
+		if provider.Disabled {
+			if mark, isolated := isolation[provider.ID]; isolated {
+				view.Isolated, view.IsolatedAt, view.IsolatedBy = true, mark.At, mark.By
+			}
 		}
 		if expiry := providerCredentialExpiry(provider); !expiry.IsZero() {
 			view.ExpiresAt = expiry.UTC().Format(time.RFC3339)

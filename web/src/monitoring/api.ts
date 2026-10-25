@@ -1,6 +1,7 @@
 import { API_BASE, fetchWithTimeout } from '../lib';
 import type {
   MonitorAccount,
+  MonitorIsolationResult,
   MonitorAlert,
   MonitorAlertDetail,
   MonitorChannelInput,
@@ -140,6 +141,25 @@ export async function refreshQuota(providerId: string): Promise<MonitorQuotaResu
     throw new MonitorAPIError(response.status, guard(response.status, body as unknown as JSONBody));
   }
   return { ok: response.ok && body?.ok !== false, quota: body?.quota, errorKind: body?.errorKind };
+}
+
+/**
+ * 强制熔断隔离：账号被临时停用并排除出调度，直到有人点「恢复调度」。
+ * 两个写接口都带 X-Monitor-Action 头——后端用它拒绝浏览器跨站表单发起的请求。
+ * 409 是结论而不是故障（已隔离 / 已被手工停用 / 本就没隔离），原因由后端给出。
+ */
+export function isolateAccount(providerId: string): Promise<MonitorIsolationResult> {
+  return request<MonitorIsolationResult>(`/accounts/${encodeURIComponent(providerId)}/isolate`, {
+    method: 'POST',
+    headers: { 'X-Monitor-Action': 'isolate' },
+  });
+}
+
+export function restoreAccount(providerId: string): Promise<MonitorIsolationResult> {
+  return request<MonitorIsolationResult>(`/accounts/${encodeURIComponent(providerId)}/restore`, {
+    method: 'POST',
+    headers: { 'X-Monitor-Action': 'restore' },
+  });
 }
 
 export function fetchEvents(filters: MonitorEventFilters = {}): Promise<MonitorPage<MonitorEvent>> {

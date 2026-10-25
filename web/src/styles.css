@@ -8931,9 +8931,11 @@ html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); colo
 .mon-acc-fact-value.err { color: var(--red); font-weight: 600; }
 .mon-acc-fact-stale { margin-left: 6px; padding: 0 5px; border-radius: var(--r-xs); background: var(--amber-soft); color: var(--amber); font-size: 10px; font-weight: 600; }
 
-/* 底部动作：左侧淡色「详情」，右侧「续期」「轻探测」。参考里的「强制熔断隔离」本项目没有，不给假入口。 */
-.mon-acc-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 11px; border-top: 1px solid var(--border); min-width: 0; }
+/* 底部动作：最左「强制熔断隔离」/「恢复调度」，然后淡色「详情」、居右「续期」「轻探测」。
+   动作多了一枚，窄卡换行而不是把文字挤成省略号。 */
+.mon-acc-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 11px; border-top: 1px solid var(--border); min-width: 0; }
 .mon-acc-actions .btn { --btn-h: 28px; font-size: 12px; }
+.mon-acc-btn-detail { margin-left: auto; }
 .mon-acc-btn-ghost { color: var(--muted); }
 .mon-acc-btn-ghost:hover:not(:disabled) { color: var(--text); }
 .mon-acc-actions .mon-acc-btn-renew { margin-left: auto; color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: var(--green-soft); }
@@ -8941,6 +8943,41 @@ html[data-theme="dark"] .mon-acc-breaker.abnormal { background: var(--red); colo
 .mon-acc-btn-icon { flex: none; }
 .mon-acc-inline { color: var(--muted); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .mon-acc-inline.err { color: var(--red); }
+.mon-acc-inline.ok { color: var(--green); }
+
+/* 强制熔断隔离：红字 + 红边（参考里就是红色文字按钮）；隔离后同一位置换成绿色的「恢复调度」。 */
+.mon-acc-btn-isolate { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: transparent; }
+.mon-acc-btn-isolate:hover:not(:disabled) { border-color: var(--red); background: var(--red-soft); }
+.mon-acc-btn-isolate:disabled { color: var(--red); opacity: 0.55; }
+.mon-acc-btn-restore { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: var(--green-soft); }
+.mon-acc-btn-restore:hover:not(:disabled) { border-color: var(--green); }
+/* 已隔离：卡片描边变红（红比「异常」更实，因为它是人为的强制状态），徽标用实心红字。 */
+.mon-acc-card.is-isolated { border-color: var(--red); background: color-mix(in srgb, var(--red-soft) 35%, var(--surface)); }
+.mon-acc-card.is-isolated:hover { border-color: var(--red); }
+.mon-acc-breaker.isolated { background: var(--red-soft); color: var(--red); border-color: color-mix(in srgb, var(--red) 60%, transparent); }
+html[data-theme="dark"] .mon-acc-breaker.isolated { background: var(--red); color: #0b1220; border-color: var(--red); }
+
+/* 二次确认：点「强制熔断隔离 / 恢复调度」后先问一句。浮层用半透明遮罩 + 居中卡片，
+   明暗两套主题都读现有 token，不引第三方弹窗。 */
+.mon-acc-confirm-layer {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, #000 42%, transparent);
+  backdrop-filter: blur(2px);
+}
+.mon-acc-confirm {
+  display: flex; flex-direction: column; gap: 10px;
+  width: min(420px, 100%); max-height: calc(100vh - 32px); overflow: auto;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-med);
+}
+.mon-acc-confirm-title { margin: 0; font-size: 14px; font-weight: 700; color: var(--text-strong); line-height: 1.4; overflow-wrap: anywhere; }
+.mon-acc-confirm-body { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.mon-acc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
 .mon-acc-alert-link {
   align-self: flex-start;
   padding: 0;

@@ -114,6 +114,10 @@ type Server struct {
 	// and StartMonitoring may race to first use it).
 	monitorHub     *monitorStreamHub
 	monitorHubOnce sync.Once
+	// monitorIsolationMu serializes the forced circuit-break endpoints' read-
+	// check-write of the isolation marker and the Disabled flag together, so two
+	// clicks cannot leave a disabled account with no marker (or vice versa).
+	monitorIsolationMu sync.Mutex
 	// log2xxBodies mirrors GatewayState.Log2xxBodies; guarded by log2xxBodiesMu
 	// because it is read on every request-log write and toggled from a handler.
 	log2xxBodies   bool
@@ -369,6 +373,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /__monitor/accounts/{providerId}", s.handleMonitorAccount)
 	mux.HandleFunc("POST /__monitor/accounts/{providerId}/refresh", s.handleMonitorAccountRefresh)
 	mux.HandleFunc("POST /__monitor/accounts/{providerId}/quota/refresh", s.handleMonitorQuotaRefresh)
+	mux.HandleFunc("POST /__monitor/accounts/{providerId}/isolate", s.handleMonitorIsolateAccount)
+	mux.HandleFunc("POST /__monitor/accounts/{providerId}/restore", s.handleMonitorRestoreAccount)
 	mux.HandleFunc("GET /__monitor/events", s.handleMonitorEvents)
 	mux.HandleFunc("GET /__monitor/probes", s.handleMonitorProbes)
 	mux.HandleFunc("POST /__monitor/probes/run", s.handleMonitorProbeRun)

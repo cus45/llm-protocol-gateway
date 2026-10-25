@@ -53,6 +53,13 @@ export interface MonitorAccount {
   vendor: string;
   authType: string;
   disabled: boolean;
+  /**
+   * 强制熔断隔离。隔离就是「临时停用」：`disabled` 一定同时为 true，调度跳过该账号；
+   * 区别只在语义——隔离带标记（谁、什么时候隔离的）且只能人工「恢复调度」解除。
+   */
+  isolated?: boolean;
+  isolatedAt?: string;
+  isolatedBy?: string;
   healthStatus: string;
   capabilities: MonitorCapabilities;
   expiresAt?: string;
@@ -197,6 +204,11 @@ export interface MonitorRenewalResult {
   renewed: boolean;
   expiresAt?: string;
   errorKind?: MonitorErrorKind;
+}
+
+/** 隔离 / 恢复的响应：账号行与 `/__monitor/accounts` 同一形状。 */
+export interface MonitorIsolationResult {
+  account: MonitorAccount;
 }
 
 export interface MonitorQuotaResult {

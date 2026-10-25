@@ -820,6 +820,12 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
               .catch(() => setError('告警读取失败'));
           }}
           onOpenLogs={onOpenAccountLogs ?? (() => undefined)}
+          onIsolationChange={(result) => {
+            // 隔离 / 恢复立即反映到卡片与概览计数，不等下一轮轮询；后台再整体刷新一次兜底。
+            const next = result.account;
+            setAccounts((prev) => prev.map((account) => (account.providerId === next.providerId ? next : account)));
+            void loadVisible();
+          }}
         />
       )}
 

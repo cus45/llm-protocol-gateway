@@ -670,3 +670,280 @@ func TestMonitorRulesPutRejectsEmptyTable(t *testing.T) {
 		}
 	}
 }
+
+// ── 强制熔断隔离 ─────────────────────────────────────────────────────────
+
+// isolationCall 与 monitorCall 相同，只是多带一个可选的 X-Monitor-Action 头：
+// 两个写接口要求它存在，普通 POST 表单因此无法跨站触发隔离。
+func isolationCall(t *testing.T, handler http.HandlerFunc, method, target, body string,
+	values map[string]string, identity sessionIdentity, action string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	for key, value := range values {
+		request.SetPathValue(key, value)
+	}
+	if action != "" {
+		request.Header.Set(monitorIsolationActionHeader, action)
+	}
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, identity))
+	recorder := httptest.NewRecorder()
+	handler(recorder, request)
+	return recorder
+}
+
+func isolationTestServer(t *testing.T, providers ...domain.Provider) (*Server, *store.Store) {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "isolation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	server := NewServer(NewRouter(domain.GatewayState{Providers: providers}), monitor.NewStore(), db)
+	if server.monitoringStore == nil {
+		t.Fatal("store does not satisfy monitoringStore")
+	}
+	return server, db
+}
+
+func isolationProvider(id, name string) domain.Provider {
+	return domain.Provider{
+		ID: id, Name: name, Protocol: domain.ProtocolClaude, AuthType: domain.AuthTypeAPIKey,
+		BaseURL: "https://api.example.com", APIKeySource: "literal:sk", DefaultModel: "claude-sonnet-4-5",
+	}
+}
+
+// isolatedAccount 跑一次隔离并断言 200，返回响应里的账号行。
+func isolatedAccount(t *testing.T, server *Server, providerID string, identity sessionIdentity) monitorAccountView {
+	t.Helper()
+	recorder := isolationCall(t, server.handleMonitorIsolateAccount, http.MethodPost,
+		"/__monitor/accounts/"+providerID+"/isolate", "", map[string]string{"providerId": providerID}, identity, "isolate")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("isolate code = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Account monitorAccountView `json:"account"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Account
+}
+
+func providerByIDInState(state domain.GatewayState, providerID string) (domain.Provider, bool) {
+	for _, provider := range state.Providers {
+		if provider.ID == providerID {
+			return provider, true
+		}
+	}
+	return domain.Provider{}, false
+}
+
+// 隔离开关就是 Disabled，但它必须真的落库：进程重启后重新从 SQLite 读回来的
+// router 仍然要跳过这个账号，否则重启 = 隔离失效。
+func TestMonitorIsolatePersistsDisabledAndRestoreClearsIt(t *testing.T) {
+	server, db := isolationTestServer(t, isolationProvider("p-iso", "待隔离"))
+
+	account := isolatedAccount(t, server, "p-iso", monitorAdminID())
+	if !account.Disabled || !account.Isolated || account.IsolatedAt == "" || account.IsolatedBy != "admin" {
+		t.Fatalf("isolated account view = %+v", account)
+	}
+
+	// 重新打开同一个库：这才是「落库」的判据，只看内存字段证明不了什么。
+	reopened, err := store.Open(db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	state, err := reopened.Load(domain.GatewayState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, found := providerByIDInState(state, "p-iso"); !found || !stored.Disabled {
+		t.Fatalf("reopened store must keep provider disabled, found=%v provider=%+v", found, stored)
+	}
+	restarted := NewServer(NewRouter(state), monitor.NewStore(), reopened)
+	if mark, ok := restarted.monitorIsolationMark("p-iso"); !ok || mark.By != "admin" {
+		t.Fatalf("isolation marker must survive a restart, got %+v ok=%v", mark, ok)
+	}
+	if accounts := restarted.monitorAccountViewsOf(restarted.monitorProviders()); len(accounts) != 1 ||
+		!accounts[0].Disabled || !accounts[0].Isolated {
+		t.Fatalf("restarted server must still show the account isolated: %+v", accounts)
+	}
+
+	restored := isolationCall(t, restarted.handleMonitorRestoreAccount, http.MethodPost,
+		"/__monitor/accounts/p-iso/restore", "", map[string]string{"providerId": "p-iso"}, monitorAdminID(), "restore")
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore code = %d body = %s", restored.Code, restored.Body.String())
+	}
+	var restoredBody struct {
+		Account monitorAccountView `json:"account"`
+	}
+	if err := json.Unmarshal(restored.Body.Bytes(), &restoredBody); err != nil {
+		t.Fatal(err)
+	}
+	if restoredBody.Account.Disabled || restoredBody.Account.Isolated {
+		t.Fatalf("restored account = %+v", restoredBody.Account)
+	}
+	if _, ok := restarted.monitorIsolationMark("p-iso"); ok {
+		t.Fatal("restore must drop the isolation marker")
+	}
+	state, err = reopened.Load(domain.GatewayState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, found := providerByIDInState(state, "p-iso"); !found || stored.Disabled {
+		t.Fatalf("restore must be persisted too: found=%v provider=%+v", found, stored)
+	}
+
+	// 事件流里两条系统事件都要有，且带上操作者。
+	page, err := db.QueryMonitorEvents(monitoring.EventQuery{Kind: monitoring.EventKindSystem, Page: 1, PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := map[string]map[string]any{}
+	for _, event := range page.Items {
+		if event.TargetID == "p-iso" {
+			details[event.Title] = event.Detail
+		}
+	}
+	if details["账号已强制熔断隔离"]["operator"] != "admin" {
+		t.Fatalf("isolation event missing or without operator: %+v", details)
+	}
+	if details["账号已恢复调度"]["operator"] != "admin" {
+		t.Fatalf("restore event missing or without operator: %+v", details)
+	}
+}
+
+// 这两个接口会改变调度行为，必须 admin-only；普通用户拿到 403 且状态不变。
+func TestMonitorIsolateAndRestoreRequireAdmin(t *testing.T) {
+	server, _ := isolationTestServer(t, isolationProvider("p1", "Claude"))
+	for _, item := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"isolate", server.handleMonitorIsolateAccount},
+		{"restore", server.handleMonitorRestoreAccount},
+	} {
+		recorder := isolationCall(t, item.handler, http.MethodPost, "/__monitor/accounts/p1/"+item.name,
+			"", map[string]string{"providerId": "p1"}, monitorUserID(), item.name)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s as normal user: code = %d body = %s", item.name, recorder.Code, recorder.Body.String())
+		}
+	}
+	provider, err := server.router.ProviderByID("p1")
+	if err != nil || provider.Disabled {
+		t.Fatalf("a rejected call must not touch the provider: %+v err=%v", provider, err)
+	}
+	// 没有 X-Monitor-Action 头的写请求一律 403（CSRF 防线），管理员也不行。
+	noHeader := isolationCall(t, server.handleMonitorIsolateAccount, http.MethodPost,
+		"/__monitor/accounts/p1/isolate", "", map[string]string{"providerId": "p1"}, monitorAdminID(), "")
+	if noHeader.Code != http.StatusForbidden {
+		t.Fatalf("missing action header: code = %d", noHeader.Code)
+	}
+}
+
+// 重复隔离 409；手工停用的账号隔离 409 且原样不动；没隔离的账号恢复 409。
+func TestMonitorIsolateConflicts(t *testing.T) {
+	manuallyOff := isolationProvider("p-off", "手工停用")
+	manuallyOff.Disabled = true
+	server, _ := isolationTestServer(t,
+		isolationProvider("p-iso", "已隔离"),
+		manuallyOff,
+		isolationProvider("p-on", "正常"),
+	)
+	isolatedAccount(t, server, "p-iso", monitorAdminID())
+
+	again := isolationCall(t, server.handleMonitorIsolateAccount, http.MethodPost,
+		"/__monitor/accounts/p-iso/isolate", "", map[string]string{"providerId": "p-iso"}, monitorAdminID(), "isolate")
+	if again.Code != http.StatusConflict {
+		t.Fatalf("repeated isolate: code = %d body = %s", again.Code, again.Body.String())
+	}
+
+	manual := isolationCall(t, server.handleMonitorIsolateAccount, http.MethodPost,
+		"/__monitor/accounts/p-off/isolate", "", map[string]string{"providerId": "p-off"}, monitorAdminID(), "isolate")
+	if manual.Code != http.StatusConflict || !strings.Contains(manual.Body.String(), "手工停用") {
+		t.Fatalf("manually disabled account: code = %d body = %s", manual.Code, manual.Body.String())
+	}
+	if _, ok := server.monitorIsolationMark("p-off"); ok {
+		t.Fatal("a manually disabled account must not gain an isolation marker")
+	}
+
+	notIsolated := isolationCall(t, server.handleMonitorRestoreAccount, http.MethodPost,
+		"/__monitor/accounts/p-on/restore", "", map[string]string{"providerId": "p-on"}, monitorAdminID(), "restore")
+	if notIsolated.Code != http.StatusConflict {
+		t.Fatalf("restore of a live account: code = %d body = %s", notIsolated.Code, notIsolated.Body.String())
+	}
+
+	missing := isolationCall(t, server.handleMonitorIsolateAccount, http.MethodPost,
+		"/__monitor/accounts/ghost/isolate", "", map[string]string{"providerId": "ghost"}, monitorAdminID(), "isolate")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown provider: code = %d", missing.Code)
+	}
+}
+
+// 隔离之后调度真的会跳过这个账号——请求一路走到真实失败（没有可用上游），
+// 而不是只看字段：隔离后链首被剔除，同样的请求只能落到备用账号；恢复后它又
+// 回到链首。Key 不带兜底链时隔离就等于「无可用账号」，所以这里给它一条备选。
+func TestMonitorIsolateRemovesAccountFromScheduling(t *testing.T) {
+	primary := isolationProvider("p-primary", "主号")
+	primary.FirstPacketTimeoutSec = 2
+	backup := isolationProvider("p-backup", "备号")
+	backup.BaseURL = "https://api2.example.com"
+	server, _ := isolationTestServer(t, primary, backup)
+	route := domain.Route{ID: "r-p", Name: "主路由", ProviderID: "p-primary", OutputProtocol: domain.ProtocolClaude, Enabled: true}
+	if _, err := server.router.AddRoute(route); err != nil {
+		t.Fatal(err)
+	}
+	key := domain.APIKey{ID: "k1", Name: "admin key", RouteID: "r-p", FallbackProviderIDs: []string{"p-backup"}}
+	run := func() domain.RouteDecision {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+		// 调度器从请求里取身份来决定这条 Key 能用哪些账号。
+		request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, monitorAdminID()))
+		// 调度轨迹挂在 handler 建的 requestTiming 上；这里自己建一个，才能读到实际尝试顺序。
+		request = request.WithContext(withRequestTiming(request.Context(), newRequestTiming(time.Now())))
+		// 与真实 handler 一样先取决策，再按 Key 的链与隔离状态归因到实际首选的账号。
+		seeded, err := server.router.Decide(route.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seeded = server.decisionForAPIKey(route, key, seeded, "")
+		_, _, _, _, _, execErr := server.executeProtocolFlowWithFailover(
+			recorder, request, route, seeded,
+			"claude-sonnet-4-5", map[string]any{"model": "claude-sonnet-4-5"},
+			domain.ProtocolClaude, true, key, true,
+		)
+		if execErr == nil {
+			t.Fatal("both example.com upstreams are unreachable; the flow must fail")
+		}
+		// 返回值里的 decision 只说明「最初打算发给谁」；真正发给谁看调度轨迹。
+		trace := scheduleTraceOf(request.Context())
+		if trace == nil || len(trace.attempts) == 0 {
+			t.Fatalf("no scheduling trace recorded: %+v", trace)
+		}
+		return domain.RouteDecision{ProviderID: trace.attempts[0].ProviderID}
+	}
+	if picked := run(); picked.ProviderID != "p-primary" {
+		t.Fatalf("before isolation the request must reach the primary, got %q", picked.ProviderID)
+	}
+
+	account := isolatedAccount(t, server, "p-primary", monitorAdminID())
+	if !account.Disabled {
+		t.Fatalf("isolated account must be disabled: %+v", account)
+	}
+	if decision := run(); decision.ProviderID != "p-backup" {
+		chain := apiKeyProviderChain(route.ProviderID, key.FallbackProviderIDs)
+		p, _ := server.router.ProviderByID("p-primary")
+		t.Fatalf("after isolation the request must skip the primary and land on the backup, got %q (disabled=%v allowed=%v)", decision.ProviderID, p.Disabled, server.allowedProviderChainForKey(key, chain))
+	}
+
+	restored := isolationCall(t, server.handleMonitorRestoreAccount, http.MethodPost,
+		"/__monitor/accounts/p-primary/restore", "", map[string]string{"providerId": "p-primary"}, monitorAdminID(), "restore")
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore code = %d body = %s", restored.Code, restored.Body.String())
+	}
+	if decision := run(); decision.ProviderID != "p-primary" {
+		t.Fatalf("restore must put the account back at the head of the chain, got %q", decision.ProviderID)
+	}
+}
