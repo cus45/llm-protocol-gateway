@@ -914,7 +914,7 @@ export function ProbesTab(props: ProbesTabProps) {
             </div>
           );
         })}
-      </div>
+        </div>
       </div>
 
       {shownResult && (
