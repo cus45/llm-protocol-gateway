@@ -645,18 +645,17 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
                 {loading ? '同步中…' : loadedAt ? `${loadedAt} 同步` : '等待首轮同步'}
               </span>
             </div>
-            <p className="mon-header-sub">
-              <span className="mon-header-summary" title="账号与厂商数取自 /__monitor/accounts，告警取自 /__monitor/overview">
-                <span>{`覆盖 ${accountTotal} 个账号`}</span>
-                <span className="mon-dot" aria-hidden="true">·</span>
-                <span>{`${vendorLabels.size} 个厂商${vendorless > 0 ? `（另 ${vendorless} 个未标注）` : ''}`}</span>
-                <span className="mon-dot" aria-hidden="true">·</span>
-                <span>{firingCount > 0 ? `${firingCount} 条未处理告警` : '暂无未处理告警'}</span>
-              </span>
+            <p
+              className="mon-header-sub"
+              title={`覆盖 ${accountTotal} 个账号（${vendorLabels.size} 个厂商${vendorless > 0 ? `，另 ${vendorless} 个未标注` : ''}）· ${firingCount} 条未处理告警 · ${rulesEnabled}/${ruleTotal} 条规则已启用 · 今日探测 ${liveProbes} 发`}
+            >
+              {/* 副标题只留三段（对齐参考的「覆盖 20 容灾节点 · 熔断防御已就绪 · 实时流式遥测中」）。
+                  原先五段加起来 432px，把 Header 挤成两行（1280 下 116px 高）；其余口径进 title。 */}
+              <span>{`覆盖 ${accountTotal} 个账号`}</span>
               <span className="mon-dot" aria-hidden="true">·</span>
-              <span title={`${rulesEnabled}/${ruleTotal} 条规则已启用`}>{`${rulesEnabled}/${ruleTotal} 条规则已启用`}</span>
+              <span>{firingCount > 0 ? `${firingCount} 条未处理告警` : '暂无未处理告警'}</span>
               <span className="mon-dot" aria-hidden="true">·</span>
-              <span title="今日已发出的轻探测总数（各账号 usedToday 之和，按投递时区计）">{`今日探测 ${liveProbes} 发`}</span>
+              <span>{`${rulesEnabled}/${ruleTotal} 条规则已启用`}</span>
             </p>
           </div>
         </div>
@@ -670,7 +669,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
             title={quietTitle}
           >
             <HeaderActionIcon id="mute" />
-            <span>{busy === 'quiet' ? '保存中…' : quiet ? (inQuietWindow ? '已静音' : '静音中·时段外') : '告警静音'}</span>
+            <span>{busy === 'quiet' ? '保存中…' : quiet ? (inQuietWindow ? '已静音' : '静音中') : '告警静音'}</span>
           </button>
           <button type="button" className="mon-header-btn mon-header-refresh" onClick={() => void loadVisible()} disabled={loading}>
             <HeaderActionIcon id="refresh" />

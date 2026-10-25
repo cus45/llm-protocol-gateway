@@ -6887,7 +6887,9 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   padding: 14px 8px;
   border-bottom: 1px solid var(--border);
 }
-.mon-header-id { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+/* flex-basis 必须给 0：auto 会让副标题按内容撑到 960px+，把右侧按钮组挤到下一行，
+   Header 从 64px 涨到 112px（1280 实测）。参考里两者始终同一行。 */
+.mon-header-id { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 0; }
 /* 徽章：36px 圆角方块 + 内侧 20px 图标 + 同色系外发光（参考 40px 的盒子，图标 40%）。 */
 .mon-header-badge {
   flex: none;
@@ -6907,7 +6909,10 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .mon-header-badge-glyph svg { width: 20px; height: 20px; }
 .mon-header-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
 /* 标题行 = 15px 标题 + 11px 同步胶囊；胶囊贴着标题右侧，不抢标题的字重。 */
-.mon-header-headline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+/* 标题行不换行：参考这行只有「标题 + 状态胶囊」，实测 40px 单行。同步时间挪到
+   副标题行尾（见 .mon-header-sync 的 order），否则标题行会被挤成两行、
+   Header 从 64px 涨到 94px。 */
+.mon-header-headline { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px 10px; min-width: 0; }
 /* 同步时间贴着标题行的右尾：参考把时间放在 tooltip 与右上角，这里保持 11px 弱色胶囊，
    不占副标题那一行（副标题留给业务摘要）。 */
 /* 刷新中与「同步」是两个字，比标题右侧剩下的宽度长，允许它换到第二行也不裁切
@@ -6935,6 +6940,10 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   line-height: 1.35;
   letter-spacing: 0.01em;
   color: var(--text-strong);
+  /* 标题是标识，不允许折行：被压缩到 100px 时会变成「协议网关监控/中心」两行，
+     把整条标题行撑到 41px、Header 从 64px 涨到 94px（1280 实测）。 */
+  white-space: nowrap;
+  flex: none;
 }
 /* 副标题：状态胶囊在前（参考把它挂在标题右侧），后接三条统计。胶囊与统计各自成组，
    组间 8px、行内 2px 6px：胶囊的描边+底色本身就是分隔，不需要再靠小圆点硬挤。 */
@@ -6956,7 +6965,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .mon-header-summary { display: contents; }
 .mon-header-fact { white-space: nowrap; }
 .mon-dot { color: var(--subtle); }
-.mon-header-btns { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; margin-left: auto; }
+.mon-header-btns { display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; margin-left: auto; }
 /* 动作按钮：30px 高圆角胶囊，图标 14px。三档色系——中性描边 / 绿渐变（续期）/ 主色渐变（密钥）。 */
 .mon-header-btn {
   display: inline-flex;
@@ -7165,6 +7174,10 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
   .mon-header-id { flex: 1 0 100%; }
   /* 手机档标题与胶囊共用一行后，同步时间已没有余地，单独落到下一行左端（order 让它排在胶囊之后）。 */
   .mon-header-sync { order: 3; flex-basis: 100%; width: max-content; margin-left: 0; }
+  /* 窄屏标题行恢复换行：标题本身仍不折（nowrap 在基础规则里），但同步时间胶囊
+     要能落到第二行。否则一行放不下 100+178+172，整页横向溢出到 403（390 实测）。 */
+  .mon-header-headline { flex-wrap: wrap; }
+  .mon-chain { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
   /* 四个动作按钮在 390 一行 80px 装不下（实测每个文字要 48~75px），改成 2×2 网格：
      标签完整显示，不截断、不缩字号。 */
   .mon-header-btns { flex: 1 1 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; margin-left: 0; gap: 8px; }
