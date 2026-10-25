@@ -373,21 +373,27 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   };
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+    <div className="monitoring-page">
+      {/* 页签与「用量统计」同构（同一套 .usage-page-tabs 视觉），不再用胶囊按钮当导航。 */}
+      <div className="usage-page-tabs monitoring-tabs" role="tablist" aria-label="监控中心">
         {TABS.map((item) => (
           <button
             key={item.id}
-            className={`status-pill-btn ${tab === item.id ? 'active' : ''}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
             aria-current={tab === item.id ? 'page' : undefined}
+            className={tab === item.id ? 'active' : ''}
             onClick={() =>
               goTab(item.id, (item.id === 'accounts' || item.id === 'probes') && selectedAccount ? { account: selectedAccount } : {})
             }
           >
-            {item.label}
+            <span>{item.label}</span>
           </button>
         ))}
-        {loading && <span className="muted-text" style={{ marginLeft: 'auto' }}>{'刷新中…'}</span>}
+        <span className="page-tabs-status muted-text" aria-live="polite">
+          {loading ? <><i className="live-dot" aria-hidden="true" />{'刷新中…'}</> : ''}
+        </span>
       </div>
 
       {tab === 'overview' && (
@@ -395,6 +401,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           overview={overview}
           accounts={accounts}
           alerts={alerts}
+          alertTotal={alertTotal}
           events={events}
           eventTotal={eventTotal}
           kindFilter={kindFilter}
@@ -408,6 +415,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           onLoadMoreEvents={loadMoreEvents}
           onOpenAccount={openAccount}
           onOpenAlert={openAlert}
+          onOpenAlerts={() => goTab('alerts', {})}
           onRetry={() => void loadVisible()}
         />
       )}

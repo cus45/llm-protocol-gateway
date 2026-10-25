@@ -6860,20 +6860,150 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .monitoring-cols {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 子卡用 subgrid 共享这两条轨道：两卡等高，且高度随内容走；账号一多，整块封顶 690px，
+     两卡列表各自在卡内滚动（不把概览页拉成几千像素，也不留死白）。
+     封顶栏是 minmax(36px, 690px)：直接用 max-height 会让子网格里 auto 的轨道、flex:1 0
+     的滚动区退化成 0 高（卡片只剩标题）。 */
+  grid-template-rows: max-content minmax(36px, 690px);
   gap: 12px;
 }
 
-/* 半宽档：账号健康行只有 543px，名称列先被「续期 / 额度 / 状态 / 详情」四列固定宽度
-   挤到 82px（长名只剩 33px 可见）。这一档把开启时间与额度合成一格，名称拿回弹性宽度。
-   更窄（≤1100px）仍走下面 .mrow 的两列档。 */
-@media (max-width: 1420px) and (min-width: 1101px) {
-  .mrow-account-mini { grid-template-columns: minmax(0,2fr) minmax(0,1.2fr) 112px 56px; }
-  .mrow-account-mini > .m-row-line { align-items: baseline; }
-  .mrow-account-mini > .m-row-line > .m-clip { flex: 0 1 auto; }
+/* 顶部页签：视觉完全复用「用量统计」的 .usage-page-tabs（高度/圆角/底色/激活态同源，
+   不另起一套）。这里只补监控页签独有的两点：没有副注时的垂直居中，以及右侧刷新状态。 */
+.usage-page-tabs.monitoring-tabs button { justify-content: center; padding-top: 0; padding-bottom: 0; min-height: 61px; }
+.usage-page-tabs.monitoring-tabs .page-tabs-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  align-self: center;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  /* 窄屏保持与用量页签同一尺寸（不缩按钮），放不下时沿横轴滚动，与用量页一致。
+     光有 nowrap 不够：容器会把内容宽度算进自身，整条 tab 撑到 531px 把视口顶出横滚。
+     这里让它自己成为滚动容器（overflow-x: auto + max-width: 100%），
+     右侧状态文字不参与滚动，留在原地。 */
+  .usage-page-tabs.monitoring-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .usage-page-tabs.monitoring-tabs::-webkit-scrollbar { display: none; }
+  .usage-page-tabs.monitoring-tabs > button { flex: 0 0 auto; }
+  .usage-page-tabs.monitoring-tabs .page-tabs-status { margin-left: 0; padding: 0 10px; flex: 0 0 auto; }
 }
 
+/* 概览：两卡一行，量卡与「用量统计」的指标卡同一套语言（标题 + 大数字 + 副注）。 */
+.monitor-metric-row { margin-bottom: 12px; }
+/* 账号 / 告警两卡在桌面封顶约一屏高：账号有 26 个时，概览页不该被拉成几千像素长的滚动条。
+   上限写在上面的 subgrid 内容轨里；单列布局下两卡上下排，那条不生效，改用下面 1280 档。 */
+.monitor-metric-row .metric { min-height: 0; padding: 13px 16px; }
+.monitor-metric-row .metric-main-row { justify-content: flex-start; gap: 8px; margin-bottom: 2px; }
+.monitor-metric-row .metric-value { margin-top: 4px; font-size: 22px; letter-spacing: -0.03em; }
+.monitor-metric-row .metric-note { line-height: 1.5; }
+/* 监控自己的卡片头：内容行仍走全局 .log-row（圆角/描边/阴影），只是把内边距收掉一部分，
+   免得行高被容器又撑一层。 */
+.m-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.m-panel-note { color: var(--subtle); font-size: 11px; font-variant-numeric: tabular-nums; }
+.m-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
+
+/* 账号健康：名称独占整行（卡宽减去 40px 内边距），不再与四列抢宽度。
+   实测：1440 下「Claude Pro 订阅（主账号）」文本 147px，名称格 430px 可整句放下；
+   续期/额度、状态、详情收到第二行。只有卡很窄（≤420px）时才退成单列。 */
+.mrow-account-mini {
+  /* 第一列吃剩余宽度，状态/详情两列按内容宽度；用 auto 时状态区不贡献宽度，会被压成 0。 */
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  grid-template-areas:
+    'name  name  name'
+    'facts tags  detail';
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 0;
+}
+.m-acc-name { grid-area: name; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.m-acc-name > .m-acc-label {
+  font-weight: 600;
+  /* 名称按整行宽度排版，正常显示；超过两行才收起（hover 有完整 title）。
+     不设固定宽度：宽度由 flex 父级按「文本宽度 vs 可用宽度」给。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.m-acc-facts {
+  grid-area: facts;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+  min-width: 0;
+  line-height: 1.45;
+}
+.m-acc-fact { display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 11.5px; }
+.m-acc-fact > b { flex: none; font-weight: 500; color: var(--subtle); }
+.m-acc-fact > span { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.m-acc-facts .m-acc-fact.quota > span.has-warn { color: var(--amber); }
+.m-acc-facts .m-acc-fact.quota > span.has-err { color: var(--red); }
+.m-acc-badges { grid-area: tags; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; justify-content: flex-end; }
+.m-acc-detail { justify-self: end; align-self: center; padding: 0 10px; white-space: nowrap; }
+/* 只按结构位置定位，不挂在按钮类上（告警行的「处理」也带 .m-acc-detail）。
+   用显式列线而不是 grid-area detail：区域名在首行跨两列，自动放置会把按钮铺满整行。 */
+.mrow-account-mini > .m-acc-detail { grid-area: 2 / 3; }
+
+/* 当前告警：与左侧账号卡同高，列表内滚动，不把整页拉长也不留死白。
+   两卡都用 subgrid 分到同一组轨道（行高/间距都来自 .monitoring-cols），高度随内容互相拉齐。 */
+.monitoring-cols > .m-col-card {
+  display: grid;
+  grid-template-rows: subgrid;
+  grid-row: span 2;
+  gap: 8px;
+  min-width: 0;
+}
+.m-scroll-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+.mrow-alert-mini { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 4px 10px; padding: 7px 0; }
+.m-alert-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.m-alert-title { font-weight: 500; overflow-wrap: anywhere; }
+.m-alert-meta { color: var(--subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.m-alert-main .badge { align-self: flex-start; }
+
+/* 事件流：时间 / 级别 / 标题 / 详情 四列，详情允许两行。 */
+.mrow-event { grid-template-columns: 76px 36px minmax(0, 1fr) minmax(0, 1.15fr); gap: 4px 10px; padding: 7px 0; }
+.m-event-title { overflow-wrap: anywhere; }
+.m-event-detail { color: var(--subtle); font-size: 11.5px; overflow-wrap: anywhere; }
+.m-event-link { border: 0; background: none; padding: 0; margin-left: 6px; color: var(--accent-strong); font: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; }
+.m-event-link:hover { text-decoration: underline; }
+
+
+/* 单列后两卡上下排：告警卡再撑满全量就会把账号卡推到很下面，内容轨限高、卡内滚动。 */
 @media (max-width: 1280px) {
-  .monitoring-cols { grid-template-columns: minmax(0, 1fr); }
+  .monitoring-cols {
+    grid-template-columns: minmax(0, 1fr);
+    /* 单列上下排：两张卡各自封顶，告警多时卡内滚动，账号卡不被推到很下面。 */
+    grid-template-rows: minmax(36px, 690px) minmax(36px, 480px);
+  }
 }
 
 .monitoring-input {
@@ -6904,8 +7034,6 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 /* 开启时间 + 额度合排的一格：两个子项默认并排，换行时各自单行截断 */
 .m-row-line { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
 .mrow-account { grid-template-columns: minmax(0,2.2fr) 96px minmax(0,1fr) minmax(0,1.1fr) 84px 64px; }
-/* 概览的账号健康卡只有半宽，列要更少更紧：名称 / 续期 / 额度 / 状态 / 详情。 */
-.mrow-account-mini { grid-template-columns: minmax(0,1.5fr) 84px minmax(0,1fr) 112px 56px; }
 .mrow-alert { grid-template-columns: 56px minmax(0,2fr) minmax(0,1.4fr) minmax(0,1fr) 96px 64px; }
 .mrow-alert-mini { grid-template-columns: 56px minmax(0,2fr) minmax(0,1.2fr) 64px; }
 .mrow-event { grid-template-columns: 75px 56px minmax(0,2fr) minmax(0,2fr); }
@@ -6931,6 +7059,7 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .mrow-probe-run { grid-template-columns: 128px minmax(0,1fr) 64px minmax(0,1fr) 48px minmax(0,1.2fr) 64px minmax(0,1fr) minmax(0,1fr); }
 .mrow-probe-case { grid-template-columns: 48px minmax(0,1fr) 80px 64px minmax(0,1.5fr); }
 .m-row-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.monitor-metric-row .metric-value { font-variant-numeric: tabular-nums; }
 .m-row-link { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; text-align: left; }
 .panel-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 /* 探测行内的操作组：两个 .btn 是 inline-flex 兄弟，容器不给 gap 时只隔一个空白文本节点，
@@ -7075,4 +7204,59 @@ select.rules-control {
   .rules-name { flex-wrap: wrap; align-items: center; overflow: visible; }
   .rules-name > .m-clip { flex: 1 0 100%; min-width: 0; }
   .rules-actions > .btn { white-space: nowrap; }
+}
+
+/* 概览页在窄处的行布局。≤1100 时 .mrow 把首尾格铺满整行，这里把账号/告警/事件行改回
+   自己的排法：账号行 = 名称 / 续期+额度 / 状态+详情 依次三行（全宽时一段才够放长名，
+   硬挤成两行会把名称押回省略号）；告警与事件行标题整宽，其余并排。 */
+@media (max-width: 1100px) {
+  /* 三行：名称整宽 / 续期+额度 / 状态靠左 + 详情靠右。
+     第 1 列 min/max 都取 minmax(0, …)：跨列区域（名称/续期两行）按轨道推断尺寸时，
+     auto 的最小值会把长名推出卡片；按钮列用 max-content，否则它会被算成 0 宽，
+     按钮回落到第 1 列、横压在续期行上。 */
+  .mrow-account-mini {
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas:
+      'name  name'
+      'facts facts'
+      'tags  detail';
+    align-items: center;
+    row-gap: 6px;
+  }
+  .mrow-account-mini > .m-acc-badges { justify-content: flex-start; }
+  .mrow-alert-mini { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .mrow-alert-mini > :first-child { grid-column: auto; }
+  .mrow-alert-mini > .m-alert-main { grid-column: 2 / 4; }
+  .mrow-event { grid-template-columns: 76px 36px minmax(0, 1fr); }
+  .mrow-event > :first-child { grid-column: auto; }
+  .mrow-event > .m-event-title { grid-column: 3; }
+  .mrow-event > .m-event-detail { grid-column: 1 / -1; }
+}
+@media (max-width: 420px) {
+  /* 卡内宽度 <~420px 时状态与详情并排放不下：名称 / 续期+额度 / 状态 / 详情 四行。
+     全部用显式网格线定位，不依赖区域名（区域名会被自动放置铺满整行）。 */
+  .mrow-account-mini { grid-template-columns: minmax(0, 1fr); grid-template-areas: none; }
+  .mrow-account-mini > .m-acc-name,
+  .mrow-account-mini > .m-acc-facts,
+  .mrow-account-mini > .m-acc-badges,
+  .mrow-account-mini > .m-acc-detail { grid-column: 1; }
+  .mrow-account-mini > .m-acc-name { grid-row: 1; }
+  .mrow-account-mini > .m-acc-facts { grid-row: 2; }
+  .mrow-account-mini > .m-acc-badges { grid-row: 3; justify-content: flex-start; }
+  .mrow-account-mini > .m-acc-detail { grid-row: 4; justify-self: start; }
+}
+@media (max-width: 560px) {
+  .mrow-event { grid-template-columns: 36px minmax(0, 1fr); }
+  .mrow-event > :first-child { grid-column: 1 / -1; }
+  .mrow-event > .m-event-title { grid-column: 2; }
+  /* 事件筛选条在手机上一行放不下，改成整宽、内部横向滚动，不把页面撑宽。 */
+  .monitoring-page .card.panel > .m-panel-head.has-filters { flex-wrap: wrap; align-items: flex-start; }
+  .monitoring-page .card.panel > .m-panel-head.has-filters > .panel-header-actions {
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+  }
+  .monitoring-page .card.panel > .m-panel-head.has-filters .usage-segments { flex: none; }
 }
