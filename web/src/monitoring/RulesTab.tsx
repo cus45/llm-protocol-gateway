@@ -47,7 +47,7 @@ const PARAM_SPECS: Record<string, ParamSpec> = {
   leadHours: { label: '提前提醒', short: '提前', unit: '小时', kind: 'int' },
   consecutiveFailures: { label: '连续失败', short: '连败≥', unit: '次', kind: 'int' },
   consecutiveDays: { label: '连续失败', short: '连败≥', unit: '天', kind: 'int' },
-  windowMinutes: { label: '统计窗口', short: '窗口', unit: '', kind: 'int' },
+  windowMinutes: { label: '统计窗口', short: '窗口', unit: '分钟', kind: 'int' },
   minCount: { label: '最少次数', short: '次数≥', unit: '次', kind: 'int' },
   minSamples: { label: '最少样本', short: '样本≥', unit: '次', kind: 'int' },
   maxCount: { label: '次数上限', short: '次数≤', unit: '次', kind: 'int' },
