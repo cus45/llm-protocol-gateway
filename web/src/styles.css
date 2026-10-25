@@ -9017,7 +9017,9 @@ html[data-theme="light"] .mon-cluster-status.down { color: color-mix(in srgb, va
    能放下 3 列、展开时只放 2 列）。inline-size 会让内容撑高，账页面容器改用 size 并
    随内容增高（见 .mon-accounts）。 */
 .monitoring-page { container-type: inline-size; }
-.mon-accounts { container-type: size; display: flex; flex-direction: column; min-width: 0; }
+/* container-type: size 会让元素的高度脱离内容、在 flex 父级里算出 0（实测卡片渲染了
+   但容器 0 高、整块被压扁）。账号卡片只按宽度做容器查询，用 inline-size。 */
+.mon-accounts { container-type: inline-size; display: flex; flex-direction: column; min-width: 0; }
 /* 共用小件：设置/告警/规则页也用（渠道类型标签、处置态胶囊），账号卡片自己也用。 */
 .mon-acc-tag {
   display: inline-flex;
