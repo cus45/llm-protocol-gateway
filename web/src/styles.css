@@ -7038,14 +7038,30 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
 .mon-chain-text { white-space: nowrap; }
 .mon-chain-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .mon-chain-ok { color: var(--green); background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 34%, transparent); }
-.mon-chain-ok .mon-chain-dot { animation: mon-chain-pulse 2s ease-out infinite; }
 .mon-chain-warn { color: var(--amber); background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
 .mon-chain-danger { color: var(--red); background: var(--red-soft); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
-@keyframes mon-chain-pulse {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
-  70% { box-shadow: 0 0 0 5px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+/* 脉冲光环用 transform 缩放的 ::after 圆环，而不是 box-shadow keyframes：
+   后者每帧重绘宿主元素的盒子，在整屏截取/软件合成时会把相邻行画成黑块（1024 深色复现）。
+   transform/opacity 走合成线程，同位置元素不受影响。宿主需要 position: relative。 */
+@keyframes mon-ring-pulse {
+  0% { transform: scale(1); opacity: 0.55; }
+  70% { transform: scale(4.2); opacity: 0; }
+  100% { transform: scale(4.2); opacity: 0; }
 }
+/* 宿主圆点本身要有定位，::after 光环才能以它为圆心。 */
+.mon-chain-dot, .mon-tab-badge-dot, .mon-alert-state-dot { position: relative; }
+.mon-chain-dot::after, .mon-tab-badge-dot::after, .mon-alert-state-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+}
+.mon-chain-ok .mon-chain-dot::after,
+.mon-tab-badge-live .mon-tab-badge-dot::after,
+.mon-alert-state.firing .mon-alert-state-dot::after { animation: mon-ring-pulse 2s ease-out infinite; }
 
 /* 子页签：图标 + 文字 + 数量徽标；激活 = 底部 2px 强调线 + 强调色文字 + 极淡底色。
    整条横向可滚：外层负责裁切，内层 nowrap 自己滚；两端渐隐只在真能滚时出现（has-fade-*）。 */
@@ -7139,7 +7155,6 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
 }
 .mon-tab-badge-amber { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); font-weight: 700; }
 .mon-tab-badge-live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 34%, transparent); color: var(--green); font-weight: 700; letter-spacing: 0.04em; }
-.mon-tab-badge-live .mon-tab-badge-dot { animation: mon-chain-pulse 2s ease-out infinite; }
 .mon-tab-badge-paused { letter-spacing: 0.04em; }
 .mon-tab-badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .mon-tab-panel { display: grid; gap: 14px; min-width: 0; }
@@ -9099,7 +9114,6 @@ html[data-theme="light"] .mon-alert-sev.tone-p2 { color: color-mix(in srgb, var(
 .mon-alert-state.firing { color: var(--red); font-weight: 600; }
 .mon-alert-state.resolved { color: var(--muted); }
 .mon-alert-state-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.mon-alert-state.firing .mon-alert-state-dot { animation: mon-chain-pulse 2s ease-out infinite; }
 html[data-theme="light"] .mon-alert-state.firing { color: color-mix(in srgb, var(--red) 88%, #000); }
 .mon-alert-push {
   padding: 0 6px;
@@ -9125,12 +9139,13 @@ html[data-theme="light"] .mon-alert-push.push-pending { color: color-mix(in srgb
 .mon-alert-ack:hover:not(:disabled) { --btn-bg: #15803d; --btn-border: #15803d; }
 .mon-alert-ack:disabled { --btn-fg: var(--muted); --btn-bg: var(--surface-soft); --btn-border: var(--border); box-shadow: none; opacity: 0.7; }
 /* 推送状态那一句：参考里是绿色「已向企业群组派发通知」，这里按真实结果分三色。 */
-.mon-alert-sentence {
+/* 推送状态是一句话，不是胶囊：参考里的「已向企业群组派发通知」就是纯文字。
+   推送报错会带上游原文（可能很长）：整句折行，不截断也不撑破行。 */
+.mon-alert-push.mon-alert-sentence {
   padding: 0;
-  border-color: transparent;
+  border: 0;
   background: none;
   font-weight: 500;
-  /* 推送报错会带上游原文（可能很长）：整句折行，不截断也不撑破行。 */
   white-space: normal;
   overflow-wrap: anywhere;
   min-width: 0;
