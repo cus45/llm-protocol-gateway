@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BrandIcon } from '../components/ui';
 import { formatCostMicros } from '../lib';
-import type { MonitorAccount, MonitorAlert, MonitorEvent, MonitorOverview, MonitorSeverity } from './types';
+import type { MonitorAccount, MonitorAlert, MonitorEvent, MonitorEventKind, MonitorOverview, MonitorProbeRun, MonitorSeverity } from './types';
 import { hasTime, SEVERITY_TEXT } from './types';
 import { detailPairs, displayTime, displayTimeCompact, formatLatency, formatRatio, quotaText, relativeToNow, SEVERITY_TONE } from './format';
 
@@ -28,7 +28,358 @@ export interface OverviewTabProps {
   onOpenAlert: (alertId: number) => void;
   /** 告警卡「全部」：切到告警页看完整列表（概览右卡只给最近的几条）。 */
   onOpenAlerts: () => void;
+  /**
+   * 概览自己维护的跳转：量卡「调控熔断 →」与拓扑集群行 / 脚注落到账号页，状态条落到事件流。
+   * 不传时各按钮退回旧行为（告警页 / 账号详情），保证旧调用方不炸。
+   */
+  onOpenTab?: (tab: 'accounts' | 'alerts' | 'probes') => void;
+  /** 轻探测记录：拓扑的 RTT 用它。概览页不拉一次探测接口（只在探测页拉），
+      所以这里通常为空——RTT 缺失时集群行显示「RTT —」，不编造毫秒数。 */
+  probeRuns?: MonitorProbeRun[];
   onRetry: () => void;
+}
+
+type Tone = 'accent' | 'green' | 'amber' | 'red' | 'blue';
+
+const AUTH_LABELS: Record<string, string> = {
+  api_key: 'API Key',
+  claude_oauth: 'Claude 订阅',
+  chatgpt_oauth: 'ChatGPT 订阅',
+  cursor_oauth: 'Cursor 订阅',
+  qoder_pat: 'Qoder 订阅',
+  qoder_cn: 'Qoder CN 订阅',
+  workbuddy: 'WorkBuddy 订阅',
+  workbuddy_ai: 'WorkBuddy AI 订阅',
+  zcode: 'ZCode 订阅',
+  trae_cn: 'Trae CN 订阅',
+  trae_global: 'Trae Global 订阅',
+  opencode_zen: 'OpenCode Zen',
+};
+
+const UNKNOWN_VENDOR = '未标注厂商';
+
+const STATUS_TEXT: Record<'full' | 'degraded' | 'down', string> = {
+  full: '全速运行',
+  degraded: '降级运行',
+  down: '异常隔离',
+};
+
+const CLIENT_VIEWS = [
+  { key: 'subscription', label: '订阅制客户端', hint: 'OAuth 续期链' },
+  { key: 'api', label: 'API Key 直连', hint: 'Bearer 鉴权' },
+  { key: 'offline', label: '停用 / 异常', hint: '需人工处置' },
+] as const;
+
+const CORE_TAGS: Array<{ key: string; label: string; tone: Tone }> = [
+  { key: 'retry', label: '自适应重试', tone: 'accent' },
+  { key: 'halfopen', label: '熔断半开恢复', tone: 'green' },
+  { key: 'renew', label: '凭证自动续期', tone: 'blue' },
+];
+
+/** 事件分类 → 核心底部彩色标签。 */
+const CHANNEL_TAGS: Record<MonitorEventKind, { label: string; tone: Tone }> = {
+  alert: { label: '告警', tone: 'red' },
+  renewal: { label: '续期', tone: 'green' },
+  probe: { label: '探测', tone: 'accent' },
+  checkin: { label: '签到', tone: 'blue' },
+  quota: { label: '额度', tone: 'amber' },
+  system: { label: '系统', tone: 'blue' },
+};
+
+/** 空值一律给「—」：拓扑里占比 / SLA 没有数据时不许写成 0%。 */
+function shareText(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : pct(value * 100);
+}
+
+function groupOf(account: MonitorAccount): 'subscription' | 'api' | 'offline' {
+  if (account.disabled || account.healthStatus === 'unavailable') return 'offline';
+  return account.capabilities.oauth ? 'subscription' : 'api';
+}
+
+/**
+ * 实时流量拓扑（参考 MonitoringCenter.tsx:760-1000 的三栏版式）。数据映射：
+ *
+ * - 调用端：按凭证形态分三组（订阅 OAuth / API Key / 停用异常），占比 = 该组账号数 ÷ 账号总数；
+ *   协议层没有逐客户端流量，口径写在卡片脚注里。
+ * - 核心：纳管账号用账号计数；成功率与 P95 用 24h 请求汇总，窗口内零请求时写「—」。
+ * - 上游集群：按 vendor 聚合账号；RTT = 该集群账号最近一次轻探测耗时的均值；
+ *   状态：全部停用 → 异常隔离；有活跃告警或健康度非 healthy → 降级运行；否则全速运行；
+ *   SLA 沿用接口给的全局 24h 成功率（行内不加「全局」二字会误导成逐集群值，脚注已写明）；
+ *   窗口内没有请求时（SLA 只能是「—」）改报该集群的轻探测成功率，连探测记录都没有就写明「无流量」。
+ */
+function TopologyCard({
+  accounts,
+  overview,
+  probeRuns,
+  timezone,
+  loading,
+  onOpenAccount,
+  onOpenAllAccounts,
+}: {
+  accounts: MonitorAccount[];
+  overview: MonitorOverview | null;
+  probeRuns: MonitorProbeRun[];
+  timezone: string;
+  loading: boolean;
+  onOpenAccount: (providerId: string) => void;
+  onOpenAllAccounts: () => void;
+}) {
+  // 没有厂商名的账号各自成组会让筛选按钮刷出一长串「未标注厂商」，按 label 折叠成一簇。
+  const keyOf = (account: MonitorAccount) => account.vendor || (AUTH_LABELS[account.authType] || account.authType || '').trim() || UNKNOWN_VENDOR;
+  const [vendorFilter, setVendorFilter] = useState('all');
+  const req = overview?.requests;
+  const traffic = req && req.total > 0 ? { rate: req.successRate, p95: req.p95LatencyMs > 0 ? req.p95LatencyMs : null } : null;
+  const total = accounts.length;
+
+  const vendors = useMemo(() => {
+    const map = new Map<string, MonitorAccount[]>();
+    for (const account of accounts) {
+      const key = keyOf(account);
+      const list = map.get(key);
+      if (list) list.push(account);
+      else map.set(key, [account]);
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0], 'zh-CN'));
+  }, [accounts]);
+
+  // 每个账号最近一次真正跑过的轻探测耗时：durationMs=0 是「没计时」，不是 0ms。
+  const rttByAccount = useMemo(() => {
+    const latest = new Map<string, number>();
+    for (const run of [...probeRuns].sort((a, b) => Date.parse(b.time) - Date.parse(a.time))) {
+      if (run.skipped || !(run.durationMs > 0) || latest.has(run.providerId)) continue;
+      latest.set(run.providerId, run.durationMs);
+    }
+    return latest;
+  }, [probeRuns]);
+
+  // 轻探测结论按账号汇总：窗口里真正跑过的发数（skipped 不是结论）与成功数。
+  const probeStats = useMemo(() => {
+    const map = new Map<string, { ok: number; total: number }>();
+    for (const run of probeRuns) {
+      if (run.skipped) continue;
+      const item = map.get(run.providerId) ?? { ok: 0, total: 0 };
+      item.total += 1;
+      if (run.ok) item.ok += 1;
+      map.set(run.providerId, item);
+    }
+    return map;
+  }, [probeRuns]);
+
+  const clusters = useMemo(
+    () =>
+      vendors.map(([vendor, list]) => {
+        const alerts = list.reduce((sum, account) => sum + account.activeAlerts, 0);
+        const offline = list.filter((account) => groupOf(account) === 'offline').length;
+        const rtts = list.map((account) => rttByAccount.get(account.providerId)).filter((value): value is number => value !== undefined);
+        const rtt = rtts.length > 0 ? rtts.reduce((sum, value) => sum + value, 0) / rtts.length : null;
+        // 一个告警都没在报的账号才叫全速；没告警但有停用/异常账号的集群是降级。
+        const status = offline === list.length ? 'down' : alerts > 0 || offline > 0 ? 'degraded' : 'full';
+        const probed = list.map((account) => probeStats.get(account.providerId)).filter((item): item is { ok: number; total: number } => !!item);
+        const probeTotal = probed.reduce((sum, item) => sum + item.total, 0);
+        const probeRate = probeTotal > 0 ? probed.reduce((sum, item) => sum + item.ok, 0) / probeTotal : null;
+        return { vendor, name: `${vendor} 集群`, nodes: list.length, probeRate, probeTotal, share: total > 0 ? list.length / total : null, alerts, offline, rtt, status, vendorAccounts: list.map((account) => account.providerId) } as const;
+      }),
+    [vendors, rttByAccount, probeStats, total],
+  );
+
+  // 厂商筛选收窄调用端占比；集群行保留并置灰（参考实现同样保留行）。
+  const scopedAccounts = vendorFilter === 'all' ? accounts : accounts.filter((account) => keyOf(account) === vendorFilter);
+  const clients = CLIENT_VIEWS.map((view, index) => {
+    const group = scopedAccounts.filter((account) => groupOf(account) === view.key);
+    const authTypes = [...new Set(group.map((account) => AUTH_LABELS[account.authType] || account.authType || 'API Key'))];
+    return {
+      ...view,
+      count: group.length,
+      share: scopedAccounts.length > 0 ? group.length / scopedAccounts.length : null,
+      auth: authTypes.length > 0 ? authTypes.slice(0, 2).join(' / ') : '无账号',
+      tone: (['accent', 'green', 'amber'] as const)[index],
+    };
+  });
+
+  const firing = overview?.firing;
+  const usable = overview ? overview.accounts.total - overview.accounts.disabled : null;
+  const tone: Tone = !overview ? 'accent' : firing && firing.p0 > 0 ? 'red' : firing && firing.total > 0 ? 'amber' : 'green';
+  const windowHours = overview ? overview.windowHours : 24;
+  const collector = overview && hasTime(overview.collectorLastSuccess) ? displayTimeCompact(displayTime(overview.collectorLastSuccess, timezone).text) : '';
+  const coreTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of overview?.recentEvents ?? []) counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    if (ranked.length === 0) return CORE_TAGS;
+    return ranked.map(([kind, count]) => {
+      const tag = CHANNEL_TAGS[kind as MonitorEventKind] ?? CORE_TAGS[0];
+      return { key: kind, label: `${tag.label} · ${count}`, tone: tag.tone };
+    });
+  }, [overview]);
+
+  const status = !overview
+    ? { tone: 'idle', text: loading ? '等待采集' : '暂无数据' }
+    : firing && firing.p0 > 0
+      ? { tone: 'warn', text: `${firing.p0} 条 P0 待处理` }
+      : firing && firing.total > 0
+        ? { tone: 'warn', text: `运行中 · ${firing.total} 条活跃告警` }
+        : { tone: 'ok', text: '自适应重试已挂载' };
+
+  return (
+    <section className={`mon-topo tone-${tone}`} aria-label="实时流量拓扑">
+      <div className="mon-topo-head">
+        <div className="mon-topo-head-main">
+          <span className="mon-topo-ping" aria-hidden />
+          {/* 逐词切开允许在词间断行；整句在 1440 下是一行，窄屏折两行而不是被挤成省略号。 */}
+          <h3 className="mon-topo-title">
+            {'智能协议网关实时流量拓扑与自愈流水线'.split(/(?<=流量拓扑)/).join('​')}
+          </h3>
+          <span className={`mon-topo-badge ${status.tone}`}>{status.text}</span>
+        </div>
+        <div className="mon-topo-filter" role="group" aria-label="按厂商查看节点分流">
+          <span className="mon-topo-filter-label">{'查看节点分流'}</span>
+          <button type="button" className={`mon-topo-chip${vendorFilter === 'all' ? ' on' : ''}`} aria-pressed={vendorFilter === 'all'} onClick={() => setVendorFilter('all')}>
+            {'全部'}
+          </button>
+          {vendors.map(([vendor, list]) => (
+            <button
+              key={vendor}
+              type="button"
+              className={`mon-topo-chip${vendorFilter === vendor ? ' on' : ''}`}
+              aria-pressed={vendorFilter === vendor}
+              title={`只看「${vendor}」的 ${list.length} 个账号`}
+              onClick={() => setVendorFilter(vendor)}
+            >
+              {vendor}
+              <span className="mon-topo-chip-count">{list.length}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mon-topo-body">
+        <div className="mon-topo-clients">
+          <div className="mon-topo-group">
+            <Glyph d={GLYPH.key} />
+            <span>{'调用端 (CLIENTS)'}</span>
+          </div>
+          {total === 0 && <div className="mon-topo-empty">{'还没有接入任何账号'}</div>}
+          {clients.map((client) => (
+            <div key={client.key} className={`mon-client ${client.tone}`} title={`${client.label} · ${client.hint} · ${client.count} 个账号`}>
+              <div className="mon-client-top">
+                <span className="mon-client-name">{client.label}</span>
+                <span className="mon-client-share">{`${shareText(client.share)} 占比`}</span>
+              </div>
+              <div className="mon-client-id">{`${client.auth} · ${client.count} 账号`}</div>
+              {client.share !== null && <div className="mon-progress" role="presentation"><span className="mon-progress-fill" style={{ width: `${clampPercent(client.share * 100)}%` }} /></div>}
+            </div>
+          ))}
+          <div className="mon-topo-note">{'占比 = 该组账号数 ÷ 账号总数'}</div>
+        </div>
+
+        <div className="mon-core-wrap">
+          <div className="mon-core">
+            <span className="mon-core-glow" aria-hidden />
+            <div className="mon-core-inner">
+              <span className="mon-core-icon" aria-hidden>
+                <Glyph d={GLYPH.core} />
+              </span>
+              <h4 className="mon-core-title">{'智能路由与容灾自愈核心'}</h4>
+              <p className="mon-core-version">{`Protocol Gateway Mesh · ${windowHours}h 窗口${collector ? ` · 采样 ${collector}` : ''}`}</p>
+              <div className="mon-core-stats">
+                <div className="mon-core-stat">
+                  <span className="mon-core-stat-label">{'成功率'}</span>
+                  <span className={`mon-core-stat-value${traffic ? ' green' : ' empty'}`}>{traffic ? formatRatio(traffic.rate) : '—'}</span>
+                </div>
+                <div className="mon-core-stat">
+                  <span className="mon-core-stat-label">{'P95'}</span>
+                  <span className={`mon-core-stat-value${traffic?.p95 ? ' accent' : ' empty'}`}>{traffic?.p95 ? formatLatency(traffic.p95) : '—'}</span>
+                </div>
+                <div className="mon-core-stat">
+                  <span className="mon-core-stat-label">{'纳管'}</span>
+                  <span className="mon-core-stat-value">{overview ? `${usable}/${overview.accounts.total}` : '—'}</span>
+                </div>
+              </div>
+              <div className="mon-core-tags">
+                {coreTags.map((tag) => (
+                  <span key={tag.key} className={`mon-core-tag ${tag.tone}`}>{tag.label}</span>
+                ))}
+              </div>
+              {/* 转发链路：账号接口不带上游地址，所以只画链路阶段，不编域名。 */}
+              <div className="mon-route">
+                <span className="mon-route-hop">{`${scopedAccounts.length} 调用账号`}</span>
+                <span className="mon-route-arrow" aria-hidden>{'→'}</span>
+                <span className="mon-route-hop accent">{'本网关 · 协议转换'}</span>
+                <span className="mon-route-arrow" aria-hidden>{'→'}</span>
+                <span className="mon-route-hop">{`${clusters.filter((cluster) => vendorFilter === 'all' || cluster.vendor === vendorFilter).length} 上游集群`}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mon-topo-upstream">
+          <div className="mon-topo-group">
+            <Glyph d={GLYPH.server} />
+            <span>{'上游 PROVIDER 容灾集群'}</span>
+          </div>
+          <div className="mon-cluster-list">
+            {clusters.length === 0 && <div className="mon-topo-empty">{'还没有接入任何厂商'}</div>}
+            {clusters.map((cluster) => {
+              const dim = vendorFilter !== 'all' && vendorFilter !== cluster.vendor;
+              return (
+                <div key={cluster.vendor} className={`mon-cluster${dim ? ' is-dim' : ''}`}>
+                  <button
+                    type="button"
+                    className="mon-cluster-hit"
+                    aria-label={`查看 ${cluster.name} 的账号`}
+                    onClick={() => onOpenAccount(cluster.vendorAccounts[0])}
+                  />
+                  <div className="mon-cluster-main">
+                    <div className="mon-cluster-title">
+                      <span className="mon-cluster-name">{cluster.name}</span>
+                      <span className="mon-cluster-nodes">{`${cluster.nodes} 节点`}</span>
+                    </div>
+                    <div className="mon-cluster-meta">
+                      <span className={cluster.rtt !== null ? 'accent' : 'muted'} title="该集群账号最近一次轻探测耗时的均值">{cluster.rtt !== null ? `${Math.round(cluster.rtt)}ms` : 'RTT —'}</span>
+                      <span aria-hidden>·</span>
+                      {/* 有请求：SLA 用全局 24h 成功率；没有请求：退到探测成功率；都没记录：写明「无流量」。 */}
+                      <span
+                        title={
+                          traffic
+                            ? '接口只给全局 24h 成功率，这里沿用全局值'
+                            : cluster.probeRate !== null
+                              ? `24h 无请求；探测成功率 = 窗口内 ${cluster.probeTotal} 发轻探测的成功数 ÷ 总数`
+                              : '24h 无请求，窗口内也没有该集群的轻探测记录'
+                        }
+                      >
+                        {traffic
+                          ? `SLA ${formatRatio(traffic.rate)}`
+                          : cluster.probeRate !== null
+                            ? `探测成功率 ${formatRatio(cluster.probeRate)} · ${cluster.probeTotal} 发`
+                            : '无流量 · 无探测'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mon-cluster-side">
+                    <span className="mon-cluster-share">{shareText(cluster.share)}</span>
+                    <span className={`mon-cluster-status ${cluster.status}`} title={`异常/停用 ${cluster.offline} · 活跃告警 ${cluster.alerts} 条`}>
+                      {STATUS_TEXT[cluster.status]}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="mon-topo-foot">
+        <span>
+          {vendorFilter === 'all'
+            ? `${total} 个账号 · ${clusters.length} 个厂商；RTT 取最近一次轻探测，有请求时 SLA 为全局 24h`
+            : `只看「${vendorFilter}」：${scopedAccounts.length} 个账号；其余集群置灰`}
+        </span>
+        <button type="button" className="mon-topo-link" onClick={onOpenAllAccounts}>
+          {'进入账号矩阵 →'}
+        </button>
+      </div>
+    </section>
+  );
 }
 
 const KIND_CHIPS: Array<{ id: string; label: string }> = [
@@ -129,8 +480,6 @@ const OVERVIEW_NOTE_TITLE = [
  */
 const TTFT_BUDGET_MS = 3000;
 
-type Tone = 'accent' | 'green' | 'amber' | 'red' | 'blue';
-
 interface RadarDim {
   key: string;
   name: string;
@@ -179,7 +528,7 @@ function clampPercent(value: number): number {
 }
 
 function pct(value: number): string {
-  return `${value.toFixed(value >= 99.95 || value < 10 ? 1 : 0)}%`;
+  return `${value.toFixed(value >= 99.95 ? 1 : 0)}%`;
 }
 
 /** 量卡右上角的细线图标：与侧栏 NavIcon 同一笔画语言，path 由调用方给。 */
@@ -195,6 +544,9 @@ const GLYPH = {
   account: 'M4 20v-1.5A4.5 4.5 0 0 1 8.5 14h7a4.5 4.5 0 0 1 4.5 4.5V20M12 10.5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
   success: 'M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5ZM8.8 12l2.2 2.2 4.2-4.4',
   alert: 'M12 4 2.8 20h18.4L12 4ZM12 10v4.2M12 17.2h.01',
+  key: 'M15.2 9.8 20 5M20 5h-3.6M20 5v3.6M15.2 9.8a4.2 4.2 0 1 1-3.5-3.5',
+  server: 'M4 5.5h16v5H4v-5ZM4 13.5h16v5H4v-5ZM7.2 8h.01M7.2 16h.01',
+  core: 'M9 3.5h6M9 20.5h6M3.5 9v6M20.5 9v6M7 7h10v10H7V7ZM10.5 10.5h3v3h-3v-3Z',
   cost: 'M12 3v18M16.5 7.2c-.7-1.4-2.3-2.2-4.2-2.2-2.4 0-4.3 1.2-4.3 3.1 0 4.3 8.6 2.3 8.6 6.6 0 1.9-1.9 3.1-4.3 3.1-2 0-3.7-.9-4.4-2.3',
 };
 
@@ -208,6 +560,7 @@ function MetaCard({
   chipTone,
   note,
   noteRight,
+  action,
 }: {
   label: string;
   icon: ReactNode;
@@ -218,6 +571,7 @@ function MetaCard({
   chipTone?: Tone;
   note: string;
   noteRight?: string;
+  action?: { label: string; onClick: () => void };
 }) {
   return (
     <div className={`card mon-meta mon-meta-${tone}`}>
@@ -232,7 +586,11 @@ function MetaCard({
       </div>
       <div className="mon-meta-foot">
         <span>{note}</span>
-        {noteRight && <span className={`mon-meta-foot-right ${tone}`}>{noteRight}</span>}
+        {action ? (
+          <button type="button" className="mon-meta-link" onClick={action.onClick}>{action.label}</button>
+        ) : (
+          noteRight && <span className={`mon-meta-foot-right ${tone}`}>{noteRight}</span>
+        )}
       </div>
     </div>
   );
@@ -241,7 +599,8 @@ function MetaCard({
 export function OverviewTab(props: OverviewTabProps) {
   const {
     overview, accounts, alerts, alertTotal, events, eventTotal, kindFilter, severityFilter, timezone, iconOf,
-    loading, error, onKindFilter, onSeverityFilter, onLoadMoreEvents, onOpenAccount, onOpenAlert, onOpenAlerts, onRetry,
+    loading, error, onKindFilter, onSeverityFilter, onLoadMoreEvents, onOpenAccount, onOpenAlert, onOpenAlerts,
+    onOpenTab, probeRuns = [], onRetry,
   } = props;
   const now = Date.now();
 
@@ -356,6 +715,7 @@ export function OverviewTab(props: OverviewTabProps) {
     return { p95, band, index };
   }, [req]);
 
+  const onOpenFilterAll = () => onKindFilter('');
   const latest = events[0];
   const latestStamp = latest ? displayTimeCompact(displayTime(latest.time, timezone).text) : '—';
   const collectorStamp = overview && hasTime(overview.collectorLastSuccess) ? displayTime(overview.collectorLastSuccess, timezone) : null;
@@ -409,6 +769,7 @@ export function OverviewTab(props: OverviewTabProps) {
           chipTone={'blue'}
           note={req ? (req.total > 0 ? `${req.total.toLocaleString()} 条 · 成功 ${req.success.toLocaleString()}` : '该窗口内没有请求') : '等待采集'}
         />
+        {/* 第 3 张卡右下角带快捷跳转（参考 §6.5）：直接落到账号页调熔断。 */}
         <MetaCard
           label={'活跃告警'}
           icon={<Glyph d={GLYPH.alert} />}
@@ -418,6 +779,9 @@ export function OverviewTab(props: OverviewTabProps) {
           chipTone={'red'}
           note={overview ? `P0 ${overview.firing.p0} · P1 ${overview.firing.p1} · P2 ${overview.firing.p2}` : '等待采集'}
           noteRight={overview ? `渠道 ${overview.channels.enabled}/${overview.channels.total}` : undefined}
+          /* 第 3 张是告警卡，快捷跳转就该落到告警页；契约示例里的「调控熔断」是参考第 3 张
+             （熔断保护卡）的语义，照抄过来会和本卡标题对不上。 */
+          action={onOpenTab ? { label: '查看告警 →', onClick: () => onOpenTab('alerts') } : undefined}
         />
         <MetaCard
           label={`${overview ? overview.windowHours : 24}h 成本`}
@@ -438,6 +802,18 @@ export function OverviewTab(props: OverviewTabProps) {
           }
         />
       </div>
+
+      {/* 拓扑主视觉（契约 §6.1 第 2 段）：调用端 3 栏 / 核心 5 栏 / 上游集群 4 栏。
+          占比与状态全部由账号 + 轻探测 + 24h 请求汇总换算，口径写在卡内脚注。 */}
+      <TopologyCard
+        accounts={accounts}
+        overview={overview}
+        probeRuns={probeRuns}
+        timezone={timezone}
+        loading={loading}
+        onOpenAccount={onOpenAccount}
+        onOpenAllAccounts={() => (onOpenTab ? onOpenTab('accounts') : onOpenAccount(accounts[0]?.providerId ?? ''))}
+      />
 
       {/* 雷达（五维评分）+ 延迟分布。两卡用 subgrid 共享轨道：卡片高度跟随内容多的那张，
           不固定撑满；某张卡内容少时，它的脚注贴底，中间留白而不是把行拉长。 */}
@@ -713,7 +1089,7 @@ export function OverviewTab(props: OverviewTabProps) {
             <p className="mon-statusbar-text">{'还没有事件。'}</p>
           )}
         </div>
-        <button className="btn btn-sm mon-statusbar-btn" onClick={() => onKindFilter('')}>
+        <button className="btn btn-sm mon-statusbar-btn" onClick={() => (onOpenTab ? onOpenTab('probes') : onOpenFilterAll())}>
           {'进入实时事件流'}
         </button>
       </div>

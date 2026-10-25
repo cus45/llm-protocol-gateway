@@ -1,7 +1,8 @@
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {BrandIcon, Modal} from '../components/ui';
-import type {MonitorAccount} from './types';
-import {hasTime} from './types';
+import {fetchProbes} from './api';
+import type {MonitorAccount, MonitorProbeAccount, MonitorProbeRun, MonitorQuota} from './types';
+import {hasTime, quotaRatioKnown} from './types';
 import {displayTime, formatLatency, quotaText, relativeToNow} from './format';
 
 export interface AccountsTabProps {
@@ -94,6 +95,7 @@ const STATE_TEXT: Record<AccountState, string> = {
 };
 
 type StateFilter = 'all' | 'problem' | AccountState;
+type ViewMode = 'cards' | 'heat';
 
 /**
  * 卡片与筛选共用的账号状态。判定顺序必须与概览页一致（概览说异常、这里说正常就是自相矛盾）：
@@ -107,6 +109,81 @@ function stateOf(account: MonitorAccount, alerts: number): AccountState {
 }
 
 const STATE_RANK: Record<AccountState, number> = { bad: 0, warn: 1, off: 2, ok: 3 };
+
+/**
+ * 容灾角色。本项目没有「主路由 / 热备 / 兜底」的持久化字段，也没有分流权重，
+ * 所以角色只按能证实的事实推导，并在卡片副注里写明依据（不让推导看起来像配置）：
+ * 停用=退出调度；健康且无告警=主路由（当前会被调度）；有告警或判定异常=降级兜底
+ * （只作最后手段）；没被判定过健康=待确认（还没被调度验证）。
+ */
+type ResilienceRole = 'standby' | 'fallback' | 'hold';
+
+const ROLE_TEXT: Record<ResilienceRole, string> = {
+  standby: '主路由',
+  fallback: '降级兜底',
+  hold: '待确认',
+};
+
+const ROLE_HINT: Record<ResilienceRole, string> = {
+  standby: '健康且无未恢复告警，当前会被调度',
+  fallback: '有未恢复告警或请求判定异常，降级使用',
+  hold: '还没有被调度验证过健康状态',
+};
+
+function roleOf(account: MonitorAccount, alerts: number, state: AccountState, breaker: Breaker): ResilienceRole {
+  // 探测已熔断的账号不会被调度去兜底，它是「待确认」，不是「兜底」。
+  if (breaker === 'OPEN') return 'hold';
+  if (account.healthStatus === 'healthy' && alerts === 0 && state === 'ok') return 'standby';
+  if (state === 'warn' || state === 'bad') return 'fallback';
+  return 'hold';
+}
+
+/**
+ * 熔断档位。本项目没有用户可干预的熔断器，只有探测侧的连续失败 streak：
+ * 连续失败 ≥ BREAKER_TRIP_STREAK 视为熔断阻断（OPEN），失败但未到阈值是半开试探（HALF_OPEN），
+ * 其余闭合（CLOSED）。灰点为停用（不参与调度与探测）。
+ */
+const BREAKER_TRIP_STREAK = 5;
+type Breaker = 'CLOSED' | 'HALF_OPEN' | 'OPEN' | 'OFF';
+
+function breakerOf(account: MonitorAccount, facts: AccountsProbeFacts | undefined): Breaker {
+  if (account.disabled) return 'OFF';
+  if (!facts || !facts.probed) return 'CLOSED';
+  if (facts.consecutiveFailures >= BREAKER_TRIP_STREAK) return 'OPEN';
+  if (facts.consecutiveFailures > 0) return 'HALF_OPEN';
+  return 'CLOSED';
+}
+
+const BREAKER_TEXT: Record<Breaker, string> = {
+  CLOSED: 'CLOSED',
+  HALF_OPEN: 'HALF_OPEN',
+  OPEN: 'OPEN',
+  OFF: '停用',
+};
+
+const BREAKER_HINT: Record<Breaker, string> = {
+  CLOSED: '探测闭合：最近没有连续失败',
+  HALF_OPEN: `探测半开：有连续失败，未到 ${BREAKER_TRIP_STREAK} 次熔断线`,
+  OPEN: `探测熔断：连续失败已达 ${BREAKER_TRIP_STREAK} 次`,
+  OFF: '停用：不参与自动调度，也不会发探测',
+};
+
+type BreakerFilter = 'all' | 'CLOSED' | 'HALF_OPEN' | 'OPEN';
+
+function Onboarding() {
+  return (
+    <div className="mon-acc-onboard">
+      <span className="mon-acc-onboard-icon" aria-hidden="true">
+        <SearchIcon />
+      </span>
+      <div className="mon-acc-onboard-body">
+        <p className="mon-acc-onboard-title">{'还没有可监控的账号'}</p>
+        <p className="mon-acc-onboard-text">{'接入 Provider 后这里会出现账号卡片：探测点阵、连续失败与额度采样都来自同一个监控采集器。'}</p>
+      </div>
+      <span className="mon-acc-onboard-badge">{'账号 0'}</span>
+    </div>
+  );
+}
 
 /**
  * 账号名按空白插零宽断点：长名在词与词之间折行，而不是把整段挤成省略号。
@@ -135,9 +212,15 @@ function expiryText(account: MonitorAccount, now: number): string {
   return `续期 ${relativeToNow(account.expiresAt, now)}`;
 }
 
-/** 当天已用次数；上限为 0 时后端意为「不限」，此时不能写成「x / 0」。 */
+/** 当天已用次数 / 上限；上限为 0 时后端意为「不限」，此时不能写成「x / 0」。 */
 function usedTodayText(facts: AccountsProbeFacts): string {
-  return facts.maxPerDay === 0 ? `${facts.usedToday}（不限）` : `${facts.usedToday} / ${facts.maxPerDay}`;
+  return facts.maxPerDay === 0 ? `${facts.usedToday} / 不限` : `${facts.usedToday} / ${facts.maxPerDay}`;
+}
+
+/** 今日探测进度 0..1；不限次数时返回 null（进度条没有分母，不画假进度）。 */
+function todayProgress(facts: AccountsProbeFacts): number | null {
+  if (facts.maxPerDay <= 0) return null;
+  return Math.min(1, Math.max(0, facts.usedToday / facts.maxPerDay));
 }
 
 /** 最近一发的结论。没有状态码就是网络层失败，0 与 200 不是一回事，要分开写。 */
@@ -147,8 +230,8 @@ function lastProbeText(facts: AccountsProbeFacts): string {
   return '网络失败';
 }
 
-function ProbeStrip({ facts, windowSize }: { facts: AccountsProbeFacts; windowSize: number }) {
-  // 新→旧排；右侧补灰色占位到 windowSize，点数恒定，卡与卡之间的点阵长度一致可比。
+/** 点阵格子：新→旧排，右侧补灰色占位到 windowSize，点数恒定，卡与卡之间长度一致可比。 */
+function dotCells(facts: AccountsProbeFacts, windowSize: number): Array<{ tone: 'ok' | 'err' | 'none'; title: string }> {
   const cells: Array<{ tone: 'ok' | 'err' | 'none'; title: string }> = facts.recent
     .slice(0, windowSize)
     .map((ok, index) => ({
@@ -158,15 +241,24 @@ function ProbeStrip({ facts, windowSize }: { facts: AccountsProbeFacts; windowSi
   while (cells.length < windowSize) {
     cells.push({ tone: 'none', title: '没有更多探测记录' });
   }
+  return cells;
+}
+
+function successText(facts: AccountsProbeFacts): string {
   const measured = facts.recent.length;
+  if (measured === 0) return '暂无记录';
   const okCount = facts.recent.filter(Boolean).length;
+  return `${Math.round((okCount / measured) * 100)}% 成功`;
+}
+
+function ProbeStrip({ facts, windowSize }: { facts: AccountsProbeFacts; windowSize: number }) {
+  const cells = dotCells(facts, windowSize);
+  const measured = facts.recent.length;
   return (
     <>
       <div className="mon-acc-probe-head">
-        <span className="mon-acc-probe-label">{`最近 ${windowSize} 次轻探测`}</span>
-        <span className="mon-acc-probe-note">
-          {measured > 0 ? `${Math.round((okCount / measured) * 100)}% 成功（${measured} 发）` : '暂无记录'}
-        </span>
+        <span className="mon-acc-probe-label">{`最近 ${windowSize} 次轻探测连通`}</span>
+        <span className="mon-acc-probe-note">{successText(facts)}</span>
       </div>
       <div className="mon-acc-probe-dots" title={measured > 0 ? `最近 ${measured} 发探测，右为最近` : '还没有探测记录'}>
         {cells.map((cell, index) => (
@@ -174,6 +266,130 @@ function ProbeStrip({ facts, windowSize }: { facts: AccountsProbeFacts; windowSi
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * 热力图的数据：卡片 / 点阵共用。MonitoringPage 只随页面轮询刷新一次；
+ * 这里点一次「轻探测」后要立刻看到这一发的颜色，所以自己再读一次单账号的 probes，
+ * 探测进行中时随探测结束重读一次（probeBusy 变化触发）。
+ */
+function useAccountProbeDetail(providerId: string, probeBusy: string, windowSize: number) {
+  const [detail, setDetail] = useState<{ facts: AccountsProbeFacts; runs: MonitorProbeRun[] } | null>(null);
+  const reloading = !!providerId && probeBusy === `probe:${providerId}`;
+  useEffect(() => {
+    if (!providerId) {
+      setDetail(null);
+      return;
+    }
+    let live = true;
+    fetchProbes(providerId)
+      .then((page) => {
+        if (!live) return;
+        const account: MonitorProbeAccount | undefined = page.accounts.find((item) => item.providerId === providerId);
+        const runs = (page.runs ?? [])
+          .filter((run) => run.providerId === providerId && !run.skipped)
+          .sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+        setDetail({
+          runs: runs.slice(0, 30),
+          facts: {
+            probed: !!account?.probed,
+            consecutiveFailures: account?.consecutiveFailures ?? 0,
+            lastProbeAt: account?.lastProbeAt,
+            lastStatus: account?.lastStatus,
+            recent: runs.slice(0, windowSize).map((run) => run.ok),
+            usedToday: account?.usedToday ?? 0,
+            maxPerDay: account?.maxPerDay ?? 0,
+            rttMs: runs[0] && runs[0].durationMs > 0 ? runs[0].durationMs : undefined,
+          },
+        });
+      })
+      .catch(() => {
+        // 抽屉里已有页面级的轮询数据兜底；单读失败不覆盖、不弹错。
+      });
+    return () => {
+      live = false;
+    };
+  }, [providerId, reloading, windowSize]);
+  return detail;
+}
+
+/** 抖动：最近几发耗时的极差。只有一发时无从谈抖动，返回 undefined 而不是 0。 */
+function jitterOf(runs: MonitorProbeRun[]): number | undefined {
+  const durations = runs.filter((run) => !run.skipped && run.durationMs > 0).slice(0, 5).map((run) => run.durationMs);
+  if (durations.length < 2) return undefined;
+  return Math.max(...durations) - Math.min(...durations);
+}
+
+/**
+ * 点阵热力图：行 = 账号，列 = 最近 20 发探测。每格按该发的耗时着色
+ * （快/中/慢/失败四档），所以看的是真实分布，不是装饰。
+ */
+function HeatView({
+  rows,
+  onProbe,
+  probeBusy,
+}: {
+  rows: Array<{ account: MonitorAccount; runs: MonitorProbeRun[]; facts?: AccountsProbeFacts }>;
+  onProbe: (providerId: string) => void;
+  probeBusy: string;
+}) {
+  const CELLS = 20;
+  // 固定档位（秒级探测 1~3s 都正常，按 ms 分档会把整屏涂成一片）：<1s 快 / 1~2.5s 正常 / >2.5s 慢。
+  const FAST_MS = 1000;
+  const SLOW_MS = 2500;
+  return (
+    <div className="card panel mon-acc-heat">
+      <div className="mon-acc-heat-head">
+        <div className="mon-acc-heat-title">
+          <h2 className="panel-title">{'全账号 SLA 点阵热力图'}</h2>
+          <p className="panel-desc">{`${rows.length} 个账号 · 每行最近 ${CELLS} 发轻探测，按耗时着色；空位是窗口里没有记录，不是失败。`}</p>
+        </div>
+        <div className="mon-acc-heat-legend">
+          <span className="mon-acc-heat-key l1">{`< ${formatLatency(FAST_MS)}`}</span>
+          <span className="mon-acc-heat-key l2">{`${formatLatency(FAST_MS)}–${formatLatency(SLOW_MS)}`}</span>
+          <span className="mon-acc-heat-key l3">{`> ${formatLatency(SLOW_MS)}`}</span>
+          <span className="mon-acc-heat-key l4">{'失败'}</span>
+          <span className="mon-acc-heat-key l0">{'无数据'}</span>
+        </div>
+      </div>
+      <div className="mon-acc-heat-rows">
+        {rows.map(({ account, runs, facts }) => {
+          const cellsFrom = runs.slice(0, CELLS).map((run) => ({
+            tone: !run.ok ? 'l4' : run.durationMs < FAST_MS ? 'l1' : run.durationMs < SLOW_MS ? 'l2' : 'l3',
+            title: `${run.case || '探测'} · ${run.ok ? '通过' : '失败'} · ${formatLatency(run.durationMs)} · ${displayTime(run.time, Intl.DateTimeFormat().resolvedOptions().timeZone).text}`,
+          }));
+          while (cellsFrom.length < CELLS) cellsFrom.push({ tone: 'l0', title: '窗口内没有记录' });
+          const probing = probeBusy === `probe:${account.providerId}`;
+          return (
+            <div key={account.providerId} className="mon-acc-heat-row">
+              <div className="mon-acc-heat-who">
+                <button type="button" className="mon-acc-heat-name" onClick={() => onProbe(account.providerId)} title="点名字发一发轻探测">
+                  <NameText name={account.name} />
+                </button>
+                <span className="mon-acc-heat-meta">
+                  {`${account.vendor || AUTH_LABELS[account.authType] || 'API Key'} · ${facts?.probed ? `连败 ${facts.consecutiveFailures}` : '未探测'}`}
+                </span>
+              </div>
+              <div className="mon-acc-heat-cells">
+                {cellsFrom.map((cell, index) => (
+                  <span key={index} className={`mon-acc-heat-cell ${cell.tone}`} title={cell.title} />
+                ))}
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm mon-acc-heat-probe"
+                disabled={probing || account.disabled}
+                onClick={() => onProbe(account.providerId)}
+                title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
+              >
+                {probing ? '探测中…' : '轻探测'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -186,7 +402,11 @@ export function AccountsTab(props: AccountsTabProps) {
   const [search, setSearch] = useState('');
   const [vendor, setVendor] = useState('all');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [breakerFilter, setBreakerFilter] = useState<BreakerFilter>('all');
+  // 只保留本项目有真实能力的筛选（状态 / 熔断档位）；参考里的「容灾层级」是 mock 字段，
+  // 这里换成按凭证类型筛，过滤的仍是后端真给的 authType。
   const [authFilter, setAuthFilter] = useState('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const now = Date.now();
 
   const vendors = useMemo(() => {
@@ -214,6 +434,10 @@ export function AccountsTab(props: AccountsTabProps) {
         if (stateFilter !== 'all') return state === stateFilter;
         return true;
       })
+      .filter((account) => {
+        if (breakerFilter === 'all') return true;
+        return breakerOf(account, probeView?.factsOf(account.providerId)) === breakerFilter;
+      })
       .filter((account) =>
         authFilter === 'all' ? true : (AUTH_LABELS[account.authType] || account.authType || 'API Key') === authFilter,
       )
@@ -229,40 +453,66 @@ export function AccountsTab(props: AccountsTabProps) {
         if (delta !== 0) return delta;
         return a.name.localeCompare(b.name, 'zh-CN');
       });
-  }, [accounts, search, vendor, stateFilter, authFilter, alertCountOf]);
+  }, [accounts, search, vendor, stateFilter, breakerFilter, authFilter, alertCountOf, probeView]);
 
   const detail = accounts.find((account) => account.providerId === selectedId) ?? null;
   const detailFacts = detail && probeView ? probeView.factsOf(detail.providerId) : undefined;
   const probing = !!detail && probeBusy === `probe:${detail.providerId}`;
   const windowSize = probeView?.windowSize ?? 10;
+  const detailProbe = useAccountProbeDetail(detail?.providerId ?? '', probeBusy, windowSize);
+  const detailWindow = detailProbe ?? (detailFacts ? { facts: detailFacts, runs: [] } : null);
   // 能用的功能才出现：停用账号自动调度会跳过，手动探测也只会写一条 skipped，没有排障
   // 价值，所以直接不给入口。其余账号都给——「没配模型」由后端在按下时以 skipped 结果
   // 回给抽屉，界面如实展示那一句，不在前端猜（前端拿不到 model 字段）。
   const canProbe = !!detail && !detail.disabled;
   const detailProbing = detail ? probeBusy === `probe:${detail.providerId}` : false;
 
+  // 热力图行：每行需要该账号最近 20 发，页面级 probeView 只留了 10 发且没有耗时，
+  // 所以切到热力图时单独读一次全量 probes（与卡片同一接口，口径一致）。
+  const [heatSource, setHeatSource] = useState<MonitorProbePageLite | null>(null);
+  useEffect(() => {
+    if (viewMode !== 'heat') return;
+    let live = true;
+    fetchProbes()
+      .then((page) => {
+        if (live) setHeatSource(page);
+      })
+      .catch(() => {
+        if (live) setHeatSource({ accounts: [], runs: [] });
+      });
+    return () => {
+      live = false;
+    };
+  }, [viewMode, probeBusy, accounts.length]);
+  const heatRows = useMemo(() => {
+    if (!heatSource) return [];
+    const byAccount = new Map<string, MonitorProbeRun[]>();
+    const runs = [...heatSource.runs].filter((run) => !run.skipped).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+    for (const run of runs) {
+      const list = byAccount.get(run.providerId) ?? [];
+      list.push(run);
+      byAccount.set(run.providerId, list);
+    }
+    return filtered.map((account) => ({
+      account,
+      runs: byAccount.get(account.providerId) ?? [],
+      facts: probeView?.factsOf(account.providerId),
+    }));
+  }, [heatSource, filtered, probeView]);
+
   const empty = accounts.length === 0;
 
   return (
     <div className="mon-accounts">
-      <div className="card panel mon-acc-panel">
-        <div className="panel-header mon-acc-head">
-          <div>
-            <h2 className="panel-title">{'账号矩阵'}</h2>
-            <p className="panel-desc">
-              {'点阵与连续失败取自轻探测记录；额度取最近一次采样，超过阈值标为「数据过期」；没有接口的厂商显示「不适用」，不是 0。'}
-            </p>
-          </div>
-        </div>
+      {error && <div className="mon-acc-error" role="alert">{error}</div>}
 
-        {error && <div className="mon-acc-error">{error}</div>}
-
-        <div className="mon-acc-toolbar" role="group" aria-label="账号筛选">
+      <div className="mon-acc-toolbar" role="group" aria-label="账号筛选">
+        <div className="mon-acc-toolbar-main">
           <label className="mon-acc-search">
             <SearchIcon />
             <input
               className="monitoring-input"
-              placeholder="按账号名、Provider ID、厂商搜索"
+              placeholder="按账号名、Provider、厂商搜索…"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               aria-label="搜索账号"
@@ -277,9 +527,8 @@ export function AccountsTab(props: AccountsTabProps) {
               onClick={() => setVendor('all')}
             >
               {'全部'}
-              <span className="mon-acc-vendor-count">{accounts.length}</span>
             </button>
-            {vendors.map(([label, count]) => (
+            {vendors.map(([label]) => (
               <button
                 key={label}
                 type="button"
@@ -288,198 +537,269 @@ export function AccountsTab(props: AccountsTabProps) {
                 onClick={() => setVendor(label)}
               >
                 {label}
-                <span className="mon-acc-vendor-count">{count}</span>
               </button>
             ))}
           </div>
+        </div>
 
-          <div className="mon-acc-selects">
-            <label className="mon-acc-select">
-              <span className="mon-acc-select-label">{'状态'}</span>
-              <select
-                className="monitoring-input mon-acc-select-input"
-                value={stateFilter}
-                onChange={(event) => setStateFilter(event.target.value as StateFilter)}
-              >
-                <option value="all">{'全部状态'}</option>
-                <option value="problem">{'只看有问题'}</option>
-                <option value="ok">{'正常'}</option>
-                <option value="warn">{'告警'}</option>
-                <option value="bad">{'异常'}</option>
-                <option value="off">{'停用'}</option>
-              </select>
-            </label>
-            <label className="mon-acc-select">
-              <span className="mon-acc-select-label">{'凭证'}</span>
-              <select
-                className="monitoring-input mon-acc-select-input"
-                value={authFilter}
-                onChange={(event) => setAuthFilter(event.target.value)}
-              >
-                <option value="all">{'全部凭证'}</option>
-                {authTypes.map((label) => (
-                  <option key={label} value={label}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <div className="mon-acc-toolbar-side">
+          <label className="mon-acc-select">
+            <span className="mon-acc-select-label">{'状态'}</span>
+            <select
+              className="monitoring-input mon-acc-select-input"
+              aria-label="状态"
+              value={stateFilter}
+              onChange={(event) => setStateFilter(event.target.value as StateFilter)}
+            >
+              <option value="all">{'全部状态'}</option>
+              <option value="problem">{'只看有问题'}</option>
+              <option value="warn">{'告警'}</option>
+              <option value="bad">{'异常'}</option>
+              <option value="off">{'停用'}</option>
+            </select>
+          </label>
+          <label className="mon-acc-select">
+            <span className="mon-acc-select-label" title={`按探测连续失败推导：≥${BREAKER_TRIP_STREAK} 次为熔断`}>{'熔断'}</span>
+            <select
+              className="monitoring-input mon-acc-select-input"
+              aria-label="熔断状态"
+              value={breakerFilter}
+              onChange={(event) => setBreakerFilter(event.target.value as BreakerFilter)}
+            >
+              <option value="all">{'全部熔断状态'}</option>
+              <option value="CLOSED">{'CLOSED 闭合'}</option>
+              <option value="HALF_OPEN">{'HALF_OPEN 半开'}</option>
+              <option value="OPEN">{'OPEN 熔断'}</option>
+            </select>
+          </label>
+          <label className="mon-acc-select">
+            <span className="mon-acc-select-label">{'凭证'}</span>
+            <select
+              className="monitoring-input mon-acc-select-input"
+              aria-label="凭证类型"
+              value={authFilter}
+              onChange={(event) => setAuthFilter(event.target.value)}
+            >
+              <option value="all">{'全部凭证'}</option>
+              {authTypes.map((label) => (
+                <option key={label} value={label}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="mon-acc-view" role="group" aria-label="视图">
+            <button
+              type="button"
+              className={`mon-acc-view-btn${viewMode === 'cards' ? ' on' : ''}`}
+              aria-pressed={viewMode === 'cards'}
+              onClick={() => setViewMode('cards')}
+            >
+              {'集群卡片'}
+            </button>
+            <button
+              type="button"
+              className={`mon-acc-view-btn${viewMode === 'heat' ? ' on' : ''}`}
+              aria-pressed={viewMode === 'heat'}
+              onClick={() => setViewMode('heat')}
+            >
+              {'SLA 点阵热力图'}
+            </button>
           </div>
-
-          <span className="mon-acc-count">{`${filtered.length} / ${accounts.length} 个账号`}</span>
         </div>
+      </div>
 
-        {empty && <div className="m-empty">{'还没有账号。接入 Provider 后这里会出现账号矩阵。'}</div>}
-        {!empty && filtered.length === 0 && <div className="m-empty">{'没有符合当前筛选的账号。'}</div>}
+      <div className="mon-acc-meta-row">
+        <span className="mon-acc-count">{`${filtered.length} / ${accounts.length} 个账号`}</span>
+        <span className="mon-acc-meta-note" title="角色按健康与告警推导；熔断档位按探测连续失败推导；本项目没有手工隔离/复位接口">
+          {'角色、熔断档位按健康与探测结果推导，不是手工配置'}
+        </span>
+      </div>
 
-        <div className="mon-acc-grid">
-          {filtered.map((account) => {
-            const alerts = alertCountOf(account.providerId);
-            const state = stateOf(account, alerts);
-            const facts = probeView?.factsOf(account.providerId);
-            const quota = quotaText(account.quota);
-            const quotaTone = account.quota?.error
-              ? 'err'
-              : account.quota && account.quota.ratio >= 0 && account.quota.ratio < 0.1
-                ? 'warn'
-                : '';
-            const cardProbing = probeBusy === `probe:${account.providerId}`;
-            const renewing = busy === `renew:${account.providerId}`;
-            const fresh = selectedId === account.providerId;
-            return (
-              <article
-                key={account.providerId}
-                className={`mon-acc-card state-${state}${fresh ? ' is-open' : ''}`}
-                aria-label={`账号 ${account.name}`}
-              >
-                <div className="mon-acc-card-top">
-                  <span className="mon-acc-tag" title={`厂商：${account.vendor || '未知'} · 凭证：${AUTH_LABELS[account.authType] || account.authType || 'API Key'}`}>
-                    {account.vendor || AUTH_LABELS[account.authType] || 'API Key'}
+      {empty && <Onboarding />}
+      {!empty && filtered.length === 0 && <div className="m-empty">{'没有符合当前筛选的账号。'}</div>}
+
+      {viewMode === 'heat' && !empty && filtered.length > 0 && (
+        <HeatView
+          rows={heatRows}
+          probeBusy={probeBusy}
+          onProbe={(providerId) => void onRunProbe(providerId)}
+        />
+      )}
+
+      <div className="mon-acc-grid">
+        {viewMode === 'cards' && filtered.map((account) => {
+          const alerts = alertCountOf(account.providerId);
+          const state = stateOf(account, alerts);
+          const facts = probeView?.factsOf(account.providerId);
+          const quota = quotaText(account.quota);
+          const quotaTone = account.quota?.error
+            ? 'err'
+            : account.quota && seriesLow(account.quota.ratio)
+              ? 'warn'
+              : '';
+          const breaker = breakerOf(account, facts);
+          const role = roleOf(account, alerts, state, breaker);
+          const cardProbing = probeBusy === `probe:${account.providerId}`;
+          const renewing = busy === `renew:${account.providerId}`;
+          const fresh = selectedId === account.providerId;
+          const progress = facts ? todayProgress(facts) : null;
+          return (
+            <article
+              key={account.providerId}
+              className={`mon-acc-card state-${state}${fresh ? ' is-open' : ''}`}
+              aria-label={`账号 ${account.name}`}
+            >
+              <div className="mon-acc-card-top">
+                <span className={`mon-acc-role ${role}`} title={ROLE_HINT[role]}>
+                  {ROLE_TEXT[role]}
+                </span>
+                <span className="mon-acc-card-tags">
+                  <span className="mon-acc-ptag">{account.vendor || AUTH_LABELS[account.authType] || 'API Key'}</span>
+                  <span className={`mon-acc-breaker ${breaker.toLowerCase()}`} title={BREAKER_HINT[breaker]}>
+                    <span className="mon-acc-breaker-dot" aria-hidden />
+                    {BREAKER_TEXT[breaker]}
                   </span>
-                  <span className={`mon-acc-state ${state}`}>
-                    <span className="mon-acc-state-dot" aria-hidden />
-                    {alerts > 0 && state === 'warn' ? `告警 ${alerts}` : STATE_TEXT[state]}
+                </span>
+              </div>
+
+              <h3 className="mon-acc-name">
+                <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
+                <span className="mon-acc-name-text" title={account.name}>
+                  <NameText name={account.name} />
+                </span>
+              </h3>
+
+              <div className="mon-acc-metrics">
+                <div className="mon-acc-metric">
+                  <span className="mon-acc-metric-label">{'最近探测成功率'}</span>
+                  <span className={`mon-acc-metric-value${state === 'bad' ? ' bad' : ''}`}>
+                    {successText(facts ?? { probed: false, consecutiveFailures: 0, recent: [], usedToday: 0, maxPerDay: 0 })}
                   </span>
                 </div>
-
-                <h3 className="mon-acc-name">
-                  <BrandIcon icon={iconOf?.(account.providerId)} name={account.name} size={18} />
-                  <span className="mon-acc-name-text" title={account.name}>
-                    <NameText name={account.name} />
+                <div className="mon-acc-metric">
+                  <span className="mon-acc-metric-label">{'探测 RTT'}</span>
+                  <span className="mon-acc-metric-value">
+                    {facts?.rttMs === undefined ? '—' : formatLatency(facts.rttMs)}
                   </span>
-                </h3>
-                <div className="mon-acc-sub" title={account.providerId}>
-                  {`${AUTH_LABELS[account.authType] || account.authType || 'API Key'} · ${account.providerId}`}
+                  <span className="mon-acc-metric-note">
+                    {facts && facts.rttMs !== undefined && facts.recent.length > 1 ? '端到端往返' : '无抖动样本'}
+                  </span>
                 </div>
-
-                <div className="mon-acc-metrics">
-                  <div className="mon-acc-metric">
-                    <span className="mon-acc-metric-label">{'最近一发'}</span>
-                    <span className="mon-acc-metric-value">{facts ? lastProbeText(facts) : '—'}</span>
-                    <span className="mon-acc-metric-note">{facts?.probed ? '轻探测结论' : '未探测'}</span>
-                  </div>
-                  <div className="mon-acc-metric">
-                    <span className="mon-acc-metric-label">{'探测 RTT'}</span>
-                    <span className="mon-acc-metric-value">
-                      {facts?.rttMs === undefined ? '—' : formatLatency(facts.rttMs)}
-                    </span>
-                    <span className="mon-acc-metric-note">
-                      {facts?.rttMs === undefined ? '无有效耗时' : '端到端往返'}
-                    </span>
-                  </div>
-                  <div className="mon-acc-metric">
-                    <span className="mon-acc-metric-label">{'连续失败'}</span>
-                    <span
-                      className={`mon-acc-metric-value${
-                        facts && facts.probed && facts.consecutiveFailures > 0 ? ' bad' : ''
-                      }`}
-                      title={facts && facts.probed ? undefined : '还没有可用的探测记录'}
-                    >
-                      {facts && facts.probed ? `${facts.consecutiveFailures} 次` : '—'}
-                    </span>
-                    <span className="mon-acc-metric-note">
-                      {facts && facts.probed
-                        ? facts.consecutiveFailures > 0
-                          ? '已连续失败'
-                          : '当前无连败'
-                        : '无记录'}
-                    </span>
-                  </div>
-                </div>
-
-                {facts ? (
-                  <div className="mon-acc-probe">
-                    <ProbeStrip facts={facts} windowSize={windowSize} />
-                    <div className="mon-acc-probe-meta" title="按投递时区计的当日探测次数 / 每日上限；上限 0 表示不限">
-                      {`今日探测 ${usedTodayText(facts)} · ${
-                        hasTime(facts.lastProbeAt) ? `最近 ${relativeToNow(facts.lastProbeAt, now)}` : '还没有记录'
-                      }`}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mon-acc-probe">
-                    <div className="mon-acc-probe-head">
-                      <span className="mon-acc-probe-label">{`最近 ${windowSize} 次轻探测`}</span>
-                      <span className="mon-acc-probe-note">{'读取中'}</span>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mon-acc-facts">
-                  <div className="mon-acc-fact" title={`凭证到期：${account.expiresAt ?? '无凭证或不过期'}`}>
-                    <span className="mon-acc-fact-key">
-                      <ClockIcon />
-                      {'续期'}
-                    </span>
-                    <span className="mon-acc-fact-value">{expiryText(account, now)}</span>
-                  </div>
-                  <div className="mon-acc-fact right" title={quota.note}>
-                    <span className="mon-acc-fact-key">{'额度'}</span>
-                    <span className={`mon-acc-fact-value ${quotaTone}`}>{quota.primary}</span>
-                    {account.quota?.stale && <span className="badge amber">{'数据过期'}</span>}
-                  </div>
-                </div>
-
-                <div className="mon-acc-actions">
-                  <button type="button" className="btn btn-sm mon-acc-btn" onClick={() => onSelect(account.providerId)}>
-                    {'详情'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm mon-acc-btn"
-                    disabled={renewing || !account.capabilities.oauth}
-                    onClick={() => onRenew(account.providerId)}
-                    title={
-                      account.capabilities.oauth
-                        ? '按厂商自己的窗口续期；未到窗口不会强行轮换'
-                        : '该账号没有可续期凭证'
-                    }
+                <div className="mon-acc-metric">
+                  <span className="mon-acc-metric-label">{'连续失败'}</span>
+                  <span
+                    className={`mon-acc-metric-value${
+                      facts && facts.probed && facts.consecutiveFailures > 0 ? ' bad' : ''
+                    }`}
+                    title={facts && facts.probed ? undefined : '还没有可用的探测记录'}
                   >
-                    {renewing ? '续期中…' : '续期'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm mon-acc-btn"
-                    disabled={cardProbing || account.disabled}
-                    onClick={() => void onRunProbe(account.providerId)}
-                    title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
-                  >
-                    {cardProbing ? '探测中…' : '轻探测'}
-                  </button>
+                    {facts && facts.probed ? `${facts.consecutiveFailures} 次` : '—'}
+                  </span>
+                  <span className="mon-acc-metric-note">
+                    {facts && facts.probed
+                      ? facts.consecutiveFailures >= BREAKER_TRIP_STREAK
+                        ? `已达 ${BREAKER_TRIP_STREAK} 次熔断线`
+                        : facts.consecutiveFailures > 0 ? '未到熔断线' : '最近一发通过'
+                      : '无记录'}
+                  </span>
                 </div>
-                {selectedId === account.providerId && actionError && (
-                  <div className="mon-acc-inline err">{actionError}</div>
-                )}
-                {selectedId === account.providerId && !actionError && note && <div className="mon-acc-inline">{note}</div>}
-                {alerts > 0 && (
-                  <button type="button" className="mon-acc-alert-link" onClick={() => onOpenAlerts(account.providerId)}>
-                    {`${alerts} 条未恢复告警，查看 →`}
-                  </button>
-                )}
-              </article>
-            );
-          })}
-        </div>
+              </div>
+
+              {facts ? (
+                <div className="mon-acc-probe">
+                  <ProbeStrip facts={facts} windowSize={windowSize} />
+                </div>
+              ) : (
+                <div className="mon-acc-probe">
+                  <div className="mon-acc-probe-head">
+                    <span className="mon-acc-probe-label">{`最近 ${windowSize} 次轻探测连通`}</span>
+                    <span className="mon-acc-probe-note">{'读取中'}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="mon-acc-quota" title="按投递时区计的当日探测次数 / 每日上限；上限 0 表示不限">
+                <div className="mon-acc-quota-row">
+                  <span className="mon-acc-quota-label">{'今日探测'}</span>
+                  <span className="mon-acc-quota-value">{facts ? usedTodayText(facts) : '—'}</span>
+                </div>
+                <div className="mon-acc-track" aria-hidden="true">
+                  <span className={progress === null ? 'is-open' : ''} style={{ width: `${(progress ?? 1) * 100}%` }} />
+                </div>
+                <p className="mon-acc-quota-note">
+                  {facts
+                    ? facts.maxPerDay === 0
+                      ? '每日探测不限次数'
+                      : progress !== null && progress >= 1 ? '今日探测次数已用完' : '每日探测额度占用'
+                    : '探测现状读取中'}
+                </p>
+              </div>
+
+              <div className="mon-acc-facts">
+                <div className="mon-acc-fact" title={`凭证到期：${account.expiresAt ?? '无凭证或不过期'}`}>
+                  <span className="mon-acc-fact-key">
+                    <ClockIcon />
+                    {'续期'}
+                  </span>
+                  <span className="mon-acc-fact-value">{expiryText(account, now)}</span>
+                </div>
+                <div className="mon-acc-fact right" title={quota.note}>
+                  <span className="mon-acc-fact-key">{'额度'}</span>
+                  <span className={`mon-acc-fact-value ${quotaTone}`}>
+                    {quota.primary}
+                    {account.quota?.stale && <span className="mon-acc-fact-stale">{'数据过期'}</span>}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mon-acc-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm mon-acc-btn mon-acc-btn-ghost"
+                  onClick={() => onSelect(account.providerId)}
+                  title="打开账号抽屉：凭证、额度、探测与全部操作"
+                >
+                  {'详情'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm mon-acc-btn mon-acc-btn-renew"
+                  disabled={renewing || !account.capabilities.oauth}
+                  onClick={() => onRenew(account.providerId)}
+                  title={
+                    account.capabilities.oauth
+                      ? '按厂商自己的窗口续期；未到窗口不会强行轮换'
+                      : '该账号没有可续期凭证'
+                  }
+                >
+                  <RenewIcon />
+                  {renewing ? '续期中…' : '续期'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm mon-acc-btn"
+                  disabled={cardProbing || account.disabled}
+                  onClick={() => void onRunProbe(account.providerId)}
+                  title={account.disabled ? '账号已停用，探测跳过' : '现在就发一发最小对话探测'}
+                >
+                  <ZapIcon />
+                  {cardProbing ? '探测中…' : '轻探测'}
+                </button>
+              </div>
+              {selectedId === account.providerId && actionError && (
+                <div className="mon-acc-inline err">{actionError}</div>
+              )}
+              {selectedId === account.providerId && !actionError && note && <div className="mon-acc-inline">{note}</div>}
+              {alerts > 0 && (
+                <button type="button" className="mon-acc-alert-link" onClick={() => onOpenAlerts(account.providerId)}>
+                  {`${alerts} 条未恢复告警，查看 →`}
+                </button>
+              )}
+            </article>
+          );
+        })}
       </div>
 
       {detail && (
@@ -521,28 +841,37 @@ export function AccountsTab(props: AccountsTabProps) {
 
             <div className="card">
               <div className="panel-title">{'轻探测'}</div>
-              {detailFacts ? (
+              {detailWindow ? (
                 <>
-                  <div className={`metric-value ${detailFacts.probed && detailFacts.consecutiveFailures > 0 ? 'err' : ''}`}>
-                    {detailFacts.probed
-                      ? detailFacts.consecutiveFailures > 0
-                        ? `连续失败 ${detailFacts.consecutiveFailures} 次`
-                        : '通过'
+                  <div className={`metric-value ${detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 ? 'err' : ''}`}>
+                    {detailWindow.facts.probed
+                      ? detailWindow.facts.consecutiveFailures > 0
+                        ? `连续失败 ${detailWindow.facts.consecutiveFailures} 次（最近一发：${lastProbeText(detailWindow.facts)}）`
+                        : `通过（最近一发：${lastProbeText(detailWindow.facts)}）`
                       : '暂无数据'}
                   </div>
                   <div className="metric-note">
-                    {hasTime(detailFacts.lastProbeAt)
-                      ? `最近一次执行 ${displayTime(detailFacts.lastProbeAt, timezone).text}（${relativeToNow(detailFacts.lastProbeAt, Date.now())}）`
+                    {hasTime(detailWindow.facts.lastProbeAt)
+                      ? `最近一次执行 ${displayTime(detailWindow.facts.lastProbeAt, timezone).text}（${relativeToNow(detailWindow.facts.lastProbeAt, Date.now())}）`
                       : '还没有探测记录'}
                   </div>
                   <div className="metric-note" title="当日次数 / 每日上限，按投递时区计算">
-                    {`当日次数 ${detailFacts.maxPerDay === 0 ? `${detailFacts.usedToday} / 不限` : `${detailFacts.usedToday} / ${detailFacts.maxPerDay}`} · 连续失败 ${detailFacts.consecutiveFailures} 次`}
+                    {`当日次数 ${usedTodayText(detailWindow.facts)} · 连续失败 ${detailWindow.facts.consecutiveFailures} 次`}
+                  </div>
+                  <div className="metric-note" title="最近几发探测耗时的极差；不足两发无从谈抖动">
+                    {`探测 RTT ${detailWindow.facts.rttMs === undefined ? '—' : formatLatency(detailWindow.facts.rttMs)} · 抖动 ${
+                      jitterOf(detailWindow.runs) === undefined ? '—（样本不足）' : `±${formatLatency(jitterOf(detailWindow.runs) as number)}`
+                    }`}
                   </div>
                   <div className="mon-acc-drawer-dots">
-                    <ProbeStrip facts={detailFacts} windowSize={windowSize} />
+                    <ProbeStrip facts={detailWindow.facts} windowSize={windowSize} />
                   </div>
-                  {detailFacts.probed && detailFacts.consecutiveFailures > 0 && (
-                    <div className="metric-note err">{'探测未跑通，已进入 probe_failed 判定'}</div>
+                  {detailWindow.facts.probed && detailWindow.facts.consecutiveFailures > 0 && (
+                    <div className={`metric-note ${detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK ? 'err' : ''}`}>
+                      {detailWindow.facts.consecutiveFailures >= BREAKER_TRIP_STREAK
+                        ? `连续失败已达 ${BREAKER_TRIP_STREAK} 次，卡片判为熔断（OPEN）`
+                        : '探测未跑通，已进入 probe_failed 判定'}
+                    </div>
                   )}
                   {detail.disabled && <div className="metric-note">{'账号已停用，自动调度跳过它，也不会发探测。'}</div>}
                 </>
@@ -600,7 +929,7 @@ export function AccountsTab(props: AccountsTabProps) {
               {actionError && <div className="metric-note err" style={{ marginTop: 8 }}>{actionError}</div>}
               {note && !actionError && <div className="metric-note" style={{ marginTop: 8 }}>{note}</div>}
               <div className="metric-note" style={{ marginTop: 8 }}>
-                {'监控中心不提供停用、隔离或改配置的按钮；处置只在请求调度里做。'}
+                {'监控中心不提供停用、熔断隔离/复位或改配置的按钮；处置只在请求调度里做。'}
               </div>
             </div>
           </div>
@@ -608,6 +937,13 @@ export function AccountsTab(props: AccountsTabProps) {
       )}
     </div>
   );
+}
+
+type MonitorProbePageLite = { accounts: MonitorProbeAccount[]; runs: MonitorProbeRun[] };
+
+/** 额度低于 10% 才标警告；ratio<0 是「读数不可用」，不是低额度。 */
+function seriesLow(ratio: number): boolean {
+  return quotaRatioKnown({ ratio } as MonitorQuota) && ratio < 0.1;
 }
 
 function SearchIcon() {
@@ -624,6 +960,23 @@ function ClockIcon() {
     <svg className="mon-acc-fact-icon" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
       <circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
       <path d="M12 7.6V12l3 1.9" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RenewIcon() {
+  return (
+    <svg className="mon-acc-btn-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <path d="M19.2 12a7.2 7.2 0 1 1-2.4-5.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M19.5 4.2v3.8h-3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ZapIcon() {
+  return (
+    <svg className="mon-acc-btn-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <path d="M13.2 3 6.5 13h4.6L10 21l7-10.4h-4.6L13.2 3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
     </svg>
   );
 }

@@ -97,7 +97,7 @@ function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
   };
   if (id === 'key') {
     return (
-      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+      <svg className="mon-header-btn-icon" viewBox="0 0 24 24" aria-hidden="true" {...common}>
         <circle cx="8" cy="12" r="4.2" />
         <path d="M12.2 12H21M17.5 12v3M20.8 12v2.2" />
       </svg>
@@ -106,7 +106,7 @@ function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
   if (id === 'renew') {
     // 续期：环形箭头 + 下方延长线，和「刷新」区分开。
     return (
-      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+      <svg className="mon-header-btn-icon" viewBox="0 0 24 24" aria-hidden="true" {...common}>
         <path d="M19.5 12a7.5 7.5 0 1 1-2.6-5.7" />
         <path d="M19.8 3.6v4.2h-4.2" />
         <path d="M12 15.5V9.5M9.6 11.9 12 9.5l2.4 2.4" />
@@ -114,7 +114,7 @@ function HeaderActionIcon({ id }: { id: 'refresh' | 'renew' | 'key' }) {
     );
   }
   return (
-    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...common}>
+    <svg className="mon-header-btn-icon" viewBox="0 0 24 24" aria-hidden="true" {...common}>
       <path d="M19.6 8.2a8 8 0 0 0-13.8-2.6L3.6 7.8" />
       <path d="M3.8 3.9v4h4" />
       <path d="M4.4 15.8a8 8 0 0 0 13.8 2.6l2.2-2.2" />
@@ -153,6 +153,9 @@ export interface MonitoringPageProps {
 
 export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProps) {
   const [tab, setTab] = useState<TabID>(() => tabFromLocation());
+  // 页签条两侧的滚动渐隐：只有真能横滚时才挂 fade 类，桌面下不出现假的边缘阴影。
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const [tabsScroll, setTabsScroll] = useState({ start: false, end: false });
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
   const [accounts, setAccounts] = useState<MonitorAccount[]>([]);
   const [alerts, setAlerts] = useState<MonitorAlert[]>([]);
@@ -283,6 +286,26 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   useEffect(() => {
     void loadVisible();
   }, [loadVisible]);
+
+  // 页签条横滚渐隐：宽度不够（手机档 / 加宽字体的 1024）时两端才出渐隐，
+  // 并且滚到哪端就收哪端，让人知道后面还有页签。
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    const update = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      setTabsScroll({ start: el.scrollLeft > 1, end: max > 1 && el.scrollLeft < max - 1 });
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => {
+      el.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
+  }, []);
 
   // 探测配置：只在设置页读一次 `/probe-config`（写入要走 PUT）。失败不拖垮整页：
   // 设置页的其它卡片照常可用，探测配置卡片不出现，等下一轮再试。
@@ -522,11 +545,11 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
 
   return (
     <div className="monitoring-page">
-      {/* 1. 顶栏：徽章 + 标题 + 实时副标题 ｜ 状态胶囊 ｜ 动作按钮组；与页签栏用 1px 边框分隔。 */}
+      {/* 1. 顶栏：徽章 + 标题（右挂状态胶囊）+ 实时副标题 ｜ 动作按钮组；与页签栏用 1px 边框分隔。 */}
       <header className="mon-header">
         <div className="mon-header-id">
           <span className="mon-header-badge" aria-hidden="true">
-            <NavIcon id="monitoring" />
+            <span className="mon-header-badge-glyph"><NavIcon id="monitoring" /></span>
           </span>
           <div className="mon-header-text">
             <div className="mon-header-headline">
@@ -537,6 +560,10 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
               </span>
             </div>
             <p className="mon-header-sub">
+              <span className={`mon-chain mon-chain-${chainState.tone}`} role="status" aria-live="polite">
+                <i className="mon-chain-dot" aria-hidden="true" />
+                <span className="mon-chain-text">{chainState.text}</span>
+              </span>
               <span>可用账号 {accountTotal - unavailableCount}/{accountTotal}</span>
               <span className="mon-dot" aria-hidden="true">·</span>
               <span>未处理告警 {firingCount}</span>
@@ -545,36 +572,35 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
             </p>
           </div>
         </div>
-        <div className="mon-header-actions">
-          <span className={`mon-chain mon-chain-${chainState.tone}`} role="status" aria-live="polite">
-            <i className="mon-chain-dot" aria-hidden="true" />
-            <span className="mon-chain-text">{chainState.text}</span>
-          </span>
-          <div className="mon-header-btns">
-            <button type="button" className="btn btn-sm mon-header-btn" onClick={() => void loadVisible()} disabled={loading}>
-              <HeaderActionIcon id="refresh" />
-              <span>{loading ? '刷新中' : '刷新指标'}</span>
-            </button>
-            <button type="button" className="btn btn-sm mon-header-btn" onClick={() => selectTab('accounts')}>
-              <HeaderActionIcon id="renew" />
-              <span>账号续期</span>
-            </button>
-            <a className="btn btn-sm primary mon-header-btn" href={navPathForID('api-keys')} onClick={(event) => {
-              // 键盘/修饰键点击留给浏览器，普通点击走 SPA 路由，整页不重载。
-              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-              event.preventDefault();
-              window.history.pushState({ nav: 'api-keys' }, '', navPathForID('api-keys'));
-              window.dispatchEvent(new PopStateEvent('popstate', { state: { nav: 'api-keys' } }));
-            }}>
-              <HeaderActionIcon id="key" />
-              <span>管理 API 密钥</span>
-            </a>
-          </div>
+        <div className="mon-header-btns">
+          <button type="button" className="mon-header-btn" onClick={() => void loadVisible()} disabled={loading}>
+            <HeaderActionIcon id="refresh" />
+            <span>{loading ? '刷新中' : '刷新指标'}</span>
+          </button>
+          <button type="button" className="mon-header-btn is-green" onClick={() => selectTab('accounts')}>
+            <HeaderActionIcon id="renew" />
+            <span>账号续期</span>
+          </button>
+          <a className="mon-header-btn is-accent" href={navPathForID('api-keys')} onClick={(event) => {
+            // 键盘/修饰键点击留给浏览器，普通点击走 SPA 路由，整页不重载。
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            window.history.pushState({ nav: 'api-keys' }, '', navPathForID('api-keys'));
+            window.dispatchEvent(new PopStateEvent('popstate', { state: { nav: 'api-keys' } }));
+          }}>
+            <HeaderActionIcon id="key" />
+            <span>管理 API 密钥</span>
+          </a>
         </div>
       </header>
 
       {/* 2. 子页签：图标 + 文字 + 数量徽标；激活 = 底部 2px 强调线 + 强调色文字。整条横向可滚。 */}
-      <div className="mon-tabs" role="tablist" aria-label="监控中心">
+      <div
+        ref={tabsRef}
+        className={`mon-tabs${tabsScroll.start ? ' has-fade-start' : ''}${tabsScroll.end ? ' has-fade-end' : ''}`}
+        role="tablist"
+        aria-label="监控中心"
+      >
         <div className="mon-tabs-track">
           {TABS.map((item) => {
             const active = tab === item.id;
@@ -620,7 +646,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
           onLoadMoreEvents={loadMoreEvents}
           onOpenAccount={openAccount}
           onOpenAlert={openAlert}
+          onOpenTab={(next) => goTab(next, {})}
           onOpenAlerts={() => goTab('alerts', {})}
+          probeRuns={probeRuns}
           onRetry={() => void loadVisible()}
         />
       )}
