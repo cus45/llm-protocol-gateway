@@ -10433,8 +10433,8 @@ html[data-theme="light"] .mon-set-dirty { color: color-mix(in srgb, var(--amber)
    参考拓扑卡 1172 = 主栏 1216 − 两侧 21 + 边框。 */
 /* 六个 tab 统一内边距：参考账号页容器 1176 = 主栏 1216 − 两侧 20，概览拓扑 1172
    （比其它 tab 再少 4：概览外层自身还有 2px 边框）。 */
-.monitoring-page .mon-tab-panel { padding: 0; }
-.monitoring-page .mon-overview { padding: 20px 24px 0 0; }
+.monitoring-page .mon-tab-panel { padding: 20px 20px 0 0; }
+.monitoring-page .mon-overview { padding: 0 4px 0 0; }
 
 /* 监控页内所有卡片的圆角统一 16px（参考值）：.card 默认 14px（--r-lg），
    在监控页里显得比方一点。只作用于监控页，不动全站。 */
