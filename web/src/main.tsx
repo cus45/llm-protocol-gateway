@@ -3509,10 +3509,11 @@ function App() {
       const response = await fetch(`${API_BASE}/__providers/${encodeURIComponent(providerID)}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(await response.text());
       showToast(`已删除输入 Provider：${providerName}`);
-      const stateResponse = await fetch(`${API_BASE}/__state`);
-      const data = await stateResponse.json() as GatewayState;
-      setState(data);
-      setSelectedProviderID(data.providers[0]?.id || '');
+      // 走 refreshState：它会检查响应状态并做归一化。直接拿 /__state 的返回体
+      // setState 的话，会话过期时那份 401 error 体会被当成 state，整个页面按空
+      // 数据渲染（Provider / 密钥全没了的样子），而提示却是「已删除」。
+      await refreshState(false);
+      setSelectedProviderID(state.providers[0]?.id || '');
       setSelectedExportProviderIDs((current) => current.filter((id) => id !== providerID));
       await refreshAppLogs();
     } catch (error) {
@@ -4223,12 +4224,12 @@ function App() {
       const response = await fetch(`${API_BASE}/__routes/${encodeURIComponent(routeID)}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(await response.text());
       showToast(`已删除路由：${routeName}`);
-      const stateResponse = await fetch(`${API_BASE}/__state`);
-      const data = await stateResponse.json() as GatewayState;
-      setState(data);
-      const nextRoute = data.routes[0];
+      // 同 deleteProvider：refreshState 先校验状态再 setState，会话过期时不会把
+      // 401 的 error 体当成一份空 state 渲染出来。
+      await refreshState(false);
+      const nextRoute = state.routes[0];
       setSelectedRouteID(nextRoute?.id || '');
-      setSelectedProviderID(nextRoute?.providerId || data.providers[0]?.id || '');
+      setSelectedProviderID(nextRoute?.providerId || state.providers[0]?.id || '');
       setSelectedOutputProtocol(nextRoute?.outputProtocol || 'openai_chat');
       await refreshAppLogs();
     } catch (error) {
