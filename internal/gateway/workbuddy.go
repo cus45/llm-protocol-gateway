@@ -714,11 +714,12 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 	}
 	// WorkBuddy 的 refresh token 轮换：并发续期里后到的那个会被判无效。按令牌
 	// 串行；等锁期间别人续好的直接用。
-	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken)
+	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken, s.oauthRenewProviderReader(provider.ID))
 	defer renewLock.Unlock()
 	if settled != nil && settled.err != nil {
 		// 刚刚（等锁时）有人拿这同一枚 refresh token 去换并失败了：不再花第二次。
-		return settled.provider, settled.err
+		// 交回的是路由里当前的凭证，而不是那位调用方手里的旧快照。
+		return settledOauthRenewFailure(settled, provider)
 	}
 	// 等锁期间别人可能已经续过了：以路由里的最新凭证为准，续期也只花它。手上
 	// 这枚 refresh token 可能已被别人花掉、整条令牌链都换了，再拿它去换只会被
@@ -737,7 +738,7 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 		// 可用的令牌了，报错（与 Trae 6626556 同口径）。
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 		// 失败也记下来：排在这枚令牌后面的请求不该各花一次。
-		settleOauthRenew(provider.ID, current.RefreshToken, renewLock, provider, err)
+		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
 		if workBuddyCredentialExpired(&current) {
 			s.logs.AddApp("error", "workbuddy token refresh failed and the token expired", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 			return provider, fmt.Errorf("WorkBuddy 令牌已过期且续期失败：%w", err)
@@ -784,10 +785,11 @@ func (s *Server) forceRefreshWorkBuddyToken(providerID string) (domain.Provider,
 	if strings.TrimSpace(credential.RefreshToken) == "" {
 		return domain.Provider{}, errors.New("WorkBuddy 登录已失效（没有 refresh token），请在控制台重新登录")
 	}
-	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken)
+	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken, s.oauthRenewProviderReader(provider.ID))
 	defer renewLock.Unlock()
 	if settled != nil && settled.err != nil {
-		return settled.provider, settled.err
+		// 排队的请求共用这次失败；交回路由里当前的凭证，而不是那位调用方手里的旧快照。
+		return settledOauthRenewFailure(settled, provider)
 	}
 
 	// Another goroutine may have refreshed while this one waited for the lock.
@@ -801,7 +803,7 @@ func (s *Server) forceRefreshWorkBuddyToken(providerID string) (domain.Provider,
 	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
 	if err != nil {
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
-		settleOauthRenew(provider.ID, current.RefreshToken, renewLock, provider, err)
+		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
 		return provider, fmt.Errorf("%w（WorkBuddy 登录可能已失效，请在控制台重新登录）", err)
 	}
 	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)

@@ -33,6 +33,10 @@ type oauthRenewOutcome struct {
 	provider domain.Provider
 	err      error
 	at       time.Time
+	// current is the provider as it stands when the waiter takes the answer,
+	// read from the router under the lock: never the renewer's own snapshot,
+	// which a sign-in may have overtaken.
+	current domain.Provider
 }
 
 type oauthRenewLockEntry struct {
@@ -58,39 +62,76 @@ func oauthRenewLockKey(providerID, refreshToken string) string {
 	return providerID + "\x00" + strings.TrimSpace(refreshToken)
 }
 
+// readOauthRenewProvider re-reads the provider behind the lock while the caller
+// holds it.
+type readOauthRenewProvider func() (domain.Provider, bool)
+
 // beginOauthRenew is the lock plus the one question a renewal has to ask under
 // it: did the renewal this caller waited for already finish, and how? A caller
 // that took the lock and then met a failure that just happened does not spend
-// the same refresh token again — it is given the same answer.
+// the same refresh token again — it is given the same answer, together with the
+// provider as the router has it now, so it can act on the state the failure
+// left behind rather than on a copy the renewal predates.
 //
 // The lock is returned so the caller can hand it to
 // retireOauthRenewLock/settleOauthRenew on its way out.
-func beginOauthRenew(providerID, refreshToken string) (*sync.Mutex, *oauthRenewOutcome) {
+func beginOauthRenew(providerID, refreshToken string, fresh readOauthRenewProvider) (*sync.Mutex, *oauthRenewOutcome) {
 	lock := oauthRenewLock(providerID, refreshToken)
 	lock.Lock()
+	now := time.Now()
 	oauthRenewLocks.Lock()
-	sweepOauthRenewLocksLocked(time.Now())
+	sweepOauthRenewLocksLocked(now)
+	key := oauthRenewLockKey(providerID, refreshToken)
 	var settled *oauthRenewOutcome
-	if entry, ok := oauthRenewLocks.entries[oauthRenewLockKey(providerID, refreshToken)]; ok && &entry.mu == lock {
-		if entry.outcome != nil && time.Since(entry.outcome.at) < oauthRenewOutcomeWindow {
+	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock {
+		entry.last = now
+		if entry.outcome != nil && now.Sub(entry.outcome.at) < oauthRenewOutcomeWindow {
 			settled = entry.outcome
 		}
 	}
 	oauthRenewLocks.Unlock()
-	return lock, settled
+	if settled == nil {
+		return lock, nil
+	}
+	// The router is read without oauthRenewLocks held, and the entry is kept
+	// fresh afterwards: holding the table across a router read would stall every
+	// waiter behind the renewer and pin them to the reading moment's credential.
+	handed := *settled
+	provider, ok := fresh()
+	oauthRenewLocks.Lock()
+	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock {
+		entry.last = time.Now()
+	}
+	oauthRenewLocks.Unlock()
+	if ok {
+		handed.current = provider
+	}
+	return lock, &handed
 }
 
 // settleOauthRenew records the outcome of a renewal that failed, so the callers
 // queued behind it share its answer instead of retrying the same token. A
 // renewal that succeeded retires the lock instead (retireOauthRenewLock): its
 // token is spent and nobody should wait on it again.
-func settleOauthRenew(providerID, refreshToken string, lock *sync.Mutex, provider domain.Provider, err error) {
-	key := oauthRenewLockKey(providerID, refreshToken)
+//
+// The outcome is recorded even when this caller no longer holds the entry (the
+// renewal it waited on succeeded while its own attempt failed) and even when
+// the lock it waited on is already retired: the waiters take the router's
+// current credential, so the old token's error cannot be pinned on requests
+// that already carry a new one — but a spent token that just failed must not
+// have its failure forgotten either.
+func settleOauthRenew(providerID, refreshToken string, provider domain.Provider, err error) {
 	oauthRenewLocks.Lock()
-	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock {
-		entry.outcome = &oauthRenewOutcome{provider: provider, err: err, at: time.Now()}
-		entry.last = time.Now()
+	if oauthRenewLocks.entries == nil {
+		oauthRenewLocks.entries = map[string]*oauthRenewLockEntry{}
 	}
+	entry, ok := oauthRenewLocks.entries[oauthRenewLockKey(providerID, refreshToken)]
+	if !ok {
+		entry = &oauthRenewLockEntry{}
+		oauthRenewLocks.entries[oauthRenewLockKey(providerID, refreshToken)] = entry
+	}
+	entry.outcome = &oauthRenewOutcome{provider: provider, err: err, at: time.Now()}
+	entry.last = time.Now()
 	oauthRenewLocks.Unlock()
 }
 
@@ -115,10 +156,39 @@ func oauthRenewLock(providerID, refreshToken string) *sync.Mutex {
 // 造成的表项泄漏。只在续期的持有者（lock 此时正被自己持有）续成功时调用：
 // 续完的令牌不会再被正常请求拿来上锁，表项删掉只影响此后"同一枚旧令牌"的
 // 迟到请求——它们等锁后会重读路由，发现令牌已换人，直接改用新凭证。
+//
+// 带失败结论的表项不删：重新登录并不会让那枚死令牌"变成能用"，删掉结论只会让
+// 排队的请求再各花一次同一枚死令牌。结论由 sweep 在 oauthRenewOutcomeWindow
+// 之后连同表项一起回收，表不会因此增长。
 func retireOauthRenewLock(providerID, refreshToken string, lock *sync.Mutex) {
 	key := oauthRenewLockKey(providerID, refreshToken)
 	oauthRenewLocks.Lock()
-	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock {
+	if entry, ok := oauthRenewLocks.entries[key]; ok && !entry.hasLiveOutcomeLocked(time.Now()) && (&entry.mu == lock || entry.mu.TryLock()) {
+		delete(oauthRenewLocks.entries, key)
+		if &entry.mu != lock {
+			entry.mu.Unlock()
+		}
+	}
+	oauthRenewLocks.Unlock()
+}
+
+// hasLiveOutcomeLocked reports whether the entry still owes an answer to
+// waiters: a failure recorded within oauthRenewOutcomeWindow.
+func (e *oauthRenewLockEntry) hasLiveOutcomeLocked(now time.Time) bool {
+	return e.outcome != nil && now.Sub(e.outcome.at) < oauthRenewOutcomeWindow
+}
+
+// retireSpreadOauthRenewLock retires a spent token's lock after late arrivals
+// already shared its failure: a success now (the provider recovered) means the
+// failure no longer describes anything, and a success followed by a retire would
+// otherwise leave the table growing one entry per spent token. The failure's
+// waiters are gone — they took it and moved on — so only a new failure may
+// settle the entry again.
+func retireSpreadOauthRenewLock(providerID, refreshToken string, lock *sync.Mutex) {
+	key := oauthRenewLockKey(providerID, refreshToken)
+	oauthRenewLocks.Lock()
+	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock && entry.outcome != nil &&
+		time.Since(entry.outcome.at) >= oauthRenewOutcomeWindow {
 		delete(oauthRenewLocks.entries, key)
 	}
 	oauthRenewLocks.Unlock()
@@ -149,8 +219,8 @@ func oauthRenewLockCount() int {
 
 // freshTraeCredential 读出路由里最新的 Trae 凭证：调用方手里的可能是续期前的旧值。
 func (s *Server) freshTraeCredential(providerID string) (domain.TraeCredential, bool) {
-	provider, err := s.router.ProviderByID(providerID)
-	if err != nil || provider.Trae == nil || provider.Trae.Disconnected {
+	provider, ok := s.oauthRenewProvider(providerID)
+	if !ok || provider.Trae == nil || provider.Trae.Disconnected {
 		return domain.TraeCredential{}, false
 	}
 	return *provider.Trae, true
@@ -158,8 +228,8 @@ func (s *Server) freshTraeCredential(providerID string) (domain.TraeCredential, 
 
 // freshWorkBuddyCredential 同上，给 WorkBuddy 用。
 func (s *Server) freshWorkBuddyCredential(providerID string) (domain.WorkBuddyCredential, bool) {
-	provider, err := s.router.ProviderByID(providerID)
-	if err != nil || provider.WorkBuddy == nil {
+	provider, ok := s.oauthRenewProvider(providerID)
+	if !ok || provider.WorkBuddy == nil {
 		return domain.WorkBuddyCredential{}, false
 	}
 	return *provider.WorkBuddy, true
@@ -167,9 +237,37 @@ func (s *Server) freshWorkBuddyCredential(providerID string) (domain.WorkBuddyCr
 
 // freshCursorCredential 同上，给 Cursor 用。
 func (s *Server) freshCursorCredential(providerID string) (domain.CursorOAuthCredential, bool) {
-	provider, err := s.router.ProviderByID(providerID)
-	if err != nil || provider.CursorOAuth == nil {
+	provider, ok := s.oauthRenewProvider(providerID)
+	if !ok || provider.CursorOAuth == nil {
 		return domain.CursorOAuthCredential{}, false
 	}
 	return *provider.CursorOAuth, true
+}
+
+// oauthRenewProvider reads a provider from the router.
+func (s *Server) oauthRenewProvider(providerID string) (domain.Provider, bool) {
+	if s == nil || s.router == nil {
+		return domain.Provider{}, false
+	}
+	provider, err := s.router.ProviderByID(providerID)
+	if err != nil {
+		return domain.Provider{}, false
+	}
+	return provider, true
+}
+
+// oauthRenewProviderReader is the readOauthRenewProvider for one server.
+func (s *Server) oauthRenewProviderReader(providerID string) readOauthRenewProvider {
+	return func() (domain.Provider, bool) { return s.oauthRenewProvider(providerID) }
+}
+
+// settledOauthRenewFailure turns an answer a waiter queued behind into what the
+// waiter acts on: the failure itself, and the provider carrying the router's
+// credential as it stands now. The shared answer suppresses the network spend of
+// one token, never the use of a credential that has changed since (a sign-in).
+func settledOauthRenewFailure(settled *oauthRenewOutcome, forProvider domain.Provider) (domain.Provider, error) {
+	if settled.current.ID != "" {
+		return settled.current, settled.err
+	}
+	return forProvider, settled.err
 }
