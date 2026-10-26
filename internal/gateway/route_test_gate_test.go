@@ -130,3 +130,79 @@ func TestInternalTestRouteIDRequiresTheServerSideMark(t *testing.T) {
 		})
 	}
 }
+
+// X-Gateway-Internal-Test 早先还兼着一个「跳过协议不符检查」的开关：带上它，
+// 发给 Claude 端点的 chat 路由就不会被拒。客户端本该拿不到这个能力 —— 一个带合法
+// key、但 key 绑的路由输出的是 chat 协议的请求，原来能靠这个头绕过 400。
+func TestClientCannotForgeTheInternalTestFlagToSkipProtocolChecks(t *testing.T) {
+	upstream, _ := routeGateUpstream(t)
+	state := routeGateState(upstream.URL)
+	// 让 k1 绑到 chat 输出的 r2：这时把请求发给 Claude 端点就是协议不符。
+	state.APIKeys[0].RouteID = "r2"
+	server := NewServer(NewRouter(state), monitor.NewStore())
+	server.SetAdminAuthStore(newMemoryAdminAuthStore())
+	body := `{"model":"claude-x","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+
+	// 对照：不带这个头，Claude 端点 + chat 路由 = 400 协议不符。
+	plain := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(body))
+	plain.Host = "gateway.example.com"
+	plain.RemoteAddr = "203.0.113.70:443"
+	plain.Header.Set("Content-Type", "application/json")
+	plain.Header.Set("x-api-key", "sk-console-key-1")
+	plainRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(plainRecorder, plain)
+	if plainRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("baseline: status = %d, want 400 protocol mismatch (body %s)", plainRecorder.Code, plainRecorder.Body.String())
+	}
+
+	// 带上伪造的头：结果必须一样，不能因此走到上游。
+	forged := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(body))
+	forged.Host = "gateway.example.com"
+	forged.RemoteAddr = "203.0.113.70:443"
+	forged.Header.Set("Content-Type", "application/json")
+	forged.Header.Set("x-api-key", "sk-console-key-1")
+	forged.Header.Set(headerGatewayInternalTest, "1")
+	forgedRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(forgedRecorder, forged)
+	if forgedRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want the same 400 the header must not change (body %s)", forgedRecorder.Code, forgedRecorder.Body.String())
+	}
+}
+
+// 普通用户的 Key 只能用管理员当前授权的 Provider。这条规则由
+// executeProtocolFlowWithFailover 每次请求复核，而 count_tokens 不走那条路：
+// 撤销授权后，旧 Key 仍然能拿 token 计数，花的是上游账号的额度。
+func TestCountTokensRefusesRevokedProviderForNormalUserKey(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens":1}`))
+	}))
+	defer upstream.Close()
+
+	state := domain.GatewayState{
+		Providers: []domain.Provider{{ID: "revoked-p", Name: "revoked-p", Protocol: domain.ProtocolClaude,
+			BaseURL: upstream.URL, AuthType: domain.AuthTypeAPIKey, APIKeySource: "sk-a"}},
+		Routes: []domain.Route{{ID: "revoked-route", ProviderID: "revoked-p", OutputProtocol: domain.ProtocolClaude, Enabled: true}},
+		APIKeys: []domain.APIKey{{ID: "user-key", Name: "user-key", Key: "sk-user-key-token", RouteID: "revoked-route",
+			OwnerUserID: "user-1", Enabled: true}},
+	}
+	server := NewServer(NewRouter(state), monitor.NewStore())
+	// 管理员把这个用户的 Provider 都撤了：用户已无任何授权。
+	server.userStore = newMemoryUserStore(domain.User{ID: "user-1", Username: "alice", Role: domain.UserRoleUser, Enabled: true})
+
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages/count_tokens",
+		strings.NewReader(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "sk-user-key-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleClaudeCountTokens(rec, req)
+
+	if hits.Load() > 0 {
+		t.Fatalf("count_tokens reached upstream %d time(s) after the owner's grant was revoked (status %d)", hits.Load(), rec.Code)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 after the grant was revoked (body %s)", rec.Code, rec.Body.String())
+	}
+}

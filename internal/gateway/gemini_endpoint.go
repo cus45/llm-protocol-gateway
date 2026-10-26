@@ -80,7 +80,7 @@ func (s *Server) handleGeminiGenerateContent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolGemini {
 		writeGeminiError(w, http.StatusBadRequest, fmt.Sprintf("API key is bound to route %q with output protocol %s, but this endpoint is Gemini", route.ID, route.OutputProtocol.DisplayName()))
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "rejected", route.OutputProtocol.DisplayName()+" endpoint mismatch", r.URL.Path, http.StatusBadRequest, TokenUsage{}, body, nil)

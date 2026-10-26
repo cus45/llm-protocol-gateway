@@ -45,10 +45,17 @@ const (
 // (withRouteTestToken) and nothing else in the process does.
 func internalTestRouteID(r *http.Request) (string, bool) {
 	routeID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID))
-	if routeID == "" || r.Header.Get(headerGatewayInternalTest) != "1" || !routeTestTokenFrom(r.Context()) {
+	if routeID == "" || !internalTestRequest(r) {
 		return "", false
 	}
 	return routeID, true
+}
+
+// internalTestRequest reports whether this request really is one of the
+// gateway's own route tests (see internalTestRouteID): the header names it, and
+// the server put the mark in its context.
+func internalTestRequest(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1" && routeTestTokenFrom(r.Context())
 }
 
 type StateSaver interface {
@@ -4130,7 +4137,7 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolOpenAIChat {
 		mismatchBody := routeProtocolMismatchBody(route, domain.ProtocolOpenAIChat)
 		writeRouteProtocolMismatch(w, route, domain.ProtocolOpenAIChat)
@@ -4251,7 +4258,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"message": err.Error(), "type": "authentication_error"}})
 		return
 	}
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolOpenAIResponses {
 		mismatchBody := routeProtocolMismatchBody(route, domain.ProtocolOpenAIResponses)
 		writeRouteProtocolMismatch(w, route, domain.ProtocolOpenAIResponses)
@@ -4539,7 +4546,7 @@ func (s *Server) serveOpenAIPassThrough(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolOpenAIChat {
 		writeRouteProtocolMismatch(w, route, domain.ProtocolOpenAIChat)
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "rejected", route.OutputProtocol.DisplayName()+" endpoint mismatch", r.URL.Path, http.StatusBadRequest, TokenUsage{}, body, routeProtocolMismatchBody(route, domain.ProtocolOpenAIChat))
@@ -4724,7 +4731,7 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolClaude {
 		mismatchBody := routeProtocolMismatchBody(route, domain.ProtocolClaude)
 		writeRouteProtocolMismatch(w, route, domain.ProtocolClaude)
@@ -4805,7 +4812,7 @@ func (s *Server) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request)
 		writeClaudeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	internalTest := strings.TrimSpace(r.Header.Get(headerGatewayInternalTest)) == "1"
+	internalTest := internalTestRequest(r)
 	if gatewayKeyMatched && !internalTest && route.OutputProtocol != domain.ProtocolClaude {
 		writeRouteProtocolMismatch(w, route, domain.ProtocolClaude)
 		s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, "", "rejected", route.OutputProtocol.DisplayName()+" endpoint mismatch", r.URL.Path, http.StatusBadRequest, TokenUsage{}, body, routeProtocolMismatchBody(route, domain.ProtocolClaude))
@@ -4815,6 +4822,21 @@ func (s *Server) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		writeClaudeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	// count_tokens 不走 executeProtocolFlowWithFailover，也就不会经过那里对
+	// 「普通用户的 Key 只能用当前仍授权的 Provider」的逐请求复核：撤销授权后，
+	// 旧 Key 仍然能拿 token 计数（以及上游账号的额度）。这里补上同一条判定，
+	// 并把 decision 收窄到仍被授权的 Provider。
+	if gatewayKeyMatched {
+		decision = s.decisionForAPIKey(route, matchedKey, decision, sessionAffinityKey(r, req, matchedKey.ID))
+		if decision.ProviderID == route.ProviderID && !s.providerAllowedForKeyOwner(matchedKey, decision.ProviderID) {
+			if strings.TrimSpace(matchedKey.OwnerUserID) == "" {
+				writeClaudeError(w, http.StatusServiceUnavailable, "no enabled provider on the key's provider chain")
+				return
+			}
+			writeClaudeError(w, http.StatusForbidden, fmt.Sprintf("provider %q is not assigned to your account", decision.ProviderID))
+			return
+		}
 	}
 
 	requestModel, _ := req["model"].(string)
