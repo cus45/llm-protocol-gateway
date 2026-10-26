@@ -46,7 +46,7 @@ func TestCORSAdminRejectsForeignOrigin(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("foreign origin must not be allowed on admin paths: %q", got)
 	}
-	preflight := corsProbe(t, http.MethodOptions, "/__state", "gw.example.com", "https://evil.example")
+	preflight := corsPreflightFor(t, "/__state", "GET", "gw.example.com", "https://evil.example")
 	if preflight.Code != http.StatusNoContent {
 		t.Fatalf("preflight status = %d", preflight.Code)
 	}
@@ -103,7 +103,15 @@ func TestCORSAdminOriginComparison(t *testing.T) {
 
 // 放行浏览器直连模型端点时，预检要带上 Anthropic 的浏览器标记头。
 func TestCORSPreflightHeaders(t *testing.T) {
-	rec := corsProbe(t, http.MethodOptions, "/anthropic/v1/messages", "gw.example.com", "https://claude.ai")
+	handler := withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/anthropic/v1/messages", nil)
+	req.Host = "gw.example.com"
+	req.Header.Set("Origin", "https://claude.ai")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("preflight status = %d", rec.Code)
 	}
@@ -114,6 +122,21 @@ func TestCORSPreflightHeaders(t *testing.T) {
 	if rec.Header().Get("Access-Control-Max-Age") == "" {
 		t.Fatalf("preflight must be cacheable")
 	}
+}
+
+// corsPreflightFor 发一个真正的浏览器预检（带 Access-Control-Request-Method）。
+func corsPreflightFor(t *testing.T, path, method, host, origin string) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodOptions, path, nil)
+	req.Host = host
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", method)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
 }
 
 func containsToken(list, token string) bool {

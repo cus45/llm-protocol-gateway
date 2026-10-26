@@ -58,26 +58,74 @@ func stripDefaultPort(host string) string {
 }
 
 // withCORS 按路径决定跨域来源：模型协议端点放行任意来源，管理端只放行同源。
+//
+// 预检（OPTIONS）只在「这条路径真的接受预检里声明的那个方法」时才由中间件
+// 回 204。以前任何 OPTIONS 都在 mux 之前回 204：控制台路由的存不存在一探便知
+// （OPTIONS /__unknown 也是 204），错误方法的探测（POST /__state）还会被
+// net/http 回 405 + Allow，等于免鉴权地列出路由表。其余 OPTIONS 交给 mux，
+// 由它按真实路由回 405/404。Allow-Methods 也改成逐路径计算，只宣告这条路径
+// 实际支持的方法；预检请求的可变头写进 Vary，避免缓存串味。
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
 		origin := r.Header.Get("Origin")
 		path := r.URL.Path
-		if isModelCORSRequest(path) {
+		modelRequest := isModelCORSRequest(path)
+		if modelRequest {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
+			// Model endpoints only take POST (the lists are GET, the health probe
+			// answers without a method): a preflight answer is cached by the
+			// browser and must not advertise methods the path cannot serve.
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
 		} else if adminCORSOriginAllowed(origin, r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
 		}
 		w.Header().Set("Access-Control-Allow-Headers", corsAllowedHeaders)
-		w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Max-Age", corsPreflightMaxAge)
-			w.WriteHeader(http.StatusNoContent)
-			return
+			w.Header().Add("Vary", "Access-Control-Request-Method")
+			w.Header().Add("Vary", "Access-Control-Request-Headers")
+			// A preflight names the method it is asking about; without one it is
+			// not a cross-origin preflight at all, so the mux answers it like any
+			// other unsupported method. Anything not answered below (no method
+			// named, or a method the path does not accept) is forwarded to the
+			// mux instead of being short-circuited here.
+			requested := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
+			if requested != "" {
+				if corsPathSupportsMethod(path, requested) {
+					w.Header().Set("Access-Control-Max-Age", corsPreflightMaxAge)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// corsPathSupportsMethod 回答「这条路径接受这个方法吗」。模型端点与鉴权中间件
+// 同一套口径（isModelProtocolPath，另加几个只读的列表 GET）；控制台路由只认
+// 控制台自己会发出的方法——对它们回 405 等于免鉴权地列出路由表，所以只要
+// 方法合理就交给中间件回预检。
+func corsPathSupportsMethod(path string, method string) bool {
+	if isModelProtocolPath(path) {
+		if method == http.MethodPost {
+			return true
+		}
+		if method != http.MethodGet {
+			return false
+		}
+		// Model lists are the only model-path GETs (the health probe additionally
+		// serves any method through its own handler, but browsers only ever GET it).
+		trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
+		return trimmed == "/__health" || strings.HasSuffix(trimmed, "/v1/models") || strings.HasSuffix(trimmed, "/models")
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return true
+	}
+	return false
 }
 
 // isModelCORSRequest 判断路径是否属于模型协议端点（需要跨域直连的）。
