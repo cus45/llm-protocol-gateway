@@ -8,9 +8,9 @@ import "regexp"
 // place every entry passes through, rather than at each of the callers: a new
 // log line cannot forget it.
 var appLogSecretPattern = regexp.MustCompile(
-	`\b(sk-[A-Za-z0-9_\-]{12,}` +
-		`|sk-ant-[A-Za-z0-9_\-]{12,}` +
-		`|sk-proj-[A-Za-z0-9_\-]{12,}` +
+	`\b(sk-[A-Za-z0-9_\-]{8,}` +
+		`|sk-ant-[A-Za-z0-9_\-]{8,}` +
+		`|sk-proj-[A-Za-z0-9_\-]{8,}` +
 		`|ghp_[A-Za-z0-9]{20,}` +
 		`|gho_[A-Za-z0-9]{20,}` +
 		`|github_pat_[A-Za-z0-9_]{20,}` +
@@ -28,6 +28,22 @@ var appLogSecretPattern = regexp.MustCompile(
 var appLogJWTPattern = regexp.MustCompile(
 	`\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}`)
 
+// appLogCredentialPatterns are the credential shapes that carry no telling
+// prefix: `Authorization: Bearer <opaque>`, a `?api_key=`-style query value, a
+// URL's userinfo and a cloudflared tunnel token. prefix and suffix are what the
+// match keeps on either side of the redaction, so the line stays readable
+// (`Bearer [redacted]`, `?api_key=[redacted]`, `https://[redacted]@host`).
+var appLogCredentialPatterns = []struct {
+	re     *regexp.Regexp
+	prefix string
+	suffix string
+}{
+	{regexp.MustCompile(`(?i)\b(bearer)\s+[A-Za-z0-9\-._~+/=]{8,}`), "$1 ", ""},
+	{regexp.MustCompile(`(?i)([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|secret|password|sig|signature)=)[^&\s"'\\]+`), "${1}", ""},
+	{regexp.MustCompile(`(\b[a-zA-Z][a-zA-Z0-9+.\-]*://)(?:[^/\s:@'"]+):[^/\s@'"]+@`), "${1}", "@"},
+	{regexp.MustCompile(`\beyJhIjoi[A-Za-z0-9+/=]{20,}`), "", ""},
+}
+
 const appLogScrubbed = "[redacted]"
 
 // scrubAppLogText replaces known credential shapes in one free-text field. It
@@ -37,5 +53,8 @@ func scrubAppLogText(text string) string {
 		return text
 	}
 	text = appLogSecretPattern.ReplaceAllString(text, appLogScrubbed)
+	for _, shape := range appLogCredentialPatterns {
+		text = shape.re.ReplaceAllString(text, shape.prefix+appLogScrubbed+shape.suffix)
+	}
 	return appLogJWTPattern.ReplaceAllString(text, appLogScrubbed)
 }

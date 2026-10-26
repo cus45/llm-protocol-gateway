@@ -85,9 +85,9 @@ func camelToSnake(s string) string {
 // secretValuePattern matches well-known credential prefixes inside free text,
 // so a key pasted into a prompt ("use sk-abc… to call it") is scrubbed too.
 var secretValuePattern = regexp.MustCompile(
-	`\b(sk-[A-Za-z0-9_\-]{12,}` +
-		`|sk-ant-[A-Za-z0-9_\-]{12,}` +
-		`|sk-proj-[A-Za-z0-9_\-]{12,}` +
+	`\b(sk-[A-Za-z0-9_\-]{8,}` +
+		`|sk-ant-[A-Za-z0-9_\-]{8,}` +
+		`|sk-proj-[A-Za-z0-9_\-]{8,}` +
 		`|ghp_[A-Za-z0-9]{20,}` +
 		`|gho_[A-Za-z0-9]{20,}` +
 		`|github_pat_[A-Za-z0-9_]{20,}` +
@@ -101,6 +101,43 @@ var secretValuePattern = regexp.MustCompile(
 		`|pac_[0-9A-Za-z_\-]{20,})`)
 
 const scrubbedValue = "[redacted]"
+
+// Credential shapes that carry no telling prefix — the ones a vendor's own error
+// text, a tool result or an upstream URL carries — are recognised by where a
+// secret sits, not by what it starts with:
+//
+//   - `Authorization: Bearer <opaque>` (Zhipu/Qwen/OpenAI-compatible clients and
+//     every SDK that echoes the header back in an error);
+//   - a query parameter that names the credential (`?api_key=…`, `?token=…`);
+//   - userinfo in a URL (`https://user:pass@host`), which OAuth-free proxies and
+//     self-hosted endpoints use;
+//   - a cloudflared tunnel token, the base64 JSON blob `service install` takes.
+//
+// `sk-` used to need 12 characters after the dash, so a hyphenated UUID-shaped
+// key (8 characters before the first hyphen) was written to the request log and
+// to /__app/logs verbatim; it now needs 8.
+var (
+	bearerCredentialPattern = regexp.MustCompile(`(?i)\b(bearer)\s+[A-Za-z0-9\-._~+/=]{8,}`)
+	queryCredentialPattern  = regexp.MustCompile(`(?i)([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|secret|password|sig|signature)=)[^&\s"'\\]+`)
+	urlUserinfoPattern      = regexp.MustCompile(`(\b[a-zA-Z][a-zA-Z0-9+.\-]*://)(?:[^/\s:@'"]+):[^/\s@'"]+@`)
+	tunnelTokenPattern      = regexp.MustCompile(`\beyJhIjoi[A-Za-z0-9+/=]{20,}`)
+)
+
+// scrubCredentialShapes replaces those shapes in one piece of free text. Each
+// keeps the text around it readable: the header keeps its scheme, the query
+// keeps its name, the URL keeps its scheme and host.
+func scrubCredentialShapes(text string) string {
+	text = bearerCredentialPattern.ReplaceAllString(text, "$1 "+scrubbedValue)
+	text = queryCredentialPattern.ReplaceAllString(text, "${1}"+scrubbedValue)
+	text = urlUserinfoPattern.ReplaceAllString(text, "${1}"+scrubbedValue+"@")
+	text = tunnelTokenPattern.ReplaceAllString(text, scrubbedValue)
+	return text
+}
+
+// uiLogCredentialPattern is ui_log.go's narrower prefix rule; keeping the list
+// here means the diagnostics endpoint and the logs agree on what a credential
+// looks like.
+var uiLogCredentialPattern = regexp.MustCompile(`(?:pt|sk|sk-gw)-[A-Za-z0-9_\-]{8,}`)
 
 // scrubSensitiveRequestBody returns body with credential fields and known
 // secret patterns replaced. Bodies that aren't JSON are scrubbed as text and
@@ -128,6 +165,7 @@ func scrubSensitiveRequestBody(body []byte) []byte {
 			return body
 		}
 		scrubbed := secretValuePattern.ReplaceAllString(string(body), scrubbedValue)
+		scrubbed = scrubCredentialShapes(scrubbed)
 		if scrubbed == string(body) {
 			return body
 		}
@@ -172,6 +210,7 @@ func isSSEText(body []byte) bool {
 // JSON embedded in the string, scrubbed by the same field rules.
 func scrubSensitiveText(text string, changed *bool) string {
 	scrubbed := secretValuePattern.ReplaceAllString(text, scrubbedValue)
+	scrubbed = scrubCredentialShapes(scrubbed)
 	if jwtValuePattern.MatchString(scrubbed) {
 		scrubbed = jwtValuePattern.ReplaceAllString(scrubbed, scrubbedValue)
 	}
@@ -225,8 +264,13 @@ func scrubSensitiveValue(value any, insideSensitive bool, changed *bool) any {
 			return scrubbedValue
 		}
 		if secretValuePattern.MatchString(typed) {
+			typed = secretValuePattern.ReplaceAllString(typed, scrubbedValue)
 			*changed = true
-			return secretValuePattern.ReplaceAllString(typed, scrubbedValue)
+		}
+		// 一段 JSON 字符串值里也可能嵌着 URL、Bearer 头或 ?key=：形状规则同样要跑。
+		if shaped := scrubCredentialShapes(typed); shaped != typed {
+			typed = shaped
+			*changed = true
 		}
 		return scrubSensitiveText(typed, changed)
 	default:

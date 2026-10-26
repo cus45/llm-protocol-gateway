@@ -13,20 +13,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 )
 
 const uiLogMaxField = 400
-
-var uiLogSecretPattern = regexp.MustCompile(`(?:pt|sk|sk-gw)-[A-Za-z0-9_\-]{8,}`)
 
 func uiLogSanitize(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > uiLogMaxField {
 		value = value[:uiLogMaxField] + "…"
 	}
-	return uiLogSecretPattern.ReplaceAllString(value, "***redacted***")
+	// 客户端上报的摘要会和请求日志、应用日志用同一套判定（log_scrub.go）：前缀规则
+	// 之外，URL 里的 ?key=、userinfo、Bearer 头和 tunnel token 同样要抹掉。
+	value = uiLogCredentialPattern.ReplaceAllString(value, "***redacted***")
+	return scrubCredentialShapes(value)
 }
 
 // handleUILog ingests one client-side diagnostic event.
