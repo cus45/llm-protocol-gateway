@@ -788,25 +788,81 @@ func (s *Server) forceRefreshWorkBuddyToken(providerID string) (domain.Provider,
 	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken, s.oauthRenewProviderReader(provider.ID))
 	defer renewLock.Unlock()
 	if settled != nil && settled.err != nil {
-		// 排队的请求共用这次失败；交回路由里当前的凭证，而不是那位调用方手里的旧快照。
-		return settledOauthRenewFailure(settled, provider)
+		// This request's own 401 filed its renewal attempt behind another request's,
+		// and that attempt failed. Only that attempt's failure is shared. A newer
+		// credential in the router (a sign-in) is spent by the 401 retry; otherwise
+		// this request still owes its own probe — the vendor may have recovered,
+		// and handing back the dead access token would end the request before any
+		// upstream response exists, losing the retry a 401 is supposed to get.
+		// Either way the 401's refresh did not happen, and an auth failure (not a
+		// transport one) is what the failover loop reports.
+		current := s.readWorkBuddyCredential(provider)
+		if current.AccessToken == credential.AccessToken {
+			_, _ = s.refreshWorkBuddyProbe(provider, site, current, renewLock)
+		}
+		// The credential to retry with, and the failure this 401 ran into: a
+		// waiter that answered without it would hand on a token nobody verified.
+		latest, _ := s.latestWorkBuddyProvider(provider)
+		return latest, settled.err
 	}
 
-	// Another goroutine may have refreshed while this one waited for the lock.
-	current := *credential
-	if latest, latestErr := s.router.ProviderByID(provider.ID); latestErr == nil && latest.WorkBuddy != nil {
-		current = *latest.WorkBuddy
-		if current.AccessToken != credential.AccessToken {
-			return latest, nil
-		}
+	// Another goroutine may have refreshed while this one waited for the lock,
+	// or the user signed in again. Read the router right before spending the
+	// credential, not the copy this call opened with.
+	current := s.readWorkBuddyCredential(provider)
+	if current.AccessToken != credential.AccessToken {
+		// Read again at the moment of choosing it: a sign-in may have landed
+		// while the credential was compared.
+		return s.latestWorkBuddyProvider(provider)
 	}
+	return s.renewWorkBuddyToken(provider, site, current, renewLock, true)
+}
+
+// readWorkBuddyCredential reads the credential the renew lock belongs to from
+// the router; the caller holds the lock for it.
+func (s *Server) readWorkBuddyCredential(provider domain.Provider) domain.WorkBuddyCredential {
+	if stored, err := s.router.ProviderByID(provider.ID); err == nil && stored.WorkBuddy != nil {
+		return *stored.WorkBuddy
+	}
+	return *provider.WorkBuddy
+}
+
+// latestWorkBuddyProvider is the router's provider, read now.
+func (s *Server) latestWorkBuddyProvider(provider domain.Provider) (domain.Provider, error) {
+	if latest, err := s.router.ProviderByID(provider.ID); err == nil && latest.WorkBuddy != nil {
+		return latest, nil
+	}
+	return provider, nil
+}
+
+// renewWorkBuddyToken trades current for a fresh credential and persists it,
+// settling the shared renew entry with the failure or retiring the spent token.
+func (s *Server) renewWorkBuddyToken(provider domain.Provider, site workBuddySite, current domain.WorkBuddyCredential, renewLock *sync.Mutex, settleFailure bool) (domain.Provider, error) {
 	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
 	if err != nil {
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
-		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
+		if settleFailure {
+			settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
+		} else {
+			retireSpreadOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
+		}
 		return provider, fmt.Errorf("%w（WorkBuddy 登录可能已失效，请在控制台重新登录）", err)
 	}
 	retireOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
+	return updated, nil
+}
+
+// refreshWorkBuddyProbe is one more forced refresh for a request whose own 401
+// was answered by another request's failure. It records no new shared failure
+// (the one already there speaks for this attempt too) and a probe that fails
+// does not retire anything: the entry still owes its answer to the waiters.
+func (s *Server) refreshWorkBuddyProbe(provider domain.Provider, site workBuddySite, current domain.WorkBuddyCredential, renewLock *sync.Mutex) (domain.Provider, error) {
+	updated, err := s.refreshWorkBuddyTokenLocked(provider, site, current)
+	if err != nil {
+		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
+		return provider, fmt.Errorf("%w（WorkBuddy 登录可能已失效，请在控制台重新登录）", err)
+	}
+	retireSpreadOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 	return updated, nil
 }
 
