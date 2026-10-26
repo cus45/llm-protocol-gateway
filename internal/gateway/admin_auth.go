@@ -527,6 +527,9 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// TrustDevice is the login page's "信任此安全设备（30 天内免登录）".
+		// False (or absent) means the session lasts the browser session only.
+		TrustDevice bool `json:"trustDevice"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -542,7 +545,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordAuthSuccess(r, username)
-		s.issueSession(w, r, legacyAdminUserID)
+		s.issueSessionFor(w, r, legacyAdminUserID, payload.TrustDevice)
 		s.logs.AddApp("info", "admin login success", requestHostname(r.Host))
 		localBypass := isLocalAdminBypass(r)
 		writeJSON(w, http.StatusOK, adminAuthStatus{
@@ -573,7 +576,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAuthSuccess(r, username)
-	s.issueSession(w, r, user.ID)
+	s.issueSessionFor(w, r, user.ID, payload.TrustDevice)
 	_ = s.userStore.TouchUserLogin(user.ID, nowRFC3339())
 	s.logs.AddApp("info", "user login success", user.Username)
 	localBypass := isLocalAdminBypass(r)
@@ -716,6 +719,17 @@ func (s *Server) issueAdminSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID string) {
+	s.issueSessionFor(w, r, userID, false)
+}
+
+// issueSessionFor mints the console session. trustDevice is the login page's
+// "信任此安全设备（30 天内免登录）": with it the cookie outlives the browser
+// (Max-Age) for adminSessionTTL; without it the cookie carries no Max-Age or
+// Expires, so it lives as long as the browser session and a shared computer is
+// signed out when the window closes. The server-side token expiry is the same
+// either way — trusting a device decides how long the browser keeps it, not
+// whether the server honours it.
+func (s *Server) issueSessionFor(w http.ResponseWriter, r *http.Request, userID string, trustDevice bool) {
 	secret := ""
 	if s.adminAuth != nil {
 		secret = strings.TrimSpace(s.adminAuth.Setting(settingAdminSession))
@@ -727,16 +741,19 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID str
 	if err != nil {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     adminSessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   requestIsHTTPS(r),
-		Expires:  time.Now().Add(adminSessionTTL),
-		MaxAge:   int(adminSessionTTL.Seconds()),
-	})
+	}
+	if trustDevice {
+		cookie.Expires = time.Now().Add(adminSessionTTL)
+		cookie.MaxAge = int(adminSessionTTL.Seconds())
+	}
+	http.SetCookie(w, cookie)
 }
 
 func clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {

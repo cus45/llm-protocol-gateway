@@ -11,6 +11,9 @@ export interface TerminalAuthGateProps {
   authBusy: boolean;
   authError: string;
   setAuthError: (val: string) => void;
+  // 「信任此安全设备」由 App 持有：登录请求要把它带给服务端决定会话 cookie 是否持久。
+  trustDevice: boolean;
+  setTrustDevice: (val: boolean) => void;
   onSubmit: (mode: 'setup' | 'login') => Promise<void> | void;
 }
 
@@ -25,15 +28,10 @@ export function TerminalAuthGate({
   authBusy,
   authError,
   setAuthError,
+  trustDevice,
+  setTrustDevice,
   onSubmit,
 }: TerminalAuthGateProps) {
-  const [trustDevice, setTrustDevice] = useState(() => {
-    try {
-      return localStorage.getItem('gateway_trust_device') !== 'false';
-    } catch {
-      return true;
-    }
-  });
 
   const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
@@ -49,13 +47,10 @@ export function TerminalAuthGate({
     }
   }, [authSetupMode]);
 
+  // 「30 天内免登录」是服务端决定的（会话 cookie 是否持久），所以勾选状态交给 App
+  // 随登录请求一起提交；localStorage 只记住这台设备上的偏好。
   const handleTrustDeviceChange = (checked: boolean) => {
     setTrustDevice(checked);
-    try {
-      localStorage.setItem('gateway_trust_device', checked ? 'true' : 'false');
-    } catch {
-      // ignore
-    }
   };
 
   const handleUsernameKeyDown = (e: React.KeyboardEvent) => {

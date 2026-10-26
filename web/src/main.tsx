@@ -423,6 +423,13 @@ function App() {
   const [authUsername, setAuthUsername] = useState('');
   const [authPasswordConfirm, setAuthPasswordConfirm] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+  const [authTrustDevice, setAuthTrustDevice] = useState(() => {
+    try {
+      return localStorage.getItem('gateway_trust_device') !== 'false';
+    } catch {
+      return true;
+    }
+  });
   const [authError, setAuthError] = useState('');
 
   // 用户管理页（仅 admin）
@@ -1422,7 +1429,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mode === 'setup'
           ? { password: authPassword }
-          : { username: authUsername.trim(), password: authPassword }),
+          : { username: authUsername.trim(), password: authPassword, trustDevice: authTrustDevice }),
       });
       if (!response.ok) {
         const text = await response.text();
@@ -4405,6 +4412,8 @@ function App() {
         authBusy={authBusy}
         authError={authError}
         setAuthError={setAuthError}
+        trustDevice={authTrustDevice}
+        setTrustDevice={setAuthTrustDevice}
         onSubmit={submitAdminAuth}
       />
     );
