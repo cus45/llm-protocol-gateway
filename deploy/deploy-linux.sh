@@ -228,7 +228,12 @@ if [[ "$SKIP_WEB" == "0" ]]; then
   info "npm run build (版本 $APP_VERSION) ..."
   GATEWAY_APP_VERSION="$APP_VERSION" npm run build
   [[ -f "dist/index.html" ]] || die "前端构建失败：web/dist/index.html 不存在"
-  ok "前端构建完成"
+  # 版本号必须真的编进 JS：控制台靠 __APP_VERSION__ 和后端 BuildVersion 比对来提示升级。
+  # 手工 `npm run build`（没带 GATEWAY_APP_VERSION）产出的 dist 会被当成开发构建，
+  # 永久关闭升级提示——曾经就这样发过一版，用户再也没收到刷新提醒。
+  grep -q -- "$APP_VERSION" dist/assets/*.js \
+    || die "前端产物里找不到版本号 $APP_VERSION（dist 被没有注入版本号的构建覆盖了？拒绝发布）"
+  ok "前端构建完成（已校验版本号 $APP_VERSION）"
   cd "$ROOT"
 else
   warn "跳过前端构建（--skip-web）"
