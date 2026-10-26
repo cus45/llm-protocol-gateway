@@ -5966,7 +5966,9 @@ function App() {
                     <div className="traffic-meta-stats">
                       <span className="traffic-meta-stat">日志总数: <b>{logsTotal}</b> 条</span>
                       <span className="traffic-meta-stat">当前页码: <b>{logsPage}</b> / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))}</span>
-                      <span className="traffic-meta-stat">历史留存: <b>{requestLogRetentionDays} 天</b></span>
+                      {/* 留存天数是管理员设置：/__state 对 role=user 不发这个值，
+                          显示出来的会是前端默认的 7 天而不是真实设置。 */}
+                      {!isNormalUser ? <span className="traffic-meta-stat">历史留存: <b>{requestLogRetentionDays} 天</b></span> : null}
                     </div>
                     {!isNormalUser && (
                       <label
