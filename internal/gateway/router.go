@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -1232,14 +1234,23 @@ func (r *Router) APIKeyByToken(token string) (domain.APIKey, bool) {
 	if token == "" {
 		return domain.APIKey{}, false
 	}
+	wanted := sha256.Sum256([]byte(token))
+	found := false
+	var match domain.APIKey
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	for _, key := range r.state.APIKeys {
-		if key.Enabled && key.Key == token {
-			return key, true
+		if !key.Enabled || key.Key == "" {
+			continue
+		}
+		// 逐一比较全部 Key 的摘要（不提前返回）：比较本身恒定时间，命中的是第几个
+		// Key 也不从耗时上泄露出去。
+		candidate := sha256.Sum256([]byte(key.Key))
+		if subtle.ConstantTimeCompare(candidate[:], wanted[:]) == 1 && !found {
+			match, found = key, true
 		}
 	}
-	return domain.APIKey{}, false
+	r.mu.RUnlock()
+	return match, found
 }
 
 // APIKeyByID looks a key up by its id, disabled ones included: the console patches
