@@ -1737,6 +1737,9 @@ function App() {
       setLog2xxBodies(data.log2xxBodies === true);
       if (data.usageBatchMaxSize && data.usageBatchMaxSize > 0) setUsageBatchMaxSize(data.usageBatchMaxSize);
       if (data.usageBatchMaxWaitSeconds && data.usageBatchMaxWaitSeconds > 0) setUsageBatchMaxWaitSeconds(data.usageBatchMaxWaitSeconds);
+      if (data.usageBatchMaxSize && data.usageBatchMaxWaitSeconds) {
+        confirmedUsageBatch.current = { size: data.usageBatchMaxSize, wait: data.usageBatchMaxWaitSeconds };
+      }
       markBackendReachable();
       setDataFetchedAt(new Date());
       writeUICache(uiCacheScope(authStatusRef.current), 'state', normalized);
@@ -1890,7 +1893,7 @@ function App() {
     }
   }
 
-  async function updateLog2xxBodies(enabled: boolean) {
+  async function updateLog2xxBodies(enabled: boolean): Promise<boolean> {
     setSaving(true);
     try {
       const response = await fetch(`${API_BASE}/__settings/log-2xx-bodies`, {
@@ -1902,14 +1905,20 @@ function App() {
       const data = await response.json() as { log2xxBodies: boolean };
       setLog2xxBodies(data.log2xxBodies);
       showToast(data.log2xxBodies ? '已开启记录成功请求正文（写盘量会显著上升）' : '已关闭记录成功请求正文');
+      return true;
     } catch (error) {
       showToast(`更新失败：${String(error)}`);
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
-  async function updateUsageBatch(maxSize: number, maxWaitSeconds: number) {
+  // confirmedUsageBatch 记住服务端确认过的攒批设置：blur 没有改动时不再发请求。
+  const confirmedUsageBatch = useRef<{ size: number; wait: number }>({ size: 0, wait: 0 });
+  async function updateUsageBatch(maxSize: number, maxWaitSeconds: number): Promise<boolean> {
+    // 值没变就别 PATCH：只切一下标签页、把光标移进移出都会触发 blur。
+    if (maxSize === confirmedUsageBatch.current.size && maxWaitSeconds === confirmedUsageBatch.current.wait) return true;
     setSaving(true);
     try {
       const response = await fetch(`${API_BASE}/__settings/usage-batch`, {
@@ -1921,9 +1930,12 @@ function App() {
       const data = await response.json() as { usageBatchMaxSize: number; usageBatchMaxWaitSeconds: number };
       setUsageBatchMaxSize(data.usageBatchMaxSize);
       setUsageBatchMaxWaitSeconds(data.usageBatchMaxWaitSeconds);
+      confirmedUsageBatch.current = { size: data.usageBatchMaxSize, wait: data.usageBatchMaxWaitSeconds };
       showToast(`用量统计攒批已设为 ${data.usageBatchMaxSize} 条 / ${data.usageBatchMaxWaitSeconds} 秒（重启网关后生效）`);
+      return true;
     } catch (error) {
       showToast(`更新失败：${String(error)}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -6771,8 +6783,8 @@ function App() {
                         type="button"
                         disabled={saving}
                         onClick={async () => {
-                          await updateLog2xxBodies(true);
-                          showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
+                          const enabledNow = await updateLog2xxBodies(true);
+                          if (enabledNow) showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
                         }}
                       >
                         立即开启「记录 2xx 成功正文」
@@ -6892,8 +6904,8 @@ function App() {
                         type="button"
                         disabled={saving}
                         onClick={async () => {
-                          await updateLog2xxBodies(true);
-                          showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
+                          const enabledNow = await updateLog2xxBodies(true);
+                          if (enabledNow) showToast('已开启记录 2xx 成功请求正文！后续的新请求将完整保存请求体与响应体。');
                         }}
                       >
                         立即开启「记录 2xx 成功正文」
