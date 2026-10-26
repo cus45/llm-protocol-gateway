@@ -26,6 +26,7 @@ import {
     antiAutofillProps,
     API_BASE,
     API_KEY_VIEW_STORAGE_KEY,
+    authRejectionMessage,
     API_KEYS_PAGE_SIZE,
     apiKeyReferencesProvider,
     BACKEND_FAIL_STREAK_LIMIT,
@@ -1496,8 +1497,7 @@ function App() {
           : { username: authUsername.trim(), password: authPassword, trustDevice: authTrustDevice }),
       });
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
+        throw new Error(await authRejectionMessage(response, mode === 'setup' ? '设置密码失败' : '登录失败'));
       }
       const data = await response.json() as AdminAuthStatus;
       setAuthStatus(data);
@@ -1564,7 +1564,7 @@ function App() {
           newPassword: adminNewPassword,
         }),
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new Error(await authRejectionMessage(response, '更新管理密码失败'));
       const data = await response.json() as AdminAuthStatus;
       setAuthStatus(data);
       setAdminCurrentPassword('');

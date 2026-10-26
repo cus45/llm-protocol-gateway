@@ -287,6 +287,32 @@ export function reportIfLooksLikeAutofill(diagName: string, previous: string, ne
   }
 }
 
+/**
+ * errorMessageFromBody 从控制台的错误信封里取出人能读的那句话：
+ * {"error":{"message":"invalid username or password","type":"gateway_error"}}、
+ * {"error":"..."}、{"message":"..."} 或纯文本。取不到时返回 fallback。
+ * 登录页曾把整个 JSON 原样 print 在终端样式的行里。
+ */
+export function errorMessageFromBody(text: string, fallback = ''): string {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return fallback;
+  try {
+    const data = JSON.parse(trimmed) as { error?: { message?: string } | string; message?: string; detail?: string };
+    const message = (typeof data?.error === 'object' ? data.error?.message : data?.error) || data?.message || data?.detail;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+    return fallback || trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/** authRejectionMessage 把非 2xx 的登录/改密应答变成一句话（错误信封或纯文本都认）。 */
+export async function authRejectionMessage(response: Response, fallback: string): Promise<string> {
+  let text = '';
+  try { text = await response.text(); } catch { /* 读不到体就走兜底 */ }
+  return errorMessageFromBody(text, `${fallback}（HTTP ${response.status}）`);
+}
+
 export async function readConnectResponse(response: Response, fallbackMessage: string) {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   // 诊断:记录浏览器真实收到的状态/类型/体前缀,终结"到底是谁返回的 502"之争。

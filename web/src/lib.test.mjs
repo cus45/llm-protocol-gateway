@@ -327,3 +327,23 @@ test('Claude 密钥用 x-api-key，OpenAI 密钥用 Bearer', () => {
   const openai = lib.buildApiKeyPublicCurl(geminiKey, {...geminiRoute, outputProtocol: 'openai_chat'}, endpoints, '', {id: 'p1', name: 'p', protocol: 'openai_chat', baseUrl: 'https://x', defaultModel: 'gpt-x'});
   assert.ok(openai.includes("-H 'Authorization: Bearer sk-x'"), openai);
 });
+
+// ── 登录错误信封（lib.tsx errorMessageFromBody / authRejectionMessage）──────
+test('errorMessageFromBody：从控制台错误信封里取人能读的那句话', () => {
+  assert.equal(lib.errorMessageFromBody(JSON.stringify({error: {message: 'invalid username or password', type: 'gateway_error'}})), 'invalid username or password');
+  assert.equal(lib.errorMessageFromBody(JSON.stringify({error: 'too many attempts'})), 'too many attempts');
+  assert.equal(lib.errorMessageFromBody(JSON.stringify({message: '密码至少 8 位'})), '密码至少 8 位');
+  assert.equal(lib.errorMessageFromBody('Bad Gateway', '登录失败'), 'Bad Gateway');
+  assert.equal(lib.errorMessageFromBody('', '登录失败'), '登录失败');
+  assert.equal(lib.errorMessageFromBody('{}', '登录失败'), '登录失败');
+});
+
+test('authRejectionMessage：401 不再是原样的 JSON', async () => {
+  const body = JSON.stringify({error: {message: 'invalid username or password', type: 'gateway_error'}});
+  const response = new Response(body, {status: 401, headers: {'content-type': 'application/json'}});
+  const message = await lib.authRejectionMessage(response, '登录失败');
+  assert.equal(message, 'invalid username or password');
+  assert.ok(!message.includes('{'), message);
+  const empty = await lib.authRejectionMessage(new Response('', {status: 403}), '登录失败');
+  assert.equal(empty, '登录失败（HTTP 403）');
+});
