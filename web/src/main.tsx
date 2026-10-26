@@ -2957,10 +2957,9 @@ function App() {
         setClaudeOAuthFlowId('');
         setClaudeOAuthCallbackHint('授权完成后，浏览器会停在 Anthropic 的回调页；把页面给出的 code（或 code#state）粘贴到下面即可。');
         window.open(data.authUrl, '_blank', 'noopener,noreferrer');
-        try {
-          await navigator.clipboard.writeText(data.authUrl);
+        if (await copyToClipboard(data.authUrl)) {
           showToast('请在授权完成后，把回调页上的 code 粘贴到下方');
-        } catch {
+        } else {
           showToast('已打开 Claude 授权页面');
         }
         return;
@@ -2971,10 +2970,9 @@ function App() {
       // 真的打开成功），没法用它判断"是否被拦截"；这里不再据此误报，统一给中性
       // 提示，并始终把链接复制到剪贴板兜底（下方"手动粘贴 code"入口始终可用）。
       window.open(data.authUrl, '_blank', 'noopener,noreferrer');
-      try {
-        await navigator.clipboard.writeText(data.authUrl);
+      if (await copyToClipboard(data.authUrl)) {
         showToast('已尝试打开 Claude 授权页面；如未自动跳转，可粘贴剪贴板中的链接手动打开');
-      } catch {
+      } else {
         showToast('已尝试打开 Claude 授权页面');
       }
       if (data.flowId) {
@@ -3006,11 +3004,10 @@ function App() {
       if (!opened) {
         setClaudeOAuthError('浏览器拦截了弹窗，请复制授权链接手动打开。');
       }
-      try {
-        await navigator.clipboard.writeText(data.authUrl);
+      if (await copyToClipboard(data.authUrl)) {
         if (opened) showToast('已打开授权页面，请复制返回的 code 粘贴到下方');
-      } catch {
-        if (opened) showToast('已打开 Claude 授权页面');
+      } else if (opened) {
+        showToast('已打开 Claude 授权页面');
       }
     } catch (error) {
       setClaudeOAuthError(String(error));
@@ -3103,10 +3100,9 @@ function App() {
       if (data.flowId) setCursorOAuthFlowId(data.flowId);
       // 同上：noopener 场景下返回值恒为 null，不再据此误报"被拦截"。
       window.open(data.authUrl, '_blank', 'noopener,noreferrer');
-      try {
-        await navigator.clipboard.writeText(data.authUrl);
+      if (await copyToClipboard(data.authUrl)) {
         showToast('已尝试打开 Cursor 授权页面；如未自动跳转，可粘贴剪贴板中的链接手动打开');
-      } catch {
+      } else {
         showToast('已尝试打开 Cursor 授权页面');
       }
       if (data.flowId) {
@@ -3179,10 +3175,9 @@ function App() {
       setChatgptOAuthCallbackBlocked(data.callbackBlocked || '');
       // 同上：noopener 场景下返回值恒为 null，不再据此误报"被拦截"。
       window.open(data.authUrl, '_blank', 'noopener,noreferrer');
-      try {
-        await navigator.clipboard.writeText(data.authUrl);
+      if (await copyToClipboard(data.authUrl)) {
         showToast('已尝试打开 ChatGPT 授权页面；如未自动跳转，可粘贴剪贴板中的链接手动打开');
-      } catch {
+      } else {
         showToast('已尝试打开 ChatGPT 授权页面');
       }
       if (data.flowId) {
