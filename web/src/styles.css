@@ -10644,8 +10644,10 @@ html[data-theme="dark"] .monitoring-page {
 /* 参考是「应用式布局」：内容区固定高、overflow hidden，内层自己 overflow-y auto；
    我们是整页滚动。对齐参考后，侧栏与页头固定，只有内容区滚动。
    尺寸取自参考实测：内容区 788.5（视口 900 − 页头 69 − tab 43）、内层 748.5×1176、gap 16。 */
+/* 锁高只对监控页生效：Provider / 日志 / 用量等页内容比视口高，必须继续整页滚动。
+   写成全局 `.main` 会让 overflow:hidden 把超出部分直接裁掉、滚轮也无效。 */
 @media (min-width: 901px) {
-  .main { height: calc(100vh - 0px); min-height: 0; overflow: hidden; }
+  .main:has(> .section-full > .monitoring-page) { height: calc(100vh - 0px); min-height: 0; overflow: hidden; }
   .monitoring-page {
     display: flex; flex-direction: column;
     height: 100%; min-height: 0;
@@ -10673,7 +10675,7 @@ html[data-theme="dark"] .monitoring-page {
 @media (min-width: 901px) { .main { padding-left: 0; } }
 /* grid 行默认按内容撑高，需显式约束才能让内层滚动容器拿到可用高度 */
 @media (min-width: 901px) {
-  .main > .section-full { min-height: 0; height: 100%; overflow: hidden; }
+  .main:has(> .section-full > .monitoring-page) > .section-full { min-height: 0; height: 100%; overflow: hidden; }
   .main > .section-full > .monitoring-page { min-height: 0; height: 100%; }
 }
 
@@ -11220,8 +11222,8 @@ body { font-size: 14px; }
 /* 901px 断点以下未套用外壳限高，导致 768 等中宽整页滚动（docH 1741+）。
    中宽同样使用「内容区固定高 + 内层滚动」，只保留移动端（≤560）整页滚动以适配软键盘。 */
 @media (min-width: 561px) and (max-width: 900px) {
-  .main { height: calc(100vh - 24px); min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr); }
-  .main > .section-full { height: 100%; min-height: 0; overflow: hidden; }
+  .main:has(> .section-full > .monitoring-page) { height: calc(100vh - 24px); min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+  .main:has(> .section-full > .monitoring-page) > .section-full { height: 100%; min-height: 0; overflow: hidden; }
   .main > .section-full > .monitoring-page { height: 100%; min-height: 0; display: flex; flex-direction: column; }
   .monitoring-page .mon-tab-panel { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 20px; }
   .monitoring-page .mon-overview, .monitoring-page .mon-accounts,
@@ -11230,8 +11232,8 @@ body { font-size: 14px; }
 }
 /* 中宽 shell 为「顶部导航行 + 主区行」，主区高度需扣掉导航行，否则整页仍超出视口。 */
 @media (min-width: 561px) and (max-width: 900px) {
-  .shell { height: 100vh; min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr); }
-  .main { height: auto; }
+  .shell:has(.monitoring-page) { height: 100vh; min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr); }
+  .shell:has(.monitoring-page) > .main { height: auto; }
 }
 /* .main 在 grid 行内需 min-height:0 才能把行高约束传下去，否则内层被内容撑开。 */
 @media (min-width: 561px) and (max-width: 900px) {
@@ -11260,8 +11262,8 @@ body { font-size: 14px; }
   .shell { grid-template-rows: auto minmax(0, 1fr); }
 }
 @media (min-width: 561px) and (max-width: 900px) {
-  html, body { height: 100%; overflow: hidden; }
-  #root { height: 100%; overflow: hidden; }
+  /* 只锁监控页；非监控页（如「用量统计」）仍需整页滚动，否则内容不可达。 */
+  html:has(.monitoring-page) { height: 100%; overflow: hidden; }
 }
 /* ===== 第 3 轮审查修复 ===== */
 
@@ -11384,3 +11386,19 @@ body { font-size: 14px; }
 .monitoring-page .mon-duo-card:has(.mon-latency-body) .mon-band-table { height: 161.563px; }
 /* 频谱卡直接锁到参考高度 289.5（内部为自适应，剩余 0.06 来自行高取整，属亚像素）。 */
 .monitoring-page .mon-duo-card:has(.mon-latency-body) { height: 289.5px; }
+/* 视觉对齐参考：拓扑区去掉点阵背景（参考是干净深色卡），底色统一 #090e1a。 */
+.monitoring-page .mon-topo,
+.monitoring-page .mon-topo-mesh,
+.monitoring-page .mon-topo-body {
+  background-image: none;
+}
+.monitoring-page .mon-topo { background-color: #090e1a; }
+/* 告警态边框降温柔：红色只保留在徽标与卡片图标上，边框回到中性，避免整页泛红。 */
+.monitoring-page .mon-topo.tone-red { border-color: color-mix(in srgb, var(--subtle) 70%, transparent); }
+.monitoring-page .mon-topo.tone-red .mon-topo-head { background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.monitoring-page .mon-core.tone-red, .monitoring-page .mon-core-wrap .mon-core {
+  border-color: color-mix(in srgb, var(--subtle) 70%, transparent);
+}
+/* 撤掉频谱档位的装饰性 ::after 条：没有分档数据时画条会被误读成分布图（审查第 5 条）。 */
+.monitoring-page .mon-band::after,
+.monitoring-page .mon-band.is-hit::after { content: none; display: none; }
