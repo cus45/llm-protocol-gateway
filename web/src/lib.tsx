@@ -1309,12 +1309,19 @@ export function clockLabel(at: Date, now: Date = new Date()): string {
   return `${at.getMonth() + 1}月${at.getDate()}日 ${time}`;
 }
 
+// untilLabel 是「3 小时后」这种粗略的剩余时间。这里一律向下取整：说「2 小时后」时
+// 至少还有 2 小时，而不是 1 小时 31 分被四舍五入成 2 小时；不足 1 分钟就明说，不编成
+// 「1 分钟后」。
 export function untilLabel(at: Date, now: Date = new Date()): string {
-  const minutes = Math.max(1, Math.round((at.getTime() - now.getTime()) / 60_000));
-  if (minutes < 60) return `${minutes} 分钟后`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} 小时后`;
-  return `${Math.round(hours / 24)} 天后`;
+  const minutes = (at.getTime() - now.getTime()) / 60_000;
+  if (minutes < 1) return '不到 1 分钟';
+  if (minutes < 60) return `${Math.floor(minutes)} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    const rest = Math.floor(minutes - hours * 60);
+    return rest > 0 ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+  }
+  return `${Math.floor(hours / 24)} 天`;
 }
 
 function parseTimeHint(value: string): Date | null {
@@ -1333,7 +1340,7 @@ export function resetHint(resetsAt: string | undefined, now: Date = new Date(), 
     return { text: `${label}时间已过`, title: `${label}时间已过（${full}）`, passed: true };
   }
   const when = clockLabel(at, now);
-  const relative = untilLabel(at, now);
+  const relative = `${untilLabel(at, now)}后`;
   return { text: `${label} ${when} · ${relative}`, title: `${label}：${full}`, passed: false, when, relative, label };
 }
 
@@ -1358,7 +1365,7 @@ export function runsOutHint(runsOutAt: string | undefined, amount: number, unit:
   const count = Number.isInteger(amount) ? String(amount) : amount.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
   const full = at.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const when = `${count}${unit ? ` ${unit}` : ''} 将于 ${clockLabel(at, now)} 过期`;
-  const relative = untilLabel(at, now);
+  const relative = `${untilLabel(at, now)}后`;
   return {
     text: `${when} · ${relative}`,
     title: `${count}${unit ? ` ${unit}` : ''} 在 ${full} 作废`,

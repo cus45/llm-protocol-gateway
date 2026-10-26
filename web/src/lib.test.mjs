@@ -183,3 +183,21 @@ test('超时收尾为失败，并停掉定时器', async () => {
   assert.deepEqual(settled, [false]);
   assert.equal(timers.size, 0);
 });
+
+test('untilLabel 向下取整：说的剩余时间不会比实际多', () => {
+  const now = new Date('2026-10-26T12:00:00Z');
+  const at = (minutes) => new Date(now.getTime() + minutes * 60_000);
+  assert.equal(lib.untilLabel(at(91), now), '1 小时 31 分钟');
+  assert.equal(lib.untilLabel(at(90), now), '1 小时 30 分钟');
+  assert.equal(lib.untilLabel(at(60), now), '1 小时');
+  assert.equal(lib.untilLabel(at(35 * 60), now), '35 小时');
+  assert.equal(lib.untilLabel(at(0.5), now), '不到 1 分钟');
+  // 1 小时 31 分不能再显示成「2 小时后」。
+  assert.equal(lib.untilLabel(at(49 * 60), now), '2 天');
+});
+
+test('resetHint 把向下取整的剩余时间接在「后」前', () => {
+  const now = new Date('2026-10-26T12:00:00Z');
+  const hint = lib.resetHint(new Date(now.getTime() + 91 * 60_000).toISOString(), now);
+  assert.ok(hint && hint.text.includes('1 小时 31 分钟后'), hint && hint.text);
+});
