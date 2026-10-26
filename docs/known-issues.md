@@ -66,3 +66,19 @@ codex features disable remote_compaction_v2
 - **"还原为官方 provider"**：对称执行 `codex features enable remote_compaction_v2` 恢复默认。
 
 手动配置 Codex（未走本项目脚本）需自己执行一次上述命令；改动后重启 Codex 桌面 App 才生效。
+
+## 4. 控制台 Cloudflare 授权轮询的漏定时器（已修复，复现窗口极小）
+
+**现象（代码审查）**：`waitForCloudflareAuthorization` 早先是 `void check()` 之后立刻
+`setInterval`，而收尾时清的是「当时已经装上的那只」。若后端响应够慢，让第二次检查先回来、
+第一次检查后回来，第一次检查的收尾清掉的就是定时器 id，随后装上来的那只再也没人停 ——
+每 2 秒请求一次 `login/status`（授权后还连带取 `zones`），每次 `setState` 重渲染整个控制台。
+
+**为什么记下来**：按旧顺序实测扫过 0/5/50/1000/2500/10000 ms 的后端延迟，以及
+`document.hasFocus()` 为假的沙箱环境，都没能稳定复现（多数时序下挂上来的定时器第一跳
+正好落在收尾之后，自己把自己清掉了）。所以这是正确性隐患，不是可稳定触发的缺陷。
+
+**修复**：把驱动抽成 `web/src/pollers.ts` 的 `runCloudflareAuthPoll`：等第一次检查回来再
+决定装不装；检查在飞时不叠加第二次；收尾统一走 `finish()`（先 `settled` 再清定时器）。
+`web/src/lib.test.mjs`（`npm run test:lib`）把「收尾后跳多少次都不再发请求」「在飞不叠加」
+钉住，旧顺序下断言会红。

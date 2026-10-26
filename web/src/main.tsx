@@ -16,6 +16,7 @@ import {
     buildApiKeyUsageMap
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
+import {runCloudflareAuthPoll} from './pollers';
 import {type MergedModel, mergeModelsAcrossAccounts} from './model_merge';
 import {
     activePublicBaseURL,
@@ -364,6 +365,9 @@ function App() {
   const [publicControlRawToken, setPublicControlRawToken] = useState('');
   const [publicControlTokenBusy, setPublicControlTokenBusy] = useState(false);
   const cloudflarePollRef = useRef<number | null>(null);
+  // 授权轮询的驱动（见 pollers.ts）：停轮询时要连它一起停，否则正在飞的那次检查
+  // 回来后还会再装一个定时器。
+  let cloudflarePoll: {stop: () => void} | null = null;
   // 5s __state 轮询会不断换新 publicAccess 对象（含 tunnel 状态）。用指纹跳过
   // 「仅运行时变化」的同步，避免正在编辑的子域名前缀被已保存域名盖回去。
   const publicAccessFormSyncRef = useRef('');
@@ -1193,6 +1197,7 @@ function App() {
     if (cloudflarePollRef.current != null) {
       window.clearInterval(cloudflarePollRef.current);
     }
+    cloudflarePoll?.stop();
   }, []);
 
   useEffect(() => {
@@ -2030,6 +2035,10 @@ function App() {
   }
 
   function stopCloudflareLoginPoll() {
+    // 轮询的字面定时器归 runCloudflareAuthPoll 管，停它要连「正在飞的那一次检查
+    // 回来后别再装定时器」一起停掉，所以先停驱动再清兜底的 id。
+    cloudflarePoll?.stop();
+    cloudflarePoll = null;
     if (cloudflarePollRef.current != null) {
       window.clearInterval(cloudflarePollRef.current);
       cloudflarePollRef.current = null;
@@ -2037,27 +2046,23 @@ function App() {
   }
 
   async function waitForCloudflareAuthorization(timeoutMs = 10 * 60 * 1000) {
-    const started = Date.now();
     return new Promise<boolean>((resolve) => {
       stopCloudflareLoginPoll();
-      const check = async () => {
-        const authorized = await refreshCloudflareAuthStatus();
-        if (authorized) {
-          stopCloudflareLoginPoll();
+      // 先查一次，仍在等待才装定时器（runCloudflareAuthPoll）：已授权的控制台
+      // 一次就结束，不会留下每 2 秒打一次 status + zones 的那只定时器。
+      const poll = runCloudflareAuthPoll({
+        timeoutMs,
+        now: () => Date.now(),
+        checkStatus: refreshCloudflareAuthStatus,
+        installTimer: (tick) => window.setInterval(tick, 2000),
+        clearTimer: (id) => window.clearInterval(id),
+        onSettled: (authorized) => {
+          cloudflarePollRef.current = null;
           setCloudflareAuthPending(false);
-          resolve(true);
-          return;
-        }
-        if (Date.now() - started > timeoutMs) {
-          stopCloudflareLoginPoll();
-          setCloudflareAuthPending(false);
-          resolve(false);
-        }
-      };
-      void check();
-      cloudflarePollRef.current = window.setInterval(() => {
-        void check();
-      }, 2000);
+          resolve(authorized);
+        },
+      });
+      cloudflarePoll = poll;
     });
   }
 

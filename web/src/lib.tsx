@@ -3291,3 +3291,26 @@ export function isVisionModel(modelID: string): boolean {
   return false;
 }
 
+
+// ---------------------------------------------------------------------------
+// Cloudflare 授权轮询
+// ---------------------------------------------------------------------------
+
+/** 授权轮询一次检查的结果：还没授权就继续等，授权成功或超时则收尾。 */
+export type CloudflareAuthPollOutcome = 'wait' | 'authorized' | 'timeout'
+
+/**
+ * cloudflareAuthPollOutcome 是授权轮询「这一次检查之后还要不要继续」的唯一判定。
+ *
+ * 早先这段判断写在定时器的回调里，而第一次检查（`void check()`）在定时器 id
+ * 装进 ref 之前就跑了：控制台本来就已经授权时，第一次检查立刻成功，
+ * `stopCloudflareLoginPoll()` 清掉的是一个还不存在的 id，随后装上来的 2 秒
+ * 定时器再也没人停 —— 每一次都请求 status（成功后还会连带取 zones），
+ * 并且每次都 setState 重渲染整个控制台，直到关掉标签页。把判定抽成纯函数，
+ * 让「先检查、拿到结果再决定要不要装定时器」这件事可以被直接测到。
+ */
+export function cloudflareAuthPollOutcome(input: { authorized: boolean; elapsedMs: number; timeoutMs: number }): CloudflareAuthPollOutcome {
+  if (input.authorized) return 'authorized'
+  if (input.elapsedMs > input.timeoutMs) return 'timeout'
+  return 'wait'
+}
