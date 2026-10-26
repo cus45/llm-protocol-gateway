@@ -273,6 +273,52 @@ func TestMonitorOverviewAndAccountsReadOnly(t *testing.T) {
 	}
 }
 
+// 真实请求失败进入冷却时，账号矩阵必须和 Providers 页同一口径：healthStatus
+// 判为 unavailable，并带上后台重探时刻，前端才能写「异常 · N秒后重试」。
+func TestMonitorAccountsExposeRequestCooldown(t *testing.T) {
+	server, _ := monitorTestServer(t, monitorAPIKeyProvider())
+	started := time.Now()
+	server.setProviderUnavailable("p-glm", false, "rate_limited", "", nil, false)
+
+	accounts := monitorCall(t, server.handleMonitorAccounts, http.MethodGet, "/__monitor/accounts", "", nil, monitorAdminID())
+	if accounts.Code != http.StatusOK {
+		t.Fatalf("accounts = %d body=%s", accounts.Code, accounts.Body.String())
+	}
+	var page struct {
+		Accounts []monitorAccountView `json:"accounts"`
+	}
+	if err := json.Unmarshal(accounts.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Accounts) != 1 {
+		t.Fatalf("accounts = %+v", page.Accounts)
+	}
+	account := page.Accounts[0]
+	if account.HealthStatus != "unavailable" {
+		t.Fatalf("healthStatus = %q, want unavailable", account.HealthStatus)
+	}
+	retryAt, err := time.Parse(time.RFC3339, account.NextRetryAt)
+	if err != nil {
+		t.Fatalf("nextRetryAt = %q: %v", account.NextRetryAt, err)
+	}
+	if !retryAt.After(started) {
+		t.Fatalf("nextRetryAt %s is not in the future", retryAt)
+	}
+
+	single := monitorCall(t, server.handleMonitorAccount, http.MethodGet, "/__monitor/accounts/p-glm", "",
+		map[string]string{"providerId": "p-glm"}, monitorAdminID())
+	if single.Code != http.StatusOK {
+		t.Fatalf("single account = %d body=%s", single.Code, single.Body.String())
+	}
+	var detail monitorAccountView
+	if err := json.Unmarshal(single.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.HealthStatus != "unavailable" || detail.NextRetryAt != account.NextRetryAt {
+		t.Fatalf("detail lost the cooldown: %+v", detail)
+	}
+}
+
 func TestMonitorAccountRefreshAndQuotaRefresh(t *testing.T) {
 	server, db := monitorTestServer(t, monitorClaudeProvider(), monitorAPIKeyProvider())
 

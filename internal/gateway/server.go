@@ -5571,8 +5571,11 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		// Chat→Claude 直写流（未走 finishConvertedProxy），同样需要心跳防反代空闲断流。
 		stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
 		defer stopHeartbeat()
-		usage, streamErr := streamOpenAIChatToClaudeEvents(hw, response.Body, model, declaredTools, clientStopSequences...)
-		return response.StatusCode, usage, nil, streamErr
+		// The converted stream is teed into the log copy the caller records:
+		// this path writes the answer itself, so it must report what it sent.
+		logged := newStreamLogWriter(hw)
+		usage, streamErr := streamOpenAIChatToClaudeEvents(logged, response.Body, model, declaredTools, clientStopSequences...)
+		return response.StatusCode, usage, logged.Bytes(), streamErr
 	}
 
 	responseBody, readErr := io.ReadAll(response.Body)
@@ -5607,7 +5610,7 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 	if _, writeErr := w.Write(claudeBody); writeErr != nil {
 		return http.StatusOK, usage, claudeBody, writeErr
 	}
-	return http.StatusOK, usage, nil, nil
+	return http.StatusOK, usage, claudeBody, nil
 }
 
 func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provider domain.Provider, model string, body []byte, skipIncomingAuth bool) (int, TokenUsage, []byte, error) {

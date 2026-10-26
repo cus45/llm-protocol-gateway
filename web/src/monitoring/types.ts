@@ -72,6 +72,8 @@ export interface MonitorAccount {
   isolatedAt?: string;
   isolatedBy?: string;
   healthStatus: string;
+  /** 真实请求失败后的冷却结束时刻（RFC3339）；只有 healthStatus === 'unavailable' 时才存在。 */
+  nextRetryAt?: string;
   capabilities: MonitorCapabilities;
   expiresAt?: string;
   quota?: MonitorQuota | null;

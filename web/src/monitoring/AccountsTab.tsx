@@ -1,19 +1,27 @@
 import {useEffect, useMemo, useState} from 'react';
+import {retrySecondsLabel, useNowTick} from '../lib';
 import {BrandIcon, Modal} from '../components/ui';
-import {IconSelect} from '../components/selects';
 import type {IconSelectOption} from '../components/selects';
+import {IconSelect} from '../components/selects';
 import {fetchProbes, isolateAccount, restoreAccount} from './api';
 import type {
-  MonitorAccount,
-  MonitorIsolationResult,
-  MonitorProbeAccount,
-  MonitorProbeConfig,
-  MonitorProbeRun,
-  MonitorQuota,
+    MonitorAccount,
+    MonitorIsolationResult,
+    MonitorProbeAccount,
+    MonitorProbeConfig,
+    MonitorProbeRun,
+    MonitorQuota,
 } from './types';
-import {hasTime, quotaRatioKnown} from './types';
-import {displayTime, formatLatency, quotaText, quotaWindowLabel, quotaWindowText, quotaWindowsHint, relativeToNow} from './format';
-import {probeCaseText} from './types';
+import {hasTime, probeCaseText, quotaRatioKnown} from './types';
+import {
+    displayTime,
+    formatLatency,
+    quotaText,
+    quotaWindowLabel,
+    quotaWindowsHint,
+    quotaWindowText,
+    relativeToNow
+} from './format';
 
 export interface AccountsTabProps {
   accounts: MonitorAccount[];
@@ -227,8 +235,9 @@ const BREAKER_HINT: Record<Breaker, string> = {
 };
 
 /**
- * 右上角徽标的文案。与 breakerOf 一一对应：
- * 强制隔离→已隔离，OFF→停用，OPEN→异常，HALF_OPEN 且连续失败 ≥2→异常，否则看活跃告警→告警，其余→正常。
+ * 右上角徽标的文案。与 stateOf 同一优先级（概览说异常、这里说正常就是自相矛盾）：
+ * 强制隔离→已隔离，OFF→停用，OPEN→异常，HALF_OPEN 且连续失败 ≥2→异常，
+ * 有活跃告警→告警，真实请求刚失败在冷却（healthStatus=unavailable）→异常，其余→正常。
  */
 type HealthCode = 'normal' | 'alert' | 'abnormal' | 'off' | 'isolated';
 
@@ -246,11 +255,14 @@ function healthOf(account: MonitorAccount, alerts: number, breaker: Breaker, fac
   if (breaker === 'OPEN') return 'abnormal';
   if (facts?.probed && facts.consecutiveFailures >= BREAKER_WARN_STREAK) return 'abnormal';
   if (alerts > 0) return 'alert';
+  // 真实请求失败后调度会跳过该账号直到冷却结束：Providers 页此时显示「异常 +
+  // N秒后重试」，监控中心不能还写「正常」。
+  if (account.healthStatus === 'unavailable') return 'abnormal';
   return 'normal';
 }
 
 /** 徽标的判定依据：悬停即可看到每一条门槛的当前值，不让人猜「异常」从哪来。 */
-function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined): string {
+function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, facts: AccountsProbeFacts | undefined, retryLabel: string | null): string {
   if (account.isolated) {
     const when = hasTime(account.isolatedAt) ? displayTime(account.isolatedAt as string, '').text : '';
     return [
@@ -270,9 +282,12 @@ function healthHint(account: MonitorAccount, alerts: number, breaker: Breaker, f
                   facts.consecutiveFailures >= BREAKER_WARN_STREAK ? ` ≥ ${BREAKER_WARN_STREAK} 次 → 异常` : ''
                 }`
               : '还没有可用探测记录（不计入连续失败）',
-            `请求健康判定：${HEALTH_STATUS_TEXT[account.healthStatus] || account.healthStatus || '未检测'}`,
+            `请求健康判定：${HEALTH_STATUS_TEXT[account.healthStatus] || account.healthStatus || '未检测'}${
+              account.healthStatus === 'unavailable' ? '（真实请求失败，调度暂跳过该账号）' : ''
+            }`,
+            ...(retryLabel ? [`后台周期探测将在 ${retryLabel.replace('后重试', '')}后重试`] : []),
           ];
-  return `${lines.join('\n')}\n判定顺序：隔离 → 停用 → 连续失败 ≥${BREAKER_TRIP_STREAK} 次 → 连续失败 ≥${BREAKER_WARN_STREAK} 次 → 有未恢复告警`;
+  return `${lines.join('\n')}\n判定顺序：隔离 → 停用 → 连续失败 ≥${BREAKER_TRIP_STREAK} 次 → 连续失败 ≥${BREAKER_WARN_STREAK} 次 → 有未恢复告警 → 请求判定不可用`;
 }
 
 const HEALTH_STATUS_TEXT: Record<string, string> = {
@@ -631,6 +646,8 @@ export function AccountsDrawer(props: AccountsDrawerProps) {
   // 回给抽屉，界面如实展示那一句，不在前端猜（前端拿不到 model 字段）。
   const canProbe = !detail.disabled;
   const detailProbing = probeBusy === `probe:${detail.providerId}`;
+  const retryNow = useNowTick(detail.healthStatus === 'unavailable' && !!detail.nextRetryAt);
+  const detailRetry = detail.healthStatus === 'unavailable' ? retrySecondsLabel(detail.nextRetryAt, retryNow) : null;
 
   return (
     <Modal
@@ -723,7 +740,7 @@ export function AccountsDrawer(props: AccountsDrawerProps) {
         <div className="card">
           <div className="panel-title">{'健康与能力'}</div>
           <div className="metric-note">
-            {`状态 ${detail.healthStatus || '未检测'} · 模型列表连续失败 ${detail.modelFailures} 次 · 活跃告警 ${alertCount}`}
+            {`状态 ${HEALTH_STATUS_TEXT[detail.healthStatus] || detail.healthStatus || '未检测'}${detailRetry ? ` · ${detailRetry}` : ''} · 模型列表连续失败 ${detail.modelFailures} 次 · 活跃告警 ${alertCount}`}
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
             {CAPABILITY_LABELS.map((item) => (
@@ -821,6 +838,11 @@ export function AccountsTab(props: AccountsTabProps) {
     return () => window.removeEventListener('popstate', restore);
   }, []);
   const now = Date.now();
+  // 真实请求失败的冷却倒计时：与 Providers 页同一个 nextRetryAt / 同一句文案。
+  const retryPending = accounts.some(
+    (account) => !account.disabled && account.healthStatus === 'unavailable' && !!account.nextRetryAt,
+  );
+  const retryNow = useNowTick(retryPending);
 
   // 隔离 / 恢复：二次确认 → 调接口 → 成功就地把新的账号行交给页面。
   // 隔离 / 恢复自己发请求而不是走页面的 run()，因为结果要回到这里就地显示在卡片上；
@@ -1115,6 +1137,9 @@ export function AccountsTab(props: AccountsTabProps) {
               : '';
           const breaker = breakerOf(account, facts);
           const health = healthOf(account, alerts, breaker, facts);
+          const retryLabel = account.healthStatus === 'unavailable'
+            ? retrySecondsLabel(account.nextRetryAt, retryNow)
+            : null;
           const role = roleOf(account, alerts, state, breaker);
           const cardProbing = probeBusy === `probe:${account.providerId}`;
           const renewing = busy === `renew:${account.providerId}`;
@@ -1140,11 +1165,16 @@ export function AccountsTab(props: AccountsTabProps) {
                   <span className="mon-acc-ptag">{account.vendor || AUTH_LABELS[account.authType] || 'API Key'}</span>
                   <span
                     className={`mon-acc-breaker ${health}`}
-                    title={`${HEALTH_TEXT[health]}\n${healthHint(account, alerts, breaker, facts)}\n\n探测档位 ${BREAKER_TEXT[breaker]}：${BREAKER_HINT[breaker]}`}
+                    title={`${HEALTH_TEXT[health]}\n${healthHint(account, alerts, breaker, facts, retryLabel)}\n\n探测档位 ${BREAKER_TEXT[breaker]}：${BREAKER_HINT[breaker]}`}
                   >
                     <span className="mon-acc-breaker-dot" aria-hidden />
                     {HEALTH_TEXT[health]}
                   </span>
+                  {retryLabel ? (
+                    <span className="mon-acc-retry-hint" title="真实请求刚刚失败，调度暂跳过该账号；后台会周期性自动重试">
+                      {retryLabel}
+                    </span>
+                  ) : null}
                 </span>
               </div>
 

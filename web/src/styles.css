@@ -9347,6 +9347,8 @@ select.mon-acc-select-input {
   white-space: nowrap;
 }
 .mon-acc-breaker-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+/* 真实请求失败后的冷却倒计时：与 Providers 卡上的 .provider-retry-hint 同一读法。 */
+.mon-acc-retry-hint { color: var(--red); font-size: 11px; font-weight: 600; white-space: nowrap; }
 /* 徽标按「健康判定」上色（不是熔断档位名）：正常=绿、告警=amber、异常=红、停用=灰。
    判定依据写在 title 里；档位（CLOSED/HALF_OPEN/OPEN）仍用于筛选下拉。 */
 .mon-acc-breaker.alert { background: var(--amber-soft); color: var(--amber); }

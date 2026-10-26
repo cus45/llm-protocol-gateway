@@ -223,6 +223,38 @@ func (b *limitedBuffer) Total() int64 {
 	return b.total
 }
 
+// streamLogWriter forwards an SSE stream and keeps a capped copy for the
+// request log, so a converted stream is logged like a pass-through one.
+type streamLogWriter struct {
+	base http.ResponseWriter
+	log  *limitedBuffer
+}
+
+func newStreamLogWriter(base http.ResponseWriter) *streamLogWriter {
+	return &streamLogWriter{base: base, log: &limitedBuffer{max: passThroughLogBufferMax}}
+}
+
+func (w *streamLogWriter) Header() http.Header { return w.base.Header() }
+
+func (w *streamLogWriter) WriteHeader(statusCode int) { w.base.WriteHeader(statusCode) }
+
+func (w *streamLogWriter) Write(p []byte) (int, error) {
+	n, err := w.base.Write(p)
+	if n > 0 {
+		_, _ = w.log.Write(p[:n])
+	}
+	return n, err
+}
+
+func (w *streamLogWriter) Flush() {
+	if f, ok := w.base.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Bytes is the capped copy of what went out, for the request log.
+func (w *streamLogWriter) Bytes() []byte { return w.log.Bytes() }
+
 // flushWriter writes to the response and flushes after each Write so SSE
 // chunks reach the client immediately. When w already flushes internally
 // (e.g. sseHeartbeatResponseWriter), flusher may be nil.

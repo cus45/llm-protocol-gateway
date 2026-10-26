@@ -79,10 +79,14 @@ type monitorAccountView struct {
 	// console's forced circuit-break (not by the admin's own 停用). It is the
 	// same Disabled flag for scheduling; the marker only says why it is off, and
 	// it is what 「恢复调度」 clears.
-	Isolated      bool                       `json:"isolated,omitempty"`
-	IsolatedAt    string                     `json:"isolatedAt,omitempty"`
-	IsolatedBy    string                     `json:"isolatedBy,omitempty"`
-	HealthStatus  string                     `json:"healthStatus"`
+	Isolated     bool   `json:"isolated,omitempty"`
+	IsolatedAt   string `json:"isolatedAt,omitempty"`
+	IsolatedBy   string `json:"isolatedBy,omitempty"`
+	HealthStatus string `json:"healthStatus"`
+	// NextRetryAt is the live-request cooldown's end (RFC3339), the same runtime
+	// hint the Providers page shows next to 异常. Empty unless healthStatus is
+	// unavailable.
+	NextRetryAt   string                     `json:"nextRetryAt,omitempty"`
 	Capabilities  monitoring.Capabilities    `json:"capabilities"`
 	ExpiresAt     string                     `json:"expiresAt,omitempty"`
 	Quota         *monitoring.QuotaSnapshot  `json:"quota,omitempty"`
@@ -1191,6 +1195,7 @@ func (s *Server) monitorAccountViewsOf(providers []domain.Provider) []monitorAcc
 			ProviderID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
 			AuthType: provider.AuthType, Disabled: provider.Disabled,
 			HealthStatus: provider.HealthStatus,
+			NextRetryAt:  provider.NextRetryAt,
 			Capabilities: monitoring.Capabilities{
 				OAuth:   providerHasExpiry(provider),
 				Quota:   providerHasQuotaHandler(provider),
