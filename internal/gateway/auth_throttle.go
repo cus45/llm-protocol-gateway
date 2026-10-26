@@ -46,7 +46,7 @@ func newAuthThrottle() *authThrottle {
 }
 
 // blocked 报告该来源+账号当前是否已被限流，以及还要等多久。
-func (t *authThrottle) blocked(client, user string) (bool, time.Duration) {
+func (t *authThrottle) blocked(client, user string, limit int) (bool, time.Duration) {
 	if t == nil {
 		return false, 0
 	}
@@ -54,7 +54,7 @@ func (t *authThrottle) blocked(client, user string) (bool, time.Duration) {
 	defer t.mu.Unlock()
 	now := t.now()
 	entry, ok := t.entries[authFailureKey{client: client, user: user}]
-	if !ok || now.Sub(entry.windowStart) >= authFailureWindow || entry.count < authMaxFailures {
+	if !ok || now.Sub(entry.windowStart) >= authFailureWindow || entry.count < limit {
 		return false, 0
 	}
 	return true, authFailureWindow - now.Sub(entry.windowStart)
@@ -105,8 +105,21 @@ func authThrottleUser(username string) string {
 }
 
 // rejectIfAuthThrottled 在口令校验前限流；命中时写 429 并返回 true。
+// blocked reports whether this source, or this account for any source, has
+// failed too often recently, and how long the block lasts.
+func (s *Server) blocked(r *http.Request, username string) (bool, time.Duration) {
+	source, user := authThrottleSource(r), authThrottleUser(username)
+	// 来源维度只看来源（与用户名无关）：换账号名绕不过已经失败很多次的来源。
+	if blocked, wait := s.authThrottle.blocked(source, authThrottleAnyUserKey, authMaxFailures); blocked {
+		return true, wait
+	}
+	// 账号维度跨来源累计，所以阈值更高：单台机器靠来源维度本来就挡住了，
+	// 这一层是给「同一账号从很多来源试」和「换账号绕过来源」两头兜底。
+	return s.authThrottle.blocked(authThrottleAccountKey, user, authAccountMaxFailures)
+}
+
 func (s *Server) rejectIfAuthThrottled(w http.ResponseWriter, r *http.Request, username string) bool {
-	blocked, wait := s.authThrottle.blocked(requestClientIP(r), authThrottleUser(username))
+	blocked, wait := s.blocked(r, username)
 	if !blocked {
 		return false
 	}
@@ -173,12 +186,17 @@ func peekUsername(r *http.Request) string {
 
 // recordAuthFailure 记一次口令失败（供后续限流判断）。
 func (s *Server) recordAuthFailure(r *http.Request, username string) {
-	if s.authThrottle.fail(requestClientIP(r), authThrottleUser(username)) {
-		s.logs.AddApp("warn", "auth throttled after repeated failures", requestClientIP(r))
+	source, user := authThrottleSource(r), authThrottleUser(username)
+	// 来源维度与账号维度各记一次：换来源绕不过账号，换账号绕不过来源。
+	s.authThrottle.fail(source, authThrottleAnyUserKey)
+	if s.authThrottle.fail(authThrottleAccountKey, user) {
+		s.logs.AddApp("warn", "auth throttled after repeated failures", source)
 	}
 }
 
 // recordAuthSuccess 清空该来源+账号的失败计数。
 func (s *Server) recordAuthSuccess(r *http.Request, username string) {
-	s.authThrottle.succeeded(requestClientIP(r), authThrottleUser(username))
+	source, user := authThrottleSource(r), authThrottleUser(username)
+	s.authThrottle.succeeded(source, authThrottleAnyUserKey)
+	s.authThrottle.succeeded(authThrottleAccountKey, user)
 }

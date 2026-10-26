@@ -21,21 +21,21 @@ func TestAuthThrottleCountsFailuresWindow(t *testing.T) {
 	throttle.now = func() time.Time { return now }
 
 	for i := 0; i < authMaxFailures; i++ {
-		if blocked, _ := throttle.blocked("1.2.3.4", "admin"); blocked {
+		if blocked, _ := throttle.blocked("1.2.3.4", "admin", authMaxFailures); blocked {
 			t.Fatalf("blocked after %d failures", i)
 		}
 		throttle.fail("1.2.3.4", "admin")
 	}
-	if blocked, wait := throttle.blocked("1.2.3.4", "admin"); !blocked || wait <= 0 {
+	if blocked, wait := throttle.blocked("1.2.3.4", "admin", authMaxFailures); !blocked || wait <= 0 {
 		t.Fatalf("expected to be blocked, got blocked=%v wait=%v", blocked, wait)
 	}
 	// 另一个来源不受影响：失手的是那个 IP，不是账号本身。
-	if blocked, _ := throttle.blocked("5.6.7.8", "admin"); blocked {
+	if blocked, _ := throttle.blocked("5.6.7.8", "admin", authMaxFailures); blocked {
 		t.Fatalf("a different source must not be blocked")
 	}
 	// 窗口过期后自动放行，且计数从头开始。
 	now = now.Add(authFailureWindow)
-	if blocked, _ := throttle.blocked("1.2.3.4", "admin"); blocked {
+	if blocked, _ := throttle.blocked("1.2.3.4", "admin", authMaxFailures); blocked {
 		t.Fatalf("window expiry must lift the block")
 	}
 	if blocked := throttle.fail("1.2.3.4", "admin"); blocked {
@@ -55,7 +55,7 @@ func TestAuthThrottleSuccessResets(t *testing.T) {
 			t.Fatalf("blocked after reset + %d failures", i)
 		}
 	}
-	if blocked, _ := throttle.blocked("1.2.3.4", "admin"); blocked {
+	if blocked, _ := throttle.blocked("1.2.3.4", "admin", authMaxFailures); blocked {
 		t.Fatalf("must still be below the threshold")
 	}
 }
