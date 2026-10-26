@@ -384,7 +384,57 @@ func inputItemsFromChatMessages(messages []any) ([]any, string, error) {
 	if len(inputItems) == 0 {
 		return nil, "", fmt.Errorf("chat request has no usable messages")
 	}
+	inputItems = pairFunctionCallsWithOutputs(inputItems)
 	return inputItems, instructions.String(), nil
+}
+
+// pairFunctionCallsWithOutputs gives every function_call in the history an
+// output. A turn the client was cut off in the middle of (Ctrl-C, a crash, a
+// dropped connection) leaves a call whose result never came; OpenAI-family
+// upstreams answer every later turn with "No tool output found for function call
+// …" until the conversation is abandoned. The interrupted call gets a synthetic
+// output saying so, placed right after it, which is what the Responses→Claude
+// leg already does for its own shape (pairClaudeToolUsesWithResults).
+func pairFunctionCallsWithOutputs(items []any) []any {
+	answered := map[string]bool{}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind := stringValue(entry["type"]); kind == "function_call_output" || kind == "custom_tool_call_output" {
+			if callID := stringValue(entry["call_id"]); callID != "" {
+				answered[callID] = true
+			}
+		}
+	}
+	paired := make([]any, 0, len(items))
+	missing := false
+	for _, item := range items {
+		paired = append(paired, item)
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind := stringValue(entry["type"]); kind != "function_call" && kind != "custom_tool_call" {
+			continue
+		}
+		callID := stringValue(entry["call_id"])
+		if callID == "" || answered[callID] {
+			continue
+		}
+		answered[callID] = true
+		missing = true
+		paired = append(paired, map[string]any{
+			"type":    "function_call_output",
+			"call_id": callID,
+			"output":  "The turn was interrupted before this call returned. No output is available.",
+		})
+	}
+	if !missing {
+		return items
+	}
+	return paired
 }
 
 func setResponsesInput(responsesReq map[string]any, inputItems []any) {
