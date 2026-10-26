@@ -82,3 +82,23 @@ codex features disable remote_compaction_v2
 决定装不装；检查在飞时不叠加第二次；收尾统一走 `finish()`（先 `settled` 再清定时器）。
 `web/src/lib.test.mjs`（`npm run test:lib`）把「收尾后跳多少次都不再发请求」「在飞不叠加」
 钉住，旧顺序下断言会红。
+
+## 5. 只有 thinking 的空回答兜底轮次：兜底账号的答案到不了客户端（未修复）
+
+**现象**：一条转换后的流式请求（如 Chat 客户端 → Claude 上游），第一个账号只发出
+开口（`message_start` + 一个空的 `thinking` 块）就结束，被判为「只有 thinking 的空
+回答」，本应换兜底账号重答；实际客户端拿到 5xx，兜底账号的完整回答丢失。
+
+**根因**：`runStreamConverter`（`internal/gateway/protocol_proxy.go`）在「转换器没有
+写出任何字节」的尝试上，只要上游正文出现过 `data:` 且没有本协议收尾帧，就判成被截断。
+兜底账号以普通 JSON 回答（`Content-Type: application/json`）时正文里没有 `data:`，
+本来没问题；但同一次请求里前一个账号的 SSE 已经影响后续分支的判断，最终这次正常回答
+也被当成截断，客户端拿到 502。
+
+**复现**：`internal/gateway/thinking_only_failover_test.go` 的
+`TestEmptyTurnWithinHoldLimitGoesToTheBackup`（暂时 `t.Skip`，去掉 Skip 即在修复前失败）。
+成立的那条不变量 `TestSlowEmptyTurnIsNotAnsweredTwice` 仍然在跑。
+
+**修复方向**：`runStreamConverter` 只对「确实是事件流」的正文做截断判定（按
+Content-Type 或首个字节），并让被判定为空回答的尝试走 thinking-only 分支（同 Provider
+重试）而不是当成传输错误继续走兜底链。
