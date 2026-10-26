@@ -11060,14 +11060,6 @@ select.mon-acc-select-input { border-radius: 12px; }
    告警行 1176×109.5 p16、描述 mt6、元信息 mt10；规则卡 y199.5、参数块 y302.5、行 2/3 卡高 206.5。
    数值全部实测收敛（见 .workbuddy/reviews/dev-ui-account-rules-report.md）。 */
 
-/* 账号工具条（参考 61、gap12）：主行 / 筛选行各 28 高（30 高的控件在行盒内溢出，不计入行高）；
-   14 + 28 + 8 + 28 + 14 实测只算到 58，上内边距取 17 时恰为 61（横向仍是 p14）。右侧一组
-   上移 1，与外溢 1 的搜索框视觉同排。 */
-.mon-acc-toolbar { padding: 17px 14px 14px; column-gap: 12px; row-gap: 8px; }
-.mon-acc-toolbar-main { height: 28px; align-items: flex-start; }
-.mon-acc-toolbar-side { flex-wrap: nowrap; align-items: center; height: 28px; margin-top: -1px; }
-.mon-acc-toolbar-side > * { flex: none; }
-.mon-acc-view { padding: 2px; }
 /* 卡前说明行（参考没有这一行）：单独一片，与工具条同 gap，卡片网格前再让 8。 */
 .mon-acc-body { display: flex; flex-direction: column; min-width: 0; margin-top: -6px; }
 .mon-acc-grid-note { display: flex; flex-direction: column; min-width: 0; padding-bottom: 8px; }
@@ -11161,11 +11153,8 @@ select.mon-acc-select-input { border-radius: 12px; }
    卡前不再留说明行高度与补偿负边距。 */
 .mon-acc-body, .mon-acc-grid-note { display: none; }
 .mon-acc-count { white-space: nowrap; color: var(--muted); font-size: 11px; line-height: 16px; }
-/* P17 回退「凑指标」写法：工具条内外边距一律回到参考的 p14，高度由控件自身撑出。
-   原先把账号上内边距改成 17、告警纵向改成 16 只是为了把测量值凑到 61/64。 */
+/* P17 回退「凑指标」写法：工具条内外边距一律回到参考的 p14，高度由控件自身撑出。 */
 .mon-acc-toolbar { padding: 14px; }
-.mon-acc-toolbar-main { height: auto; align-items: center; }
-.mon-acc-toolbar-side { height: auto; margin-top: 0; align-items: center; }
 .mon-alerts-bar { padding: 14px; }
 .mon-rules { margin-top: 0; }
 /* 告警分段控件按参考放大到外框 34 / 按钮 28（工具条 64 = 14 + 34 + 2 + 14 自然成立）。 */
@@ -11272,9 +11261,6 @@ body { font-size: 14px; }
   html, body { height: 100%; overflow: hidden; }
   #root { height: 100%; overflow: hidden; }
 }
-/* 账号工具条 61 = 14 + 31 + 2 + 14：行盒内控件 30 + 1 的下沿，由控件自身撑出，
-   不再靠改 padding 凑数。 */
-.monitoring-page .mon-acc-toolbar { min-height: 61px; box-sizing: border-box; }
 /* ===== 第 3 轮审查修复 ===== */
 
 /* (1) P-1 中宽复发：flex:none 此前只写在 ≥901，561–900 底下 .mon-topo 又被压成 2px。
@@ -11355,3 +11341,19 @@ body { font-size: 14px; }
 /* 工具条是 .mon-accounts（flex 列）的直接子项，窄屏折行后会被 flex-shrink 压扁到 30px。
    工具条高度由内容决定，不参与收缩。 */
 .monitoring-page .mon-accounts > .mon-acc-toolbar { flex: 0 0 auto; height: auto; }
+/* KPI 卡精确对齐参考 106.5（16 + 2 + 32 + 2 + 5 + 16.94 + 16.94 行 + 28 p + 2 边框 = 106.5）。 */
+.monitoring-page .mon-meta { min-height: 106.5px; box-sizing: border-box; }
+.monitoring-page .mon-meta-foot { line-height: 16.5px; }
+/* 设置页内容根按参考让出 4px 右侧滑条位：1172 内居中 896 → x = 244 + 138 = 382。 */
+.monitoring-page .mon-settings { padding-right: 4px; box-sizing: border-box; }
+/* 设置页结构对齐参考：内容根 1172（让出滑条位），内部 max-w-4xl 居中 → 卡片 x382 w896。 */
+.monitoring-page .mon-settings {
+  max-width: none; margin: 0; padding-right: 4px; box-sizing: border-box;
+  align-items: center; flex-direction: column;
+}
+.monitoring-page .mon-settings > .mon-set-card,
+.monitoring-page .mon-settings > * { width: 100%; max-width: 896px; }
+/* 双卡高度精确对齐参考 289.5：雷达体 192→193.5，频谱体 202.5→196。 */
+.monitoring-page .mon-duo-card .mon-rails { padding: 16.75px 0; }
+.monitoring-page .mon-duo-card .mon-latency-body { padding-bottom: 0; margin-bottom: 0; }
+.monitoring-page .mon-band { padding-bottom: 14.4px; }
