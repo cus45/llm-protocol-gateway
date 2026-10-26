@@ -6122,7 +6122,9 @@ function App() {
               }}
               onOpenAccountLogs={(providerID) => {
                 setLogsProviderFilter(providerID);
-                setActiveNav('traffic-tokens');
+                // 走 goToPage：它会写地址栏。直接 setActiveNav 的话刷新一下就回到
+                // 监控中心，刚选的账号筛选也没了，链接也发不出去。
+                goToPage('traffic-tokens');
               }}
             />
           </section>

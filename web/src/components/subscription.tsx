@@ -205,9 +205,11 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
         <div className="claude-usage-empty">该账号没有返回额度窗口（未订阅或接口未开放）</div>
       ) : (
         <div className="claude-usage-grid">
-          {report.windows.map((window) => (
+          {report.windows.map((window, index) => (
             <UsageBucketRow
-              key={window.name}
+              // WorkBuddy 会返回同名（或都没有名字）的几批额度，只用 name 做 key 时
+              // React 会把它们当成同一行：列表重排时内容会串行，控制台还会报重复 key。
+              key={`${window.name || 'window'}-${index}`}
               label={window.name}
               percent={Math.min(100, Math.max(0, window.used))}
               note={window.limit != null && window.limit > 0
