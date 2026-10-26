@@ -248,7 +248,9 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
    ---------------------------------------------------------------- */
 .shell {
   width: min(1600px, 100%);
-  margin: 0;
+  /* 只去掉上下外边距；水平 auto 必须保留：侧栏是 fixed，left 按「居中 1600 容器」
+     反算（50% - 800px），shell 一旦左贴边，宽于 1600 的窗口下侧栏就会压到主栏上。 */
+  margin: 0 auto;
   display: grid;
   grid-template-columns: var(--sidebar-w, 248px) minmax(0, 1fr);
   gap: 0;
@@ -11374,3 +11376,11 @@ body { font-size: 14px; }
 }
 .monitoring-page .mon-hint-dot:hover { border-color: var(--accent); color: var(--accent); }
 .monitoring-page .mon-acc-count { display: inline-flex; align-items: center; }
+/* 频谱卡 head 行高取整（30.047 → 30），卡高精确 289.5。 */
+.monitoring-page .mon-duo-card:has(.mon-latency-body) .mon-card-head { height: 30px; }
+/* 频谱档位行高取整：161.563 → 161，卡高精确 289.5。 */
+.monitoring-page .mon-duo-card:has(.mon-latency-body) .mon-band-table { height: 161px; }
+.monitoring-page .mon-duo-card:has(.mon-latency-body) .mon-band { flex: 1 1 0; }
+.monitoring-page .mon-duo-card:has(.mon-latency-body) .mon-band-table { height: 161.563px; }
+/* 频谱卡直接锁到参考高度 289.5（内部为自适应，剩余 0.06 来自行高取整，属亚像素）。 */
+.monitoring-page .mon-duo-card:has(.mon-latency-body) { height: 289.5px; }
