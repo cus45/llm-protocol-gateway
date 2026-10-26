@@ -89,7 +89,12 @@ func (s *Server) handleGeminiGenerateContent(w http.ResponseWriter, r *http.Requ
 
 	logModel := model
 	if gatewayKeyMatched && keyHasQuota(matchedKey) {
-		admission := s.admitKeyQuota(matchedKey, 0, time.Now())
+		// The reservation is what keeps N concurrent requests from all fitting
+		// under the remaining quota at once: with a prompt of 0 (as this call
+		// used to pass) only finished usage gates the key, and a burst on a key
+		// at 900/1000 tokens all goes through. Every other protocol entry
+		// reserves the real prompt estimate.
+		admission := s.admitKeyQuota(matchedKey, estimateKeyQuotaPrompt(geminiReq), time.Now())
 		if refusal := admission.refusal; refusal != nil {
 			writeGeminiError(w, http.StatusTooManyRequests, refusal.Message)
 			s.recordRequestLogFromRequest(r, started, matchedKey, gatewayKeyMatched, route.ID, route.ProviderID, logModel, "convert", "gemini", r.URL.Path, http.StatusTooManyRequests, TokenUsage{}, body, []byte(refusal.Message))
