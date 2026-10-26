@@ -10646,6 +10646,15 @@ html[data-theme="dark"] .monitoring-page {
    尺寸取自参考实测：内容区 788.5（视口 900 − 页头 69 − tab 43）、内层 748.5×1176、gap 16。 */
 /* 锁高只对监控页生效：Provider / 日志 / 用量等页内容比视口高，必须继续整页滚动。
    写成全局 `.main` 会让 overflow:hidden 把超出部分直接裁掉、滚轮也无效。 */
+/* 外壳行（顶栏 / 页签条 / 提示条）不参与 flex 压缩：监控页是固定高的 flex 列，
+   长页面（账号 / 规则 / 设置）内容高度远大于视口，压缩会从所有 flex 项里按比例扣。
+   .mon-tabs 是横向滚动容器（overflow-y: hidden），它的 flex 自动最小尺寸是 0，
+   于是被压到 26px、42px 的页签只露出上面一半（实测 1536×768 设置页）。
+   页签条压扁后看起来像「tab 顶上去了」，实际是被容器裁掉了下半截。 */
+.monitoring-page > .mon-header,
+.monitoring-page > .mon-tabs,
+.monitoring-page > .mon-notice { flex: none; }
+
 @media (min-width: 901px) {
   .main:has(> .section-full > .monitoring-page) { height: calc(100vh - 0px); min-height: 0; overflow: hidden; }
   .monitoring-page {
