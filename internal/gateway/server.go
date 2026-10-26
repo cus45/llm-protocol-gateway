@@ -4131,6 +4131,10 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 			if s.apiKeyStore != nil {
 				s.apiKeyToucher.Touch(key.ID)
 			}
+		} else {
+			// 带了 Key 但不对：明确拒绝，不落到「没有 Key」的历史默认路由上。
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid api key")
+			return
 		}
 	}
 	if err != nil {
@@ -4252,6 +4256,10 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 			if s.apiKeyStore != nil {
 				s.apiKeyToucher.Touch(key.ID)
 			}
+		} else {
+			// 带了 Key 但不对：明确拒绝，不落到「没有 Key」时的默认路由上。
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"message": "invalid api key", "type": "authentication_error"}})
+			return
 		}
 	}
 	if err != nil {
