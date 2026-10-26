@@ -468,7 +468,8 @@ func (s *Server) monitorRecordIsolationEvent(provider domain.Provider, title str
 	}
 }
 
-// handleMonitorQuotaRefresh forces one vendor usage read and persists it, so the// console can show a fresh number instead of the last sampled hour.
+// handleMonitorQuotaRefresh forces one vendor usage read and persists it, so the
+// console can show a fresh number instead of the last sampled hour.
 func (s *Server) handleMonitorQuotaRefresh(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.monitorGate(w, r); !ok {
 		return
@@ -505,16 +506,38 @@ func (s *Server) handleMonitorQuotaRefresh(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	snapshot.Stale = false
-	sample := monitoring.MetricSample{
-		ProviderID: provider.ID, AuthExpiresAt: monitorSampleTime(providerCredentialExpiry(provider)),
-		HealthStatus: provider.HealthStatus, ObservedAt: snapshot.ObservedAt,
-	}
-	if snapshot.Available() {
-		ratio := snapshot.Ratio
-		sample.QuotaRatio = &ratio
-	}
-	_ = s.monitoringStore.UpsertProviderMetricSample(sample)
+	s.persistQuotaSnapshot(provider, snapshot)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota": snapshot})
+}
+
+// persistQuotaSnapshot stores one quota read as the provider's latest sample and
+// hands it back to the collector cache. Without the cache hand-off the next tick
+// would upsert the older cached snapshot over this fresh row a minute later.
+func (s *Server) persistQuotaSnapshot(provider domain.Provider, snapshot *monitoring.QuotaSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.Stale = false
+	if snapshot.ObservedAt.IsZero() {
+		snapshot.ObservedAt = time.Now().UTC()
+	}
+	if s.monitoringStore != nil {
+		sample := monitoring.MetricSample{
+			ProviderID: provider.ID, AuthExpiresAt: monitorSampleTime(providerCredentialExpiry(provider)),
+			HealthStatus: provider.HealthStatus, ObservedAt: snapshot.ObservedAt,
+			QuotaWindows: snapshot.Windows,
+		}
+		if snapshot.Available() {
+			ratio := snapshot.Ratio
+			sample.QuotaRatio = &ratio
+		}
+		if err := s.monitoringStore.UpsertProviderMetricSample(sample); err != nil {
+			slog.Warn("quota sample upsert failed", "provider", provider.ID, "error", err)
+		}
+	}
+	if s.monitoring != nil {
+		s.monitoring.NoteQuotaSnapshot(provider.ID, *snapshot)
+	}
 }
 
 func (s *Server) handleMonitorEvents(w http.ResponseWriter, r *http.Request) {
@@ -1214,6 +1237,7 @@ func monitorQuotaFromSample(sample monitoring.MetricSample, staleAfter time.Dura
 		Error:      sample.SourceError,
 		Ratio:      -1,
 		Stale:      stale,
+		Windows:    sample.QuotaWindows,
 	}
 	if sample.QuotaRatio != nil {
 		snapshot.Ratio = *sample.QuotaRatio

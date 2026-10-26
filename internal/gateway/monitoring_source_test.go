@@ -80,6 +80,48 @@ func TestMonitoringSourceKeysUsesWindowUsage(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaWindowsKeepBucketsApart(t *testing.T) {
+	fiveHourReset := "2026-10-26T14:40:00Z"
+	weeklyReset := "2026-10-31T04:00:00.123456789Z"
+	report := ClaudeOAuthUsageReport{
+		Available: true,
+		FiveHour:  &ClaudeOAuthUsageBucket{Utilization: 0, ResetsAt: fiveHourReset},
+		SevenDay:  &ClaudeOAuthUsageBucket{Utilization: 51, ResetsAt: weeklyReset},
+		// Sonnet window outranks the weekly one here only to prove the reset follows
+		// the tightest bucket, not the first one present.
+		SevenDaySonnet: &ClaudeOAuthUsageBucket{Utilization: 120, ResetsAt: weeklyReset},
+	}
+	windows := claudeQuotaWindows(report)
+	if len(windows) != 3 {
+		t.Fatalf("windows = %d, want 3: %+v", len(windows), windows)
+	}
+	if windows[0].Key != "five_hour" || windows[0].UsedPercent != 0 {
+		t.Fatalf("five-hour window must come first and keep 0%%: %+v", windows[0])
+	}
+	if windows[2].Key != "seven_day_sonnet" || windows[2].UsedPercent != 100 {
+		t.Fatalf("used percent must be clamped to 0..100: %+v", windows[2])
+	}
+	if !windows[1].ResetsAt.Equal(time.Date(2026, 10, 31, 4, 0, 0, 123456789, time.UTC)) {
+		t.Fatalf("nanosecond resets_at lost: %s", windows[1].ResetsAt)
+	}
+
+	reset := claudeWindowReset(report)
+	if !reset.Equal(time.Date(2026, 10, 31, 4, 0, 0, 123456789, time.UTC)) {
+		t.Fatalf("reset of the tightest window = %s", reset)
+	}
+	if !claudeWindowReset(ClaudeOAuthUsageReport{}).IsZero() {
+		t.Fatal("an empty report must not invent a reset time")
+	}
+	// 最紧的窗口没有 resets_at 时，退回到其它有时间的窗口，而不是丢掉重置信息。
+	fallback := claudeWindowReset(ClaudeOAuthUsageReport{
+		SevenDay: &ClaudeOAuthUsageBucket{Utilization: 90},
+		FiveHour: &ClaudeOAuthUsageBucket{Utilization: 10, ResetsAt: fiveHourReset},
+	})
+	if !fallback.Equal(time.Date(2026, 10, 26, 14, 40, 0, 0, time.UTC)) {
+		t.Fatalf("fallback reset = %s", fallback)
+	}
+}
+
 func TestMonitoringSourceMultiIPMapsHits(t *testing.T) {
 	server := NewServer(NewRouter(domain.GatewayState{}), nil)
 	source := newMonitoringSource(server)

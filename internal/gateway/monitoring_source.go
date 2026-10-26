@@ -257,7 +257,9 @@ func (m *monitoringSource) quotaForProvider(ctx context.Context, p domain.Provid
 		if !report.Available {
 			return nil, errors.New(firstNonEmpty(report.Error, "claude usage unavailable"))
 		}
-		return quotaFromUsedPercent("claude", maxClaudeUtilization(report), time.Time{}, now), nil
+		snapshot := quotaFromUsedPercent("claude", maxClaudeUtilization(report), claudeWindowReset(report), now)
+		snapshot.Windows = claudeQuotaWindows(report)
+		return snapshot, nil
 	case p.ChatGPTOAuth != nil:
 		report, err := fetchChatGPTOAuthUsage(ctx, p)
 		if err != nil {
@@ -306,6 +308,79 @@ func maxClaudeUtilization(report ClaudeOAuthUsageReport) float64 {
 		}
 	}
 	return math.Min(100, best)
+}
+
+// claudeWindowReset names when the window maxClaudeUtilization picked resets, so
+// the console can say "00:40 重置" instead of deriving a time from the schedule.
+// A bucket without resets_at falls back to any other window that has one.
+func claudeWindowReset(report ClaudeOAuthUsageReport) time.Time {
+	var best, fallback *ClaudeOAuthUsageBucket
+	for _, bucket := range []*ClaudeOAuthUsageBucket{
+		report.SevenDayOverageIncluded, report.SevenDay, report.FiveHour,
+		report.SevenDaySonnet, report.SevenDayOpus,
+	} {
+		if bucket == nil {
+			continue
+		}
+		reset := parseClaudeResetsAt(bucket.ResetsAt)
+		if !reset.IsZero() && fallback == nil {
+			fallback = bucket
+		}
+		if best == nil || bucket.Utilization > best.Utilization {
+			best = bucket
+		}
+	}
+	if best == nil {
+		return time.Time{}
+	}
+	if reset := parseClaudeResetsAt(best.ResetsAt); !reset.IsZero() {
+		return reset
+	}
+	if fallback != nil {
+		return parseClaudeResetsAt(fallback.ResetsAt)
+	}
+	return time.Time{}
+}
+
+// claudeQuotaWindows keeps Claude's buckets apart in the order an operator reads
+// them: the five-hour window first (it is the one keepalive targets), then the
+// weekly buckets.
+func claudeQuotaWindows(report ClaudeOAuthUsageReport) []monitoring.QuotaWindow {
+	buckets := []struct {
+		key    string
+		bucket *ClaudeOAuthUsageBucket
+	}{
+		{"five_hour", report.FiveHour},
+		{"seven_day", report.SevenDay},
+		{"seven_day_sonnet", report.SevenDaySonnet},
+		{"seven_day_opus", report.SevenDayOpus},
+		{"seven_day_overage_included", report.SevenDayOverageIncluded},
+	}
+	windows := make([]monitoring.QuotaWindow, 0, len(buckets))
+	for _, item := range buckets {
+		if item.bucket == nil {
+			continue
+		}
+		windows = append(windows, monitoring.QuotaWindow{
+			Key:         item.key,
+			UsedPercent: math.Min(100, math.Max(0, item.bucket.Utilization)),
+			ResetsAt:    parseClaudeResetsAt(item.bucket.ResetsAt),
+		})
+	}
+	return windows
+}
+
+func parseClaudeResetsAt(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func maxChatGPTUtilization(report ChatGPTOAuthUsageReport) float64 {

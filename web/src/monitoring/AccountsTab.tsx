@@ -12,7 +12,7 @@ import type {
   MonitorQuota,
 } from './types';
 import {hasTime, quotaRatioKnown} from './types';
-import {displayTime, formatLatency, quotaText, relativeToNow} from './format';
+import {displayTime, formatLatency, quotaText, quotaWindowLabel, quotaWindowText, quotaWindowsHint, relativeToNow} from './format';
 import {probeCaseText} from './types';
 
 export interface AccountsTabProps {
@@ -643,7 +643,7 @@ export function AccountsDrawer(props: AccountsDrawerProps) {
         <div className="card">
           <div className="panel-title">{'凭证'}</div>
           <div className="metric-label">{'到期时间'}</div>
-          <div className="metric-value" title={detail.expiresAt ?? ''}>
+          <div className="metric-value" style={{ whiteSpace: 'normal' }} title={detail.expiresAt ?? ''}>
             {hasTime(detail.expiresAt)
               ? `${displayTime(detail.expiresAt, timezone).text}（${relativeToNow(detail.expiresAt, Date.now())}）`
               : '不适用'}
@@ -663,9 +663,18 @@ export function AccountsDrawer(props: AccountsDrawerProps) {
           <div className="metric-value">{quotaText(detail.quota).primary}</div>
           <div className="metric-note">
             {detail.quota
-              ? `${quotaText(detail.quota).note} · 采样 ${displayTime(detail.quota.observedAt, timezone).text}`
+              ? `${quotaText(detail.quota).note} · 读取 ${displayTime(detail.quota.observedAt, timezone).text}`
               : '该厂商没有额度接口'}
           </div>
+          {(detail.quota?.windows ?? []).map((window) => (
+            <div
+              className="metric-note"
+              key={window.key}
+              title={hasTime(window.resetsAt) ? `${displayTime(window.resetsAt, timezone).text} 重置` : '上游没有给这个窗口的重置时间'}
+            >
+              {`${quotaWindowLabel(window.key)}：${quotaWindowText(window, timezone)}`}
+            </div>
+          ))}
           {detail.quota?.error && <div className="metric-note err">{`读取失败：${detail.quota.error}`}</div>}
         </div>
 
@@ -1252,7 +1261,7 @@ export function AccountsTab(props: AccountsTabProps) {
                     {account.isolated ? isolatedAtText || '已隔离' : expiryText(account, now)}
                   </span>
                 </div>
-                <div className="mon-acc-fact right" title={quota.note}>
+                <div className="mon-acc-fact right" title={[quota.note, quotaWindowsHint(account.quota, timezone)].filter(Boolean).join('\n')}>
                   <span className="mon-acc-fact-key">{'额度'}</span>
                   <span className={`mon-acc-fact-value ${quotaTone}`}>
                     {quota.primary}

@@ -149,23 +149,8 @@ func (c *Collector) Snapshot(ctx context.Context, now time.Time) (Snapshot, erro
 	}
 
 	if sink, ok := c.store.(SampleSink); ok {
-		hour := now.UTC().Truncate(time.Hour).Format(time.RFC3339Nano)
 		for _, provider := range snap.Providers {
-			sample := MetricSample{
-				ProviderID:    provider.ID,
-				Hour:          hour,
-				AuthExpiresAt: formatSampleTime(provider.ExpiresAt),
-				HealthStatus:  provider.HealthStatus,
-				ObservedAt:    now,
-			}
-			if provider.Quota != nil {
-				if provider.Quota.Available() {
-					ratio := provider.Quota.Ratio
-					sample.QuotaRatio = &ratio
-				}
-				sample.SourceError = provider.Quota.Error
-			}
-			_ = sink.UpsertProviderMetricSample(sample)
+			_ = sink.UpsertProviderMetricSample(c.providerSample(provider, now))
 		}
 	}
 
@@ -183,4 +168,42 @@ func formatSampleTime(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// providerSample builds the row one tick persists. The quota itself is read at
+// most once per quotaCacheTTL, so its own ObservedAt — not the tick clock — is
+// the honest "采样" time; stamping every tick made a 15-minute-old number look
+// freshly read.
+func (c *Collector) providerSample(provider ProviderObservation, now time.Time) MetricSample {
+	sample := MetricSample{
+		ProviderID:    provider.ID,
+		Hour:          now.UTC().Truncate(time.Hour).Format(time.RFC3339Nano),
+		AuthExpiresAt: formatSampleTime(provider.ExpiresAt),
+		HealthStatus:  provider.HealthStatus,
+		ObservedAt:    now,
+	}
+	if quota := provider.Quota; quota != nil {
+		if !quota.ObservedAt.IsZero() {
+			sample.ObservedAt = quota.ObservedAt
+		}
+		if quota.Available() {
+			ratio := quota.Ratio
+			sample.QuotaRatio = &ratio
+		}
+		sample.SourceError = quota.Error
+		sample.QuotaWindows = quota.Windows
+	}
+	return sample
+}
+
+// NoteQuota replaces the cached snapshot after a forced read (the console's
+// 刷新额度 or a keepalive fire). Without it the next tick would write the older
+// cached value back over the fresh sample a minute later.
+func (c *Collector) NoteQuota(providerID string, quota QuotaSnapshot) {
+	if providerID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.quota[providerID] = &quota
 }

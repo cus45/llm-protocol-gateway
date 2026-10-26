@@ -22,6 +22,7 @@ import {
   apiKeyClientBaseURL,
   apiKeyGatewayRoot,
   clientConfigsForProtocol,
+  copyToClipboard,
   protocolLabel,
   protocolFromLabel,
   ScheduleModeOptions,
@@ -681,10 +682,16 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
 
   function copy(text: string, message: string, token = 'plain') {
     if (!text) return;
-    void navigator.clipboard?.writeText(text).then(() => {
+    // 局域网 HTTP 下 navigator.clipboard 不存在，必须走带 execCommand 降级的
+    // copyToClipboard；直接调 clipboard 会让点击静默失败。
+    void copyToClipboard(text).then((ok) => {
+      if (!ok) {
+        onToast('复制失败，请手动选中文本复制');
+        return;
+      }
       flashCopied(token);
       onToast(message);
-    }).catch(() => onToast('复制失败，请手动选中文本复制'));
+    });
   }
 
   const clientURL = route ? apiKeyClientBaseURL(route, endpoints, effectivePublicBase) : '';

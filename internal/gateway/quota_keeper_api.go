@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
 const (
@@ -114,10 +115,60 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 		return
 	}
 	response := map[string]any{"tasks": tasks, "recentRuns": runs, "serverTimeZone": serverTimeZoneLabel()}
+	response["providerQuota"] = s.quotaTaskProviderQuota(identity, tasks)
 	if identity.isAdmin() {
 		response["ownerNames"] = s.quotaOwnerNames(tasks)
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// quotaTaskProviderQuota hands the task cards the last real quota read for the
+// providers they schedule. The card used to derive "窗口重置" from nextRunAt +
+// 5h, which is a schedule guess; Claude reports a real resets_at per window and
+// that is what the operator is looking at when they wonder why a fire did not
+// move the number.
+func (s *Server) quotaTaskProviderQuota(identity sessionIdentity, tasks []domain.ScheduledTask) map[string]monitoring.QuotaSnapshot {
+	out := map[string]monitoring.QuotaSnapshot{}
+	if s.monitoringStore == nil {
+		return out
+	}
+	// Only providers the caller can already see: a revoked grant must not leak
+	// that account's usage through a task they made before the revocation.
+	visible := map[string]bool{}
+	granted := map[string]bool{}
+	if !identity.isAdmin() {
+		granted = s.allowedProviderIDsForUser(identity.UserID)
+	}
+	for _, task := range tasks {
+		for _, providerID := range task.ProviderIDs {
+			if identity.isAdmin() || granted[providerID] {
+				visible[providerID] = true
+			}
+		}
+	}
+	if len(visible) == 0 {
+		return out
+	}
+	samples, err := s.monitoringStore.LatestProviderMetricSamples()
+	if err != nil {
+		return out
+	}
+	now := time.Now().UTC()
+	staleAfter := time.Duration(monitoring.NewConfig(s.monitoringStore).Probe().QuotaStaleMinutes) * time.Minute
+	for providerID := range visible {
+		sample, found := samples[providerID]
+		if !found {
+			continue
+		}
+		snapshot := monitorQuotaFromSample(sample, staleAfter, now)
+		// Only a sample that names its windows is useful here; the card falls
+		// back to its own estimate for vendors without per-window usage.
+		if snapshot == nil || len(snapshot.Windows) == 0 {
+			continue
+		}
+		out[providerID] = *snapshot
+	}
+	return out
 }
 
 // quotaVisibleRuns returns recent firings for the tasks the caller may see.

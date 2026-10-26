@@ -19,6 +19,7 @@ import (
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
 // ScheduledTaskStore persists quota-keeper tasks and their run history.
@@ -751,6 +752,7 @@ func (s *Server) probeProviderForQuota(ctx context.Context, task domain.Schedule
 		// 只有成功的一发才算"碰过额度"。失败的上游请求没有启动窗口，若也记进
 		// 最近探测，下一格会被自己的失败挡住，正好错过重新激活的机会。
 		s.recordQuotaProbe(providerID, started)
+		s.refreshQuotaAfterProbe(ctx, provider)
 		run.Outcome = domain.QuotaRunFired
 		return run
 	}
@@ -761,6 +763,33 @@ func (s *Server) probeProviderForQuota(ctx context.Context, task domain.Schedule
 		run.Reason = fmt.Sprintf("上游返回 HTTP %d", run.Status)
 	}
 	return run
+}
+
+// refreshQuotaAfterProbe closes the gap between "保活发了一发" and "面板看到新
+// 读数". The collector samples quota at most once every 15 minutes, so a fire the
+// user just triggered used to leave the old number on screen until the next
+// sample. A failed read never fails the run: the probe itself already succeeded.
+func (s *Server) refreshQuotaAfterProbe(ctx context.Context, provider domain.Provider) {
+	if s.monitoringSrc == nil || !providerHasQuotaHandler(provider) {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), monitorProbeTimeout)
+	defer cancel()
+	snapshot, err := s.monitoringSrc.Quota(readCtx, monitoring.ProviderObservation{
+		ID: provider.ID, Name: provider.Name, Vendor: providerVendorKey(provider),
+	})
+	if err != nil {
+		slog.Warn("quota read after keepalive probe failed", "provider", provider.ID, "error", err)
+		return
+	}
+	if snapshot == nil {
+		return
+	}
+	if snapshot.Error != "" {
+		slog.Warn("quota read after keepalive probe unavailable", "provider", provider.ID, "error", snapshot.Error)
+		return
+	}
+	s.persistQuotaSnapshot(provider, snapshot)
 }
 
 func truncateRunReason(value string) string {

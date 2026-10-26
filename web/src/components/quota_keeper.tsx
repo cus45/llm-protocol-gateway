@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { API_BASE, protocolLabel } from '../lib';
 import type { BadgeTone, Provider, QuotaPreviewFire, ScheduledTask, ScheduledTaskRun, ScheduleMode } from '../types';
+import type { MonitorQuota } from '../monitoring/types';
+import { quotaWindowLabel } from '../monitoring/format';
 import { MultiSelectFilter } from './selects';
 import { ProviderLabel, ProviderRefLabel, providerIcon } from './provider_label';
 import { Badge, CheckboxField, Field, Modal, MoreMenu } from './ui';
@@ -190,6 +192,7 @@ async function readError(response: Response) {
 export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]; isAdmin: boolean }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [recentRuns, setRecentRuns] = useState<ScheduledTaskRun[]>([]);
+  const [providerQuota, setProviderQuota] = useState<Record<string, MonitorQuota>>({});
   const [ownerNames, setOwnerNames] = useState<Record<string, string>>({});
   const [serverZone, setServerZone] = useState('');
   const [loading, setLoading] = useState(true);
@@ -204,10 +207,11 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
     try {
       const response = await fetch(`${API_BASE}/__quota-tasks`);
       if (!response.ok) throw new Error(await readError(response));
-      const payload = (await response.json()) as { tasks?: ScheduledTask[]; recentRuns?: ScheduledTaskRun[]; ownerNames?: Record<string, string>; serverTimeZone?: string };
+      const payload = (await response.json()) as { tasks?: ScheduledTask[]; recentRuns?: ScheduledTaskRun[]; providerQuota?: Record<string, MonitorQuota>; ownerNames?: Record<string, string>; serverTimeZone?: string };
       // 被保活暂停的任务没有 Provider 了；这里统一成数组，卡片直接按数组用。
       setTasks((payload.tasks || []).map((task) => ({ ...task, providerIds: task.providerIds || [] })));
       setRecentRuns(payload.recentRuns || []);
+      setProviderQuota(payload.providerQuota || {});
       setOwnerNames(payload.ownerNames || {});
       setServerZone(payload.serverTimeZone || '');
       setError('');
@@ -322,6 +326,7 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
                 task={task}
                 providers={providers}
                 runs={runsByTask[task.id] || []}
+                providerQuota={providerQuota}
                 busy={busyId === task.id}
                 expanded={expanded === task.id}
                 onToggleExpansion={() => setExpanded(expanded === task.id ? '' : task.id)}
@@ -351,10 +356,40 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
   );
 }
 
-function QuotaTaskCard({ task, providers, runs, busy, expanded, onToggleExpansion, onToggle, onRun, onEdit, onDelete, now, owner, serverZone }: {
+type QuotaResetWindow = { providerId: string; providerName: string; label: string; usedPercent: number; at: number };
+
+/**
+ * 各 Provider 上游给的真实窗口重置时间。原来卡片用「下次触发 + 5 小时」推算，
+ * 一旦调度跳过或延迟，推算就与上游对不上；有 resets_at 时以它为准。
+ */
+function quotaResetWindows(task: ScheduledTask, providers: Provider[], providerQuota: Record<string, MonitorQuota>, now: number): QuotaResetWindow[] {
+  const out: QuotaResetWindow[] = [];
+  for (const providerId of task.providerIds) {
+    const windows = providerQuota[providerId]?.windows ?? [];
+    if (windows.length === 0) continue;
+    // 保活要钉的是五小时窗口；厂商没给时才退回「用得最紧且带重置时间」的窗口。
+    const target = windows.find((window) => window.key === 'five_hour' && window.resetsAt)
+      || windows.filter((window) => window.resetsAt).sort((left, right) => right.usedPercent - left.usedPercent)[0];
+    if (!target?.resetsAt) continue;
+    const at = Date.parse(target.resetsAt);
+    // 已经过去的重置时间说明样本过期：这时显示"已重置"只会误导，让卡片退回推算。
+    if (Number.isNaN(at) || at <= now) continue;
+    out.push({
+      providerId,
+      providerName: providers.find((provider) => provider.id === providerId)?.name || providerId,
+      label: quotaWindowLabel(target.key),
+      usedPercent: target.usedPercent,
+      at,
+    });
+  }
+  return out.sort((left, right) => left.at - right.at);
+}
+
+function QuotaTaskCard({ task, providers, runs, providerQuota, busy, expanded, onToggleExpansion, onToggle, onRun, onEdit, onDelete, now, owner, serverZone }: {
   task: ScheduledTask;
   providers: Provider[];
   runs: ScheduledTaskRun[];
+  providerQuota: Record<string, MonitorQuota>;
   busy: boolean;
   expanded: boolean;
   onToggleExpansion: () => void;
@@ -374,6 +409,8 @@ function QuotaTaskCard({ task, providers, runs, busy, expanded, onToggleExpansio
   const zone = task.timeZone || serverZone;
   const zoneDiffersFromBrowser = Boolean(task.timeZone) && task.timeZone !== LOCAL_ZONE;
   const nextReset = task.nextRunAt ? new Date(new Date(task.nextRunAt).getTime() + WINDOW_HOURS * 3600000).toISOString() : '';
+  const realResets = quotaResetWindows(task, providers, providerQuota, now);
+  const earliestReset = realResets[0];
 
   return (
     <article className={`quota-card${task.enabled ? '' : ' paused'}`}>
@@ -405,7 +442,18 @@ function QuotaTaskCard({ task, providers, runs, busy, expanded, onToggleExpansio
         <span className="quota-next-label">下次触发</span>
         <span className="quota-next-value">{task.enabled ? dayClockIn(task.nextRunAt, zone) || '待计算' : '已暂停'}</span>
         {task.enabled && task.nextRunAt ? <span className="quota-next-countdown">{countdown(task.nextRunAt, now)}</span> : null}
-        {task.enabled && nextReset ? <span className="quota-next-reset">窗口预计 {clockIn(nextReset, zone)} 重置</span> : null}
+        {task.enabled && earliestReset ? (
+          <span
+            className="quota-next-reset"
+            title={`${realResets.map((item) => `${item.providerName}：${item.label} ${Math.round(item.usedPercent)}% 已用，${dayClockIn(new Date(item.at).toISOString(), zone)} 重置`).join('\n')}\n来自上游 resets_at，不是按触发时间推算`}
+          >
+            {`${earliestReset.label}窗口 ${dayClockIn(new Date(earliestReset.at).toISOString(), zone)} 重置`}
+          </span>
+        ) : task.enabled && nextReset ? (
+          <span className="quota-next-reset" title="上游还没有给出窗口重置时间，这里按「下次触发 + 5 小时」推算">
+            {`窗口预计 ${clockIn(nextReset, zone)} 重置`}
+          </span>
+        ) : null}
       </div>
       {task.enabled && zoneDiffersFromBrowser && task.nextRunAt ? (
         <p className="quota-hint">按 {zone} 计时；你这里（{LOCAL_ZONE}）是 {dayClockIn(task.nextRunAt, LOCAL_ZONE)}。</p>

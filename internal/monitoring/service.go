@@ -55,6 +55,16 @@ func (s *Service) Tick(ctx context.Context) error { return s.tickAt(ctx, s.now()
 
 func (s *Service) TickAt(ctx context.Context, now time.Time) error { return s.tickAt(ctx, now) }
 
+// NoteQuotaSnapshot hands a forced quota read (console refresh or keepalive
+// fire) back to the collector's cache, so the next tick keeps that fresh value
+// instead of rewriting the older cached one over the persisted sample.
+func (s *Service) NoteQuotaSnapshot(providerID string, quota QuotaSnapshot) {
+	if s.collector == nil {
+		return
+	}
+	s.collector.NoteQuota(providerID, quota)
+}
+
 func (s *Service) watchdog(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

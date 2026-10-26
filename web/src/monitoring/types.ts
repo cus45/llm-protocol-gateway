@@ -28,6 +28,14 @@ export interface MonitorCapabilities {
   oauth: boolean;
 }
 
+export interface MonitorQuotaWindow {
+  key: string;
+  /** 0..100 的已用百分比。 */
+  usedPercent: number;
+  /** 上游窗口的真实重置时间；缺失表示厂商没给。 */
+  resetsAt?: string;
+}
+
 export interface MonitorQuota {
   source: string;
   remaining: number;
@@ -38,6 +46,8 @@ export interface MonitorQuota {
   observedAt: string;
   stale: boolean;
   error?: MonitorErrorKind;
+  /** 厂商拆开的用量窗口（Claude 的五小时 / 七天等）。 */
+  windows?: MonitorQuotaWindow[];
 }
 
 export interface MonitorRenewalOutcome {

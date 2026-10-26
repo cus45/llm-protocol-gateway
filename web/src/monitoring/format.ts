@@ -1,4 +1,4 @@
-import type { MonitorProbeAccount, MonitorQuota, MonitorSeverity } from './types';
+import type { MonitorProbeAccount, MonitorQuota, MonitorQuotaWindow, MonitorSeverity } from './types';
 import { hasTime, quotaAbsoluteKnown, quotaRatioKnown } from './types';
 
 /** 级别 → 现有 badge 色调（状态不能只靠颜色，文本永远同现）。 */
@@ -81,6 +81,36 @@ export function quotaText(quota?: MonitorQuota | null): { primary: string; note:
     return { primary: `剩余 ${ratio}`, note: '接口只给比例，没有绝对值' };
   }
   return { primary: `剩余 ${ratio}`, note: `${Math.round(quota.remaining)} / ${Math.round(quota.limit)}` };
+}
+
+/**
+ * 厂商窗口的展示名。Claude 的 ratio 是「最紧的那个窗口」，只看一个大数字会
+ * 误以为「还剩一半」，所以把每个窗口拆开写。
+ */
+const QUOTA_WINDOW_LABELS: Record<string, string> = {
+  five_hour: '五小时',
+  seven_day: '七天',
+  seven_day_sonnet: '七天 Sonnet',
+  seven_day_opus: '七天 Opus',
+  seven_day_overage_included: '额外用量',
+};
+
+export function quotaWindowLabel(key: string): string {
+  return QUOTA_WINDOW_LABELS[key] || key;
+}
+
+/** 一个窗口：已用百分比 + 上游给的真实重置时刻（没给就只写已用）。 */
+export function quotaWindowText(window: MonitorQuotaWindow, timeZone: string): string {
+  const used = `${Math.round(window.usedPercent)}% 已用`;
+  if (!hasTime(window.resetsAt)) return used;
+  return `${used} · ${displayTimeCompact(displayTime(window.resetsAt, timeZone).text)} 重置`;
+}
+
+/** 额度卡片的悬停说明：把每个窗口拼成多行，方便一眼对上卡上的大数字。 */
+export function quotaWindowsHint(quota?: MonitorQuota | null, timeZone = ''): string {
+  const windows = quota?.windows ?? [];
+  if (windows.length === 0) return '';
+  return windows.map((window) => `${quotaWindowLabel(window.key)}：${quotaWindowText(window, timeZone)}`).join('\n');
 }
 
 /** 延迟：秒级保留一位小数，毫秒级不写「0.0s」这种看不出量级的形态。 */

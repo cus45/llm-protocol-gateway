@@ -119,5 +119,10 @@ func ensureMonitoringSchema(tx *sql.Tx) error {
 			return fmt.Errorf("monitor schema: %w", err)
 		}
 	}
+	// quota_windows 是后加的：Claude 的五个用量窗口不再合并成一个比例，旧库
+	// 通过 ALTER TABLE 补列，不做整表重建。
+	if err := addColumnIfMissing(tx, "provider_metric_samples", "quota_windows", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("provider_metric_samples.quota_windows: %w", err)
+	}
 	return nil
 }

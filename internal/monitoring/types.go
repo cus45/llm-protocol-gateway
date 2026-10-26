@@ -235,15 +235,26 @@ type Capabilities struct {
 	OAuth   bool `json:"oauth"`
 }
 
+// QuotaWindow is one vendor usage bucket (Claude's 5-hour / 7-day limits, for
+// example). Ratio collapses them into "the tightest window"; Windows keeps them
+// apart so the console can name the bucket that is actually limiting the
+// account and show when that bucket resets.
+type QuotaWindow struct {
+	Key         string    `json:"key"`
+	UsedPercent float64   `json:"usedPercent"`
+	ResetsAt    time.Time `json:"resetsAt,omitempty"`
+}
+
 type QuotaSnapshot struct {
-	Source     string    `json:"source"`
-	Remaining  float64   `json:"remaining"`
-	Limit      float64   `json:"limit"`
-	Ratio      float64   `json:"ratio"`
-	ExpiresAt  time.Time `json:"expiresAt,omitempty"`
-	ObservedAt time.Time `json:"observedAt"`
-	Stale      bool      `json:"stale"`
-	Error      string    `json:"error,omitempty"`
+	Source     string        `json:"source"`
+	Remaining  float64       `json:"remaining"`
+	Limit      float64       `json:"limit"`
+	Ratio      float64       `json:"ratio"`
+	ExpiresAt  time.Time     `json:"expiresAt,omitempty"`
+	ObservedAt time.Time     `json:"observedAt"`
+	Stale      bool          `json:"stale"`
+	Error      string        `json:"error,omitempty"`
+	Windows    []QuotaWindow `json:"windows,omitempty"`
 }
 
 func (q QuotaSnapshot) Available() bool { return q.Limit > 0 && q.Ratio >= 0 }
@@ -396,6 +407,7 @@ type MetricSample struct {
 	ProviderID       string
 	Hour             string
 	QuotaRatio       *float64
+	QuotaWindows     []QuotaWindow
 	Credits          *float64
 	CreditValidUntil string
 	AuthExpiresAt    string

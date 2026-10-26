@@ -560,25 +560,32 @@ func (s *Store) UpsertProviderMetricSample(sample monitoring.MetricSample) error
 	if sample.Credits != nil {
 		credits = *sample.Credits
 	}
+	quotaWindows := ""
+	if len(sample.QuotaWindows) > 0 {
+		if raw, err := json.Marshal(sample.QuotaWindows); err == nil {
+			quotaWindows = string(raw)
+		}
+	}
 	_, err := s.db.Exec(`INSERT INTO provider_metric_samples (
-			provider_id, hour, quota_ratio, credits, credit_valid_until, auth_expires_at,
+			provider_id, hour, quota_ratio, quota_windows, credits, credit_valid_until, auth_expires_at,
 			health_status, source_error, observed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider_id, hour) DO UPDATE SET
 			quota_ratio = excluded.quota_ratio,
+			quota_windows = excluded.quota_windows,
 			credits = excluded.credits,
 			credit_valid_until = excluded.credit_valid_until,
 			auth_expires_at = excluded.auth_expires_at,
 			health_status = excluded.health_status,
 			source_error = excluded.source_error,
 			observed_at = excluded.observed_at`,
-		sample.ProviderID, hour, quotaRatio, credits, sample.CreditValidUntil,
+		sample.ProviderID, hour, quotaRatio, quotaWindows, credits, sample.CreditValidUntil,
 		sample.AuthExpiresAt, sample.HealthStatus, sample.SourceError, monitorTime(sample.ObservedAt))
 	return err
 }
 
 func (s *Store) LatestProviderMetricSamples() (map[string]monitoring.MetricSample, error) {
-	rows, err := s.reader().Query(`SELECT provider_id, hour, quota_ratio, credits, credit_valid_until,
+	rows, err := s.reader().Query(`SELECT provider_id, hour, quota_ratio, quota_windows, credits, credit_valid_until,
 			auth_expires_at, health_status, source_error, observed_at
 		FROM provider_metric_samples ORDER BY provider_id, hour DESC`)
 	if err != nil {
@@ -588,12 +595,13 @@ func (s *Store) LatestProviderMetricSamples() (map[string]monitoring.MetricSampl
 	out := map[string]monitoring.MetricSample{}
 	for rows.Next() {
 		var (
-			sample     monitoring.MetricSample
-			quotaRatio sql.NullFloat64
-			credits    sql.NullFloat64
-			observedAt string
+			sample       monitoring.MetricSample
+			quotaRatio   sql.NullFloat64
+			quotaWindows string
+			credits      sql.NullFloat64
+			observedAt   string
 		)
-		if err := rows.Scan(&sample.ProviderID, &sample.Hour, &quotaRatio, &credits,
+		if err := rows.Scan(&sample.ProviderID, &sample.Hour, &quotaRatio, &quotaWindows, &credits,
 			&sample.CreditValidUntil, &sample.AuthExpiresAt, &sample.HealthStatus,
 			&sample.SourceError, &observedAt); err != nil {
 			return nil, err
@@ -608,6 +616,12 @@ func (s *Store) LatestProviderMetricSamples() (map[string]monitoring.MetricSampl
 		if credits.Valid {
 			value := credits.Float64
 			sample.Credits = &value
+		}
+		if quotaWindows != "" {
+			var windows []monitoring.QuotaWindow
+			if err := json.Unmarshal([]byte(quotaWindows), &windows); err == nil {
+				sample.QuotaWindows = windows
+			}
 		}
 		sample.ObservedAt = parseMonitorTime(observedAt)
 		out[sample.ProviderID] = sample

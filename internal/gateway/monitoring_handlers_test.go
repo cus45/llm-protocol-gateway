@@ -318,6 +318,7 @@ func TestMonitorAccountRefreshAndQuotaRefresh(t *testing.T) {
 	server.monitoringSrc.quotaFetch = func(ctx context.Context, p domain.Provider, at time.Time) (*monitoring.QuotaSnapshot, error) {
 		return &monitoring.QuotaSnapshot{
 			Source: "claude", Ratio: ratio, Limit: 100, Remaining: 40, ObservedAt: at.UTC(),
+			Windows: []monitoring.QuotaWindow{{Key: "five_hour", UsedPercent: 12, ResetsAt: at.Add(90 * time.Minute).UTC()}},
 		}, nil
 	}
 	fresh := monitorCall(t, server.handleMonitorQuotaRefresh, http.MethodPost, "/__monitor/accounts/p-claude/quota/refresh", "",
@@ -335,6 +336,9 @@ func TestMonitorAccountRefreshAndQuotaRefresh(t *testing.T) {
 	if !quotaReply.OK || quotaReply.Quota.Ratio != ratio || quotaReply.Quota.Stale {
 		t.Fatalf("quota reply = %+v", quotaReply)
 	}
+	if len(quotaReply.Quota.Windows) != 1 || quotaReply.Quota.Windows[0].Key != "five_hour" {
+		t.Fatalf("per-window usage must reach the console: %+v", quotaReply.Quota.Windows)
+	}
 	// 强制读到的数必须落进采样，否则下一次 accounts 仍然显示旧的那小时。
 	samples, err := db.LatestProviderMetricSamples()
 	if err != nil {
@@ -343,6 +347,9 @@ func TestMonitorAccountRefreshAndQuotaRefresh(t *testing.T) {
 	sample, ok := samples["p-claude"]
 	if !ok || sample.QuotaRatio == nil || *sample.QuotaRatio != ratio {
 		t.Fatalf("refresh did not persist the sample: %+v", samples)
+	}
+	if len(sample.QuotaWindows) != 1 || sample.QuotaWindows[0].Key != "five_hour" {
+		t.Fatalf("refresh did not persist the windows: %+v", sample.QuotaWindows)
 	}
 
 	// 上游拒绝时是 502 + 分类，绝不把带 token 的原文透出去。
@@ -369,6 +376,56 @@ func TestMonitorAccountRefreshAndQuotaRefresh(t *testing.T) {
 		map[string]string{"providerId": "p-claude"}, monitorAdminID())
 	if unavailable.Code != http.StatusServiceUnavailable {
 		t.Fatalf("quota refresh without source = %d, want 503", unavailable.Code)
+	}
+}
+
+// 保活发成功以后必须顺手把额度读一遍并落库：否则「触发成功但面板还是旧数」
+// 只能等下一轮 15 分钟的采样，用户就会以为保活没生效。
+func TestKeepaliveProbeRefreshesQuotaSample(t *testing.T) {
+	server, db := monitorTestServer(t, monitorClaudeProvider())
+	observed := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	server.monitoringSrc.quotaFetch = func(ctx context.Context, p domain.Provider, at time.Time) (*monitoring.QuotaSnapshot, error) {
+		return &monitoring.QuotaSnapshot{
+			Source: "claude", Ratio: 0.88, Limit: 100, Remaining: 88, ObservedAt: observed,
+			Windows: []monitoring.QuotaWindow{
+				{Key: "five_hour", UsedPercent: 12, ResetsAt: observed.Add(4 * time.Hour)},
+				{Key: "seven_day", UsedPercent: 51},
+			},
+		}, nil
+	}
+	provider, err := server.router.ProviderByID("p-claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.refreshQuotaAfterProbe(context.Background(), provider)
+
+	samples, err := db.LatestProviderMetricSamples()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample, ok := samples["p-claude"]
+	if !ok || sample.QuotaRatio == nil || *sample.QuotaRatio != 0.88 {
+		t.Fatalf("keepalive did not persist a fresh sample: %+v", samples)
+	}
+	// 采样时间必须是本次读取的时刻，不是 tick 的时钟。
+	if !sample.ObservedAt.Equal(observed) {
+		t.Fatalf("sample observedAt = %s, want the read time %s", sample.ObservedAt, observed)
+	}
+	if len(sample.QuotaWindows) != 2 || sample.QuotaWindows[0].Key != "five_hour" {
+		t.Fatalf("windows lost on the way to the sample: %+v", sample.QuotaWindows)
+	}
+
+	// 读取失败不能把上一次的窗口洗掉，也不能让保活本身失败。
+	server.monitoringSrc.quotaFetch = func(ctx context.Context, p domain.Provider, at time.Time) (*monitoring.QuotaSnapshot, error) {
+		return nil, fmt.Errorf("401 unauthorized")
+	}
+	server.refreshQuotaAfterProbe(context.Background(), provider)
+	after, err := db.LatestProviderMetricSamples()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after["p-claude"]; len(got.QuotaWindows) != 2 {
+		t.Fatalf("a failed read wiped the last good windows: %+v", got)
 	}
 }
 
