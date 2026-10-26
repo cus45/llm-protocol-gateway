@@ -60,6 +60,7 @@ import {
     formatCostMicros,
     formatDuration,
     formatJsonDisplay,
+    formatDateInZone,
     formatLocalISODate,
     formatRate,
     formatTrafficLogDetail,
@@ -261,6 +262,9 @@ function App() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
   const [bootSession] = useState(loadBootSession);
+  // 网关自己的时区（/__state 的 serverTimeZone）：「今日」、日界都按它算，和每个密钥的
+  // 「今日 N 次」同一天。首次渲染还不知道时退回浏览器时区。
+  const [serverTimeZone, setServerTimeZone] = useState(() => (bootSession.state?.serverTimeZone || ''));
   const [state, setState] = useState<GatewayState>(() => bootSession.state || fallbackState);
   // 输入 Provider 列表的顺序：只在进入这一页的首次绘制、或点了「获取模型」时按
   // 近 3 日请求量重排。日志轮询照常更新计数，但顺序冻结——请求量每分钟都可能
@@ -1323,7 +1327,8 @@ function App() {
 
   useEffect(() => {
     if (activeNav !== 'usage-stats') return;
-    const today = formatLocalISODate(new Date());
+    // 「今日」按网关的时区算：每个密钥的「今日 N 次」用的是服务端的今天。
+    const today = formatDateInZone(new Date(), serverTimeZone);
     if (usageFollowTodayRef.current) {
       if (usageRangeRef.current.from !== today || usageRangeRef.current.to !== today) {
         setUsageFrom(today);
@@ -1787,6 +1792,7 @@ function App() {
       const data = await response.json() as GatewayState;
       const normalized = normalizeGatewayState(data);
       setState((current) => normalizeGatewayState(data, current));
+      setServerTimeZone(data.serverTimeZone || '');
       setSelectedRouteID((current) => current || data.routes?.[0]?.id || '');
       setSelectedProviderID((current) => current || data.providers?.[0]?.id || '');
       setSelectedOutputProtocol((current) => data.routes?.[0]?.outputProtocol || current);
@@ -1822,8 +1828,9 @@ function App() {
     // 日历选完立即刷新时 state 尚未生效，需显式传入新区间
     const from = fromOverride !== undefined ? fromOverride : logsFrom;
     const to = toOverride !== undefined ? toOverride : logsTo;
-    if (from) params.set('from', localDateToRFC3339(from));
-    if (to) params.set('to', localDateToRFC3339(to, true));
+    // 日期按网关时区补齐偏移：纯日期后端按 time.Local 解析，带浏览器偏移会把日界挪走。
+    if (from) params.set('from', localDateToRFC3339(from, false, serverTimeZone));
+    if (to) params.set('to', localDateToRFC3339(to, true, serverTimeZone));
     const keyName = apiKeyNameOverride !== undefined ? apiKeyNameOverride.trim() : logsApiKeyName.trim();
     if (keyName) params.set('apiKeyName', keyName);
     if (logsUsageTarget) params.set(logsUsageTarget.type === 'model' ? 'model' : 'apiKeyId', logsUsageTarget.value);
@@ -2011,8 +2018,9 @@ function App() {
       // 容错：开始时间晚于结束时间时自动交换，避免后端返回空区间
       if (from && to && from > to) [from, to] = [to, from];
       const params = new URLSearchParams();
-      if (from) params.set('from', localDateToRFC3339(from));
-      if (to) params.set('to', localDateToRFC3339(to, true));
+      // 日期按网关时区补齐偏移：纯日期后端按 time.Local 解析，带浏览器偏移会把日界挪走。
+      if (from) params.set('from', localDateToRFC3339(from, false, serverTimeZone));
+      if (to) params.set('to', localDateToRFC3339(to, true, serverTimeZone));
       const response = await fetch(`${API_BASE}/__request-stats?${params.toString()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const snapshot = normalizeRequestStats(await response.json() as RequestStatsSnapshot | LegacyRequestStatsSnapshot);
@@ -5261,6 +5269,7 @@ function App() {
               providers={state.providers || []}
               models={state.models || []}
               isNormalUser={isNormalUser}
+              serverTimeZone={serverTimeZone}
               from={usageFrom}
               to={usageTo}
               loading={usageLoading}

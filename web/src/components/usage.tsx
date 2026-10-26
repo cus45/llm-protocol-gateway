@@ -5,6 +5,7 @@ import {
     formatCompactCount,
     formatCostCoverage,
     formatCostMicros,
+    formatDateInZone,
     formatLocalISODate,
     formatTokenCount,
     normalizePromptTokenStats,
@@ -137,8 +138,8 @@ function PulseStrip({ stats, todayMismatch }: { stats: RequestStatsSnapshot; tod
   </div>;
 }
 
-function Overview({ stats, providers, models, isNormalUser, metric, onMetricChange }: {
-  stats: RequestStatsSnapshot; providers: Provider[]; models: Model[]; isNormalUser: boolean; metric: Metric; onMetricChange: (metric: Metric) => void;
+function Overview({ stats, providers, models, isNormalUser, metric, onMetricChange, serverTimeZone }: {
+  stats: RequestStatsSnapshot; providers: Provider[]; models: Model[]; isNormalUser: boolean; metric: Metric; onMetricChange: (metric: Metric) => void; serverTimeZone: string;
 }) {
   const [rankTab, setRankTab] = useState<'keys' | 'users'>('keys');
   const range = stats.range;
@@ -156,7 +157,8 @@ function Overview({ stats, providers, models, isNormalUser, metric, onMetricChan
   const avgLatency = latencyCount ? Math.round(measured.reduce((n, d) => n + (d.avgLatencyMs || 0) * d.requestCount, 0) / latencyCount) : null;
   const ttftCount = daily.filter(d => (d.avgTtftMs || 0) > 0).reduce((n, d) => n + d.requestCount, 0);
   const avgTtft = ttftCount ? Math.round(daily.reduce((n, d) => n + (d.avgTtftMs || 0) * ((d.avgTtftMs || 0) > 0 ? d.requestCount : 0), 0) / ttftCount) : null;
-  const todayMismatch = stats.today.date !== formatLocalISODate(new Date());
+  // 服务器的「今天」：服务器的日界是网关所在时区的 00:00，不是浏览器的。
+  const todayMismatch = stats.today.date !== formatDateInZone(new Date(), serverTimeZone);
   const rangeDays = daily.length || 1;
   const activeDays = daily.filter(d => d.requestCount > 0).length;
   const sparkRequests = daily.map(d => d.requestCount || 0);
@@ -331,15 +333,15 @@ function CompressionUsage({ stats, days, onDaysChange, providers }: { stats: RTK
 
 type Tab = 'overview' | 'requests' | 'context' | 'performance' | 'rtk';
 
-export function UsagePage({ stats, providers, models, isNormalUser, from, to, loading, error, fetchedAt, onRangeChange, onRefresh, onNavigateLogs, onOpenLogs, rtkStats, rtkDays, onRTKDaysChange }: {
-  stats: RequestStatsSnapshot | null; providers: Provider[]; models: Model[]; isNormalUser: boolean; from: string; to: string; loading: boolean; error: string; fetchedAt: Date | null;
+export function UsagePage({ stats, providers, models, isNormalUser, from, to, serverTimeZone, loading, error, fetchedAt, onRangeChange, onRefresh, onNavigateLogs, onOpenLogs, rtkStats, rtkDays, onRTKDaysChange }: {
+  stats: RequestStatsSnapshot | null; providers: Provider[]; models: Model[]; isNormalUser: boolean; from: string; to: string; serverTimeZone: string; loading: boolean; error: string; fetchedAt: Date | null;
   onRangeChange: (from: string, to: string) => void; onRefresh: () => void; onNavigateLogs: (target: LogTarget) => void; onOpenLogs: (filters: LogFilters) => void;
   rtkStats: RTKStatsResponse | null; rtkDays: number; onRTKDaysChange: (days: number) => void;
 }) {
   const [tab, setTab] = useState<Tab>('overview');
   const [metric, setMetric] = useState<Metric>('tokens');
   const [priceOpen, setPriceOpen] = useState(false);
-  const today = formatLocalISODate(new Date());
+  const today = formatDateInZone(new Date(), serverTimeZone);
   const analysisTab = tab === 'requests' || tab === 'context' || tab === 'performance';
   const analysis = useUsageAnalysis(from, to, analysisTab);
   const matchesRange = !stats?.from || (formatLocalISODate(new Date(stats.from)) === from && formatLocalISODate(new Date(new Date(stats.to || stats.from).getTime() - 1)) === to);
@@ -394,7 +396,7 @@ export function UsagePage({ stats, providers, models, isNormalUser, from, to, lo
     </div>}
     {error && <p className="usage-error" role="alert">{error}</p>}
     {!ready ? <div className="usage-empty">{loading ? '正在读取所选区间…' : '所选区间暂无可用统计，请刷新重试。'}</div> : <div aria-busy={syncing} className="usage-content">
-      {tab === 'overview' && <Overview stats={stats!} providers={providers} models={models} isNormalUser={isNormalUser} metric={metric} onMetricChange={setMetric} />}
+      {tab === 'overview' && <Overview stats={stats!} providers={providers} models={models} isNormalUser={isNormalUser} metric={metric} onMetricChange={setMetric} serverTimeZone={serverTimeZone} />}
       {tab === 'rtk' && <div className="usage-rtk-tab"><CompressionUsage stats={rtkStats} days={rtkDays} onDaysChange={onRTKDaysChange} providers={providers} /></div>}
       {analysisTab && <>
         <div className="usage-scope-note">

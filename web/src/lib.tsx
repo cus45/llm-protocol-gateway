@@ -2865,18 +2865,64 @@ export function formatLocalISODate(date: Date) {
 }
 
 /**
- * 把 YYYY-MM-DD 补成带「浏览器本地时区偏移」的 RFC3339 时间。
+ * 把 YYYY-MM-DD 补成带 RFC3339 偏移的时间。不传 timeZone（或传 ""）时用「浏览器
+ * 本地时区」的偏移；传网关的时区名（/__state 的 serverTimeZone）时按那个时区算。
  * 后端对纯日期按网关所在机器的时区解析；浏览器与网关不同时区时（如网关在美国、
- * 用户在北京），「今天」会错位，所以日志按日期筛选时由前端显式带上偏移。
+ * 用户在北京），「今天」会错位。用量统计与日志筛选都该用 timeZone=网关时区，
+ * 这样「今日」和每个密钥的「今日 N 次」才是同一天。
  * endOfDay=true 取当天 23:59:59.999（后端对 RFC3339 的 to 不再 +24h）。非日期格式原样返回。
  */
-export function localDateToRFC3339(date: string, endOfDay = false) {
+export function localDateToRFC3339(date: string, endOfDay = false, timeZone = '') {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
   const time = endOfDay ? 'T23:59:59.999' : 'T00:00:00';
-  const offsetMin = -new Date(`${date}${time}`).getTimezoneOffset();
+  // 偏移取日界那一刻的（夏令时切换当天也不会差一小时）。
+  const zoneOffset = timeZone ? zoneOffsetMinutesAt(new Date(`${date}${endOfDay ? 'T23:59:59.999' : 'T00:00:00'}Z`), timeZone) : null;
+  const offsetMin = zoneOffset ?? -new Date(`${date}${time}`).getTimezoneOffset();
   const sign = offsetMin < 0 ? '-' : '+';
   const abs = Math.abs(offsetMin);
   return `${date}${time}${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
+/**
+ * zoneOffsetMinutesAt 求 timeZone 在某一时刻的偏移分钟数（东正西负）。Intl 的
+ * timeZoneName:'longOffset' 给的是 "GMT+08:00"；浏览器不认识这个时区名（或运行时
+ * 不支持 longOffset）时返回 null，调用方退回浏览器时区。
+ */
+export function zoneOffsetMinutesAt(at: Date, timeZone: string): number | null {
+  if (!timeZone) return null;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' }).formatToParts(at);
+    const name = parts.find((part) => part.type === 'timeZoneName')?.value || '';
+    const match = /^GMT(?:([+-])(\d{1,2})(?::(\d{2}))?)?$/.exec(name);
+    if (!match) return null;
+    const sign = match[1] === '-' ? -1 : 1;
+    return sign * ((Number(match[2] || 0) * 60) + Number(match[3] || 0));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * serverDayBounds 给「今日」这类服务器日口径的查询算起止：按网关的时区挑出"服务器
+ * 今天"的日期，再从那天的 00:00 到 23:59:59.999（带该时区偏移）。
+ */
+export function serverDayBounds(now: Date, timeZone: string): { from: string; to: string } {
+  const day = formatDateInZone(now, timeZone);
+  return { from: localDateToRFC3339(day, false, timeZone), to: localDateToRFC3339(day, true, timeZone) };
+}
+
+/** formatDateInZone 把时刻写成某个时区的 YYYY-MM-DD；时区名为空或无效时用浏览器本地时区。 */
+export function formatDateInZone(date: Date, timeZone: string): string {
+  if (!timeZone) return formatLocalISODate(date);
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value || '';
+    const year = get('year');
+    if (!year || !get('month') || !get('day')) return formatLocalISODate(date);
+    return `${year}-${get('month')}-${get('day')}`;
+  } catch {
+    return formatLocalISODate(date);
+  }
 }
 
 /**

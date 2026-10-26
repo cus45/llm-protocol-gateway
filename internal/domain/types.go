@@ -892,6 +892,11 @@ type GatewayState struct {
 	DataPaths *DataPaths `json:"dataPaths,omitempty"`
 	// CursorBridge is the live local gRPC bridge status; runtime-only, not persisted.
 	CursorBridge *CursorBridgeRuntime `json:"cursorBridge,omitempty"`
+	// ServerTimeZone names the gateway process's local zone (e.g. "Asia/Shanghai").
+	// Server-day arithmetic — API-key "today" counts, scheduled-task clocks, the
+	// day bounds of a bare date — all use it, so the console must build its
+	// "today" from the same zone instead of the browser's. Runtime-only.
+	ServerTimeZone string `json:"serverTimeZone,omitempty"`
 }
 
 // CursorBridgeRuntime mirrors the local cursor-bridge subprocess for status responses.

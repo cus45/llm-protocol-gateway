@@ -261,3 +261,38 @@ test('Provider 排序：按计数降序、同数按名字', () => {
   assert.deepEqual(usagePoll.rankProviderIDs(['a', 'b', 'c'], (id) => counts[id] ?? 0, (id) => names[id]), ['b', 'c', 'a']);
   assert.deepEqual(usagePoll.rankProviderIDs([], () => 0, (id) => id), []);
 });
+
+// ── 服务器时区的「今日」（lib.tsx）────────────────────────────────────────
+test('localDateToRFC3339：给了网关时区就按那个时区补偏移', () => {
+  assert.equal(lib.localDateToRFC3339('2026-10-26', false, 'Asia/Shanghai'), '2026-10-26T00:00:00+08:00');
+  assert.equal(lib.localDateToRFC3339('2026-10-26', true, 'Asia/Shanghai'), '2026-10-26T23:59:59.999+08:00');
+  assert.equal(lib.localDateToRFC3339('2026-10-26', false, 'America/Los_Angeles'), '2026-10-26T00:00:00-07:00');
+  assert.equal(lib.localDateToRFC3339('not-a-date', false, 'Asia/Shanghai'), 'not-a-date');
+});
+
+test('zoneOffsetMinutesAt：按 IANA 名求偏移，未知时区退回 null', () => {
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-01-15T00:00:00Z'), 'Asia/Shanghai'), 480);
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-01-15T00:00:00Z'), 'America/Los_Angeles'), -480);
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-07-15T00:00:00Z'), 'America/Los_Angeles'), -420);
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-07-15T00:00:00Z'), 'Asia/Kolkata'), 330);
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-07-15T00:00:00Z'), ''), null);
+  assert.equal(lib.zoneOffsetMinutesAt(new Date('2026-07-15T00:00:00Z'), 'Not/AZone'), null);
+});
+
+test('serverDayBounds：「今日」取服务器那一天，而不是浏览器那一天', () => {
+  // 北京时间 10 月 27 日 09:00，此刻洛杉矶还是 10 月 26 日。
+  const now = new Date('2026-10-27T01:00:00Z');
+  assert.equal(lib.formatDateInZone(now, 'Asia/Shanghai'), '2026-10-27');
+  assert.equal(lib.formatDateInZone(now, 'America/Los_Angeles'), '2026-10-26');
+  assert.deepEqual(lib.serverDayBounds(now, 'America/Los_Angeles'), {
+    from: '2026-10-26T00:00:00-07:00',
+    to: '2026-10-26T23:59:59.999-07:00',
+  });
+  assert.deepEqual(lib.serverDayBounds(now, 'Asia/Shanghai'), {
+    from: '2026-10-27T00:00:00+08:00',
+    to: '2026-10-27T23:59:59.999+08:00',
+  });
+  // 网关不知道自己的时区（老版本）时退回浏览器本地日期。
+  assert.equal(lib.formatDateInZone(now, ''), lib.formatLocalISODate(now));
+  assert.equal(lib.formatDateInZone(now, 'Not/AZone'), lib.formatLocalISODate(now));
+});

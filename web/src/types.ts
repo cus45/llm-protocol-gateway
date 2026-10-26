@@ -611,6 +611,8 @@ export type GatewayState = {
   };
   publicAccess: PublicAccessSettings;
   requestLogRetentionDays?: number;
+  /** 网关进程的本地时区名（如 Asia/Shanghai）；「今日」与日界按它算，和密钥的今日计数同一天。 */
+  serverTimeZone?: string;
   /** When true, successful (2xx) requests also persist their bodies. */
   log2xxBodies?: boolean;
   /** Async usage-stat batching thresholds (0 = backend defaults). */

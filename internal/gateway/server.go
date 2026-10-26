@@ -628,6 +628,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	// page because tunnelRunning/livePublicURL stay empty.
 	state.PublicAccess = s.withTunnelRuntime(state.PublicAccess)
 	state.CursorBridge = s.cursorBridgeRuntime()
+	// 服务器自己的"今天"（API 密钥今日计数、定时任务、纯日期的日界）按 time.Local
+	// 算；控制台据此把「今日」换算到同一个时区，两个页面才不会各说一天。
+	state.ServerTimeZone = serverTimeZoneName()
 	if !identity.isAdmin() {
 		writeJSON(w, http.StatusOK, s.stateForUser(identity, state))
 		return
@@ -647,6 +650,18 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	paths := ResolveDataPaths()
 	state.DataPaths = &paths
 	writeJSON(w, http.StatusOK, state)
+}
+
+// serverTimeZoneName reports the gateway's local zone as an IANA name. A
+// container on TZ=UTC reports "UTC"; an unnamed fixed zone (a bare numeric
+// offset) falls back to its formatted offset so the console can still build the
+// right day bounds.
+func serverTimeZoneName() string {
+	name := time.Local.String()
+	if name == "" || name == "Local" {
+		return time.Now().Format("Z07:00")
+	}
+	return name
 }
 
 func (s *Server) handleSettingsPaths(w http.ResponseWriter, r *http.Request) {
