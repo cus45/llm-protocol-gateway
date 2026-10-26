@@ -87,9 +87,11 @@ func streamOpenAIChatToGeminiEvents(w http.ResponseWriter, reader io.Reader, mod
 			continue
 		}
 		if usage, ok := event["usage"].(map[string]any); ok {
-			prompt, _ := intFromAny(usage["prompt_tokens"])
-			completion, _ := intFromAny(usage["completion_tokens"])
-			total.InputTokens, total.OutputTokens = int64(prompt), int64(completion)
+			// openAIUsageFromMap 同时认 OpenAI 的 prompt_tokens_details.cached_tokens
+			// 与 DeepSeek/Moonshot 的命中字段，缓存计数不能在这里丢。
+			folded := openAIUsageFromMap(usage)
+			total.InputTokens, total.OutputTokens = folded.InputTokens, folded.OutputTokens
+			total.CacheTokens, total.CacheWriteTokens = folded.CacheTokens, folded.CacheWriteTokens
 		}
 		choices := asMapSlice(event["choices"])
 		if len(choices) == 0 {
@@ -97,7 +99,17 @@ func streamOpenAIChatToGeminiEvents(w http.ResponseWriter, reader io.Reader, mod
 		}
 		choice, _ := choices[0].(map[string]any)
 		delta, _ := choice["delta"].(map[string]any)
-		parts := make([]any, 0, 2)
+		parts := make([]any, 0, 3)
+		// Gemini 的思考是带 thought: true 的部件，Chat 上游把它放在
+		// reasoning_content 里。丢掉它，Gemini CLI 就只剩答案、没有思考过程。
+		if thinking := stringValue(delta["reasoning_content"]); thinking == "" {
+			thinking = stringValue(delta["reasoning"])
+			if thinking != "" {
+				parts = append(parts, map[string]any{"text": thinking, "thought": true})
+			}
+		} else {
+			parts = append(parts, map[string]any{"text": thinking, "thought": true})
+		}
 		if text := stringValue(delta["content"]); text != "" {
 			parts = append(parts, map[string]any{"text": text})
 		}
@@ -116,17 +128,23 @@ func streamOpenAIChatToGeminiEvents(w http.ResponseWriter, reader io.Reader, mod
 			}
 			parts = append(parts, map[string]any{"functionCall": map[string]any{"name": name, "args": args}})
 		}
-		if len(parts) == 0 {
+		finish := stringValue(choice["finish_reason"])
+		if len(parts) == 0 && finish == "" {
 			continue
 		}
-		chunk := map[string]any{
-			"candidates": []any{map[string]any{
-				"content": map[string]any{"role": "model", "parts": parts},
-			}},
-			"modelVersion": model,
+		candidate := map[string]any{}
+		if len(parts) > 0 {
+			candidate["content"] = map[string]any{"role": "model", "parts": parts}
 		}
-		if finish := stringValue(choice["finish_reason"]); finish != "" {
-			chunk["candidates"].([]any)[0].(map[string]any)["finishReason"] = geminiFinishReason(finish)
+		// 截断（length）和内容过滤（content_filter）的结束帧往往不带正文，
+		// 但它们正是客户端得知「这轮被截断了」的唯一途径：没有 finishReason，
+		// Gemini 客户端会把半句话当成完整回答。
+		if finish != "" {
+			candidate["finishReason"] = geminiFinishReason(finish)
+		}
+		chunk := map[string]any{
+			"candidates":   []any{candidate},
+			"modelVersion": model,
 		}
 		body, err := json.Marshal(chunk)
 		if err != nil {
@@ -157,12 +175,8 @@ func streamOpenAIChatToGeminiEvents(w http.ResponseWriter, reader io.Reader, mod
 	}
 	if total.InputTokens > 0 || total.OutputTokens > 0 {
 		body, _ := json.Marshal(map[string]any{
-			"usageMetadata": map[string]any{
-				"promptTokenCount":     total.InputTokens,
-				"candidatesTokenCount": total.OutputTokens,
-				"totalTokenCount":      total.InputTokens + total.OutputTokens,
-			},
-			"modelVersion": model,
+			"usageMetadata": geminiUsageMetadata(total),
+			"modelVersion":  model,
 		})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", body)
 		if flusher != nil {

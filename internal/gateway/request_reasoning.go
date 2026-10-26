@@ -40,6 +40,11 @@ func reasoningLabelFromMap(payload map[string]any) string {
 		if budget := int64FromAny(thinking["budget_tokens"]); budget > 0 {
 			return fmt.Sprintf("%s·%d", kind, budget)
 		}
+		// 自适应思考用 thinking.effort 表达强度（不是预算）：控制台的推理强度
+		// 一列不能只剩一个 "adaptive"。
+		if effort := stringField(thinking, "effort"); effort != "" {
+			return fmt.Sprintf("%s·%s", kind, effort)
+		}
 		return kind
 	}
 	return ""

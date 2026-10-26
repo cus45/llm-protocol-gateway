@@ -84,6 +84,11 @@ func openAIImageURLBlockToClaude(item map[string]any) map[string]any {
 		return nil
 	}
 	out := map[string]any{"type": "image"}
+	// detail 是客户端对分辨率/计费档位的要求（auto|low|high）：丢掉它等于把低分辨率
+	// 的请求悄悄变成默认的高分辨率。
+	if detail := claudeImageDetail(imageURL["detail"]); detail != "" {
+		out["detail"] = detail
+	}
 	if strings.HasPrefix(url, "data:") {
 		mediaType, data, ok := splitDataURL(url)
 		if !ok {
@@ -199,7 +204,9 @@ func openAIChatToClaudeRequest(openAIReq map[string]any, model string, maxTokens
 	} else {
 		claudeReq["stream"] = false
 	}
-	for _, key := range []string{"temperature", "top_p"} {
+	// top_k 也是 Anthropic 的采样参数（0 < top_k ≤ 500）：丢掉它等于悄悄改了
+	// 客户端要求的分布，其他方向（Responses→Claude、Chat→Responses）都保留。
+	for _, key := range []string{"temperature", "top_p", "top_k"} {
 		if value, exists := openAIReq[key]; exists {
 			claudeReq[key] = value
 		}
@@ -220,6 +227,9 @@ func openAIChatToClaudeRequest(openAIReq map[string]any, model string, maxTokens
 			claudeReq["stop_sequences"] = toAnySliceOfStrings(stop)
 		}
 	}
+	// Anthropic 最多接受 4 个停止串，多给的整条请求会 400。原生透传早就有这道
+	// 裁剪（sanitizeClaudeStopSequences），转换出来的请求也要走同一条规则。
+	sanitizeClaudeStopSequences(claudeReq)
 	// 别的协议不写 Claude 的缓存断点，转换后补上，否则每轮全价重算前缀。
 	applyClaudeCacheMarks(claudeReq, openAIReq["cache_control"])
 	return claudeReq, nil
@@ -317,12 +327,17 @@ func mapReasoningEffortToClaudeEffort(depth, model string) string {
 	if depth == "xhigh" && !claudeModelSupportsXHighEffort(model) {
 		return "high"
 	}
+	// minimal 是 OpenAI 最弱的一档，落到 Claude 也应当是最弱的 low；未知等级按
+	// 预算表的口径算 medium —— 都不能变成最高档，那是用户没要求的钱和时间。
+	if depth == "minimal" || depth == "minimize" {
+		return "low"
+	}
 	for _, allowed := range []string{"low", "medium", "high", "max", "xhigh"} {
 		if depth == allowed {
 			return depth
 		}
 	}
-	return "high"
+	return "medium"
 }
 
 // applyAdaptiveThinking 打开自适应思考并给出 effort。output_config 里已有
@@ -602,4 +617,18 @@ func claudeErrorValueToOpenAI(errorValue any, model string) ([]byte, TokenUsage,
 	})
 	_ = model
 	return body, TokenUsage{}, err
+}
+
+// claudeImageDetail maps a client's image detail onto Anthropic's image block.
+// Anthropic takes auto/low/high; OpenAI Responses' extra "original" is its
+// full-resolution request, which is closest to high. Anything else is left out
+// so the upstream applies its own default.
+func claudeImageDetail(raw any) string {
+	switch detail := strings.ToLower(strings.TrimSpace(stringValue(raw))); detail {
+	case "low", "high", "auto":
+		return detail
+	case "original":
+		return "high"
+	}
+	return ""
 }

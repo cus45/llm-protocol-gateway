@@ -137,7 +137,23 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 			case "tool_use", "server_tool_use", "mcp_tool_use":
 				openAIToolIndex++
 				currentToolOpenAIIndex = openAIToolIndex
-				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), restoreDeclaredToolName(stringValue(block["name"]), clientToolNames), ""); err != nil {
+				// Anthropic 流式回答里 input 通常是空的、靠后面的 input_json_delta
+				// 拼出来；但中转（或合流实现）会把整个 input 直接放在起始帧上。
+				// 只看 id/name 的话那次调用会以空参数发给客户端 —— 工具静默地跑错。
+				startArguments := ""
+				switch input := block["input"].(type) {
+				case map[string]any:
+					if len(input) > 0 {
+						if encoded, err := json.Marshal(input); err == nil {
+							startArguments = string(encoded)
+						}
+					}
+				case string:
+					if strings.TrimSpace(input) != "" {
+						startArguments = input
+					}
+				}
+				if err := emitToolCallDelta(currentToolOpenAIIndex, stringValue(block["id"]), restoreDeclaredToolName(stringValue(block["name"]), clientToolNames), startArguments); err != nil {
 					return usage, err
 				}
 			case "thinking", "redacted_thinking":

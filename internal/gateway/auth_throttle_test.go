@@ -125,7 +125,9 @@ func TestAuthLoginThrottledBeforeDecode(t *testing.T) {
 	_ = store.SetSetting(settingAdminPassword, string(hash))
 	_ = store.SetSetting(settingAdminSession, "test-secret")
 	for i := 0; i < authMaxFailures; i++ {
-		server.authThrottle.fail("203.0.113.11", "admin")
+		// 来源维度不看用户名：这条测的是「同一来源失败够多之后，正文都解析不了的
+		// 请求在解析之前就被挡下」。
+		server.authThrottle.fail("203.0.113.11", authThrottleAnyUserKey)
 	}
 	handler := server.Handler()
 

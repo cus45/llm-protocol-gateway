@@ -62,7 +62,7 @@ func geminiToOpenAIChatRequest(gemini map[string]any, model string) (map[string]
 		if role == "tool" {
 			continue
 		}
-		text, calls := geminiParts(parts)
+		text, calls, images := geminiPartsWithImages(parts)
 		message := map[string]any{"role": role}
 		if role == "assistant" && len(calls) > 0 {
 			if strings.TrimSpace(text) != "" {
@@ -71,6 +71,14 @@ func geminiToOpenAIChatRequest(gemini map[string]any, model string) (map[string]
 				message["content"] = nil
 			}
 			message["tool_calls"] = calls
+		} else if len(images) > 0 {
+			// Chat 的多模态内容是部件数组：文本在前，图片在后。
+			content := make([]any, 0, len(images)+1)
+			if strings.TrimSpace(text) != "" {
+				content = append(content, map[string]any{"type": "text", "text": text})
+			}
+			content = append(content, images...)
+			message["content"] = content
 		} else {
 			message["content"] = text
 		}
@@ -120,11 +128,21 @@ func geminiSystemText(raw any) string {
 }
 
 // geminiParts splits one content's parts into its text and its function calls.
-// Inline binary parts are described in text form: an OpenAI Chat upstream has
-// no equivalent for them, and dropping them silently would lose the question.
+// Inline binary parts (an attached screenshot) come back as image_url content
+// parts in images: a vision-capable Chat upstream takes them directly, and a
+// placeholder describing the image as text meant the model answered a question
+// it could not see.
 func geminiParts(parts []any) (string, []any) {
+	text, calls, _ := geminiPartsWithImages(parts)
+	return text, calls
+}
+
+// geminiPartsWithImages is geminiParts plus the images the parts carry, in Chat's
+// image_url form.
+func geminiPartsWithImages(parts []any) (string, []any, []any) {
 	texts := make([]string, 0, len(parts))
 	calls := make([]any, 0, len(parts))
+	images := make([]any, 0, 1)
 	for _, raw := range parts {
 		part, ok := raw.(map[string]any)
 		if !ok {
@@ -159,11 +177,35 @@ func geminiParts(parts []any) (string, []any) {
 			})
 		}
 		if inline, ok := part["inlineData"].(map[string]any); ok {
-			mime := stringValue(inline["mimeType"])
-			texts = append(texts, fmt.Sprintf("[inline data: %s]", mime))
+			mime := strings.TrimSpace(stringValue(inline["mimeType"]))
+			data := strings.TrimSpace(stringValue(inline["data"]))
+			if data != "" {
+				if mime == "" {
+					mime = "application/octet-stream"
+				}
+				images = append(images, map[string]any{"type": "image_url",
+					"image_url": map[string]any{"url": "data:" + mime + ";base64," + data}})
+			} else {
+				// 没有数据可转（只有引用），至少别让提问失去上下文。
+				if mime == "" {
+					mime = "inline data"
+				}
+				texts = append(texts, fmt.Sprintf("[inline data: %s]", mime))
+			}
+		}
+		if file, ok := part["fileData"].(map[string]any); ok {
+			uri := strings.TrimSpace(stringValue(file["fileUri"]))
+			mime := strings.TrimSpace(stringValue(file["mimeType"]))
+			if uri != "" && strings.HasPrefix(mime, "image/") {
+				images = append(images, map[string]any{"type": "image_url", "image_url": map[string]any{"url": uri}})
+				continue
+			}
+			if uri != "" {
+				texts = append(texts, fmt.Sprintf("[file: %s]", uri))
+			}
 		}
 	}
-	return strings.Join(texts, "\n"), calls
+	return strings.Join(texts, "\n"), calls, images
 }
 
 // geminiTextOnlyParts drops functionResponse parts so the leftover text of a
@@ -314,7 +356,14 @@ func openAIChatToGeminiResponse(chatBody map[string]any, model string) (map[stri
 	choice, _ := choices[0].(map[string]any)
 	message, _ := choice["message"].(map[string]any)
 
-	parts := make([]any, 0, 2)
+	parts := make([]any, 0, 3)
+	// Chat 上游把思考放在 reasoning_content / reasoning 里；Gemini 用
+	// thought: true 的部件表达同一件事。
+	if thinking := stringValue(message["reasoning_content"]); thinking != "" {
+		parts = append(parts, map[string]any{"text": thinking, "thought": true})
+	} else if thinking := stringValue(message["reasoning"]); thinking != "" {
+		parts = append(parts, map[string]any{"text": thinking, "thought": true})
+	}
 	if text := stringValue(message["content"]); text != "" {
 		parts = append(parts, map[string]any{"text": text})
 	}
@@ -349,19 +398,28 @@ func openAIChatToGeminiResponse(chatBody map[string]any, model string) (map[stri
 		"modelVersion": model,
 	}
 	if usage, ok := chatBody["usage"].(map[string]any); ok {
-		prompt, _ := intFromAny(usage["prompt_tokens"])
-		completion, _ := intFromAny(usage["completion_tokens"])
-		total, _ := intFromAny(usage["total_tokens"])
-		if total == 0 {
-			total = prompt + completion
-		}
-		out["usageMetadata"] = map[string]any{
-			"promptTokenCount":     prompt,
-			"candidatesTokenCount": completion,
-			"totalTokenCount":      total,
+		folded := openAIUsageFromMap(usage)
+		if folded.InputTokens > 0 || folded.OutputTokens > 0 || folded.CacheTokens > 0 {
+			out["usageMetadata"] = geminiUsageMetadata(folded)
 		}
 	}
 	return out, nil
+}
+
+// geminiUsageMetadata renders a usage in Gemini's names. cachedContentTokenCount
+// is the cache-read half (Gemini clients show a cache hit rate from it), and
+// thoughtsTokenCount counts the thought parts; both were dropped before, so a
+// billing- or cache-aware Gemini SDK saw every turn as a cache miss.
+func geminiUsageMetadata(usage TokenUsage) map[string]any {
+	meta := map[string]any{
+		"promptTokenCount":     usage.InputTokens,
+		"candidatesTokenCount": usage.OutputTokens,
+		"totalTokenCount":      usage.InputTokens + usage.OutputTokens,
+	}
+	if usage.CacheTokens > 0 {
+		meta["cachedContentTokenCount"] = usage.CacheTokens
+	}
+	return meta
 }
 
 // geminiFinishReason maps Chat's finish_reason onto Gemini's FinishReason.

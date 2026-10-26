@@ -379,6 +379,14 @@ func openAIChatResponseToClaude(openAIResp []byte, model string, declared map[st
 	if reason, ok := choice["finish_reason"].(string); ok && reason != "" {
 		stopReason = mapOpenAIFinishReasonToClaude(reason)
 	}
+	// refusal 必须有一句能显示的话：一个空的 text 块在所有 Anthropic 客户端里
+	// 渲染成「什么都没发生」，和 stop_reason=refusal 自相矛盾。
+	if stopReason == "refusal" && strings.TrimSpace(claudeBlocksVisibleText(contentBlocks)) == "" {
+		contentBlocks = []any{map[string]any{
+			"type": "text",
+			"text": "The model refused to answer this request.",
+		}}
+	}
 	// Chat 只会说 stop；若正文正好以客户端要的停止序列结尾，按 Anthropic 的
 	// 规则如实报告 stop_reason=stop_sequence 与命中的序列。
 	var stopSequence any
