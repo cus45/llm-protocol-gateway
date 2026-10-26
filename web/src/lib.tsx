@@ -2576,16 +2576,60 @@ export function deriveUIDomainFromAPI(apiDomain: string) {
   return `console.${root}`;
 }
 
+/**
+ * 客户端调网关该带哪个认证头。网关的 extractConsumerAPIKey 按
+ * x-api-key → x-goog-api-key → Authorization: Bearer 的顺序认，所以：
+ * - Gemini：Google SDK 只发 x-goog-api-key，示例必须用它；
+ * - Claude：Anthropic 客户端发 x-api-key；
+ * - OpenAI Chat / Responses：Bearer。上游 Provider 若配了 x-api-key 认证头，
+ *   也不影响客户端这边——网关自己的密钥入口只认上面那套头。
+ */
+export function apiKeyClientAuth(key: APIKey, route: Route): { header: string; value: string } {
+  if (route.outputProtocol === 'gemini') return { header: 'x-goog-api-key', value: key.key };
+  if (route.outputProtocol === 'claude') return { header: 'x-api-key', value: key.key };
+  return { header: 'Authorization', value: `Bearer ${key.key}` };
+}
+
+/** curl 示例里的模型：密钥/Provider 没配模型时给一个能直接改的占位名，不把 {model} 原样交出去。 */
+export const API_KEY_SAMPLE_PLACEHOLDER_MODEL = 'your-model';
+export function apiKeySampleModel(key: APIKey, provider?: Provider) {
+  return resolveApiKeyModel(key, provider);
+}
+
+/**
+ * 密钥详情里的「调用示例」：URL、请求体与认证头都按该密钥的输出协议拼。Gemini
+ * 的 URL 带 {model} 占位，示例里换上示例模型名；模型本身也是占位时给出「替换
+ * 模型名」的注释，用户复制后不会把字面量 {model} 发给网关。
+ */
 export function buildApiKeyPublicCurl(key: APIKey, route: Route, endpoints: OutputEndpoint[], publicBase: string, provider?: Provider) {
-  const model = resolveApiKeyModel(key, provider);
+  const model = apiKeySampleModel(key, provider);
   const payload = buildApiKeyCallPayload(route, model);
-  const url = publicBase
+  const template = publicBase
     ? routeGatewayURL(route, endpoints, publicBase)
     : routeGatewayURL(route, endpoints, localGatewayRoot(endpoints));
-  const auth = route.outputProtocol === 'claude'
-    ? { header: 'x-api-key', value: key.key }
-    : { header: 'Authorization', value: `Bearer ${key.key}` };
-  return buildChatTestCurl(url, payload, auth);
+  const url = route.outputProtocol === 'gemini' ? geminiCurlURL(template, model) : template;
+  const notes: string[] = [];
+  if (route.outputProtocol === 'gemini') {
+    if (model === API_KEY_SAMPLE_PLACEHOLDER_MODEL) {
+      notes.push(`# ${model} 是占位：先给密钥固定一个 Gemini 模型，或把它换成真实模型名`);
+    }
+    if (!isGeminiGenerateContentPayload(payload)) {
+      // 网关的 Gemini 端点要 Gemini 原生的请求体；给一条 OpenAI 形状的 JSON 只会收 400。
+      // 路由的「测试调用」按该路由的输出协议发请求，这里与它保持一致。
+      notes.push('# Gemini 原生端点要 Gemini 请求体：内容按 contents[].parts[] 组织（见路由「测试调用」）');
+    }
+  }
+  const curl = buildChatTestCurl(url, payload, apiKeyClientAuth(key, route));
+  return notes.length ? `${notes.join('\n')}\n${curl}` : curl;
+}
+
+function isGeminiGenerateContentPayload(payload: Record<string, unknown>) {
+  return Array.isArray(payload.contents) && !('messages' in payload);
+}
+
+/** Gemini 的 :generateContent 路径里的 {model} 换成示例模型名（远端模型 id 可能带 models/ 前缀）。 */
+function geminiCurlURL(template: string, model: string) {
+  return template.split('{model}').join(model);
 }
 
 export function resolveProviderTestModel(model: string) {

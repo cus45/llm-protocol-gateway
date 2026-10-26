@@ -296,3 +296,34 @@ test('serverDayBounds：「今日」取服务器那一天，而不是浏览器�
   assert.equal(lib.formatDateInZone(now, ''), lib.formatLocalISODate(now));
   assert.equal(lib.formatDateInZone(now, 'Not/AZone'), lib.formatLocalISODate(now));
 });
+
+// ── 客户端调用示例（lib.tsx buildApiKeyPublicCurl）──────────────────────────
+const geminiKey = {id: 'k1', name: 'gem', key: 'sk-x', routeId: 'r1'};
+const geminiRoute = {id: 'r1', name: 'g', outputEndpointId: 'e1', providerId: 'p1', outputProtocol: 'gemini', mode: 'convert', enabled: true};
+const geminiEndpoints = [{id: 'e1', name: 'Gemini', protocol: 'gemini', basePath: '/v1beta', listenHost: '127.0.0.1', listenPort: 18093, publicAccessEnabled: false}];
+
+test('Gemini 密钥的示例 curl 用 x-goog-api-key（Google SDK 的认证头），不发 Bearer', () => {
+  const out = lib.buildApiKeyPublicCurl(geminiKey, geminiRoute, geminiEndpoints, '', {id: 'p1', name: 'p', protocol: 'gemini', baseUrl: 'https://x', models: [], defaultModel: 'gemini-2.5-pro'});
+  assert.ok(out.includes("-H 'x-goog-api-key: sk-x'"), out);
+  assert.ok(!out.includes('Authorization'), out);
+});
+
+test('Gemini 示例不把 {model} 原样交出去：URL 与请求体都换成模型名', () => {
+  const out = lib.buildApiKeyPublicCurl(geminiKey, geminiRoute, geminiEndpoints, '', {id: 'p1', name: 'p', protocol: 'gemini', baseUrl: 'https://x', models: [], defaultModel: 'gemini-2.5-pro'});
+  assert.ok(!out.includes('{model}'), out);
+  assert.ok(out.includes('/v1beta/models/gemini-2.5-pro:generateContent'), out);
+  assert.ok(out.includes('"gemini-2.5-pro"'), out);
+  // 模型是示例占位时要明说，别让用户以为写死了就能跑。
+  const placeholder = lib.buildApiKeyPublicCurl(geminiKey, geminiRoute, geminiEndpoints, '', undefined);
+  assert.ok(!placeholder.includes('{model}'), placeholder);
+  assert.ok(placeholder.includes('占位'), placeholder);
+});
+
+test('Claude 密钥用 x-api-key，OpenAI 密钥用 Bearer', () => {
+  const endpoints = [{id: 'e2', name: 'Claude', protocol: 'claude', basePath: '/anthropic', listenHost: '127.0.0.1', listenPort: 18093, publicAccessEnabled: false}, geminiEndpoints[0]];
+  const claudeRoute = {...geminiRoute, outputProtocol: 'claude'};
+  const claude = lib.buildApiKeyPublicCurl(geminiKey, claudeRoute, endpoints, '', {id: 'p1', name: 'p', protocol: 'claude', baseUrl: 'https://x'});
+  assert.ok(claude.includes("-H 'x-api-key: sk-x'"), claude);
+  const openai = lib.buildApiKeyPublicCurl(geminiKey, {...geminiRoute, outputProtocol: 'openai_chat'}, endpoints, '', {id: 'p1', name: 'p', protocol: 'openai_chat', baseUrl: 'https://x', defaultModel: 'gpt-x'});
+  assert.ok(openai.includes("-H 'Authorization: Bearer sk-x'"), openai);
+});
