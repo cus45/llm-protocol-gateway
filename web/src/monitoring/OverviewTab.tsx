@@ -292,6 +292,7 @@ function TopologyCard({
           <div className="mon-topo-group">
             <Glyph d={GLYPH.key} />
             <span>{'调用端 (CLIENTS)'}</span>
+            <span className="mon-hint-dot" role="note" title="占比 = 该组账号数 ÷ 账号总数">{'?'}</span>
           </div>
           {total === 0 && <div className="mon-topo-empty">{'还没有接入任何账号'}</div>}
           {clients.map((client) => (

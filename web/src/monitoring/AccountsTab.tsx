@@ -1013,7 +1013,7 @@ export function AccountsTab(props: AccountsTabProps) {
           <span
             className="mon-acc-count"
             title="角色、熔断档位按健康与探测结果推导；强制隔离由人工发起并需人工恢复"
-          >{`${filtered.length} / ${accounts.length} 个账号`}</span>
+          >{`${filtered.length} / ${accounts.length} 个账号`}<span className="mon-hint-dot" role="note" title="角色、熔断档位按健康与探测结果推导；强制隔离由人工发起并需人工恢复">{'?'}</span></span>
           <label className="mon-acc-select">
             <span className="mon-acc-select-label">{'状态'}</span>
             <select

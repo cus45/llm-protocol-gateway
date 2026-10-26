@@ -11357,3 +11357,20 @@ body { font-size: 14px; }
 .monitoring-page .mon-duo-card .mon-rails { padding: 16.75px 0; }
 .monitoring-page .mon-duo-card .mon-latency-body { padding-bottom: 0; margin-bottom: 0; }
 .monitoring-page .mon-band { padding-bottom: 14.4px; }
+/* 内容根 y 精确对齐参考 131.5（页签底 112 + 19.5 = 131.5）。 */
+@media (min-width: 901px) {
+  .monitoring-page .mon-tab-panel { padding-top: 19.5px; }
+}
+/* 双卡 0.1 收口。 */
+.monitoring-page .mon-duo-card .mon-band { padding-bottom: 14.3px; }
+.monitoring-page .mon-duo-card .mon-band { padding-bottom: 14.4px !important; }
+/* 说明性信息用行内 ? 徽标承载（参考页无这两处文案，但保留可发现性，不占纵向空间）。 */
+.monitoring-page .mon-hint-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin-left: 4px; border-radius: 50%;
+  border: 1px solid var(--subtle); color: var(--muted);
+  font-size: 10px; line-height: 1; font-weight: 600;
+  vertical-align: middle; cursor: help; user-select: none;
+}
+.monitoring-page .mon-hint-dot:hover { border-color: var(--accent); color: var(--accent); }
+.monitoring-page .mon-acc-count { display: inline-flex; align-items: center; }
