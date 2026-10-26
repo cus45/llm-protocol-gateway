@@ -28,6 +28,14 @@ func normalizeClaudePassThroughPayload(payload map[string]any) {
 	if rawTools, ok := payload["tools"].([]any); ok && len(rawTools) > 0 {
 		normalized["tools"] = normalizeClaudePassThroughTools(rawTools)
 	}
+	// 历史里调用过、这次请求却没有声明的工具（tool_search 一类按需加载工具集的
+	// 客户端就是这样）：Anthropic 直接拒绝（"Requests which include tool_use or
+	// tool_result blocks must define tools"），一个空 tools 也一样。给它们补一个
+	// 占位声明，并把选项设成 none —— 客户端这次没打算调用任何工具。
+	if stubbed, ok := stubUndeclaredHistoryTools(normalized); ok {
+		normalized["tools"] = stubbed
+		normalized["tool_choice"] = map[string]any{"type": "none"}
+	}
 	if toolChoice := normalizeClaudePassThroughToolChoice(payload["tool_choice"]); toolChoice != nil {
 		normalized["tool_choice"] = toolChoice
 	}
@@ -453,4 +461,52 @@ func normalizeClaudePassThroughThinking(thinking any) any {
 		return thinking
 	}
 	return out
+}
+
+// stubUndeclaredHistoryTools declares a stub for every tool the conversation
+// called that the request no longer declares. An agent that loads tools on
+// demand (pi, T3 Code's tool_search) sends a history full of calls it made
+// earlier together with the few tools it thinks it needs now — and Anthropic
+// turns such a request away outright: "Requests which include `tool_use` or
+// `tool_result` blocks must define tools". A stub keeps the history valid; with
+// tool_choice=none nothing new can be called through it.
+//
+// It reports whether anything was added.
+func stubUndeclaredHistoryTools(payload map[string]any) ([]any, bool) {
+	declared := map[string]bool{}
+	tools, _ := payload["tools"].([]any)
+	for _, raw := range tools {
+		if tool, ok := raw.(map[string]any); ok {
+			declared[strings.TrimSpace(stringValue(tool["name"]))] = true
+		}
+	}
+	var missing []string
+	seen := map[string]bool{}
+	for _, raw := range asMapSlice(payload["messages"]) {
+		message, _ := raw.(map[string]any)
+		for _, blockRaw := range asMapSlice(message["content"]) {
+			block, _ := blockRaw.(map[string]any)
+			if stringValue(block["type"]) != "tool_use" {
+				continue
+			}
+			name := strings.TrimSpace(stringValue(block["name"]))
+			if name == "" || declared[name] || seen[name] {
+				continue
+			}
+			seen[name] = true
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return tools, false
+	}
+	stubbed := append([]any(nil), tools...)
+	for _, name := range missing {
+		stubbed = append(stubbed, map[string]any{
+			"name":         name,
+			"description":  "Called earlier in this conversation; not available now.",
+			"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
+		})
+	}
+	return stubbed, true
 }
