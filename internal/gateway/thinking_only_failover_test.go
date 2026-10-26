@@ -33,10 +33,9 @@ func TestSlowEmptyTurnIsNotAnsweredTwice(t *testing.T) {
 	}
 }
 
-// 缺陷的复现（当前失败，修复后应通过）：开口之后立刻正常结束的空轮次，兜底账号的
-// 回答必须原样到达客户端。
+// 开口之后立刻正常结束的空轮次，兜底账号的回答必须原样到达客户端（曾因被当成截断
+// 而丢失，见 docs/known-issues.md #5）。
 func TestEmptyTurnWithinHoldLimitGoesToTheBackup(t *testing.T) {
-	t.Skip("已知缺陷：兜底账号的完整 JSON 被 runStreamConverter 当成截断（docs/known-issues.md #5）")
 	upstream, backupHits := emptyThenClosingUpstream(t, 0)
 	recorder, execErr := runEmptyTurnThroughFailover(t, upstream.URL)
 	t.Logf("backup=%d rec=%q err=%v", backupHits.Load(), recorder.Body.String(), execErr)
