@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -83,6 +85,40 @@ func (s *Server) requireProviderTesterForUser(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	return true
+}
+
+// requireRouteAccessForUser rejects normal users acting on a route whose
+// provider they may not use: reading, testing, retargeting or deleting it would
+// otherwise reach another user's provider (or the administrator's) through a
+// route they were never granted. Admins always pass. A route that does not
+// exist is the caller's 404 to give, so it is let through here and answered by
+// the handler as it always was. Returns false after writing 403.
+func (s *Server) requireRouteAccessForUser(w http.ResponseWriter, r *http.Request, routeID string) bool {
+	identity := s.requestIdentity(r)
+	if identity.isAdmin() || s.router == nil {
+		return true
+	}
+	route, err := s.router.RouteByID(routeID)
+	if err != nil {
+		return true
+	}
+	allowed := s.allowedProviderIDsForUser(identity.UserID)
+	if !s.router.ProviderAccessible(route.ProviderID, identity.UserID, slices.Collect(maps.Keys(allowed))) {
+		writeOpenAIError(w, http.StatusForbidden, "permission denied")
+		return false
+	}
+	return true
+}
+
+// requireRouteRetargetForUser refuses a normal user's update that would move a
+// route onto a provider they were not granted — the same rule handleCreateRoute
+// applies, so a granted route cannot be re-pointed at somebody else's account.
+func (s *Server) requireRouteRetargetForUser(w http.ResponseWriter, r *http.Request, patch domain.Route) bool {
+	identity := s.requestIdentity(r)
+	if identity.isAdmin() || strings.TrimSpace(patch.ProviderID) == "" {
+		return true
+	}
+	return s.requireProviderAccessForUser(w, r, strings.TrimSpace(patch.ProviderID))
 }
 
 // requireProviderAccessForUser rejects normal users who were not granted the

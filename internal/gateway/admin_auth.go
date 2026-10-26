@@ -164,6 +164,13 @@ func isUserAllowedPath(method, path string) bool {
 	if method == http.MethodPost && (path == "/__providers" || path == "/__routes") {
 		return true
 	}
+	// A user's own routes: edit / delete / test, with the same per-route
+	// ownership check the other provider-scoped handlers carry
+	// (requireRouteAccessForUser). Routes of providers they were not granted
+	// answer 403 inside the handler.
+	if isUserRoutePath(method, path) {
+		return true
+	}
 	// Owner-only provider management (enforced via requireProviderOwnerForUser
 	// inside each handler): edit / delete / fetch-models / chat-test / preview.
 	if isUserProviderManagementPath(method, path) {
@@ -181,6 +188,27 @@ func isUserAllowedPath(method, path string) bool {
 	// Static UI assets and SPA pages are served by the same handler chain.
 	if !strings.HasPrefix(path, "/__") && method == http.MethodGet {
 		return true
+	}
+	return false
+}
+
+// isUserRoutePath matches the routes a normal user may act on: PATCH and DELETE
+// /__routes/{id} and POST /__routes/{id}/test. Every one of them is checked
+// against the caller's grants inside the handler (requireRouteAccessForUser), so
+// the middleware only decides that the request is a route action at all.
+func isUserRoutePath(method, path string) bool {
+	if !strings.HasPrefix(path, "/__routes/") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/__routes/"), "/")
+	if strings.TrimSpace(parts[0]) == "" {
+		return false
+	}
+	switch len(parts) {
+	case 1:
+		return method == http.MethodPatch || method == http.MethodDelete
+	case 2:
+		return parts[1] == "test" && method == http.MethodPost
 	}
 	return false
 }

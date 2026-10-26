@@ -2027,6 +2027,36 @@ func (r *Router) RouteByID(routeID string) (domain.Route, error) {
 	return domain.Route{}, fmt.Errorf("route %q not found", routeID)
 }
 
+// ProviderAccessible reports whether a normal user reaches providerID through
+// the route: one the admin has not paused, that the user created themselves or
+// was granted (granted is the user's AllowedProviderIDs). It answers the same
+// question as Server.allowedProviderIDsForUser for a single id, with the grant
+// list handed in rather than read from the user store, so a caller that already
+// holds it does not fetch it twice.
+func (r *Router) ProviderAccessible(providerID, userID string, granted []string) bool {
+	providerID = strings.TrimSpace(providerID)
+	userID = strings.TrimSpace(userID)
+	if providerID == "" || userID == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	provider, ok := r.providerLocked(providerID)
+	if !ok || provider.Disabled || provider.Deleted {
+		return false
+	}
+	if strings.TrimSpace(provider.OwnerUserID) == userID {
+		return true
+	}
+	for _, id := range granted {
+		if strings.TrimSpace(id) == providerID {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Router) Decide(routeID string) (domain.RouteDecision, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

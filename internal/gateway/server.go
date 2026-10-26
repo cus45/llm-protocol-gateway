@@ -3611,9 +3611,17 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateRoute(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("id")
+	if !s.requireRouteAccessForUser(w, r, routeID) {
+		return
+	}
 	var patch domain.Route
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid route json: "+err.Error())
+		return
+	}
+	// A granted route cannot be re-pointed at a provider the caller was never
+	// granted: that would put somebody else's account behind their key.
+	if !s.requireRouteRetargetForUser(w, r, patch) {
 		return
 	}
 	updated, err := s.router.UpdateRoute(routeID, patch)
@@ -3631,6 +3639,12 @@ func (s *Server) handleUpdateRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("id")
+	// Ownership: a normal user reaches only routes of providers they were
+	// granted or created, so another user's route (or the administrator's,
+	// with the keys bound to it) cannot be deleted from a user session.
+	if !s.requireRouteAccessForUser(w, r, routeID) {
+		return
+	}
 	if err := s.router.DeleteRoute(routeID); err != nil {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return
@@ -3646,6 +3660,11 @@ func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTestRoute(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	routeID := r.PathValue("id")
+	// A route test spends the provider's quota, so it takes the same access as
+	// the provider's own chat test: granted users and the owner may run it.
+	if !s.requireRouteAccessForUser(w, r, routeID) {
+		return
+	}
 	var payload struct {
 		Model   string `json:"model"`
 		Message string `json:"message"`

@@ -240,7 +240,11 @@ func TestIsUserAllowedPathProviderUsage(t *testing.T) {
 		// 属于管理路径；不存在的 id 由 handler 归属校验返回 404。
 		{http.MethodPatch, "/__providers/export", true},
 		{http.MethodPost, "/__routes", true},
-		{http.MethodPatch, "/__routes/r1", false},
+		// 路由的 PATCH/DELETE/test 对普通用户开放，归属在 handler 里按 Provider
+		// 授权判定（requireRouteAccessForUser，见 route_ownership_test.go）。
+		{http.MethodPatch, "/__routes/r1", true},
+		{http.MethodDelete, "/__routes/r1", true},
+		{http.MethodPost, "/__routes/r1/test", true},
 		// 额度保活：普通用户可维护自己的定时任务（归属与 Provider 授权在
 		// quota_keeper_api.go 内校验，别人的任务一律 404）。
 		{http.MethodGet, "/__quota-tasks", true},
