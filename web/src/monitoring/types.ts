@@ -155,6 +155,11 @@ export interface MonitorOverview {
      * 与用量页同一条硬规则：未计价绝不显示成 $0.00。
      */
     priced: number;
+    /**
+     * 各延迟档的请求数（<20 / 20-50 / 50-100 / >100ms），来自请求日志的
+     * latency_ms 实际统计。旧版后端不返回该字段，前端据此退回「只标 P95 落点」。
+     */
+    latencyBuckets?: number[];
   };
   accounts: { total: number; subscribed: number; unavailable: number; disabled: number };
   firing: { total: number; p0: number; p1: number; p2: number };

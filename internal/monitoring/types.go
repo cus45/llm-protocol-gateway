@@ -133,6 +133,10 @@ type RequestSummary struct {
 	// with Priced==0 means "not priced", not "free" — the console must not show
 	// $0.00 for it (same rule as the usage pages).
 	Priced int `json:"priced"`
+	// LatencyBuckets counts requests per latency band (<20ms / 20-50 / 50-100 /
+	// >100ms). Sum equals the number of rows that reported a latency, so the
+	// console can draw a real distribution instead of only marking the P95 slot.
+	LatencyBuckets [4]int `json:"latencyBuckets"`
 }
 
 type EventPush struct {

@@ -826,6 +826,17 @@ func (s *Store) MonitorRequestSummary(from, to time.Time) (monitoring.RequestSum
 		}
 		if latency > 0 {
 			latencies = append(latencies, latency)
+			// Boundaries match monitoring.LatencyBands used by the console.
+			switch {
+			case latency < 20:
+				summary.LatencyBuckets[0]++
+			case latency < 50:
+				summary.LatencyBuckets[1]++
+			case latency < 100:
+				summary.LatencyBuckets[2]++
+			default:
+				summary.LatencyBuckets[3]++
+			}
 		}
 		if priced != 0 {
 			summary.Priced++

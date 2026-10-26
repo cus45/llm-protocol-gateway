@@ -101,6 +101,8 @@ type monitorOverviewView struct {
 		P95LatencyMs int64   `json:"p95LatencyMs"`
 		CostMicros   int64   `json:"costMicros"`
 		Priced       int     `json:"priced"`
+		// LatencyBuckets: <20 / 20-50 / 50-100 / >100ms 的实际请求数。
+		LatencyBuckets []int `json:"latencyBuckets"`
 	} `json:"requests"`
 	Accounts struct {
 		Total       int `json:"total"`
@@ -165,6 +167,7 @@ func (s *Server) monitorOverviewOf(providers []domain.Provider) (monitorOverview
 	view.Requests.P95LatencyMs = summary.P95LatencyMs
 	view.Requests.CostMicros = summary.CostMicros
 	view.Requests.Priced = summary.Priced
+	view.Requests.LatencyBuckets = summary.LatencyBuckets[:]
 	if summary.Total > 0 {
 		view.Requests.SuccessRate = roundRatio(float64(summary.Success) / float64(summary.Total))
 	}

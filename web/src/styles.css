@@ -11418,3 +11418,12 @@ body { font-size: 14px; }
 }
 /* 拓扑卡的红色外投影（告警态）改为中性阴影。 */
 .monitoring-page .mon-topo.tone-red { box-shadow: 0 18px 44px -32px rgb(15 23 42); }
+/* 侧栏分组按参考的紧凑节奏：组标题不再独占 22px 一行，改为细分隔线（保留分组语义，不占纵向空间）。 */
+.nav-group-label {
+  height: 0; overflow: hidden; margin: 0; padding: 0;
+  font-size: 0; line-height: 0; border: 0;
+}
+.nav-group + .nav-group { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+.nav-group-rule { display: none; }
+/* 组标题彻底移出 flex 流（否则 gap 仍占位），分隔线由 .nav-group 的边框承担。 */
+.nav-group > .nav-group-label { display: none; }

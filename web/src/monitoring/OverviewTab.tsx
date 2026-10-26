@@ -252,7 +252,6 @@ function TopologyCard({
   const firing = overview?.firing;
   const usable = overview ? overview.accounts.total - overview.accounts.disabled : null;
   const tone: Tone = !overview ? 'accent' : firing && firing.p0 > 0 ? 'red' : firing && firing.total > 0 ? 'amber' : 'green';
-  const collector = overview && hasTime(overview.collectorLastSuccess) ? displayTimeCompact(displayTime(overview.collectorLastSuccess, timezone).text) : '';
 
   const status = !overview
     ? { tone: 'idle', text: loading ? '等待采集' : '暂无数据' }
@@ -315,7 +314,7 @@ function TopologyCard({
                 <Glyph d={GLYPH.core} />
               </span>
               <h4 className="mon-core-title">{'智能路由与容灾自愈核心'}</h4>
-              <p className="mon-core-version">{`Protocol Gateway Mesh · ${windowHours}h 窗口${collector ? ` · 采样 ${collector}` : ''}`}</p>
+              <p className="mon-core-version">{`Protocol Gateway Mesh · ${windowHours}h 窗口`}</p>
               <div className="mon-core-stats">
                 <div className="mon-core-stat">
                   <span className="mon-core-stat-label">{'实时吞吐'}</span>
@@ -633,14 +632,16 @@ export function OverviewTab(props: OverviewTabProps) {
     .filter((point): point is [number, number] => point !== null);
   const radarShape = radarPoints.length >= 3 ? radarPoints.map((point) => point.join(',')).join(' ') : '';
 
-  // ── 延迟分布：接口只有 P95，没有逐请求直方图。所以只报「P95 落在哪一档」，
-  //    不给每一档编造次数 / 占比（那样各档加起来对不上总数）。 ──
+  // ── 延迟分布：后端按请求日志的 latency_ms 统计四档次数，各档之和 = 有延迟的请求数。
+  //    旧版接口没有该字段时退回「只标 P95 落点、不报次数」，不编造数字。 ──
   const spectrum = useMemo(() => {
     if (!req || req.total <= 0 || !(req.p95LatencyMs > 0)) return null;
     const p95 = req.p95LatencyMs;
     const index = LATENCY_BANDS.findIndex((band, i) => p95 <= band.max && (i === 0 || p95 > LATENCY_BANDS[i - 1].max));
     const band = LATENCY_BANDS[index >= 0 ? index : LATENCY_BANDS.length - 1];
-    return { p95, band, index };
+    const counts = req.latencyBuckets;
+    const counted = Array.isArray(counts) && counts.some((n) => n > 0);
+    return { p95, band, index, counts: counted ? counts : null };
   }, [req]);
 
   return (
@@ -837,7 +838,13 @@ export function OverviewTab(props: OverviewTabProps) {
                         <span className={`mon-dot ${inBand ? band.tone : 'muted'}`} aria-hidden />
                         {band.label}
                       </span>
-                      <span className="mon-band-state" role="cell">{inBand ? `P95 落点 · ${band.hint}` : '未报告'}</span>
+                      <span className="mon-band-state" role="cell">
+                        {spectrum.counts
+                          ? `${spectrum.counts[index].toLocaleString('zh-CN')} 次 · ${(spectrum.counts[index] / spectrum.counts.reduce((a, b) => a + b, 0) * 100).toFixed(1)}%`
+                          : inBand
+                            ? `P95 落点 · ${band.hint}`
+                            : '未报告'}
+                      </span>
                     </div>
                   );
                 })}
@@ -845,7 +852,7 @@ export function OverviewTab(props: OverviewTabProps) {
             </div>
           )}
           <div className="mon-card-foot">
-            <span>{'接口只给 P95，没有逐请求直方图；各档不报次数与占比'}</span>
+            <span>{spectrum && spectrum.counts ? '按请求日志的实际延迟分档统计' : '接口只给 P95，没有逐请求直方图；各档不报次数与占比'}</span>
             {onOpenTab && <button type="button" className="mon-meta-link" onClick={() => onOpenTab('probes')}>{'查看实时事件流 →'}</button>}
           </div>
         </div>
