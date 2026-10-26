@@ -610,7 +610,7 @@ func runStreamConverter(w http.ResponseWriter, response *http.Response, model st
 	// terms; a leg that accepted a body it should not have is caught here.
 	reader := newUpstreamStreamReader(response.Body)
 	counting := &wroteTrackingWriter{ResponseWriter: w, written: &reader.wrote}
-	usage, err := streamConvert(counting, reader, model)
+	usage, err := streamConvert(counting, newWholeMessageReader(response, reader), model)
 	if err != nil {
 		return usage, err
 	}
@@ -620,6 +620,37 @@ func runStreamConverter(w http.ResponseWriter, response *http.Response, model st
 		return usage, cut
 	}
 	return usage, nil
+}
+
+// newWholeMessageReader hands the converter an account's answer that arrived as
+// one whole JSON message even though the request asked for a stream (accounts
+// answer either way, and failover mixes them): the message's own bytes, read
+// back as the converter's source, so the verdicts taken from its reads — the
+// interrupted stream, the turn that said nothing — see the message, not a
+// stream that lost its closing frame. Any other body is passed through as it is.
+func newWholeMessageReader(response *http.Response, body io.Reader) io.Reader {
+	if whole, ok := wholeJSONUpstreamBody(response); ok {
+		return io.MultiReader(bytes.NewReader(whole), body)
+	}
+	return body
+}
+
+// wholeJSONUpstreamBody reads a body that announced itself as JSON in full and
+// returns it. The body is judged by its header, never by peeking at it: bytes
+// taken out of a converter's read are a read the converter never made, and its
+// verdicts count on seeing every one.
+func wholeJSONUpstreamBody(response *http.Response) ([]byte, bool) {
+	if response == nil || response.Body == nil {
+		return nil, false
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
+		return nil, false
+	}
+	whole, err := io.ReadAll(response.Body)
+	if err != nil || len(bytes.TrimSpace(whole)) == 0 {
+		return nil, false
+	}
+	return whole, true
 }
 
 // upstreamStreamReader is the body a converter reads, remembered up to the cap,
@@ -707,8 +738,11 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 				fw.FlushError()
 				return response.StatusCode, usage, streamBody, streamErr, false
 			}
-			if isUpstreamStreamInterruption(streamErr) {
-				// Nothing of this attempt reached the client.
+			if isUpstreamStreamInterruption(streamErr) || isThinkingOnlyEmptyStreamError(streamErr) {
+				// Nothing of this attempt reached the client — a cut stream, or a
+				// turn that opened and said nothing (thinking-only). The latter
+				// belongs to the empty-answer retry above as well, or the attempt
+				// is committed as an error the client can do nothing with.
 				return response.StatusCode, usage, nil, streamErr, true
 			}
 			fw.WriteHeader(response.StatusCode)
@@ -723,8 +757,10 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 		stopHeartbeat := startSSEHeartbeat(dw, sseHeartbeatInterval)
 		defer stopHeartbeat()
 		usage, streamErr := runStreamConverter(dw, response, model, streamConvert)
-		if streamErr != nil && isUpstreamStreamInterruption(streamErr) && !dw.committed() {
+		if streamErr != nil && (isUpstreamStreamInterruption(streamErr) || isThinkingOnlyEmptyStreamError(streamErr)) && !dw.committed() {
 			// 尚未向客户端提交任何字节（含 heartbeat），可安全同 Provider 重试。
+			// 「只有 thinking 的空回答」也走这条：它该由调用方的空回答重试节奏再问
+			// 一次，而不是被当成截断错误报给客户端。
 			return response.StatusCode, usage, nil, streamErr, true
 		}
 		// Capture before flushing: the flush hands the buffer to the client and

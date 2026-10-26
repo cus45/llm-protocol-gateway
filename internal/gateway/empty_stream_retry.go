@@ -122,15 +122,39 @@ type countingReader struct {
 	r   io.Reader
 	n   int
 	err error // the error that ended the read, io.EOF for a body that just ran out
+	// seen is what the body said, kept up to the cap once kept is set, so a
+	// verdict can tell an event stream from a whole message answered in its place.
+	seen bytes.Buffer
+	kept bool
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += n
+	if c.kept {
+		if room := closingBodyMax - c.seen.Len(); n > 0 && room > 0 {
+			if n < room {
+				room = n
+			}
+			_, _ = c.seen.Write(p[:room])
+		}
+	}
 	if err != nil {
 		c.err = err
 	}
 	return n, err
+}
+
+// isUpstreamEventStream says the body carried server-sent events (Anthropic's
+// "event:"/"data:" frames, OpenAI's "data:" lines) rather than one JSON message.
+func isUpstreamEventStream(body []byte) bool {
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
+			return true
+		}
+	}
+	return false
 }
 
 // committed reports whether anything of the attempt reached the client, which

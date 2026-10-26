@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,7 +83,7 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 
 	var promptTokens, outputTokens, cacheRead, cacheWrite int64
 	closed := false
-	r := countingReader{r: reader}
+	r := countingReader{r: reader, kept: true}
 	scanner := bufio.NewScanner(&r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -236,6 +237,11 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 	usage = normalizeClaudeUsageFields(promptTokens, outputTokens, cacheRead, cacheWrite)
 
 	if !sawAnyEvent {
+		// The account answered with one whole message instead of a stream: a
+		// message, not a stream that said nothing.
+		if whole := isUpstreamMessageBody(r.seen.Bytes()); whole != nil {
+			return writeClaudeMessageAsOpenAIChatStream(w, whole, resolvedModel, clientToolNames, clientStopSequences...)
+		}
 		return usage, fmt.Errorf("openai stream ended without any events")
 	}
 
@@ -280,6 +286,63 @@ func streamClaudeToOpenAIChatEvents(w http.ResponseWriter, reader io.Reader, mod
 		})
 	}
 	if err := writeOpenAISSEChunk(w, finalChunk); err != nil {
+		return usage, err
+	}
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		return usage, err
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return usage, nil
+}
+
+// isUpstreamMessageBody returns the body when it is one whole JSON message
+// rather than an event stream: an object or an array, and nothing else.
+func isUpstreamMessageBody(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) < 2 || !json.Valid(trimmed) {
+		return nil
+	}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return nil
+	}
+	return trimmed
+}
+
+// writeClaudeMessageAsOpenAIChatStream answers a Chat streaming client with one
+// whole Claude message as the chunks that message would have been: the answer
+// itself, its finish reason, and [DONE]. Its errors are the non-stream
+// converter's — a thinking-only message among them — and nothing is written for
+// them, so the attempt stays the caller's to retry.
+func writeClaudeMessageAsOpenAIChatStream(w http.ResponseWriter, body []byte, model string, clientToolNames map[string]struct{}, clientStopSequences ...string) (TokenUsage, error) {
+	usage := ParseClaudeUsage(body)
+	converted, _, err := claudeResponseToOpenAIChat(body, model, clientToolNames, clientStopSequences...)
+	if err != nil {
+		return usage, err
+	}
+	completion := map[string]any{}
+	if err := json.Unmarshal(converted, &completion); err != nil {
+		return usage, err
+	}
+	chunk := map[string]any{
+		"id":      completion["id"],
+		"object":  "chat.completion.chunk",
+		"created": completion["created"],
+		"model":   firstNonEmpty(stringValue(completion["model"]), model),
+	}
+	choice := map[string]any{"index": 0, "delta": map[string]any{}}
+	if choices, ok := completion["choices"].([]any); ok && len(choices) > 0 {
+		if first, ok := choices[0].(map[string]any); ok {
+			choice["delta"] = first["message"]
+			choice["finish_reason"] = first["finish_reason"]
+		}
+	}
+	chunk["choices"] = []any{choice}
+	if usageValue, ok := completion["usage"]; ok {
+		chunk["usage"] = usageValue
+	}
+	if err := writeOpenAISSEChunk(w, chunk); err != nil {
 		return usage, err
 	}
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {

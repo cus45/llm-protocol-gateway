@@ -223,13 +223,25 @@ func closeInterruptedResponsesToChatStream(w http.ResponseWriter, chunkID, model
 // frame is the only evidence the answer was whole. The converter supplies that
 // verdict from what it saw, since it alone knows which frame closes its
 // upstream's stream.
+//
+// Only an event stream can be cut this way: an account may answer a request
+// asked for as a stream with one whole JSON message instead, and a message has
+// no closing frame to lose. A reader that did not keep what it read cannot tell
+// the two apart, so it is judged as before.
 func cleanEOFInterruption(r countingReader, closed bool) bool {
 	if r.err == nil || !errors.Is(r.err, io.EOF) {
 		// Nothing read, or a read that failed: isUpstreamStreamInterruptedReader
 		// is the verdict.
 		return false
 	}
-	return r.n > 0 && !closed
+	if r.n == 0 || closed {
+		return false
+	}
+	if r.kept && !isUpstreamEventStream(r.seen.Bytes()) {
+		// The body was one whole message, not a stream.
+		return false
+	}
+	return true
 }
 
 // errStreamWithoutClosingFrame stands in for the read error of a body that
