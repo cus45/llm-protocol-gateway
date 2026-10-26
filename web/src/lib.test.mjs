@@ -347,3 +347,31 @@ test('authRejectionMessage：401 不再是原样的 JSON', async () => {
   const empty = await lib.authRejectionMessage(new Response('', {status: 403}), '登录失败');
   assert.equal(empty, '登录失败（HTTP 403）');
 });
+
+// ── 对话测试的失败提示（lib.tsx chatTestVerdictFromBody / chatTestToastText）──
+test('失败应答的错误信封：提示里是那句话，不是 undefined', () => {
+  // 普通用户在管理员未授权的路由上点「对话测试」：403 + 错误信封。
+  const verdict = lib.chatTestVerdictFromBody(JSON.stringify({error: {message: 'permission denied', type: 'gateway_error'}}), 403);
+  assert.equal(verdict.success, false);
+  assert.equal(verdict.error, 'permission denied');
+  const toast = lib.chatTestToastText(verdict);
+  assert.equal(toast, '对话测试未通过：permission denied');
+  assert.ok(!toast.includes('undefined'), toast);
+});
+
+test('正常应答按 success 判定，成功提示带模型侧状态码', () => {
+  const ok = lib.chatTestVerdictFromBody(JSON.stringify({success: true, status: 200, routeId: 'r1', error: ''}), 200);
+  assert.equal(ok.success, true);
+  assert.equal(lib.chatTestToastText(ok), '对话测试成功：HTTP 200');
+  const failed = lib.chatTestVerdictFromBody(JSON.stringify({success: false, status: 502, error: 'upstream exploded'}), 502);
+  assert.equal(lib.chatTestToastText(failed), '对话测试未通过：upstream exploded');
+});
+
+test('解析不了的应答退回状态码，同样不出现 undefined', () => {
+  const plain = lib.chatTestVerdictFromBody('<html>Bad Gateway</html>', 502);
+  assert.ok(lib.chatTestToastText(plain).includes('502'), lib.chatTestToastText(plain));
+  const empty = lib.chatTestVerdictFromBody('', 401);
+  assert.equal(lib.chatTestToastText(empty), '对话测试未通过：HTTP 401');
+  const emptyEnvelope = lib.chatTestVerdictFromBody('{}', 500);
+  assert.equal(lib.chatTestToastText(emptyEnvelope), '对话测试未通过：HTTP 500');
+});

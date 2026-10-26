@@ -36,6 +36,8 @@ import {
     buildCurlCommand,
     buildProviderChatCurl,
     buildRouteTestCurl,
+    chatTestToastText,
+    chatTestVerdictFromBody,
     buildSelfRegistrationPrompt,
     chatgptAccountLabelFriendly,
     clearUICache,
@@ -2424,14 +2426,20 @@ function App() {
 
   async function parseRouteTestResponse(response: Response): Promise<RouteTestResult> {
     const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('json')) {
-      return await response.json() as RouteTestResult;
+    const text = await response.text();
+    // 协议缺失也不再直接当 JSON 解析：有些反代会把它去掉，体仍是 JSON。
+    if (contentType.includes('json') || /^\s*[[{]/.test(text)) {
+      const verdict = chatTestVerdictFromBody(text, response.status);
+      // 失败应答（权限不足、路由不存在……）是 {"error":{...}} 信封，没有 success /
+      // status；补成完整的失败结果，弹窗与提示才说得清原因。
+      return verdict.success
+        ? { ...(JSON.parse(text) as RouteTestResult) }
+        : { success: false, status: response.status, error: verdict.error };
     }
-    const text = (await response.text()).slice(0, 2000);
     return {
       success: false,
       status: response.status,
-      error: `HTTP ${response.status} · ${contentType || '非 JSON 响应'}：${text}`,
+      error: `HTTP ${response.status} · ${contentType || '非 JSON 响应'}：${text.slice(0, 2000)}`,
     };
   }
 
@@ -2467,7 +2475,7 @@ function App() {
         });
         const result = await parseRouteTestResponse(response);
         setChatTestResult(result);
-        showToast(result.success ? `对话测试成功：HTTP ${result.status}` : `对话测试未通过：${result.status || result.error || 'unknown'}`);
+        showToast(chatTestToastText(result));
       } else {
         const providerPath = `${API_BASE}/__providers/${encodeURIComponent(target.id)}`;
         const path = test === 'main' ? 'chat-test' : test === 'cache' ? 'cache-test' : 'thinking-test';
@@ -2489,7 +2497,9 @@ function App() {
         if (test === 'main') setChatTestResult(result);
         else if (test === 'cache') setCacheTestResult(result as ProviderCacheTestResult);
         else setThinkingTestResult(result as ProviderThinkingTestResult);
-        showToast(result.success ? `${label}成功：HTTP ${result.status}` : `${label}未通过：${result.status || result.error || 'unknown'}`);
+        // Provider 自己的对话测试失败时同样可能只有一句话（而不是结果体）：统一取原因。
+        const verdict = result.success ? result : chatTestVerdictFromBody(JSON.stringify(result), result.status || response.status);
+        showToast(verdict.success ? `${label}成功：HTTP ${result.status}` : `${label}未通过：${chatTestToastText(verdict).replace(/^对话测试未通过：/, '')}`);
       }
       if (activeNav === 'traffic-tokens' && logsFetchedOnce && logsPageRef.current === 1) {
         await refreshLogs(1, undefined, undefined, { silent: true });

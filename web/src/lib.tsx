@@ -313,6 +313,44 @@ export async function authRejectionMessage(response: Response, fallback: string)
   return errorMessageFromBody(text, `${fallback}（HTTP ${response.status}）`);
 }
 
+/** 对话测试的结论（RouteTestResult 的最小形状，见 types.ts）。 */
+export type ChatTestVerdict = { success: boolean; status?: number; error?: string; httpStatus?: number };
+
+/**
+ * chatTestVerdictFromBody 把对话测试接口的应答变成结论。接口成功时给
+ * {success,status,...}；失败（权限不足、路由不存在、请求体不合法）给的是
+ * {"error":{"message":...}} 错误信封——此时既没有 success 也没有 status，旧代码
+ * 于是弹出「对话测试未通过：undefined」。从信封里取那句话，取不到再退回状态码。
+ */
+export function chatTestVerdictFromBody(bodyText: string, httpStatus: number): ChatTestVerdict {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    const text = (bodyText || '').trim().slice(0, 200);
+    return { success: false, httpStatus, error: text ? `HTTP ${httpStatus}：${text}` : `HTTP ${httpStatus}` };
+  }
+  const data = parsed as { success?: unknown; status?: number; error?: unknown };
+  // 正常结果里 error 是字符串（或为空），成功与否看 success。
+  if (typeof data.success === 'boolean' && typeof data.error !== 'object') {
+    return { success: data.success, status: data.status, error: typeof data.error === 'string' ? data.error : undefined, httpStatus };
+  }
+  // 信封里没有可读的那句话：退回状态码，别把 "{}" 之类交给用户。
+  const message = errorMessageFromBody(bodyText, '');
+  const readable = message && message !== bodyText.trim() ? message : '';
+  return { success: false, httpStatus, error: readable || `HTTP ${httpStatus}` };
+}
+
+/** chatTestToastText 给对话测试写一句提示：错误说原因，不再出现 undefined。 */
+export function chatTestToastText(verdict: ChatTestVerdict) {
+  if (verdict.success) return `对话测试成功：HTTP ${verdict.status ?? verdict.httpStatus ?? 200}`;
+  const reason = (verdict.error || '').trim() || (verdict.status ? `HTTP ${verdict.status}` : '') || (verdict.httpStatus ? `HTTP ${verdict.httpStatus}` : '') || '未知错误';
+  return `对话测试未通过：${reason}`;
+}
+
 export async function readConnectResponse(response: Response, fallbackMessage: string) {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   // 诊断:记录浏览器真实收到的状态/类型/体前缀,终结"到底是谁返回的 502"之争。
