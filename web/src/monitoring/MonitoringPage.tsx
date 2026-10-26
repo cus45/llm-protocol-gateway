@@ -245,6 +245,9 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
   // 顶栏副标题与「规则」页签徽标要的是全量口径：告警列表可能被状态/级别筛选过，不能拿来数。
   const [rules, setRules] = useState<MonitorRule[]>([]);
   const [lastLoadedAt, setLastLoadedAt] = useState('');
+  // alertPagesShownRef 是告警列表当前展开到第几页：轮询按它重新取，不让「加载更多」
+  // 在 15 秒后被悄悄收回。
+  const alertPagesShownRef = useRef(1);
   // 顶部同步胶囊在窄屏（1024 下只有约 100px）装不下完整时间，改用相对时间「3 分钟前」：
   // 绝对时间与完整口径都留在 title 里，不再靠省略号把「10/26 03:21:5…」切掉。
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -312,8 +315,22 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       if (mine !== generation.current) return;
       setOverview(nextOverview);
       setAccounts(nextAccounts.accounts);
-      setAlerts(nextAlerts.items);
-      setAlertTotal(nextAlerts.total);
+      // 用户点过「加载更多」时，轮询不能把列表缩回第一页：按已展开的页数重新取，
+      // 让正在看的那几条留在原处，而不是每 15 秒被收回去一次。
+      const wantedAlertPages = Math.min(alertPagesShownRef.current, Math.max(1, Math.ceil(nextAlerts.total / ALERT_PAGE)));
+      if (tab === 'alerts' && wantedAlertPages > 1) {
+        void fetchAlerts({ status: statusFilter || undefined, severity: severityFilter || undefined, range: '7d', page: wantedAlertPages, pageSize: ALERT_PAGE })
+          .then((last) => {
+            if (mine !== generation.current) return;
+            setAlerts(mergeByID(nextAlerts.items, last.items));
+            setAlertTotal(last.total);
+          })
+          .catch(() => setError('告警加载失败'));
+      } else {
+        alertPagesShownRef.current = 1;
+        setAlerts(nextAlerts.items);
+        setAlertTotal(nextAlerts.total);
+      }
       setEvents(nextEvents.items);
       if (nextChannels) setChannels(nextChannels);
       if (nextDispatch) setDispatch(nextDispatch);
@@ -657,6 +674,7 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
       pageSize: ALERT_PAGE,
     })
       .then((page) => {
+        alertPagesShownRef.current = Math.floor(alerts.length / ALERT_PAGE) + 1;
         setAlerts((current) => mergeByID(current, page.items));
         setAlertTotal(page.total);
       })
@@ -779,9 +797,11 @@ export function MonitoringPage({ iconOf, onOpenAccountLogs }: MonitoringPageProp
                 <i className="mon-chain-dot" aria-hidden="true" />
                 <span className="mon-chain-text">{chainState.text}</span>
               </span>
-              <span className="mon-header-sync" title={loadedAt ? `${loadedAt} 同步${syncHint}` : undefined}>
+              {/* 读失败时不能还显示「刚刚同步」：页面上的数字可能已经过期，胶囊要说清
+                  最后一次成功是什么时候，而不是继续报告新鲜度。 */}
+              <span className={`mon-header-sync${error && !loading ? ' is-stale' : ''}`} title={loadedAt ? `${loadedAt} 同步${syncHint}` : undefined}>
                 <i className="live-dot" aria-hidden="true" />
-                {loading ? '同步中…' : loadedAt ? `${relativeLoaded} 同步` : '等待首轮同步'}
+                {loading ? '同步中…' : error ? (loadedAt ? `数据过期 · 最后成功 ${relativeLoaded}` : '读取失败') : loadedAt ? `${relativeLoaded} 同步` : '等待首轮同步'}
               </span>
             </div>
             <p

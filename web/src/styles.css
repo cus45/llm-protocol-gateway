@@ -7121,6 +7121,9 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 /* 刷新中与「同步」是两个字，比标题右侧剩下的宽度长，允许它换到第二行也不裁切
    （手机档会落到独立一行，见 media 640）。 */
 .mon-header-sync { flex: 0 1 auto; margin-left: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* 监控数据读取失败：胶囊说「数据过期」，颜色也跟着走，不再是一颗「实时」的绿点。 */
+.mon-header-sync.is-stale { color: var(--warning, #b45309); border-color: color-mix(in srgb, var(--warning, #b45309) 35%, var(--border)); }
+.mon-header-sync.is-stale .live-dot { background: var(--warning, #b45309); }
 .mon-header-sync {
   display: inline-flex;
   align-items: center;
