@@ -27,11 +27,14 @@ import (
 // no precision is lost formatting money through a float.
 const deepSeekBalancePath = "/user/balance"
 
-// isDeepSeekBaseURL reports whether a provider points at DeepSeek. Third-party
-// relays that merely serve deepseek-* models are intentionally not matched:
-// they do not implement /user/balance.
+// isDeepSeekBaseURL reports whether a provider points at DeepSeek itself rather
+// than at something that merely lives under deepseek.com. Third-party relays
+// that serve deepseek-* models are intentionally not matched: they do not
+// implement /user/balance. The check is an exact host match, not a suffix one:
+// a relay on proxy.deepseek.com belongs to its own operator, and a balance
+// probe pinned to api.deepseek.com would send that operator's key to the vendor.
 func isDeepSeekBaseURL(baseURL string) bool {
-	return baseURLHostIn(baseURL, "deepseek.com")
+	return baseURLHostIs(baseURL, "api.deepseek.com", "deepseek.com")
 }
 
 // deepSeekBalanceBase resolves the origin to query. The balance endpoint lives
@@ -43,7 +46,7 @@ func deepSeekBalanceBase(baseURL string) string {
 		return "https://api.deepseek.com"
 	}
 	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" || !baseURLHostIn(trimmed, "deepseek.com") {
+	if err != nil || parsed.Host == "" || !isDeepSeekBaseURL(trimmed) {
 		return "https://api.deepseek.com"
 	}
 	scheme := parsed.Scheme

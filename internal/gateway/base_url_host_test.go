@@ -79,7 +79,13 @@ func TestUsageBaseHostsPinnedToVendor(t *testing.T) {
 	if got := deepSeekBalanceBase("https://evil.example/?u=deepseek.com"); got != "https://api.deepseek.com" {
 		t.Errorf("deepSeekBalanceBase(spoofed) = %q, want the official fallback", got)
 	}
-	if got := deepSeekBalanceBase("https://relay.deepseek.com/v1"); got != "https://relay.deepseek.com" {
-		t.Errorf("deepSeekBalanceBase(subdomain) = %q", got)
+	// 子域名不是 DeepSeek 官方：relay.deepseek.com 是别人家的中转，把探针钉到
+	// api.deepseek.com 就是把那家中转的 key 送给 DeepSeek。只有「就是 DeepSeek」的
+	// 主机名才走探针，其余的读本地 BaseURL（中转自己有没有 /user/balance 由它决定）。
+	if got := deepSeekBalanceBase("https://relay.deepseek.com/v1"); got != "https://api.deepseek.com" {
+		t.Errorf("deepSeekBalanceBase(subdomain) = %q, want the official fallback: a relay on a deepseek.com subdomain is not DeepSeek", got)
+	}
+	if isDeepSeekBaseURL("https://relay.deepseek.com/v1") {
+		t.Error("isDeepSeekBaseURL(relay.deepseek.com) = true: a relay's key would be sent to api.deepseek.com")
 	}
 }
