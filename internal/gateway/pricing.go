@@ -39,6 +39,15 @@ type priceTable struct {
 	mu     sync.RWMutex
 	rows   map[string]domain.ModelPrice
 	loaded bool
+	// generation counts invalidations. A load reads it before querying the
+	// store and only stores its result if nothing invalidated in between: the
+	// rows it read are then still the current ones. Without it, an admin's save
+	// that landed while a cold load was in flight was undone by that load —
+	// stale rates for the life of the process, silently.
+	generation uint64
+	// loading is closed when the load now in flight finishes, so calls that
+	// arrive meanwhile wait for it instead of each querying the store.
+	loading chan struct{}
 }
 
 func priceKey(providerID, modelID string) string {
@@ -60,28 +69,65 @@ func (s *Server) priceRows() (map[string]domain.ModelPrice, error) {
 	if s == nil || s.prices == nil {
 		return nil, errors.New("price table not configured")
 	}
-	s.prices.mu.RLock()
-	loaded, rows := s.prices.loaded, s.prices.rows
-	s.prices.mu.RUnlock()
-	if loaded {
-		return rows, nil
+	for {
+		s.prices.mu.RLock()
+		loaded, rows, inFlight := s.prices.loaded, s.prices.rows, s.prices.loading
+		s.prices.mu.RUnlock()
+		if loaded {
+			return rows, nil
+		}
+		if s.priceStore == nil {
+			return rows, nil
+		}
+		if inFlight != nil {
+			// Another request is loading the table: its result is ours too
+			// (or it was invalidated again, and the loop loads once more).
+			<-inFlight
+			continue
+		}
+		s.prices.mu.Lock()
+		if s.prices.loaded {
+			rows := s.prices.rows
+			s.prices.mu.Unlock()
+			return rows, nil
+		}
+		if s.prices.loading != nil {
+			inFlight := s.prices.loading
+			s.prices.mu.Unlock()
+			<-inFlight
+			continue
+		}
+		generation := s.prices.generation
+		done := make(chan struct{})
+		s.prices.loading = done
+		s.prices.mu.Unlock()
+
+		stored, err := s.priceStore.LoadModelPrices()
+		indexed := make(map[string]domain.ModelPrice, len(stored))
+		for _, price := range stored {
+			indexed[priceKey(price.ProviderID, price.ModelID)] = price
+		}
+
+		s.prices.mu.Lock()
+		s.prices.loading = nil
+		// Only a load nothing invalidated may be cached: otherwise the rows it
+		// read may predate the write that invalidated the table, and storing them
+		// would undo that write for the life of the process.
+		current := err == nil && s.prices.generation == generation
+		if current {
+			s.prices.rows = indexed
+			s.prices.loaded = true
+		}
+		s.prices.mu.Unlock()
+		close(done)
+		if err != nil {
+			return nil, err
+		}
+		// A load that raced a write still answers this caller with what the store
+		// held a moment ago — a faithful answer to its question — but the next
+		// caller loads again.
+		return indexed, nil
 	}
-	if s.priceStore == nil {
-		return rows, nil
-	}
-	stored, err := s.priceStore.LoadModelPrices()
-	if err != nil {
-		return nil, err
-	}
-	indexed := make(map[string]domain.ModelPrice, len(stored))
-	for _, price := range stored {
-		indexed[priceKey(price.ProviderID, price.ModelID)] = price
-	}
-	s.prices.mu.Lock()
-	s.prices.rows = indexed
-	s.prices.loaded = true
-	s.prices.mu.Unlock()
-	return indexed, nil
 }
 
 // lookupPrice finds the row that prices one model, in this order:
@@ -303,5 +349,6 @@ func (s *Server) invalidatePrices() {
 	s.prices.mu.Lock()
 	s.prices.rows = nil
 	s.prices.loaded = false
+	s.prices.generation++
 	s.prices.mu.Unlock()
 }
