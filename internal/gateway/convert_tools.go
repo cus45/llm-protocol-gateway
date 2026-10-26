@@ -1788,3 +1788,52 @@ func toAnySliceOfStrings(values []string) []any {
 	}
 	return out
 }
+
+// dedupeReasoningFields leaves a message one spelling of its thinking. Chat
+// clients and relays disagree on the name: OpenAI-compatible vendors take
+// "reasoning_content", pi and some relays send "reasoning", and DeepSeek (or a
+// relay in front of it) reads the two as one field — a message carrying both is
+// refused with "duplicate field reasoning", which fails the whole turn. When
+// both are present reasoning_content wins and reasoning is dropped; a message
+// with only one of them is untouched (its own name is kept), and a body with
+// nothing to change comes back byte for byte.
+func dedupeReasoningFields(body []byte) []byte {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return body
+	}
+	changed := false
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content := strings.TrimSpace(stringValue(message["reasoning_content"]))
+		reasoning := strings.TrimSpace(stringValue(message["reasoning"]))
+		switch {
+		case content != "" && reasoning != "":
+			delete(message, "reasoning")
+			changed = true
+		case content == "" && reasoning != "":
+			// 只有 reasoning 时也统一成 reasoning_content：DeepSeek 一系只认这个名字，
+			// 留着 reasoning 会让这段思考在下一轮被丢掉。
+			message["reasoning_content"] = message["reasoning"]
+			delete(message, "reasoning")
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(payload) != nil {
+		return body
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+}

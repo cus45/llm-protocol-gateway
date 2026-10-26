@@ -3302,6 +3302,10 @@ func (s *Server) executeProviderChatHTTP(r *http.Request, provider domain.Provid
 	// for one JSON object, so the stream is rebuilt into one below.
 	workBuddy := isWorkBuddyProvider(provider)
 	body = chatToolCallIDs(body)
+	// DeepSeek (and relays in front of it) read reasoning and reasoning_content as
+	// one field and refuse a message that carries both ("duplicate field
+	// reasoning"). The thinking goes upstream under one name, once.
+	body = dedupeReasoningFields(body)
 	var workBuddyAliases map[string]string
 	if workBuddy {
 		body, workBuddyAliases, _ = shapeWorkBuddyChatBody(body)
@@ -5729,6 +5733,11 @@ func (s *Server) proxyOpenAIChat(w http.ResponseWriter, r *http.Request, provide
 	// A call that came with no id would otherwise be replayed as "" forever,
 	// which strict upstreams refuse for the whole conversation.
 	body = chatToolCallIDs(body)
+	// DeepSeek (and relays in front of it) read reasoning and reasoning_content as
+	// one field and refuse a message that carries both ("duplicate field
+	// reasoning"). A client that keeps its thinking in reasonon... whichever of the
+	// two it sent is kept, once.
+	body = dedupeReasoningFields(body)
 	var workBuddyAliases map[string]string
 	if workBuddy {
 		body, workBuddyAliases, _ = shapeWorkBuddyChatBody(body)
