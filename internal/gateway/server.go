@@ -33,6 +33,24 @@ const (
 	headerGatewayInternalTest = "X-Gateway-Internal-Test"
 )
 
+// internalTestRouteID returns the route a request names as its own test target,
+// and whether the request really is one of the gateway's own route tests.
+//
+// The headers alone are not proof: every one of them is client-chosen, so a
+// bare "X-Gateway-Internal-Test: 1" with a known route id let any caller — no
+// API key, no session — spend a provider's credential through that route, with
+// no key quota and no attribution. Route ids show up in /__state and in shared
+// configs, so that was one short string away from open access. What a client
+// cannot forge is the request's context: testRoute marks its own request there
+// (withRouteTestToken) and nothing else in the process does.
+func internalTestRouteID(r *http.Request) (string, bool) {
+	routeID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID))
+	if routeID == "" || r.Header.Get(headerGatewayInternalTest) != "1" || !routeTestTokenFrom(r.Context()) {
+		return "", false
+	}
+	return routeID, true
+}
+
 type StateSaver interface {
 	Save(domain.GatewayState) error
 }
@@ -4094,7 +4112,7 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	route, err := s.router.ActiveOpenAIChatRoute()
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractConsumerAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
@@ -4215,7 +4233,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	var route domain.Route
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractConsumerAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
@@ -4315,7 +4333,7 @@ func (s *Server) handleOpenAIImagesGenerations(w http.ResponseWriter, r *http.Re
 	var route domain.Route
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractConsumerAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
@@ -4496,7 +4514,7 @@ func (s *Server) serveOpenAIPassThrough(w http.ResponseWriter, r *http.Request, 
 	var route domain.Route
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractConsumerAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
@@ -4682,7 +4700,7 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	var route domain.Route
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractConsumerAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
@@ -4833,7 +4851,7 @@ func (s *Server) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) resolveClaudeConsumerRoute(r *http.Request) (domain.Route, domain.APIKey, bool, error) {
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err := s.router.RouteByID(testRouteID)
 		return route, domain.APIKey{}, false, err
 	}
@@ -5391,6 +5409,7 @@ func (s *Server) testRoute(r *http.Request, routeID string, requestModel string,
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(headerGatewayRouteID, route.ID)
 	request.Header.Set(headerGatewayInternalTest, "1")
+	request = request.WithContext(withRouteTestToken(request.Context()))
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	response, err := client.Do(request)

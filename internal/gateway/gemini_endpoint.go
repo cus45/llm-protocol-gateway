@@ -55,7 +55,7 @@ func (s *Server) handleGeminiGenerateContent(w http.ResponseWriter, r *http.Requ
 	var route domain.Route
 	var matchedKey domain.APIKey
 	var gatewayKeyMatched bool
-	if testRouteID := strings.TrimSpace(r.Header.Get(headerGatewayRouteID)); testRouteID != "" && r.Header.Get(headerGatewayInternalTest) == "1" {
+	if testRouteID, ok := internalTestRouteID(r); ok {
 		route, err = s.router.RouteByID(testRouteID)
 	} else if token := extractGeminiAPIKey(r); token != "" {
 		if key, ok := s.router.APIKeyByToken(token); ok {
