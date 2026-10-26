@@ -154,7 +154,7 @@ interface EventMetric {
 }
 
 /**
- * 卡片里的指标格：探测与续期有结构化的 detail，能换算成四列读数；
+ * 卡片里的指标格：探测、续期与签到有结构化的 detail，能换算成四列读数；
  * 其余类型只留一行 payload，不为了凑格数去猜字段。
  */
 function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
@@ -223,7 +223,38 @@ function eventMetrics(ev: MonitorEvent, timezone: string): EventMetric[] {
       },
     ];
   }
+  if (ev.kind === 'checkin') {
+    const outcome = asText(detail.outcome);
+    const credit = asNumber(detail.credit);
+    const streak = asNumber(detail.streak);
+    const until = asText(detail.validUntil);
+    const message = asText(detail.message);
+    const failed = outcome === 'failed';
+    const result = failed
+      ? message ? errorReason(message) : '失败'
+      : outcome === 'claimed' ? '成功'
+      : outcome === 'done' ? '已签到'
+      : outcome === 'ineligible' ? '不参与'
+      : outcome === 'inactive' ? '无活动'
+      : outcome === 'own-app' ? '需官方 App'
+      : outcome || '—';
+    return [
+      { label: '结果', value: result, tone: failed ? 'err' : undefined },
+      { label: '积分', value: credit > 0 ? `+${creditText(credit)}` : '—', tone: credit > 0 ? undefined : 'muted' },
+      { label: '连签', value: streak > 0 ? `${streak} 天` : '—', tone: streak > 0 ? undefined : 'muted' },
+      {
+        label: '有效期至',
+        value: until ? displayTimeCompact(displayTime(until, timezone).text) : '—',
+        tone: until ? undefined : 'muted',
+      },
+    ];
+  }
   return [];
+}
+
+/** 积分可能是浮点：100 不写成 100.0，0.5 原样保留。 */
+function creditText(credit: number): string {
+  return Number.isInteger(credit) ? String(credit) : String(Number(credit.toFixed(2)));
 }
 
 /** 一行等宽 payload：探测按 case 展开，其余把 detail 拍平成 key=value。 */
@@ -256,6 +287,20 @@ function payloadSegments(ev: MonitorEvent): string[] {
       model ? `model=${model}` : '',
       error ? `error=${errorReason(error)}` : '',
       skipped ? `skipped=${skipped}` : '',
+    ].filter(Boolean);
+  }
+  if (ev.kind === 'checkin') {
+    const outcome = asText(detail.outcome);
+    const message = asText(detail.message);
+    return [
+      `vendor=${asText(detail.vendor) || '—'}`,
+      `outcome=${outcome || '—'}`,
+      `day=${asText(detail.day) || '—'}`,
+      asNumber(detail.credit) > 0 ? `credit=${creditText(asNumber(detail.credit))}` : '',
+      asNumber(detail.streak) > 0 ? `streak=${asNumber(detail.streak)}d` : '',
+      detail.offline === true ? `offline=true${asNumber(detail.tries) > 0 ? ` tries=${asNumber(detail.tries)}` : ''}` : '',
+      // 失败原因已经在「结果」格（截断后）；成功附带的说明仍值得留一行。
+      message && outcome !== 'failed' ? `msg=${message}` : '',
     ].filter(Boolean);
   }
   const segments: string[] = [];

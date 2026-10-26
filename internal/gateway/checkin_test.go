@@ -8,6 +8,7 @@ import (
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
 // memoryCheckinStore is the check-in table as a map, plus the StateSaver the
@@ -243,5 +244,112 @@ func TestRecordCheckinStoresAndReusesTheDay(t *testing.T) {
 	}
 	if record.Day != checkinDay(now) || record.At == "" || record.AccountKey != "q1" {
 		t.Fatalf("record = %+v", record)
+	}
+}
+
+func TestCheckinEventWorthy(t *testing.T) {
+	base := domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinDone}
+	cases := []struct {
+		name     string
+		previous domain.CheckinRecord
+		found    bool
+		next     domain.CheckinRecord
+		want     bool
+	}{
+		{"the first answer", domain.CheckinRecord{}, false, base, true},
+		{"the same answer again", base, true, base, false},
+		{"the day turned", base, true, domain.CheckinRecord{Day: "2026-10-21", AccountKey: "acct", Outcome: domain.CheckinDone}, true},
+		{"another account signed in", base, true, domain.CheckinRecord{Day: "2026-10-20", AccountKey: "other", Outcome: domain.CheckinDone}, true},
+		{"a new outcome", base, true, domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinClaimed, Credit: 100}, true},
+		{"a new grant", domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinClaimed, Credit: 100}, true,
+			domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinClaimed, Credit: 150}, true},
+		{"the same grant re-read", domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinClaimed, Credit: 100}, true,
+			domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinClaimed, Credit: 100}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkinEventWorthy(tc.previous, tc.found, tc.next); got != tc.want {
+				t.Fatalf("checkinEventWorthy = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// An offline retry says the same thing with a slightly different transport
+	// error each time; only the outage itself (going offline, coming back) is news.
+	offline := domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinFailed, Offline: true, Message: "dial tcp: i/o timeout"}
+	if checkinEventWorthy(offline, true, domain.CheckinRecord{
+		Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinFailed, Offline: true, Message: "read tcp: connection reset",
+	}) {
+		t.Fatal("an offline retry must not be news")
+	}
+	answered := domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinFailed, Message: "上游拒绝：活动已结束"}
+	if checkinEventWorthy(domain.CheckinRecord{Day: "2026-10-20", AccountKey: "acct", Outcome: domain.CheckinFailed, Message: "上游拒绝：未登录"}, true, answered) != true {
+		t.Fatal("a changed failure reason is news")
+	}
+}
+
+func TestRecordCheckinWritesOneEventPerChange(t *testing.T) {
+	server, _ := monitorTestServer(t, domain.Provider{ID: "q1", Name: "Qoder CN", AuthType: domain.AuthTypeQoderCN})
+	provider := domain.Provider{ID: "q1", Name: "Qoder CN", AuthType: domain.AuthTypeQoderCN}
+	now := time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC)
+	count := func() (int, []monitoring.Event) {
+		t.Helper()
+		page, err := server.monitoringStore.QueryMonitorEvents(monitoring.EventQuery{
+			Kind: monitoring.EventKindCheckin, From: now.Add(-48 * time.Hour), To: now.Add(72 * time.Hour),
+			Page: 1, PageSize: 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Total, page.Items
+	}
+
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinClaimed, Credit: 100}, now)
+	total, items := count()
+	if total != 1 {
+		t.Fatalf("first answer wrote %d events, want 1", total)
+	}
+	event := items[0]
+	if event.Title != "Qoder CN 签到成功 +100 积分" {
+		t.Fatalf("title = %q", event.Title)
+	}
+	if event.TargetID != "q1" || event.TargetName != "Qoder CN" || event.Severity != monitoring.SeverityInfo {
+		t.Fatalf("event = %+v", event)
+	}
+	for key, want := range map[string]any{"vendor": "qoder", "outcome": "claimed", "day": "2026-10-20", "credit": 100.0} {
+		if got := event.Detail[key]; got != want {
+			t.Fatalf("detail[%s] = %v, want %v", key, got, want)
+		}
+	}
+
+	// Qoder re-reads a settled account every half hour; the same answer is not
+	// re-announced.
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinClaimed, Credit: 100}, now.Add(30*time.Minute))
+	if total, _ = count(); total != 1 {
+		t.Fatalf("an unchanged re-read wrote %d events, want 1", total)
+	}
+
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinFailed, Offline: true, Message: "dial tcp: i/o timeout"}, now.Add(time.Hour))
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinFailed, Offline: true, Tries: 1, Message: "read tcp: connection reset"}, now.Add(61*time.Minute))
+	if total, items = count(); total != 2 {
+		t.Fatalf("an outage and its retry wrote %d events, want 2", total)
+	}
+	if items[0].Title != "Qoder CN 签到失败：dial tcp: i/o timeout" {
+		t.Fatalf("failure title = %q", items[0].Title)
+	}
+
+	// A new 30-minute campaign grant inside the same day is worth a line.
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinClaimed, Credit: 150}, now.Add(2*time.Hour))
+	if total, _ = count(); total != 3 {
+		t.Fatalf("a new grant wrote %d events, want 3", total)
+	}
+
+	// The next Beijing day always gets its own line.
+	server.recordCheckin(provider, domain.CheckinRecord{Outcome: domain.CheckinDone}, now.Add(24*time.Hour))
+	if total, items = count(); total != 4 {
+		t.Fatalf("the next day wrote %d events, want 4", total)
+	}
+	if items[0].Title != "Qoder CN 今日已签到" {
+		t.Fatalf("done title = %q", items[0].Title)
 	}
 }

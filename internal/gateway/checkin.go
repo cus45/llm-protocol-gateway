@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitoring"
 )
 
 const (
@@ -308,7 +309,9 @@ func (s *Server) runCheckin(ctx context.Context, vendor string, provider domain.
 }
 
 // recordCheckin writes what came of a day and logs the lines worth knowing:
-// credits in, or a failure the loop will keep trying.
+// credits in, or a failure the loop will keep trying. An answer that changed is
+// also pushed into the event stream — the console shows check-ins beside
+// renewals and probes — while a retry of the same answer stays out of it.
 func (s *Server) recordCheckin(provider domain.Provider, record domain.CheckinRecord, now time.Time) {
 	if record.AccountKey == "" {
 		record.AccountKey = provider.ID
@@ -322,9 +325,16 @@ func (s *Server) recordCheckin(provider domain.Provider, record domain.CheckinRe
 	if record.At == "" {
 		record.At = now.UTC().Format(time.RFC3339)
 	}
+	previous, hadPrevious, err := s.checkinStore.CheckinByProvider(record.ProviderID)
+	if err != nil {
+		hadPrevious = false
+	}
 	if err := s.checkinStore.SaveCheckin(record); err != nil {
 		slog.Warn("check-in: save record failed", "provider", provider.ID, "error", err)
 		return
+	}
+	if checkinEventWorthy(previous, hadPrevious, record) {
+		s.recordCheckinEvent(provider, record, now)
 	}
 	switch {
 	case record.Outcome == domain.CheckinClaimed && record.Streak > 0:
@@ -334,6 +344,115 @@ func (s *Server) recordCheckin(provider domain.Provider, record domain.CheckinRe
 	case record.Outcome == domain.CheckinFailed:
 		slog.Warn("check-in: failed", "provider", provider.Name, "reason", record.Message)
 	}
+}
+
+// checkinEventWorthy says whether an answer is news: the first one, a new day,
+// a different account, a different outcome, a new grant, or a failure that now
+// looks different. An offline retry that fails the same way is not — Go's
+// transport errors change wording between attempts and would otherwise fill the
+// stream with the same outage.
+func checkinEventWorthy(previous domain.CheckinRecord, hadPrevious bool, next domain.CheckinRecord) bool {
+	if !hadPrevious {
+		return true
+	}
+	if previous.Day != next.Day || previous.AccountKey != next.AccountKey {
+		return true
+	}
+	if previous.Outcome != next.Outcome {
+		return true
+	}
+	switch next.Outcome {
+	case domain.CheckinClaimed:
+		return previous.Credit != next.Credit
+	case domain.CheckinFailed:
+		if previous.Offline != next.Offline {
+			return true
+		}
+		return !next.Offline && previous.Message != next.Message
+	}
+	return false
+}
+
+// recordCheckinEvent puts one answer into the event stream as an info event.
+// Failures stay info: checkin_failed is the rule that decides when a run of
+// them is worth a page.
+func (s *Server) recordCheckinEvent(provider domain.Provider, record domain.CheckinRecord, now time.Time) {
+	if s.monitoringStore == nil {
+		return
+	}
+	detail := map[string]any{
+		"providerId": record.ProviderID,
+		"outcome":    record.Outcome,
+		"day":        record.Day,
+	}
+	if vendor, ok := checkinVendorOf(provider); ok {
+		detail["vendor"] = vendor
+	}
+	if record.Credit > 0 {
+		detail["credit"] = record.Credit
+	}
+	if record.Streak > 0 {
+		detail["streak"] = record.Streak
+	}
+	if record.Until != "" {
+		detail["validUntil"] = record.Until
+	}
+	if record.Message != "" {
+		detail["message"] = record.Message
+	}
+	if record.Offline {
+		detail["offline"] = true
+		detail["tries"] = record.Tries
+	}
+	at := now.UTC()
+	if _, err := s.monitoringStore.InsertMonitorEvent(monitoring.Event{
+		Time: at, Kind: monitoring.EventKindCheckin, Severity: monitoring.SeverityInfo,
+		TargetType: monitoring.TargetProvider, TargetID: record.ProviderID, TargetName: provider.Name,
+		Title: checkinEventTitle(provider, record), Status: monitoring.StatusInfo, Detail: detail,
+		FirstSeen: at, LastSeen: at,
+	}); err != nil {
+		slog.Warn("monitoring check-in event failed", "provider", record.ProviderID, "error", err)
+	}
+}
+
+// checkinEventTitle names the answer the way the card does: credits in, the day
+// already done, or the reason it failed.
+func checkinEventTitle(provider domain.Provider, record domain.CheckinRecord) string {
+	name := strings.TrimSpace(provider.Name)
+	if name == "" {
+		name = record.ProviderID
+	}
+	switch record.Outcome {
+	case domain.CheckinClaimed:
+		if record.Credit > 0 {
+			return fmt.Sprintf("%s 签到成功 +%g 积分", name, record.Credit)
+		}
+		return name + " 签到成功"
+	case domain.CheckinDone:
+		return name + " 今日已签到"
+	case domain.CheckinFailed:
+		return name + " 签到失败" + checkinReasonSuffix(record.Message)
+	case domain.CheckinIneligible:
+		return name + " 不参与每日签到"
+	case domain.CheckinInactive:
+		return name + " 暂无签到活动"
+	case domain.CheckinOwnApp:
+		return name + " 需在官方 App 签到"
+	}
+	return name + " 签到结果：" + record.Outcome
+}
+
+// checkinReasonSuffix keeps the title readable: the full reason stays in
+// detail.message for the card's tooltip.
+func checkinReasonSuffix(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	if runes := []rune(message); len(runes) > 60 {
+		message = string(runes[:60]) + "…"
+	}
+	return "：" + message
 }
 
 // checkinSettled says whether record answers for accountKey on day: it is that
