@@ -11402,3 +11402,19 @@ body { font-size: 14px; }
 /* 撤掉频谱档位的装饰性 ::after 条：没有分档数据时画条会被误读成分布图（审查第 5 条）。 */
 .monitoring-page .mon-band::after,
 .monitoring-page .mon-band.is-hit::after { content: none; display: none; }
+/* 核心卡外圈光晕随告警态变粉红，参考是青色；改为中性描边 + 轻微高光。 */
+.monitoring-page .mon-core {
+  background: linear-gradient(150deg,
+    color-mix(in srgb, var(--subtle) 55%, transparent),
+    color-mix(in srgb, var(--border) 80%, transparent) 55%,
+    color-mix(in srgb, var(--subtle) 40%, transparent));
+}
+/* 核心卡内层同样带告警红晕，一并改为中性底色（参考是青色顶光）。 */
+.monitoring-page .mon-core > *,
+.monitoring-page .mon-core-inner {
+  background:
+    radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--subtle) 10%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface) 94%, transparent);
+}
+/* 拓扑卡的红色外投影（告警态）改为中性阴影。 */
+.monitoring-page .mon-topo.tone-red { box-shadow: 0 18px 44px -32px rgb(15 23 42); }
