@@ -659,6 +659,19 @@ func (o *passThroughOpeningWriter) Header() http.Header { return o.w.Header() }
 
 func (o *passThroughOpeningWriter) WriteHeader(statusCode int) { o.w.WriteHeader(statusCode) }
 
+// Flush forwards the flush to the client. Without it this writer is not an
+// http.Flusher, so sseHeartbeatResponseWriter — which wraps it — wrote each
+// keep-alive into a buffer that never left the process: a pass-through stream
+// that went quiet (long thinking, a slow tool argument) sent the client nothing
+// at all, and an edge proxy idle for its own limit (Cloudflare's is about 100 s)
+// cut the turn. Every other wrapper in front of a stream forwards Flush; this
+// one was the exception.
+func (o *passThroughOpeningWriter) Flush() {
+	if f, ok := o.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (o *passThroughOpeningWriter) Write(p []byte) (int, error) {
 	if !o.opened && o.opening.Len() < o.limit {
 		keep := min(len(p), o.limit-o.opening.Len())
