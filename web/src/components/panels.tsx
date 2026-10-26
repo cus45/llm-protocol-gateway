@@ -585,7 +585,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
   const consumeButton = (
     <button
       type="button"
-      className="mini-btn chatgpt-reset-consume-btn"
+      className="chatgpt-reset-consume-btn"
       disabled={consuming}
       title="使用最早到期的一张重置卡，立即重新开始当前额度窗口"
       onClick={(event) => {
@@ -624,25 +624,27 @@ export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitl
         const credits = report.resetCredits.credits || [];
         const summary = (
           <>
-            <span>重置卡</span>
-            <span className="chatgpt-reset-credits-actions">
-              <span className="chatgpt-reset-credits-count">
-                可用 {report.resetCredits.availableCount} 张
-                {credits.length > 0 ? ` · 最早到期 ${formatClaudeUsageResetAt(resetCreditEarliestExpiry(credits))}` : ''}
-              </span>
-              {consumeButton}
+            <span className="chatgpt-reset-credits-title">
+              <span className="chatgpt-reset-credits-label">重置卡</span>
+              <span className="chatgpt-reset-credits-count">{report.resetCredits.availableCount}</span>
+              <span className="chatgpt-reset-credits-unit">张可用</span>
+              {credits.length > 0 ? (
+                <span className="chatgpt-reset-credits-expiry">
+                  最早到期 {formatClaudeUsageResetAt(resetCreditEarliestExpiry(credits))}
+                </span>
+              ) : null}
             </span>
+            <span className="chatgpt-reset-credits-actions">{consumeButton}</span>
           </>
         );
         const list = credits.length > 0 ? (
           <div className="chatgpt-reset-credits-list">
             {credits.map((credit, index) => (
               <div className="chatgpt-reset-credit-item" key={credit.id || index} title={credit.title || ''}>
-                <span className="chatgpt-reset-credit-name">
-                  重置卡 #{index + 1}{credit.title ? ` · ${credit.title}` : ''}
-                </span>
+                <span className="chatgpt-reset-credit-index">{index + 1}</span>
+                <span className="chatgpt-reset-credit-name">{credit.title || '重置卡'}</span>
                 <span className="chatgpt-reset-credit-expiry">
-                  {credit.expiresAt ? `有效期至 ${formatClaudeUsageResetAt(credit.expiresAt)}` : '有效期未知'}
+                  {credit.expiresAt ? formatClaudeUsageResetAt(credit.expiresAt) : '有效期未知'}
                 </span>
               </div>
             ))}

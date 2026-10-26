@@ -3105,24 +3105,61 @@ html[data-theme="dark"] .checkin-row[data-state="ok"] .checkin-say { color: #6ee
 /* ChatGPT quota 卡内 grid — 3 桶等宽固定（卡宽 ≥340px 时每格 ~96px 足够） */
 .chatgpt-usage-panel .claude-usage-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
-/* ChatGPT Codex 官方限流重置卡（rate-limit reset credits）明细区。 */
-.chatgpt-reset-credits { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; }
-.chatgpt-reset-credits-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 11.5px; color: var(--muted); flex-wrap: wrap; row-gap: 6px; }
-.chatgpt-reset-credits-head > span:last-child { font-weight: 600; color: var(--text-muted); font-size: 12px; }
-.chatgpt-reset-credits-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
-.chatgpt-reset-credits-actions .chatgpt-reset-credits-count { font-weight: 600; color: var(--text-muted); font-size: 12px; }
-.chatgpt-reset-consume-btn { flex: 0 0 auto; }
+/* ChatGPT Codex 官方限流重置卡（rate-limit reset credits）明细区。
+   摘要行只放「重置卡 · N 张可用 · 最早到期」和一颗胶囊按钮，明细按行铺开，
+   用编号徽标 + 发丝分隔线代替整块蓝底，避免一张卡就在面板里占出一块色斑。 */
+.chatgpt-reset-credits {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+.chatgpt-reset-credits-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; min-height: 26px;
+  font-size: 11.5px; font-weight: 500; color: var(--muted);
+}
+.chatgpt-reset-credits-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.chatgpt-reset-credits-label { color: var(--text); font-weight: 600; flex: 0 0 auto; }
+.chatgpt-reset-credits-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  min-width: 20px; height: 18px; padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-strong);
+  font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.chatgpt-reset-credits-unit { color: var(--muted); flex: 0 0 auto; }
+.chatgpt-reset-credits-expiry {
+  min-width: 0; flex: 0 1 auto;
+  color: var(--subtle); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.chatgpt-reset-credits-expiry::before { content: "·"; margin-right: 6px; color: var(--subtle); }
+.chatgpt-reset-credits-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+.chatgpt-reset-consume-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 11px;
+  border: 1px solid var(--accent-border); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-strong);
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+.chatgpt-reset-consume-btn:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chatgpt-reset-consume-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.chatgpt-reset-consume-btn:disabled { opacity: 0.6; cursor: default; }
 .chatgpt-reset-consume-error { color: var(--red); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 details.chatgpt-reset-credits.expandable > .chatgpt-reset-consume-error { padding: 0 12px 10px; }
-/* 折叠态：摘要行即开关，沿用 .usage-details 的三角指示（收起朝右、展开转 90°）。
-   两侧留白由 summary 自己给，展开后明细与摘要之间补一条分隔线。 */
+/* 折叠态：摘要行即开关，三角指示固定在行首（收起朝右、展开转 90°）。 */
 details.chatgpt-reset-credits.expandable { padding: 0; gap: 0; }
 details.chatgpt-reset-credits.expandable > summary {
   list-style: none;
   cursor: pointer;
-  padding: 10px 12px;
+  padding: 7px 10px;
   user-select: none;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   transition: background 0.13s ease;
 }
 details.chatgpt-reset-credits.expandable > summary::-webkit-details-marker { display: none; }
@@ -3136,14 +3173,32 @@ details.chatgpt-reset-credits.expandable > summary::before {
   transition: transform 0.16s ease;
 }
 details.chatgpt-reset-credits.expandable[open] > summary::before { transform: rotate(90deg); }
-details.chatgpt-reset-credits.expandable > summary:hover { background: var(--surface-soft); }
+details.chatgpt-reset-credits.expandable > summary:hover { background: var(--surface-sunken); }
 details.chatgpt-reset-credits.expandable > summary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-details.chatgpt-reset-credits.expandable[open] > summary { border-bottom: 1px dashed var(--border); border-radius: 12px 12px 0 0; }
-details.chatgpt-reset-credits.expandable > .chatgpt-reset-credits-list { padding: 8px 12px 10px; }
-.chatgpt-reset-credits-list { display: flex; flex-direction: column; gap: 6px; }
-.chatgpt-reset-credit-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; padding: 6px 8px; border-radius: 9px; background: var(--blue-soft); }
-.chatgpt-reset-credit-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chatgpt-reset-credit-expiry { flex-shrink: 0; color: var(--text-muted); }
+details.chatgpt-reset-credits.expandable[open] > summary { border-bottom: 1px solid var(--border); border-radius: var(--r-md) var(--r-md) 0 0; }
+details.chatgpt-reset-credits.expandable > .chatgpt-reset-credits-list { padding: 6px 10px; }
+.chatgpt-reset-credits-list { display: flex; flex-direction: column; }
+.chatgpt-reset-credit-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0;
+  font-size: 11.5px; color: var(--text);
+  border-top: 1px solid var(--border);
+}
+.chatgpt-reset-credit-item:first-child { border-top: 0; }
+.chatgpt-reset-credit-index {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: 16px; height: 16px;
+  border-radius: 999px;
+  background: var(--surface-sunken); color: var(--subtle);
+  font-size: 10px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.chatgpt-reset-credit-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chatgpt-reset-credit-expiry {
+  flex: 0 0 auto; margin-left: auto;
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+}
 
 /* GLM 编程套餐的重置卡：只读一行（数量 + 最早到期），使用在厂商自己的页面，
    所以这里不提供按钮，避免让人以为点了会消耗。 */
