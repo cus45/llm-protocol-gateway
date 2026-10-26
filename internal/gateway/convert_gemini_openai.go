@@ -64,21 +64,25 @@ func geminiToOpenAIChatRequest(gemini map[string]any, model string) (map[string]
 		}
 		text, calls, images := geminiPartsWithImages(parts)
 		message := map[string]any{"role": role}
-		if role == "assistant" && len(calls) > 0 {
-			if strings.TrimSpace(text) != "" {
-				message["content"] = text
-			} else {
-				message["content"] = nil
-			}
-			message["tool_calls"] = calls
-		} else if len(images) > 0 {
-			// Chat 的多模态内容是部件数组：文本在前，图片在后。
+		// 带图片的一律用部件数组，不论有没有工具调用：一个 user 轮里既有图片又有
+		// functionCall（Gemini 多模态工具结果就会这样）时，先判 calls 会把图片整张丢掉。
+		if len(images) > 0 {
 			content := make([]any, 0, len(images)+1)
 			if strings.TrimSpace(text) != "" {
 				content = append(content, map[string]any{"type": "text", "text": text})
 			}
 			content = append(content, images...)
 			message["content"] = content
+			if len(calls) > 0 {
+				message["tool_calls"] = calls
+			}
+		} else if role == "assistant" && len(calls) > 0 {
+			if strings.TrimSpace(text) != "" {
+				message["content"] = text
+			} else {
+				message["content"] = nil
+			}
+			message["tool_calls"] = calls
 		} else {
 			message["content"] = text
 		}
@@ -179,6 +183,12 @@ func geminiPartsWithImages(parts []any) (string, []any, []any) {
 		if inline, ok := part["inlineData"].(map[string]any); ok {
 			mime := strings.TrimSpace(stringValue(inline["mimeType"]))
 			data := strings.TrimSpace(stringValue(inline["data"]))
+			// 只有图片能用 Chat 的 image_url 表达。PDF、音频之类的二进制放进
+			// image_url 会被上游拒掉或被悄悄忽略，不如留一句说明让模型知道有附件。
+			if data != "" && !strings.HasPrefix(mime, "image/") {
+				texts = append(texts, fmt.Sprintf("[inline %s attached: %d bytes base64]", firstNonEmpty(mime, "binary"), len(data)))
+				continue
+			}
 			if data != "" {
 				if mime == "" {
 					mime = "application/octet-stream"

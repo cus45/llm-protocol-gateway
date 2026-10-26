@@ -169,3 +169,39 @@ func TestGeminiInlineImageReachesChatUpstream(t *testing.T) {
 		t.Fatalf("the inline image never reached the Chat upstream: %s", text)
 	}
 }
+
+// 一个 user 轮里既有图片又有 functionCall（Gemini 的多模态工具结果）时，图片不能丢；
+// 非图片的 inlineData（PDF、音频）不该被塞进 image_url，留给模型一句说明。
+func TestGeminiInlineMediaWithToolCallsAndNonImages(t *testing.T) {
+	req, err := geminiToOpenAIChatRequest(map[string]any{
+		"contents": []any{
+			map[string]any{
+				"role": "user",
+				"parts": []any{
+					map[string]any{"functionCall": map[string]any{"name": "look", "args": map[string]any{}}},
+					map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "iVBORw0KGgo="}},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"parts": []any{
+					map[string]any{"inlineData": map[string]any{"mimeType": "application/pdf", "data": "JVBERi0xLjQ="}},
+				},
+			},
+		},
+	}, "gpt-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(req)
+	text := string(encoded)
+	if !strings.Contains(text, "data:image/png;base64,iVBORw0KGgo=") {
+		t.Fatalf("the image was dropped from a turn that also carries a tool call: %s", text)
+	}
+	if strings.Contains(text, `"url":"data:application/pdf`) {
+		t.Fatalf("a PDF was handed to the upstream as an image_url: %s", text)
+	}
+	if !strings.Contains(text, "application/pdf") {
+		t.Fatalf("the non-image attachment lost its description: %s", text)
+	}
+}
