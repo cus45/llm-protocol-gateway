@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -649,6 +650,12 @@ type passThroughOpeningWriter struct {
 	opening bytes.Buffer
 	tee     *streamTee
 	end     *streamEndReader // to tell when the log copy can be let go
+	// mu serialises the copy loop's Write with the heartbeat goroutine's Flush
+	// (and WriteHeader) on the one http.ResponseWriter underneath. net/http
+	// forbids touching a ResponseWriter from two goroutines at once: a Flush
+	// that overtakes a Write mid-frame makes the server re-emit bytes from its
+	// chunk buffer, i.e. duplicated SSE.
+	mu sync.Mutex
 }
 
 // setEnd names the reader that keeps the stream's end: once it does, the log
@@ -657,7 +664,11 @@ func (o *passThroughOpeningWriter) setEnd(end *streamEndReader) { o.end = end }
 
 func (o *passThroughOpeningWriter) Header() http.Header { return o.w.Header() }
 
-func (o *passThroughOpeningWriter) WriteHeader(statusCode int) { o.w.WriteHeader(statusCode) }
+func (o *passThroughOpeningWriter) WriteHeader(statusCode int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.w.WriteHeader(statusCode)
+}
 
 // Flush forwards the flush to the client. Without it this writer is not an
 // http.Flusher, so sseHeartbeatResponseWriter — which wraps it — wrote each
@@ -666,13 +677,20 @@ func (o *passThroughOpeningWriter) WriteHeader(statusCode int) { o.w.WriteHeader
 // at all, and an edge proxy idle for its own limit (Cloudflare's is about 100 s)
 // cut the turn. Every other wrapper in front of a stream forwards Flush; this
 // one was the exception.
+//
+// The mutex is what makes this safe next to the copy loop's Write: the
+// heartbeat goroutine flushes while the body is still being copied.
 func (o *passThroughOpeningWriter) Flush() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if f, ok := o.w.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
 func (o *passThroughOpeningWriter) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if !o.opened && o.opening.Len() < o.limit {
 		keep := min(len(p), o.limit-o.opening.Len())
 		_, _ = o.opening.Write(p[:keep])
