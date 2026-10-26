@@ -35,6 +35,7 @@ type requestLogBatcher struct {
 
 	mu      sync.Mutex
 	pending []monitor.RequestLog
+	closed  bool
 
 	wake    chan struct{}
 	stop    chan struct{}
@@ -72,6 +73,10 @@ func newRequestLogBatcher(store RequestLogStore, retentionDays func() int, onErr
 
 // Append queues entry for batched persistence, or writes it through right away
 // when failure is true.
+//
+// After Close there is no goroutine left to flush a queued row, so a late
+// Append (a request finishing while the server drains) writes through instead
+// of parking the row in memory until the process exits.
 func (b *requestLogBatcher) Append(entry monitor.RequestLog, failure bool) {
 	if b == nil {
 		return
@@ -81,6 +86,11 @@ func (b *requestLogBatcher) Append(entry monitor.RequestLog, failure bool) {
 		return
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		b.writeOne(entry)
+		return
+	}
 	b.pending = append(b.pending, entry)
 	full := len(b.pending) >= b.maxBatch
 	b.mu.Unlock()
@@ -145,6 +155,11 @@ func (b *requestLogBatcher) Close() {
 	if b == nil {
 		return
 	}
-	b.once.Do(func() { close(b.stop) })
+	b.once.Do(func() {
+		b.mu.Lock()
+		b.closed = true
+		b.mu.Unlock()
+		close(b.stop)
+	})
 	<-b.stopped
 }

@@ -1569,6 +1569,13 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 	}
 }
 
+// RecordRequestLogForTest records one finished request the way a handler does on
+// its way out, so lifecycle tests outside this package (internal/app) can play
+// "a request finishes now" without driving a full protocol flow.
+func (s *Server) RecordRequestLogForTest(r *http.Request, started time.Time, key domain.APIKey, routeID, providerID, model, path string, status int, usage TokenUsage) {
+	s.recordRequestLogFromRequestTTFT(r, started, key, true, routeID, providerID, model, "test", "openai", path, status, usage, 0, nil, nil)
+}
+
 // FlushRequestLogs persists any batched successful request logs immediately.
 // Called before reading the log page (so the console never misses a recent
 // request) and on graceful shutdown.

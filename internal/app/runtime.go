@@ -481,10 +481,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	}
 	if rt.server != nil {
 		rt.server.StopCursorBridge()
-		// Deferred/batched writers hold data in memory to save disk wear; land
-		// it all before the DB closes so a restart loses nothing.
-		rt.server.FlushDeferredWrites()
 	}
+	// Drain the HTTP server BEFORE flushing: Shutdown waits (up to the ctx
+	// deadline) for in-flight handlers, and a handler that finishes during that
+	// drain persists its row and usage delta on the way out. Flushing first
+	// would close those sinks under it and drop exactly the requests that were
+	// still being served.
 	var shutdownErr error
 	if rt.httpServer != nil {
 		if ctx == nil {
@@ -493,6 +495,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			defer cancel()
 		}
 		shutdownErr = rt.httpServer.Shutdown(ctx)
+	}
+	if rt.server != nil {
+		// Deferred/batched writers hold data in memory to save disk wear; land
+		// it all once nothing is serving, and before the DB closes so a restart
+		// loses nothing.
+		rt.server.FlushDeferredWrites()
 	}
 	if rt.db != nil {
 		_ = rt.db.Close()
