@@ -54,12 +54,13 @@ export default {};
 execFileSync(process.execPath, [
   tsc,
   '--target', 'es2022', '--module', 'es2022', '--moduleResolution', 'bundler',
-  '--jsx', 'react-jsx', '--skipLibCheck', '--ignoreConfig', '--outDir', outDir, join(here, 'lib.tsx'), join(here, 'pollers.ts')
+  '--jsx', 'react-jsx', '--skipLibCheck', '--ignoreConfig', '--outDir', outDir, join(here, 'lib.tsx'), join(here, 'pollers.ts'), join(here, 'usage_poll.ts')
 ], {cwd: webDir, stdio: 'inherit'});
 const lib = await import(pathToFileURL(join(outDir, 'lib.js')).href);
 // 编译产物里的 import './lib' 没有扩展名，ESM 解析不了：把它补成 './lib.js'。
 writeFileSync(join(outDir, 'pollers.js'), readFileSync(join(outDir, 'pollers.js'), 'utf8').replace("from './lib'", "from './lib.js'"));
 const pollers = await import(pathToFileURL(join(outDir, 'pollers.js')).href);
+const usagePoll = await import(pathToFileURL(join(outDir, 'usage_poll.js')).href);
 
 test('cloudflareAuthPollOutcome: 授权成功就收尾，不再等待', () => {
   assert.equal(lib.cloudflareAuthPollOutcome({authorized: true, elapsedMs: 0, timeoutMs: 600000}), 'authorized');
@@ -200,4 +201,46 @@ test('resetHint 把向下取整的剩余时间接在「后」前', () => {
   const now = new Date('2026-10-26T12:00:00Z');
   const hint = lib.resetHint(new Date(now.getTime() + 91 * 60_000).toISOString(), now);
   assert.ok(hint && hint.text.includes('1 小时 31 分钟后'), hint && hint.text);
+});
+
+// ── Provider 额度面板的轮询调度（usage_poll.ts）────────────────────────────
+const MIN = 3 * 60_000;
+const pollBase = { fetched: true, lastFinishedAt: 1_000_000, now: 1_000_000 + MIN, active: true, modalOpen: false, pending: false, intervalMs: MIN };
+
+test('额度轮询：到了间隔就发', () => {
+  assert.equal(usagePoll.shouldPollUsage(pollBase), 'fetch');
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, now: 1_000_000 + MIN + 1}), 'fetch');
+});
+
+test('额度轮询：间隔没到不发，在飞不叠发', () => {
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, now: 1_000_000 + MIN - 1}), 'skip-not-due');
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, pending: true}), 'skip-pending');
+});
+
+test('额度轮询：弹窗压着时整轮安静——包括还没有数据的账号', () => {
+  // 早先的写法里「没有数据就立刻取」排在可见性判断前面，编辑 Provider 的弹窗
+  // 开着时背后的卡片照打厂商额度接口。
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, modalOpen: true}), 'skip-modal');
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, modalOpen: true, fetched: false, lastFinishedAt: null}), 'skip-modal');
+});
+
+test('额度轮询：不在前台不发；没有数据（首次）不等间隔', () => {
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, active: false}), 'skip-hidden');
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, fetched: false, lastFinishedAt: null}), 'fetch');
+  // 弹窗关掉以后，还没有数据的账号下一次跳就取。
+  assert.equal(usagePoll.shouldPollUsage({...pollBase, fetched: false, lastFinishedAt: null, modalOpen: false, active: true}), 'fetch');
+});
+
+test('额度轮询排期：按上次结案时刻 + 间隔，不因重排白等一格', () => {
+  assert.equal(usagePoll.usagePollDelay(1_000_000, null, MIN), 0, '没有数据时立刻排上');
+  assert.equal(usagePoll.usagePollDelay(1_000_000, 1_000_000, MIN), MIN);
+  // 弹窗期间跳过的一格：定时器重排时已过间隔，下一次跳立刻到期。
+  assert.equal(usagePoll.usagePollDelay(1_000_000 + MIN + 5, 1_000_000, MIN), 0);
+});
+
+test('额度请求键：路径 + 非空查询，顺序稳定', () => {
+  assert.equal(usagePoll.usageRequestKey('/__providers/a/claude-oauth/usage'), '/__providers/a/claude-oauth/usage');
+  assert.equal(usagePoll.usageRequestKey('/p', {}), '/p');
+  assert.equal(usagePoll.usageRequestKey('/p', {account: 'x', skip: undefined, empty: ''}), '/p?account=x');
+  assert.equal(usagePoll.usageRequestKey('/p?x=1', {account: 'x'}), '/p?x=1&account=x');
 });

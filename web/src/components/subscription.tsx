@@ -1,7 +1,7 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {API_BASE, creditsExpiryHint, resetHint, subscriptionOAuthPrefix} from '../lib';
 import type {ProviderConnectKind, SubscriptionCheckin, SubscriptionUsage} from '../types';
-import {CheckinRow, TimeLine, UsageBucketRow, UsagePanelShell, useOAuthUsageReport} from './panels';
+import {CheckinRow, TimeLine, UsageBucketRow, UsagePanelShell, useAccountUsageReport} from './panels';
 import {CopyButton} from './ui';
 
 /**
@@ -159,7 +159,8 @@ function SubscriptionAuthLink({ url, onReopen }: { url: string; onReopen: () => 
  * 订阅额度面板：ZCode 的套餐窗口与 Trae 的 credits / 美元窗口形状相同，
  * 所以共用一个；两者都由后端归一成 {plan, windows[]}。
  */
-export function SubscriptionUsagePanel({ providerId, kind, connected, compact, subtitle, title }: {
+export function SubscriptionUsagePanel({ providerId, accountKey, kind, connected, compact, subtitle, title }: {
+  accountKey?: string;
   providerId: string;
   kind: ProviderConnectKind;
   connected?: boolean;
@@ -167,9 +168,14 @@ export function SubscriptionUsagePanel({ providerId, kind, connected, compact, s
   subtitle?: string;
   title: string;
 }) {
-  const { report, loading, refresh } = useOAuthUsageReport<SubscriptionUsage>(
+  const prefix = subscriptionOAuthPrefix(kind);
+  const request = useMemo(() => ({
+    path: `/__providers/${encodeURIComponent(providerId)}/${prefix}/usage`,
+  }), [providerId, prefix]);
+  const { report, loading, refresh } = useAccountUsageReport<SubscriptionUsage>(
     Boolean(connected),
-    `/__providers/${encodeURIComponent(providerId)}/${subscriptionOAuthPrefix(kind)}/usage`,
+    `subscription:${accountKey ?? providerId}:${kind}`,
+    request,
   );
   // 签到开关与「立即签到」的回答由后端直接给出，先本地显示，等下一次自然刷新
   // 再和额度一起回来——为此重读一次上游额度不值得。

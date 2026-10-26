@@ -20,6 +20,7 @@ import {
     retrySecondsLabel,
     useNowTick
 } from '../lib';
+import {shouldPollUsage, usagePollDelay, usageRequestKey, UsagePollDecision} from '../usage_poll';
 import {
     BadgeTone,
     ChatGPTOAuthUsageReport,
@@ -125,109 +126,229 @@ export function isDocumentActive(): boolean {
   return document.visibilityState !== 'hidden' && document.hasFocus();
 }
 
-export function usePageVisible() {
-  const [visible, setVisible] = React.useState(() => isDocumentActive());
-  React.useEffect(() => {
-    const update = () => setVisible(isDocumentActive());
-    document.addEventListener('visibilitychange', update);
-    // 监听窗口 focus/blur：Chrome 非最前台时暂停，重新回到前台时恢复。
-    window.addEventListener('focus', update);
-    window.addEventListener('blur', update);
-    return () => {
-      document.removeEventListener('visibilitychange', update);
-      window.removeEventListener('focus', update);
-      window.removeEventListener('blur', update);
-    };
-  }, []);
-  return visible;
+// ── 额度轮询：全控制台一只定时器 ───────────────────────────────────────────
+//
+// 每个 Provider 卡片最多挂一份额度面板（Claude / Cursor / ChatGPT / WorkBuddy /
+// 订阅类 / 智谱 / DeepSeek），每份面板都打一个会碰到厂商 API 的 /usage 端点。
+// 早先每份面板各装一只 3 分钟定时器、各自 fetch，pageVisible 又在 effect 的依赖
+// 里，任何一次 focus/blur 都会把当页全部面板的 effect 重跑、立刻各发一遍：十二个
+// 账号的页面一次回到前台就是十二个厂商请求，编辑 Provider 的弹窗开着也照打不误。
+//
+// 现在按账号记录「最近一次结案时刻 + 在飞状态」，一只定时器跳到点时自己挑谁该
+// 发；弹窗压着时整轮安静；定时器不随 focus 重建，可见性只在跳的那一刻判定。
+// 判定逻辑在 usage_poll.ts，由 web/src/lib.test.mjs 直接测。
+type AccountUsageRequest = {
+    /** 额度端点（不含查询串）。 */
+    path: string;
+    /** 同一个账号下另取的数据（签到状态等）：跟着额度请求一起送，不单独开轮询。 */
+    query?: Record<string, string | undefined>;
+};
+type UsageEntry = {
+    request: AccountUsageRequest;
+    report: unknown;
+    loading: boolean;
+    /** 已经取到的那份数据对应哪个请求键：换了附加查询就是没取过。 */
+    fetchedKey: string | null;
+    listeners: Set<() => void>;
+    pending: boolean;
+    lastFinishedAt: number | null;
+    controller: AbortController | null;
+};
+const usageEntries = new Map<string, UsageEntry>();
+let usageTimer: number | null = null;
+
+function usageEntry(accountKey: string, request?: AccountUsageRequest): UsageEntry {
+    let entry = usageEntries.get(accountKey);
+    if (!entry) {
+        entry = { request: request ?? { path: '' }, report: null, loading: false, fetchedKey: null, listeners: new Set(), pending: false, lastFinishedAt: null, controller: null };
+        usageEntries.set(accountKey, entry);
+    } else if (request) {
+        entry.request = request;
+    }
+    return entry;
 }
 
-export function useOAuthUsageReport<T extends { available?: boolean; error?: string }>(
-  enabled: boolean,
-  path: string,
-) {
-  const [report, setReport] = React.useState<T | null>(() => (enabled ? readOAuthUsageCache<T>(path) : null));
-  const [loading, setLoading] = React.useState(false);
-  const pageVisible = usePageVisible();
-  const pathRef = React.useRef(path);
-  const reportRef = React.useRef(report);
-  const requestVersionRef = React.useRef(0);
-  const enabledRef = React.useRef(enabled);
-  if (pathRef.current !== path || enabledRef.current !== enabled) requestVersionRef.current++;
-  pathRef.current = path;
-  enabledRef.current = enabled;
-  reportRef.current = report;
+function notifyUsageEntry(entry: UsageEntry) {
+    for (const listener of [...entry.listeners]) listener();
+}
 
-  const load = React.useCallback(async (opts?: { force?: boolean; skipIfHidden?: boolean; silent?: boolean }) => {
-    if (!enabledRef.current) return;
-    const force = Boolean(opts?.force);
-    const skipIfHidden = opts?.skipIfHidden !== false;
-    const silent = Boolean(opts?.silent);
-    if (!force && skipIfHidden && !isDocumentActive()) {
-      return;
+// 弹窗（编辑 Provider、对话测试……）压在上面时背后的额度面板没人看：整轮暂停。
+// 面板自己就渲染在弹窗里时不受影响，由 usageEntryInModal 单独认。
+function usageGateOpen(): boolean {
+    return typeof document !== 'undefined' && document.querySelector('.modal-backdrop') !== null;
+}
+
+function usagePollSchedule() {
+    if (typeof window === 'undefined') return;
+    if (usageTimer != null) window.clearTimeout(usageTimer);
+    usageTimer = null;
+    let delay = Infinity;
+    const now = Date.now();
+    for (const entry of usageEntries.values()) {
+        if (entry.listeners.size === 0) continue;
+        delay = Math.min(delay, usagePollDelay(now, entry.lastFinishedAt, OAUTH_USAGE_POLL_MS));
     }
-    const requestPath = pathRef.current;
-    const version = ++requestVersionRef.current;
-    if (!silent && (force || reportRef.current == null)) {
-      setLoading(true);
+    if (!Number.isFinite(delay)) return;
+    usageTimer = window.setTimeout(() => {
+        usageTimer = null;
+        usagePollTick();
+    }, delay);
+}
+
+function usagePollTick() {
+    sendUsageRequests(false);
+    usagePollSchedule();
+}
+
+/** 发掉所有到期的额度请求；refresh=true 时订阅着的全部强制刷新。 */
+function sendUsageRequests(refresh: boolean) {
+    const gateOpen = usageGateOpen();
+    for (const [accountKey, entry] of usageEntries) {
+        if (entry.listeners.size === 0) continue;
+        if (entry.pending) continue;
+        const decision: UsagePollDecision = refresh
+            ? 'fetch'
+            : shouldPollUsage({
+                fetched: entry.report != null && entry.fetchedKey === usageRequestKey(entry.request.path, entry.request.query),
+                lastFinishedAt: entry.lastFinishedAt,
+                now: Date.now(),
+                active: isDocumentActive(),
+                modalOpen: gateOpen && !usageEntryInModal(accountKey),
+                pending: entry.pending,
+                intervalMs: OAUTH_USAGE_POLL_MS,
+            });
+        if (decision !== 'fetch') continue;
+        void fetchUsage(entry, refresh);
     }
+}
+
+// 面板渲染在弹窗里时照常轮询：它是用户正在看的那一份。
+function usageEntryInModal(accountKey: string): boolean {
+    if (typeof document === 'undefined') return false;
+    const node = document.querySelector(`[data-usage-account="${CSS.escape(accountKey)}"]`);
+    return node != null && node.closest('.modal-backdrop') != null;
+}
+
+async function fetchUsage(entry: UsageEntry, force: boolean): Promise<void> {
+    if (entry.pending) return;
+    entry.pending = true;
+    const controller = new AbortController();
+    entry.controller = controller;
+    if (force || entry.report == null) {
+        entry.loading = true;
+        notifyUsageEntry(entry);
+    }
+    const fetchedKey = usageRequestKey(entry.request.path, entry.request.query);
     try {
-      const separator = requestPath.includes('?') ? '&' : '?';
-      const url = `${API_BASE}${requestPath}${force ? `${separator}refresh=1` : ''}`;
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const data = await response.json() as T;
-      if (version !== requestVersionRef.current || requestPath !== pathRef.current || !enabledRef.current) return;
-      setReport(data);
-      writeOAuthUsageCache(requestPath, data);
+        const separator = fetchedKey.includes('?') ? '&' : '?';
+        const url = `${API_BASE}${fetchedKey}${force ? `${separator}refresh=1` : ''}`;
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        entry.report = data;
+        entry.fetchedKey = fetchedKey;
+        writeOAuthUsageCache(fetchedKey, data);
     } catch (error) {
-      if (version === requestVersionRef.current && enabledRef.current && reportRef.current == null) {
-        setReport({ available: false, error: error instanceof Error ? error.message : '无法获取额度' } as T);
-      }
+        if (!(error instanceof DOMException && error.name === 'AbortError') && entry.report == null) {
+            entry.report = { available: false, error: error instanceof Error ? error.message : '无法获取额度' };
+        }
     } finally {
-      if (version === requestVersionRef.current) setLoading(false);
+        entry.pending = false;
+        entry.controller = null;
+        entry.loading = false;
+        entry.lastFinishedAt = Date.now();
+        notifyUsageEntry(entry);
+        if (entry.listeners.size > 0) usagePollSchedule();
     }
-  }, []);
-
-  React.useEffect(() => {
-    const cached = enabled ? readOAuthUsageCache<T>(path) : null;
-    reportRef.current = cached;
-    setReport(cached);
-    setLoading(false);
-    if (!enabled) return undefined;
-    return () => { requestVersionRef.current++; };
-  }, [enabled, path]);
-
-  React.useEffect(() => {
-    if (!enabled) return undefined;
-    let cancelled = false;
-    const safeLoad = async (opts: { force?: boolean; skipIfHidden?: boolean; silent?: boolean }) => {
-      if (cancelled) return;
-      await load(opts);
-    };
-
-    if (pageVisible) {
-      void safeLoad({ force: false, skipIfHidden: false, silent: reportRef.current != null });
-    }
-    const timer = window.setInterval(() => {
-      if (!isDocumentActive()) return;
-      void safeLoad({ force: false, skipIfHidden: true, silent: true });
-    }, OAUTH_USAGE_POLL_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [enabled, path, pageVisible, load]);
-
-  return {
-    report,
-    loading,
-    refresh: () => load({ force: true, skipIfHidden: false, silent: false }),
-  };
 }
+
+/** 这个账号上最后一份面板卸载：停掉它的在飞请求。取到的数据写进了缓存，下次重挂先垫上。 */
+function releaseUsageAccount(accountKey: string) {
+    const entry = usageEntries.get(accountKey);
+    if (!entry) return;
+    entry.controller?.abort();
+    entry.listeners.clear();
+    usageEntries.delete(accountKey);
+    usagePollSchedule();
+}
+
+/**
+ * 卡片与弹窗里挂的同一份面板用同一个账号键：两份面板共用一份数据与一条在飞请求
+ * （listeners 是集合，不会重复发）。
+ */
+function accountUsageKey(code: string, accountKey: string | undefined, providerId: string): string {
+  return `${code}:${accountKey ?? providerId}`;
+}
+
+/**
+ * Provider 卡片上额度面板的账号键。一个账号键只对应一次在飞请求与一份数据；
+ * 编辑弹窗里的同一份面板传同一个键，两者共享。
+ */
+function usageAccountKeyFor(providerId: string): string {
+  return `provider:${providerId}`;
+}
+
+/** 面板的账号请求：额度端点。没有另取的数据，查询串为空。 */
+function usageAccountRequest(path: string): AccountUsageRequest {
+  return { path };
+}
+
+/**
+ * 一个 Provider 账号的额度面板订阅。
+ */
+export function useAccountUsageReport<T extends { available?: boolean; error?: string }>(
+  enabled: boolean,
+  accountKey: string,
+  request: AccountUsageRequest,
+) {
+  const requestKey = usageRequestKey(request.path, request.query);
+  const [data, setData] = React.useState<EntryData<T>>(() => {
+    if (!enabled) return EMPTY_USAGE_DATA as EntryData<T>;
+    const entry = usageEntries.get(accountKey);
+    if (entry && entry.report != null) return { report: entry.report as T, loading: entry.loading };
+    return { report: readOAuthUsageCache<T>(requestKey), loading: false };
+  });
+  const dataRef = React.useRef(data);
+  dataRef.current = data;
+
+  React.useEffect(() => {
+    if (!enabled) {
+      setData(EMPTY_USAGE_DATA as EntryData<T>);
+      return undefined;
+    }
+    const entry = usageEntry(accountKey, request);
+    const publish = () => {
+      const next = entry.report as T | null;
+      if (next === dataRef.current.report && entry.loading === dataRef.current.loading) return;
+      const value = { report: next, loading: entry.loading };
+      dataRef.current = value;
+      setData(value);
+    };
+    entry.listeners.add(publish);
+    publish();
+    usagePollSchedule();
+    return () => {
+      entry.listeners.delete(publish);
+      if (entry.listeners.size === 0) releaseUsageAccount(accountKey);
+      else usagePollSchedule();
+    };
+  }, [enabled, accountKey, requestKey]);
+
+  // 订阅着的时候把请求描述带进 entry：查询串变了（签到状态）下一跳直接用新的。
+  if (enabled && usageEntries.get(accountKey)?.listeners.size) usageEntry(accountKey, request);
+
+  const refresh = () => {
+    if (!enabled) return;
+    void fetchUsage(usageEntry(accountKey, request), true);
+  };
+
+  return { report: data.report, loading: data.loading, refresh };
+}
+
+type EntryData<T> = { report: T | null; loading: boolean };
+const EMPTY_USAGE_DATA: EntryData<never> = { report: null, loading: false };
 
 /** 各家额度面板的公共外壳：标题行（plan 档位 + 状态 + 刷新）+ 告警消息行 + 内容区。
  *  planName 统一走友好名（如 self_serve_business_prolite → Business Pro Lite）；
@@ -249,6 +370,7 @@ export function UsagePanelShell({ panelClass, compact, subtitle, title, planName
   const warnMessage = stateMessage && stateMessage !== '可用' ? stateMessage : '';
   return (
     <div
+      data-usage-account={panelClass ? panelClass.split(' ')[0] : ''}
       className={`claude-usage-panel${panelClass ? ` ${panelClass}` : ''}${compact ? ' compact' : ''}`}
       onClick={(event) => event.stopPropagation()}
     >
@@ -325,10 +447,12 @@ export function UsageBucketRow({ label, percent, note, reset, compact }: {
   );
 }
 
-export function ClaudeOAuthUsagePanel({ providerId, connected, compact, subtitle }: { providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<ClaudeOAuthUsageReport>(
+export function ClaudeOAuthUsagePanel({ providerId, accountKey, connected, compact, subtitle }: { accountKey?: string; providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/claude-oauth/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<ClaudeOAuthUsageReport>(
     Boolean(connected),
-    `/__providers/${encodeURIComponent(providerId)}/claude-oauth/usage`,
+    accountUsageKey('claude-oauth', accountKey, providerId),
+    request,
   );
 
   if (!connected) return null;
@@ -365,10 +489,12 @@ export function ClaudeOAuthUsagePanel({ providerId, connected, compact, subtitle
   );
 }
 
-export function ZhipuUsagePanel({ providerId, compact, subtitle }: { providerId: string; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<ZhipuUsageReport>(
+export function ZhipuUsagePanel({ providerId, accountKey, compact, subtitle }: { accountKey?: string; providerId: string; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/zhipu/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<ZhipuUsageReport>(
     true,
-    `/__providers/${encodeURIComponent(providerId)}/zhipu/usage`,
+    accountUsageKey('zhipu', accountKey, providerId),
+    request,
   );
 
   // 卡片上：非编程套餐 / 拉取失败都不渲染，避免把「额度 UI」误当成 Provider/转发故障。
@@ -426,10 +552,12 @@ export function ZhipuUsagePanel({ providerId, compact, subtitle }: { providerId:
 
 /** DeepSeek 账户余额面板。与 Zhipu 同为 api_key provider，复用同一套额度面板样式；
  *  但展示的是金额而非百分比进度条，故不渲染 usage-track。 */
-export function DeepSeekBalancePanel({ providerId, compact, subtitle }: { providerId: string; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<DeepSeekBalanceReport>(
+export function DeepSeekBalancePanel({ providerId, accountKey, compact, subtitle }: { accountKey?: string; providerId: string; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/deepseek/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<DeepSeekBalanceReport>(
     true,
-    `/__providers/${encodeURIComponent(providerId)}/deepseek/usage`,
+    accountUsageKey('deepseek', accountKey, providerId),
+    request,
   );
 
   // 卡片上的紧凑版：拉取失败/不支持时不占位。
@@ -488,10 +616,12 @@ export function formatDeepSeekAmount(currency: string, amount?: string) {
   return `${symbol}${value}`;
 }
 
-export function CursorOAuthUsagePanel({ providerId, connected, compact, subtitle }: { providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<CursorOAuthUsageReport>(
+export function CursorOAuthUsagePanel({ providerId, accountKey, connected, compact, subtitle }: { accountKey?: string; providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/cursor-oauth/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<CursorOAuthUsageReport>(
     Boolean(connected),
-    `/__providers/${encodeURIComponent(providerId)}/cursor-oauth/usage`,
+    accountUsageKey('cursor-oauth', accountKey, providerId),
+    request,
   );
 
   if (!connected) return null;
@@ -524,10 +654,12 @@ export function CursorOAuthUsagePanel({ providerId, connected, compact, subtitle
   );
 }
 
-export function ChatGPTOAuthUsagePanel({ providerId, connected, compact, subtitle }: { providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<ChatGPTOAuthUsageReport>(
+export function ChatGPTOAuthUsagePanel({ providerId, accountKey, connected, compact, subtitle }: { accountKey?: string; providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/chatgpt-oauth/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<ChatGPTOAuthUsageReport>(
     Boolean(connected),
-    `/__providers/${encodeURIComponent(providerId)}/chatgpt-oauth/usage`,
+    accountUsageKey('chatgpt-oauth', accountKey, providerId),
+    request,
   );
   const [consuming, setConsuming] = React.useState(false);
   const [consumeError, setConsumeError] = React.useState('');
@@ -703,15 +835,15 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
   const usagePanels = (
     <>
       {/* 额度是运营上最该一眼看到的数字，放在徽章之后、事实区之前当视觉锚点。 */}
-      {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
-      {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
-      {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
-      {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
-      {isQoderConnectKind(connectKind) && qoderPATConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} kind={connectKind} connected compact subtitle={subtitle} title="Qoder 积分" /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} compact subtitle={subtitle} /> : null}
-      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} compact subtitle={subtitle} /> : null}
+      {isClaudeOAuth && claudeOAuthConnected && !providerDisabled ? <ClaudeOAuthUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} connected={claudeOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isCursorOAuth && cursorOAuthConnected && !providerDisabled ? <CursorOAuthUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} connected={cursorOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isChatGPTOAuth && chatgptOAuthConnected && !providerDisabled ? <ChatGPTOAuthUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} connected={chatgptOAuthConnected} compact subtitle={subtitle} /> : null}
+      {isWorkBuddy && workBuddyConnected && !providerDisabled ? <WorkBuddyUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} connected={workBuddyConnected} compact subtitle={subtitle} /> : null}
+      {isZCodeConnectKind(connectKind) && zcodeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} kind={connectKind} connected compact subtitle={subtitle} title="GLM 编程套餐额度" /> : null}
+      {isTraeConnectKind(connectKind) && traeConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} kind={connectKind} connected compact subtitle={subtitle} title="Trae 套餐额度" /> : null}
+      {isQoderConnectKind(connectKind) && qoderPATConnected && !providerDisabled ? <SubscriptionUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} kind={connectKind} connected compact subtitle={subtitle} title="Qoder 积分" /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && !isSubscriptionOAuth && /(?:bigmodel\.cn|z\.ai)/i.test(url) ? <ZhipuUsagePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} compact subtitle={subtitle} /> : null}
+      {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} compact subtitle={subtitle} /> : null}
     </>
   );
   const providerActions = (
@@ -863,10 +995,12 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
  * WorkBuddy 订阅额度：套餐 credits 的已用/总量。个人版读资源汇总，
  * 团队版没有套餐包，只能从企业计量接口拿到，后端已合并成同一组窗口。
  */
-export function WorkBuddyUsagePanel({ providerId, connected, compact, subtitle }: { providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
-  const { report, loading, refresh } = useOAuthUsageReport<WorkBuddyUsage>(
+export function WorkBuddyUsagePanel({ providerId, accountKey, connected, compact, subtitle }: { accountKey?: string; providerId: string; connected?: boolean; compact?: boolean; subtitle?: string }) {
+  const request = React.useMemo(() => usageAccountRequest(`/__providers/${encodeURIComponent(providerId)}/workbuddy-oauth/usage`), [providerId, accountKey]);
+  const { report, loading, refresh } = useAccountUsageReport<WorkBuddyUsage>(
     Boolean(connected),
-    `/__providers/${encodeURIComponent(providerId)}/workbuddy-oauth/usage`,
+    accountUsageKey('workbuddy-oauth', accountKey, providerId),
+    request,
   );
   const [checkinOverride, setCheckinOverride] = React.useState<SubscriptionCheckin | null>(null);
   React.useEffect(() => { setCheckinOverride(null); }, [providerId]);

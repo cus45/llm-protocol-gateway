@@ -7180,13 +7180,13 @@ function App() {
           {editingProviderID && providerDraft.authType === 'api_key' && /(?:bigmodel\.cn|z\.ai)/i.test(providerDraft.baseUrl) && (
             <div className="provider-account-block">
               <div className="hint-text">{`智谱编程套餐额度${providerDraft.teamOrganizationId.trim() && providerDraft.teamProjectId.trim() ? '（团队版 · 需先保存组织/项目 ID）' : '（个人版）'}`}</div>
-              <ZhipuUsagePanel providerId={editingProviderID} />
+              <ZhipuUsagePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} />
             </div>
           )}
           {editingProviderID && providerDraft.authType === 'api_key' && /deepseek\.com/i.test(providerDraft.baseUrl) && (
             <div className="claude-oauth-panel">
               <div className="hint-text">DeepSeek 账户余额（来自官方 /user/balance 接口）</div>
-              <DeepSeekBalancePanel providerId={editingProviderID} />
+              <DeepSeekBalancePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} />
             </div>
           )}
           {providerDraft.protocol === 'claude' && providerDraft.authType === 'claude_oauth' && (
@@ -7200,7 +7200,7 @@ function App() {
                   return (
                     <>
                       <div className="hint-text">{`已连接${editingProvider?.claudeOAuth?.accountLabel ? ` · ${editingProvider.claudeOAuth.accountLabel}` : ''}${editingProvider?.claudeOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.claudeOAuth.expiresAt)}` : ''}`}</div>
-                      <ClaudeOAuthUsagePanel providerId={editingProviderID} connected />
+                      <ClaudeOAuthUsagePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} connected />
                       <button className="btn danger" disabled={claudeOAuthBusy} onClick={() => void disconnectClaudeOAuth()}>{claudeOAuthBusy ? '处理中…' : '断开连接'}</button>
                     </>
                   );
@@ -7237,7 +7237,7 @@ function App() {
                   return (
                     <>
                       <div className="hint-text">{`已连接${editingProvider?.cursorOAuth?.accountLabel ? ` · ${editingProvider.cursorOAuth.accountLabel}` : ''}${editingProvider?.cursorOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.cursorOAuth.expiresAt)}` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
-                      <CursorOAuthUsagePanel providerId={editingProviderID} connected />
+                      <CursorOAuthUsagePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
                         <button className="btn danger" disabled={cursorOAuthBusy} onClick={() => void disconnectCursorOAuth()}>{cursorOAuthBusy ? '处理中…' : '断开连接'}</button>
@@ -7266,7 +7266,7 @@ function App() {
                   return (
                     <>
                       <div className="hint-text">{`已连接${editingProvider?.chatgptOAuth?.accountLabel ? ` · ${chatgptAccountLabelFriendly(editingProvider.chatgptOAuth.accountLabel)}` : ''}${editingProvider?.chatgptOAuth?.expiresAt ? ` · 过期时间：${formatClaudeUsageResetAt(editingProvider.chatgptOAuth.expiresAt)}` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
-                      <ChatGPTOAuthUsagePanel providerId={editingProviderID} connected />
+                      <ChatGPTOAuthUsagePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
                         <button className="btn danger" disabled={chatgptOAuthBusy} onClick={() => void disconnectChatGPTOAuth()}>{chatgptOAuthBusy ? '处理中…' : '断开连接'}</button>
@@ -7302,7 +7302,7 @@ function App() {
                   return (
                     <>
                       <div className="hint-text">{`已连接${editingProvider?.workbuddyOAuth?.accountLabel ? ` · ${editingProvider.workbuddyOAuth.accountLabel}` : ''}${editingProvider?.workbuddyOAuth?.expiresAt ? ` · 令牌到期：${formatClaudeUsageResetAt(editingProvider.workbuddyOAuth.expiresAt)}（到期自动续）` : ''} · 模型 ${editingProvider?.models?.length ?? 0} 个`}</div>
-                      <WorkBuddyUsagePanel providerId={editingProviderID} connected />
+                      <WorkBuddyUsagePanel providerId={editingProviderID} accountKey={`provider:${editingProviderID}`} connected />
                       <div className="actions" style={{ gap: 8 }}>
                         <button className="btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '同步模型'}</button>
                         <button className="btn" onClick={() => void startWorkBuddyOAuthConnect()}>{workbuddyOAuthBusy || workbuddyOAuthPolling ? '等待授权…' : '换账号登录'}</button>
