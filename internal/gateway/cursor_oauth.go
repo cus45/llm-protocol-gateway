@@ -328,9 +328,12 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	}
 	// Cursor 的 refresh token 只能用一次：并发续期会让其中一个失败并作废整条
 	// 令牌链。按令牌串行，等锁期间别人续好的直接用。
-	renewLock := oauthRenewLock(provider.ID, provider.CursorOAuth.RefreshToken)
-	renewLock.Lock()
+	renewLock, settled := beginOauthRenew(provider.ID, provider.CursorOAuth.RefreshToken)
 	defer renewLock.Unlock()
+	if settled != nil && settled.err != nil {
+		// 排在这枚 refresh token 后面的请求共用同一个失败结论，不再各花一次。
+		return settled.provider, settled.err
+	}
 	// 等锁期间别人可能已经续好了：以路由里的最新凭证为准。
 	current := *provider.CursorOAuth
 	if fresh, ok := s.freshCursorCredential(provider.ID); ok {
@@ -343,6 +346,7 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	refreshed, err := refreshCursorOAuthToken(current.RefreshToken)
 	if err != nil {
 		s.recordRenewal(provider, "cursor", time.Now(), err)
+		settleOauthRenew(provider.ID, current.RefreshToken, renewLock, provider, err)
 		return provider, err
 	}
 	updated, err := s.router.SetProviderCursorOAuth(provider.ID, refreshed)

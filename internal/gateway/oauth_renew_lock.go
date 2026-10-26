@@ -23,9 +23,30 @@ import (
 // 只要有新令牌就一直往表里加，永不删除）。
 const oauthRenewIdleAfter = 10 * time.Minute
 
+// oauthRenewOutcomeWindow is how long a failed renewal is remembered for the
+// waiters that queued behind it. Past it a new attempt is allowed: a vendor
+// outage ends, and the next request should be the one that finds out.
+const oauthRenewOutcomeWindow = 10 * time.Second
+
+// oauthRenewOutcome is one renewal's answer, shared with its waiters.
+type oauthRenewOutcome struct {
+	provider domain.Provider
+	err      error
+	at       time.Time
+}
+
 type oauthRenewLockEntry struct {
 	mu   sync.Mutex
 	last time.Time
+	// outcome is what the renewal of this token answered, kept for the callers
+	// that were waiting on the lock while it ran: a failed renewal must not be
+	// retried once per waiter with the same one-shot refresh token.
+	outcome *oauthRenewOutcome
+}
+
+// oauthRenewOutcomeFrom wraps a renewal's result so later waiters can reuse it.
+func oauthRenewOutcomeFrom(provider domain.Provider, err error) *oauthRenewOutcome {
+	return &oauthRenewOutcome{provider: provider, err: err}
 }
 
 var oauthRenewLocks struct {
@@ -35,6 +56,42 @@ var oauthRenewLocks struct {
 
 func oauthRenewLockKey(providerID, refreshToken string) string {
 	return providerID + "\x00" + strings.TrimSpace(refreshToken)
+}
+
+// beginOauthRenew is the lock plus the one question a renewal has to ask under
+// it: did the renewal this caller waited for already finish, and how? A caller
+// that took the lock and then met a failure that just happened does not spend
+// the same refresh token again — it is given the same answer.
+//
+// The lock is returned so the caller can hand it to
+// retireOauthRenewLock/settleOauthRenew on its way out.
+func beginOauthRenew(providerID, refreshToken string) (*sync.Mutex, *oauthRenewOutcome) {
+	lock := oauthRenewLock(providerID, refreshToken)
+	lock.Lock()
+	oauthRenewLocks.Lock()
+	sweepOauthRenewLocksLocked(time.Now())
+	var settled *oauthRenewOutcome
+	if entry, ok := oauthRenewLocks.entries[oauthRenewLockKey(providerID, refreshToken)]; ok && &entry.mu == lock {
+		if entry.outcome != nil && time.Since(entry.outcome.at) < oauthRenewOutcomeWindow {
+			settled = entry.outcome
+		}
+	}
+	oauthRenewLocks.Unlock()
+	return lock, settled
+}
+
+// settleOauthRenew records the outcome of a renewal that failed, so the callers
+// queued behind it share its answer instead of retrying the same token. A
+// renewal that succeeded retires the lock instead (retireOauthRenewLock): its
+// token is spent and nobody should wait on it again.
+func settleOauthRenew(providerID, refreshToken string, lock *sync.Mutex, provider domain.Provider, err error) {
+	key := oauthRenewLockKey(providerID, refreshToken)
+	oauthRenewLocks.Lock()
+	if entry, ok := oauthRenewLocks.entries[key]; ok && &entry.mu == lock {
+		entry.outcome = &oauthRenewOutcome{provider: provider, err: err, at: time.Now()}
+		entry.last = time.Now()
+	}
+	oauthRenewLocks.Unlock()
 }
 
 func oauthRenewLock(providerID, refreshToken string) *sync.Mutex {
@@ -48,13 +105,7 @@ func oauthRenewLock(providerID, refreshToken string) *sync.Mutex {
 	if entry, ok := oauthRenewLocks.entries[key]; ok {
 		return &entry.mu
 	}
-	for otherKey, other := range oauthRenewLocks.entries {
-		if now.Sub(other.last) > oauthRenewIdleAfter && other.mu.TryLock() {
-			// 空闲够久且没人用：同一枚令牌的请求早都结束了，删掉。
-			delete(oauthRenewLocks.entries, otherKey)
-			other.mu.Unlock()
-		}
-	}
+	sweepOauthRenewLocksLocked(now)
 	entry := &oauthRenewLockEntry{last: now}
 	oauthRenewLocks.entries[key] = entry
 	return &entry.mu
@@ -71,6 +122,23 @@ func retireOauthRenewLock(providerID, refreshToken string, lock *sync.Mutex) {
 		delete(oauthRenewLocks.entries, key)
 	}
 	oauthRenewLocks.Unlock()
+}
+
+// sweepOauthRenewLocksLocked drops the entries nothing can use any more: idle for
+// oauthRenewIdleAfter, or carrying an outcome that has been shared for longer
+// than oauthRenewOutcomeWindow. Called by both entry points under
+// oauthRenewLocks, so a request path cannot grow the table with tokens whose
+// outcome every waiter has already taken.
+func sweepOauthRenewLocksLocked(now time.Time) {
+	for otherKey, other := range oauthRenewLocks.entries {
+		stale := now.Sub(other.last) > oauthRenewIdleAfter ||
+			(other.outcome != nil && now.Sub(other.outcome.at) > oauthRenewOutcomeWindow)
+		if stale && other.mu.TryLock() {
+			// 空闲够久且没人用：同一枚令牌的请求早都结束了，删掉。
+			delete(oauthRenewLocks.entries, otherKey)
+			other.mu.Unlock()
+		}
+	}
 }
 
 func oauthRenewLockCount() int {

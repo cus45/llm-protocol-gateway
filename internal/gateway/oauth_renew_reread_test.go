@@ -77,6 +77,8 @@ func TestCursorRefreshUsesCredentialRereadUnderLock(t *testing.T) {
 	if refreshed.CursorOAuth == nil || refreshed.CursorOAuth.RefreshToken != "good-refresh" {
 		t.Fatalf("credential not refreshed from the reread token: %+v", refreshed.CursorOAuth)
 	}
+	// 这枚旧令牌已经花掉、锁也没人等了：收尾掉，别把表项留给别的测试和别的用例。
+	retireOauthRenewLock(added.ID, "alice-spent-this", oauthRenewLock(added.ID, "alice-spent-this"))
 }
 
 // 同一枚令牌的续期锁在续完、过期后必须被回收：旧实现只增不删，一枚令牌一把

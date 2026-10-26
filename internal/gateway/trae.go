@@ -721,9 +721,11 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	}
 	// 同一枚 refresh token 只能花一次：并发续期按令牌串行，等锁期间别人续好
 	// 的直接用，不再花第二枚。
-	renewLock := oauthRenewLock(provider.ID, credential.RefreshToken)
-	renewLock.Lock()
+	renewLock, settled := beginOauthRenew(provider.ID, credential.RefreshToken)
 	defer renewLock.Unlock()
+	if settled != nil && settled.err != nil {
+		return settled.provider, settled.err
+	}
 	// 等锁期间别人可能已经续好了：以路由里的最新凭证为准，别把手上这枚已经
 	// 花掉的 refresh token 再花一次。
 	current := credential
@@ -742,6 +744,7 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	renewed, err := renew(ctx, site, current, "")
 	if err != nil {
 		s.recordRenewal(provider, "trae", time.Now(), err)
+		settleOauthRenew(provider.ID, current.RefreshToken, renewLock, provider, err)
 		if traeErrorMeansSignIn(err) {
 			return provider, fmt.Errorf("Trae 登录已失效，请重新登录：%w", err)
 		}

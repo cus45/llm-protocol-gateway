@@ -114,3 +114,66 @@ func TestWorkBuddyRefreshStoresRotatedToken(t *testing.T) {
 		t.Fatalf("refresh endpoint called %d times, want 1", got)
 	}
 }
+
+// workBuddyFailingRefreshRound 起一个永远 5xx 的令牌端点（可挂起，让并发请求
+// 肯定撞在同一枚 refresh token 上），并记录被请求了几次。
+func workBuddyFailingRefreshRound(t *testing.T, hold chan struct{}) *int32 {
+	t.Helper()
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		<-hold
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":502,"msg":"upstream unavailable"}`))
+	}))
+	t.Cleanup(server.Close)
+	previous := workBuddyCNEndpoint
+	workBuddyCNEndpoint = server.URL
+	t.Cleanup(func() { workBuddyCNEndpoint = previous })
+	return &calls
+}
+
+// 续期失败时也不能让每个等锁的请求各花一次同一枚（一次性的）refresh token：
+// 失败的结论要让排队的请求共用，直到 oauthRenewOutcomeWindow 过去。
+func TestWorkBuddyFailedRefreshIsSpentOnceUnderConcurrency(t *testing.T) {
+	hold := make(chan struct{})
+	calls := workBuddyFailingRefreshRound(t, hold)
+	server, router := newRefreshLockServer(t)
+	added, err := router.AddProvider(workBuddyExpiredProvider("wb-fail"))
+	if err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := server.ensureFreshWorkBuddyToken(added); err == nil {
+				t.Error("a failed renewal must reach the caller as an error")
+			}
+		}()
+	}
+	time.Sleep(300 * time.Millisecond) // 六个请求都已排进同一枚令牌的锁
+	close(hold)
+	wg.Wait()
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("the refresh endpoint was called %d times for one expired token, want 1: each waiter spent the same one-shot refresh token", got)
+	}
+
+	// 结论只保留一小段时间：过了窗口之后的新请求要能再试一次（供应商恢复了）。
+	oauthRenewLocks.Lock()
+	for _, entry := range oauthRenewLocks.entries {
+		if entry.outcome != nil {
+			entry.outcome.at = time.Now().Add(-2 * oauthRenewOutcomeWindow)
+		}
+	}
+	oauthRenewLocks.Unlock()
+	if _, err := server.ensureFreshWorkBuddyToken(added); err == nil {
+		t.Fatal("the endpoint still fails, so a retried renewal must still error")
+	}
+	if got := atomic.LoadInt32(calls); got != 2 {
+		t.Fatalf("past the outcome window a new renewal must be attempted: calls = %d, want 2", got)
+	}
+}
