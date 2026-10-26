@@ -17,6 +17,7 @@ import {
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
 import {runCloudflareAuthPoll} from './pollers';
+import {providerRankOrder, rankProviderIDs} from './usage_poll';
 import {type MergedModel, mergeModelsAcrossAccounts} from './model_merge';
 import {
     activePublicBaseURL,
@@ -224,6 +225,11 @@ import {
 // 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
 const ALL_PROVIDERS_VALUE = '__all_providers__';
 
+/** 请求量排名缓存的账号作用域：换用户就换一份，不把上一个用户的排名带过来。 */
+function trafficRankScopeOf(auth: AdminAuthStatus | null): string {
+  return uiCacheScope(auth);
+}
+
 function App() {
   const [activeNav, setActiveNav] = useState<NavItemID>(() => navIDFromPath(window.location.pathname));
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStoredTheme());
@@ -256,6 +262,13 @@ function App() {
   }, []);
   const [bootSession] = useState(loadBootSession);
   const [state, setState] = useState<GatewayState>(() => bootSession.state || fallbackState);
+  // 输入 Provider 列表的顺序：只在进入这一页的首次绘制、或点了「获取模型」时按
+  // 近 3 日请求量重排。日志轮询照常更新计数，但顺序冻结——请求量每分钟都可能
+  // 交叉，跟着轮询重排会让卡片在光标底下换位，点 ▸ 编辑 落到另一张卡上。
+  const [providerRankSnapshot, setProviderRankSnapshot] = useState<{ scope: string; order: string[] | null }>(() => ({
+    scope: trafficRankScopeOf(bootSession.auth),
+    order: null,
+  }));
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logsTotal, setLogsTotal] = useState(0);
   const [logsPage, setLogsPage] = useState(1);
@@ -680,14 +693,60 @@ function App() {
     return mapFromTrafficRanks(cachedTrafficRanks.models);
   }, [liveTrafficReady, liveModelRequestCounts, cachedTrafficRanks.models]);
 
+  const providerRankScope = trafficRankScopeOf(authStatus);
+  const providerRankingReady = liveTrafficReady;
+  const cachedProviderRanks = useMemo(
+    () => mapFromTrafficRanks(cachedTrafficRanks.providers),
+    [cachedTrafficRanks.providers],
+  );
+
+  // 换账号（作用域变了）或停在这页之外：清掉这一把顺序，回到「等下重排」。
+  useEffect(() => {
+    if (providerRankSnapshot.scope === providerRankScope && activeNav === 'input-providers') return;
+    setProviderRankSnapshot({ scope: providerRankScope, order: null });
+  }, [activeNav, providerRankScope, providerRankSnapshot.scope]);
+
+  // 用户主动点了「获取模型」：按当下最新计数重排这一页的 Provider。
+  const [providerRankRefreshTick, setProviderRankRefreshTick] = useState(0);
+
+  // 快照：进入这一页的首次绘制（或刚点了「获取模型」）才按当时的计数排一次；
+  // 之后日志轮询只更新数字，顺序不动。
+  const rankedOrder = useMemo(() => {
+    const decision = providerRankOrder({ previous: providerRankSnapshot.order, ready: providerRankingReady, force: false });
+    if (decision !== 'rank') return null;
+    const providers = state.providers;
+    return rankProviderIDs(providers.map((provider) => provider.id), (id) => recentProviderRequestCounts.get(id) || 0, (id) => providers.find((provider) => provider.id === id)?.name || id);
+    // providerRankRefreshTick 只是让显式刷新重新排一次的触发器。
+  }, [providerRankSnapshot.order, providerRankingReady, state.providers, recentProviderRequestCounts, providerRankRefreshTick]);
+  useEffect(() => {
+    if (rankedOrder == null || providerRankSnapshot.order === rankedOrder) return;
+    setProviderRankSnapshot((current) => (current.order === rankedOrder ? current : { ...current, order: rankedOrder }));
+  }, [rankedOrder, providerRankSnapshot.order]);
+  const providerOrder = providerRankSnapshot.order;
+
+  const refreshProviderRanking = () => {
+    if (activeNav !== 'input-providers') return;
+    setProviderRankSnapshot((current) => ({ ...current, order: null }));
+    setProviderRankRefreshTick((tick) => tick + 1);
+  };
+
   const sortedProviders = useMemo(() => {
+    if (providerOrder != null) {
+      const byID = new Map(state.providers.map((provider) => [provider.id, provider]));
+      const ranked = providerOrder.map((id) => byID.get(id)).filter((provider): provider is Provider => provider != null);
+      const rankedIDs = new Set(ranked.map((provider) => provider.id));
+      // 快照之后新加的 Provider 接在后面，按名字排，同样不因轮询换位。
+      const added = state.providers.filter((provider) => !rankedIDs.has(provider.id)).sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+      return [...ranked, ...added];
+    }
+    // 还没排过（统计请求没回来）：沿用上个会话缓存的计数排，首次绘制后不再跳。
     return [...state.providers].sort((a, b) => {
-      const ca = recentProviderRequestCounts.get(a.id) || 0;
-      const cb = recentProviderRequestCounts.get(b.id) || 0;
+      const ca = cachedProviderRanks.get(a.id) || 0;
+      const cb = cachedProviderRanks.get(b.id) || 0;
       if (ca !== cb) return cb - ca;
       return a.name.localeCompare(b.name, 'zh');
     });
-  }, [state.providers, recentProviderRequestCounts]);
+  }, [state.providers, providerOrder, cachedProviderRanks]);
 
   const providersSearch = useMemo(() => {
     const query = providersSearchQuery.trim();
@@ -2536,6 +2595,8 @@ function App() {
       }
       await refreshState(false);
       await refreshAppLogs();
+      // 用户主动点的动作：按最新请求量重排一次这一页的 Provider。
+      refreshProviderRanking();
     } catch (error) {
       if (openModal) {
         setProviderModelsResult({ success: false, providerId: providerID, models: [], error: String(error) });

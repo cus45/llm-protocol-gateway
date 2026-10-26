@@ -244,3 +244,20 @@ test('额度请求键：路径 + 非空查询，顺序稳定', () => {
   assert.equal(usagePoll.usageRequestKey('/p', {account: 'x', skip: undefined, empty: ''}), '/p?account=x');
   assert.equal(usagePoll.usageRequestKey('/p?x=1', {account: 'x'}), '/p?x=1&account=x');
 });
+
+// ── 输入 Provider 列表的排序（usage_poll.ts）──────────────────────────────
+test('Provider 排序：首次绘制排一次，之后轮询不再重排，显式刷新才重排', () => {
+  assert.equal(usagePoll.providerRankOrder({previous: null, ready: false, force: false}), 'wait');
+  assert.equal(usagePoll.providerRankOrder({previous: null, ready: true, force: false}), 'rank');
+  // 进过这一页、已经排好：统计每次轮询回来都只是数字变了，顺序保持。
+  assert.equal(usagePoll.providerRankOrder({previous: ['a', 'b'], ready: true, force: false}), 'keep');
+  // 点「获取模型」：按最新计数再排一次。
+  assert.equal(usagePoll.providerRankOrder({previous: ['a', 'b'], ready: true, force: true}), 'rank');
+});
+
+test('Provider 排序：按计数降序、同数按名字', () => {
+  const counts = {a: 3, b: 10, c: 3};
+  const names = {a: '乙', b: '甲', c: '丙'};
+  assert.deepEqual(usagePoll.rankProviderIDs(['a', 'b', 'c'], (id) => counts[id] ?? 0, (id) => names[id]), ['b', 'c', 'a']);
+  assert.deepEqual(usagePoll.rankProviderIDs([], () => 0, (id) => id), []);
+});
