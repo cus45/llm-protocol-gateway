@@ -52,6 +52,9 @@ export function runCloudflareAuthPoll(input: {
           finish(false);
           return;
       }
+    } catch {
+      // 一次检查抛错不该让轮询停摆：不装定时器的话「等待授权」会一直转，直到关掉
+      // 标签页。抛错当作「还没授权」继续等，超时仍由 timeoutMs 收口。
     } finally {
       checking = false;
     }

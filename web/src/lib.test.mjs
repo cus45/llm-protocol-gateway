@@ -375,3 +375,29 @@ test('解析不了的应答退回状态码，同样不出现 undefined', () => {
   const emptyEnvelope = lib.chatTestVerdictFromBody('{}', 500);
   assert.equal(lib.chatTestToastText(emptyEnvelope), '对话测试未通过：HTTP 500');
 });
+
+test('轮询驱动：检查抛错时继续轮询，不会卡在「等待授权」', async () => {
+  let timerInstalled = 0;
+  let calls = 0;
+  let settledWith = null;
+  const poll = pollers.runCloudflareAuthPoll({
+    timeoutMs: 600000,
+    now: () => 0,
+    checkStatus: () => {
+      calls += 1;
+      return calls === 1 ? Promise.reject(new Error('network down')) : Promise.resolve(false);
+    },
+    installTimer: () => {
+      timerInstalled += 1;
+      return timerInstalled;
+    },
+    clearTimer: () => {},
+    onSettled: (authorized) => {
+      settledWith = authorized;
+    },
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(timerInstalled, 1, '一次检查抛错后仍要装上定时器（否则停在等待授权）');
+  assert.equal(settledWith, null, '抛错不能当作授权成功或失败');
+  poll.stop();
+});
