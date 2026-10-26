@@ -115,6 +115,15 @@ func TestOauthRenewLockRetiresRotatedToken(t *testing.T) {
 
 // 空闲够久的锁会被回收，表不会无限增长。
 func TestOauthRenewLocksReclaimIdleEntries(t *testing.T) {
+	// 先清掉别的用例留下的表项：这条只关心「空闲够久的锁会被回收」。
+	oauthRenewLocks.Lock()
+	for key, existing := range oauthRenewLocks.entries {
+		if existing.mu.TryLock() {
+			delete(oauthRenewLocks.entries, key)
+			existing.mu.Unlock()
+		}
+	}
+	oauthRenewLocks.Unlock()
 	entry := oauthRenewLock("idle-provider", "idle-token")
 	if entry == nil {
 		t.Fatal("nil lock")

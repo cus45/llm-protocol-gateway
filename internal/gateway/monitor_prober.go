@@ -538,9 +538,13 @@ func (s *Server) runLightProbeSweep(ctx context.Context, now time.Time, cfg moni
 	}
 	dailyOpen := cfg.Daily.Enabled && withinClockWindow(cfg.Daily.WindowStart, cfg.Daily.WindowEnd, now.In(monitorProbeLocation(s)))
 	dailyBudget := probeDailyBatchPerTick
+	// probedNow：这一轮已经探测过的账号。探测的记录与事件都在 runLightProbe 里当场写；
+	// 无论写没写成功，这个账号这一轮都不能再被选中 —— 一次探测已经花掉了账号的一次
+	// 额度，在同一轮里重试它没有任何意义。
+	probedNow := map[string]bool{}
 
 	for _, provider := range targets {
-		if s.probeInFlight(provider.ID) {
+		if s.probeInFlight(provider.ID) || probedNow[provider.ID] {
 			continue
 		}
 		outcome, used, err := s.monitoringStore.MonitorProbeOutcome(provider.ID, day)
@@ -553,8 +557,14 @@ func (s *Server) runLightProbeSweep(ctx context.Context, now time.Time, cfg moni
 			LastRealSuccess:   s.lastRealSuccessAt(provider.ID),
 			MarkedUnavailable: unavailable[provider.ID],
 		}
+		// 上次探测发生在这一个 tick 里、但记录没写进去：从事件流补回「最近一次」，
+		// 否则同一个账号每 30 秒都会被重测一次，探测反而替它多花了额度。
+		if !gate.LastProbeAt.IsZero() && now.Sub(gate.LastProbeAt) < probeTickInterval {
+			gate.LastProbeAt = s.lastProbeEventAt(provider.ID, gate.LastProbeAt)
+		}
 		gate.Enabled = cfg.EventDriven.Enabled
 		if gate.allowEventDriven() {
+			probedNow[provider.ID] = true
 			s.runLightProbe(ctx, provider.ID)
 			continue
 		}
@@ -563,9 +573,26 @@ func (s *Server) runLightProbeSweep(ctx context.Context, now time.Time, cfg moni
 			dailyGate.Enabled = true
 			dailyGate.MaxPerDay = cfg.EventDriven.MaxPerDayPerAccount
 			if dailyGate.allowDaily() {
+				probedNow[provider.ID] = true
 				s.runLightProbe(ctx, provider.ID)
 				dailyBudget--
 			}
 		}
 	}
+}
+
+// lastProbeEventAt 是该账号最近一次探测事件的时刻（不比 fallback 更早时返回它）。
+// 探测记录写失败时事件通常仍写进去了，它是「这个账号刚探测过」的第二份证据。
+func (s *Server) lastProbeEventAt(providerID string, fallback time.Time) time.Time {
+	if s.monitoringStore == nil {
+		return fallback
+	}
+	page, err := s.monitoringStore.QueryMonitorEvents(monitoring.EventQuery{TargetType: "provider", TargetID: providerID, Page: 1, PageSize: 1})
+	if err != nil || len(page.Items) == 0 {
+		return fallback
+	}
+	if at := page.Items[0].Time; at.After(fallback) {
+		return at
+	}
+	return fallback
 }

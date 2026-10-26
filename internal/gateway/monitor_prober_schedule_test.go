@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
 // 事件驱动的六个条件逐条钉住：任何一条松掉，探测就会从「他明天要用时别是坏的」
@@ -138,6 +139,16 @@ func TestRunProbeTickDailyRoundIsBatched(t *testing.T) {
 			BaseURL: upstream.URL + "/v1", APIKeySource: "literal:sk", DefaultModel: "claude-sonnet-4-5"},
 	)
 	server.monitoringStore = db
+	// 每日轮只催「有真实流量、明天要用」的账号（见 probeGate.allowEventDriven 的
+	// LastRealSuccess 条件）：三个账号各给一个一分钟前的成功请求，否则它们会因为
+	// 从未成功过而被判成闲置账号，这一轮一发都不发。用一个固定时间的测试存储，
+	// 不依赖本机请求日志库的行为。
+	server.requestLogStore = &quotaStubLogStore{query: func(query monitor.RequestLogQuery) (monitor.RequestLogPage, error) {
+		if query.Status != "2xx" || query.ProviderID == "" {
+			return monitor.RequestLogPage{}, nil
+		}
+		return monitor.RequestLogPage{Items: []monitor.RequestLog{{ProviderID: query.ProviderID, Status: 200, Time: time.Now().Add(-time.Minute)}}}, nil
+	}}
 
 	now := time.Now().UTC()
 	server.runProbeTick(context.Background(), now)
