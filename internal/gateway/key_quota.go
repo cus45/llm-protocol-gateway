@@ -179,10 +179,6 @@ func (r *quotaReservations) pending(keyID string) int64 {
 // (ascii/4, one token per CJK rune). Bytes/4 — the fallback used when a stream
 // reports no usage — under-counts Chinese prompts by roughly four times, which is
 // the wrong direction for a guard meant to refuse early rather than late.
-func quotaPromptEstimate(body []byte) int64 {
-	return estimateRTKTokens(string(body))
-}
-
 // errKeyQuotaExceeded marks a request its own key's quota refused. Handlers map it
 // to 429 through upstreamErrorStatus, so a refusal never reads as an upstream
 // failure and never cools a provider down or moves the request to another account:
