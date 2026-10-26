@@ -897,6 +897,9 @@ func (s *Server) providerRecentlyUsed(providerID string, window time.Duration) (
 	if s.requestLogStore == nil {
 		return time.Time{}, "", false
 	}
+	// 成功的请求行先进 requestLogBatcher，一个刷新周期内还不在库里；不落地就查，
+	// 一分钟前成功的那一发会被当成"没人用"。
+	s.FlushRequestLogs()
 	page, err := s.requestLogStore.QueryRequestLogs(monitor.RequestLogQuery{
 		ProviderID: providerID,
 		From:       cutoff,
