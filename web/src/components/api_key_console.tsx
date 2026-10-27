@@ -2217,17 +2217,23 @@ export function ApiKeyFullTable({
           </tbody>
         </table>
       </div>
+      {/* 底部条同时说「这一页多少」和「一共多少」：只显示当前页条数时，翻页后
+          数字不变，看着像总条数；翻页控件也始终可见（只有一页时禁用），否则页脚
+          比一行表格还高，短屏幕上会被挤到视口外。 */}
       <footer className="akc-list-foot">
         <span>单击选中 · 双击打开配置抽屉 · Shift 连续多选</span>
-        {pagination ? (
-          <span className="akc-pager-actions">
-            <span>第 {pagination.page} / {pagination.total} 页 · 每页 {pagination.pageSize} 个</span>
-            <button type="button" className="akc-soft-btn" disabled={pagination.page <= 1} onClick={pagination.onPrev}>上一页</button>
-            <button type="button" className="akc-soft-btn" disabled={pagination.page >= pagination.total} onClick={pagination.onNext}>下一页</button>
+        <span className="akc-pager-actions">
+          <span>
+            共 {totalKeys} 把密钥
+            {pagination ? ` · 第 ${pagination.page} / ${pagination.total} 页 · 每页 ${pagination.pageSize} 个` : ''}
           </span>
-        ) : (
-          <span className="akc-list-foot-count">共 {keys.length} 把密钥</span>
-        )}
+          {pagination ? (
+            <>
+              <button type="button" className="akc-soft-btn" disabled={pagination.page <= 1} onClick={pagination.onPrev}>上一页</button>
+              <button type="button" className="akc-soft-btn" disabled={pagination.page >= pagination.total} onClick={pagination.onNext}>下一页</button>
+            </>
+          ) : null}
+        </span>
       </footer>
     </section>
   );

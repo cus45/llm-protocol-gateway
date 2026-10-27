@@ -342,12 +342,21 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 }
 .akc-link:hover { text-decoration: underline; }
 
+/* 底部条与表格滚动区同宽：横向溢出只发生在中间的表格里（只在那里滚动），
+   底部条是整张卡片的脚注，左边和表格首列对齐，右边和卡片的滚动槽对齐
+   （滚动区自己保留了滚动槽，见 .akc-table-scroll）。 */
 .akc-list-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 8px 14px;
   border-top: 1px solid var(--border);
   background: var(--surface-soft);
   color: var(--subtle); font-size: 11px;
+  min-width: 0;
+}
+/* 窄屏/短屏：说明文字先让位，只留计数或翻页，免得两段文字互相挤成省略号。 */
+@media (max-width: 640px) {
+  .akc-list-foot { flex-wrap: wrap; row-gap: 6px; }
+  .akc-list-foot > span:first-child { display: none; }
 }
 .akc-list-foot-count { color: var(--accent-strong); font-weight: 600; }
 .akc-pager-actions { display: inline-flex; align-items: center; gap: 6px; }
@@ -785,7 +794,7 @@ body.akc-dragging, body.akc-dragging * { cursor: grabbing !important; user-selec
 .akc-table-filters .akc-search { align-self: end; }
 @media (max-width: 860px) { .akc-table-filters { grid-template-columns: 1fr; } }
 
-.akc-table-scroll { overflow: auto; max-height: 68vh; }
+.akc-table-scroll { overflow: auto; max-height: 68vh; min-width: 0; scrollbar-gutter: stable; }
 .akc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .akc-table thead th {
   position: sticky; top: 0; z-index: 1;
