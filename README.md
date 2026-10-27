@@ -1,205 +1,232 @@
-# LLM Protocol Gateway
+<p align="center">
+  <img src="web/public/logo.svg" width="104" height="104" alt="LLM Protocol Gateway">
+</p>
 
-**一个 LLM 协议网关：在 OpenAI Chat / OpenAI Responses / Claude 三种协议之间自由互转与透传，
-把本地/第三方/官方账号统一收敛成一个可对外访问的 OpenAI 或 Claude 端点。**
+<h1 align="center">LLM Protocol Gateway</h1>
 
-面向 Cursor、Codex 等自定义模型客户端，解决"协议对不上、无法跨网络访问、无法控制模型名与
-思考深度、单一上游不稳定"等一系列实际痛点。
+<p align="center">
+  把 <b>OpenAI Chat / OpenAI Responses / Claude / Gemini</b> 四种协议、<br>
+  API Key、官方订阅、第三方中转，统一收敛成一个<b>可控、可观测、可容灾</b>的网关。
+</p>
 
-> 🖥️ **同时支持两种部署形态，一套核心**：
-> - **macOS 桌面 App**：菜单栏常驻 + Cloudflare 一键公网，开箱即用（见 [macOS App](docs/macos-app.md)）
-> - **Web / 容器部署**：Docker / Compose / Kubernetes，部署到服务器供跨网络访问（见 [容器部署](docs/deploy.md)）
+<p align="center">
+  <a href="#-界面预览">界面预览</a> ·
+  <a href="#-核心能力">核心能力</a> ·
+  <a href="#-快速开始">快速开始</a> ·
+  <a href="#-部署">部署</a> ·
+  <a href="#-文档">文档</a>
+</p>
 
 ---
 
-## ✨ 核心特性
+## 它解决什么问题
 
-### 1. 三协议互转
-OpenAI Chat ⇄ OpenAI Responses ⇄ Claude 任意组合：协议相同则透传，协议不同则做**点对点直转**
-（不经有损中间层，完整保留工具调用、流式、以及 Claude 的签名 thinking 块）。客户端说什么协议、
-上游用什么协议，互不感知。
+- **协议对不上**：客户端只会说 OpenAI Chat，上游只给 Claude / Gemini / Responses —— 网关做点对点直转，不经过有损中间层。
+- **账号很分散**：官方 API Key、Claude/ChatGPT/Cursor 订阅、Qoder/Trae/ZCode/WorkBuddy 等账号，统一成同一套 Provider 与密钥体系。
+- **总要手工切**：一个上游限流、封号、掉线，整条链路就断 —— 网关带备选链、冷却、回切探测与会话粘性。
+- **花了多少说不清**：按模型配置价格表，逐请求记账到微美元，配合每密钥额度与用量分析，把成本和配额都摊在明面上。
 
-### 2. 一键公网访问（Cloudflare）
-内置 Cloudflare Tunnel：可选随机 `trycloudflare.com` 域名（零配置），或用 Token 绑定你自己的
-域名。**让 Cursor / Codex 或其它机器跨网络直接访问你本地的网关**，无需公网 IP、无需自己搭反代。
-
-### 3. 本地也能当"模型提供方"（Bearer 自注册）
-Provider 支持 Bearer 令牌接入任意上游；更进一步，提供**机器侧自注册接口**
-（`PATCH /__providers/{id}/self-register`，仅用 Provider 级 Bearer 令牌鉴权）：你在本地/内网跑的
-模型服务，即使地址会随隧道轮转，也能用脚本自动回填地址，把**本地模型稳定地对外提供出去**。
-详见 [Bearer Provider 文档](docs/bearer-provider.md)。
-
-### 4. 同一 Key 多 Provider，异常自动切换
-一个对外 API Key 可绑定一条 **Provider 备选链**：主 Provider 出现限流 / 5xx / 鉴权失败 /
-连接错误时**自动故障转移**到下一个；前置 Provider 恢复后**自动回切**。后台每 2 分钟对"异常"
-Provider 做一次轻量探测，恢复即停，健康 Provider 无额外流量。
-
-### 5. 覆盖模型名与推理深度
-模型名、思考（thinking / `reasoning_effort`）深度都支持两种模式：
-- **默认值兜底**：客户端没带时，用 Provider/Route 的默认值补齐（比如给 Cursor 的自定义模型补上思考深度）。
-- **强制覆盖**：忽略请求体里的模型名 / 思考深度，一律以网关配置为准。
-
-### 6. 多种账号接入
-Provider 不止支持 API Key，还支持 **OAuth 账号**直连：
-- **Claude 账号**（Claude.ai 订阅，OAuth）
-- **OpenAI / ChatGPT 账号**（Codex CLI OAuth）
-- **Cursor 账号**（Cursor 订阅）
-- **Qoder 账号**（浏览器授权登录，或个人访问令牌）
-
-Qoder 的模型跑在它客户端自己的接口上，不是公开的 OpenAI 兼容端点：网关按 Qoder 客户端
-的方式发请求（COSY 签名 + 它自己的正文编码），把回包转成标准 OpenAI Chat 再交给客户端，
-三种入站协议都能转发。登录有两种走法，连的是同一个账号：
-
-- **浏览器授权**（默认）：走 Qoder 桌面客户端同款 PKCE 设备码流程，网关轮询到你在浏览器
-  里点完确认为止，换到的作业令牌在过期前自动续期（Qoder 的刷新令牌一次性的，网关串行换发）。
-- **个人访问令牌**（无浏览器时）：在 [qoder.com/account/integrations](https://qoder.com/account/integrations)
-  生成长期令牌（`pt-` 开头）粘贴到控制台，网关用它兑换同一个作业令牌；刷新令牌失效时自动
-  重新兑换，不用你再跑一趟。
-
-模型列表取自账号自己的清单（`/algo/api/v2/model/list`），登录时同步一次，Qoder 换了货架
-就点「重新同步」。**Qoder CN**（qoder.cn，阿里云/手机号账号）是另一种连接方式，协议相同、
-主机与账号不通用。令牌刷新由网关托管，密钥/令牌永不下发到前端。
-
-订阅类 Provider 的额度卡片上还带一个**每日签到**：Qoder 两站和 WorkBuddy（国内版）每天有
-领积分的活动，开关打开后网关每天按厂商自己的接口替你点一次（以北京时间的一天为边界），
-没领到的稍后自动重试，厂商给了连续天数就显示连续天数。没有这类活动的订阅（Claude、ChatGPT、
-Trae、ZCode 等）不显示这个开关，也不会被点任何东西。
-
-额度窗口下面那一行时间说清两件事：**什么时候重新开始**（`明天 01:45 · 2 小时后`，本周内说
-「周五」，再远说「10月29日」，已经过了就只说「重置时间已过」）和**还剩的什么时候作废**——
-WorkBuddy 的积分是按批发给你的，每批各有一个到期日（`18.04 credits 将于 11月7日 02:45 过期 ·
-17 天后`），Qoder 报的是套餐有效期。厂商没给日期就不写这一行，不编一个。
-
-### 7. Claude 账号缓存命中优化
-针对 Claude（尤其 OAuth 账号）转发，网关会在正确位置**自动注入 `cache_control` 断点**
-（工具尾块、system 尾块、倒数第二条 user 消息），保证 Anthropic 的 prompt 缓存能稳定**命中**，
-显著降低长会话的费用与延迟——解决了转发/转换过程中缓存断点丢失、命中率骤降的问题。
-（实现见 `internal/gateway/claude_oauth_cloak.go`）
+一套 Go 核心，同一份前端，既可跑成 **Docker / K8s 服务**，也能打包成 **macOS 菜单栏 App**。
 
 ---
 
 ## 🖼️ 界面预览
 
-> 以下截图均已脱敏（账号邮箱 / 私有域名 / Tunnel Token / 局域网 IP / 真实用户名 / 密钥值等已替换为示例值）。
+> 截图取自真实运行的网关，账号邮箱、组织名、用户名、服务器地址等已做脱敏替换，请求量与金额保留原值。
 
-### API 密钥：同一个 Key，多方案一键切换
+### 输入 Provider：一个页面看清所有上游
 
-一个 Key（token 不变）可保存多套完整转发配置（方案），点选即时切换；每套方案可配置首选
-Provider、备选 Provider、模型映射、思考深度等，页面底部可一键复制对应 Agent 客户端配置。
+卡片直接展示订阅额度、刷新时间、可用状态与失败原因；顶部可按连接方式筛选，勾选后可批量导出/导入（含 OAuth 凭据），也能对单个账号做模型同步、对话测试和签到。
 
-![API 密钥 - 多方案与客户端配置](docs/images/api-keys.png)
+![输入 Provider](docs/images/input-providers.png)
 
-### 三协议接入地址
+### API 密钥：一个 Key，多套转发方案
 
-同一网关对外提供 OpenAI Chat / OpenAI Responses / Claude 三种端点（局域网 + 公网）。
+同一个密钥可保存多套完整方案（首选 Provider、备选链、模型映射、思考深度），点选即时生效；右侧四个页签分别管理转发方案与容灾链路、绑定关系与模型覆写、客户端配置与调用示例、额度与用量治理。
 
-![三协议接入地址](docs/images/overview.png)
+![API 密钥](docs/images/api-keys.png)
 
-### Provider 管理
+### 接入地址：四种协议的端点与试跑命令
 
-支持 Claude / OpenAI / Cursor / Qoder 账号与 API Key，展示订阅额度、协议、绑定用户。
+OpenAI Chat、OpenAI Responses、Claude、Gemini 四个端点集中展示，附局域网/公网地址和可直接粘贴的 `curl` 示例。
 
-![Provider 管理](docs/images/providers.png)
+![接入地址](docs/images/output-providers.png)
 
-### 公网访问（Cloudflare）
+### 用量统计：请求、Token、缓存与成本
 
-一键穿透，管理页与模型 API 域名可分别开启。
+按区间统计请求数、Token、缓存命中率、首字延迟与往返耗时；成本卡片同时标注计价覆盖率，未计价的请求不会被写成 $0。
 
-![公网访问](docs/images/public-url.png)
+![用量统计](docs/images/usage-stats.png)
 
-### 用量统计
+### API 日志：全链路逐请求追踪
 
-按日期区间汇总请求 / Token，含缓存命中率，按 Key / Provider / 模型 维度。
+记录密钥、请求/实际模型、推理强度、账号、协议、输入输出、缓存读写、耗时与成本；顶部给出当前页的调度决策摘要（尝试、失败、未发请求）。
 
-![用量统计](docs/images/usage.png)
+![API 日志](docs/images/traffic-logs.png)
 
-### 用户管理
+### 监控中心：集群拓扑、SLA 与实时事件流
 
-创建控制台账号并分配角色：普通用户仅能管理自己的 Key 与查看自己的日志/用量，管理员可用全部 Provider 并进入所有管理页。授予或撤销角色立即生效，无需对方重新登录。
+总览页把调用端构成、上游集群、SLA、请求分布与集群健康度放在一屏；账号矩阵、告警中心、事件流、规则引擎、调度设置分别成页。
 
-![用户管理](docs/images/users.png)
+![监控中心](docs/images/monitoring-overview.png)
 
-### 自检
+事件流把请求、探测、自动签到、系统内核事件合成一条时间线，可按类型过滤，并保留原始 payload 便于复盘。
 
-对勾选的 Provider 并行用 OpenCode / Codex / Claude CLI 走网关探测，校验回答是否正确。
+![事件流](docs/images/monitoring-events.png)
 
-![自检](docs/images/self-check.png)
+### 模型列表：所有模型一屏检索
+
+汇总所有 Provider 的模型，支持按名称/正则搜索、按能力过滤（思考、视觉、长上下文、免费档），也能按 Provider 筛选和复制模型名。
+
+![模型列表](docs/images/models.png)
+
+---
+
+## ⚙️ 核心能力
+
+### 1. 四协议互转，12 条直转路径
+
+| 入站 \ 出站 | OpenAI Chat | OpenAI Responses | Claude | Gemini |
+| --- | --- | --- | --- | --- |
+| **OpenAI Chat** | 透传 | 直转 | 直转 | 直转 |
+| **OpenAI Responses** | 直转 | 透传 | 直转 | 直转 |
+| **Claude** | 直转 | 直转 | 透传 | 直转 |
+| **Gemini** | 直转 | 直转 | 直转 | 透传 |
+
+- 协议相同直接透传，不同则点对点转换，**不经过有损中间层**；工具调用、图像输入、thinking 块与 prompt cache 断点在各条路径上都有测试覆盖。
+- 流式响应支持**心跳保活**（长思考静默时不至于被客户端判定超时）、空响应重试、仅思考无正文时重试/切换。
+- Claude 方向自动在工具尾块、system 尾块与倒数第二条 user 消息注入 `cache_control` 断点，保持上游 prompt 缓存命中。
+- 除对话外，还透传 `/v1/embeddings`、`/v1/audio/transcriptions|translations`、`/v1/images/generations`。
+
+### 2. 14 种接入方式，60 个常用预设
+
+| 连接方式 | 说明 |
+| --- | --- |
+| API Key | 任意 OpenAI/Claude/Gemini 兼容上游、中转站或自建服务 |
+| Bearer 自注册 | 本地/内网模型服务用 Provider 级令牌自动回填地址（`PATCH /__providers/{id}/self-register`） |
+| Claude OAuth | Claude.ai 订阅账号，自动续期 + 缓存断点注入 |
+| ChatGPT / Codex OAuth | ChatGPT 订阅账号，与 Codex CLI 同款登录 |
+| Cursor OAuth | Cursor 订阅账号 |
+| Qoder（国际版） | 浏览器设备码授权，或粘贴 `pt-` 个人访问令牌 |
+| Qoder CN | qoder.cn 手机号账号，主机与账号与国际版不通用 |
+| WorkBuddy / WorkBuddy AI | 腾讯 CodeBuddy 套餐的国内版与国际版（workbuddy.ai） |
+| ZCode / ZCode BigModel | Z.ai / 智谱的 GLM Coding Plan，含重置卡展示与消费 |
+| Trae CN / Trae Global | 字节 Trae 国内外版订阅，含免费档 |
+| OpenCode Zen Free | Zen 免费模型无需密钥，填入密钥可同卡访问付费模型 |
+
+添加 Provider 时提供 60 个预设（24 个厂商、16 个中转、12 个订阅、4 个本地），也可选「自定义」手填 Base URL。**密钥与 OAuth 令牌只留在网关进程里，任何页面都不会下发。**
+
+### 3. 调度与容灾
+
+- **四种调度模式**：按链路顺序、轮询、最空闲优先、额度最多优先。
+- **会话粘性**：同一密钥 + 同一会话固定落在同一 Provider 上（30 分钟滑动窗口，最多 1 万个会话键），避免多账号轮换打断上下文。
+- **冷却与回切**：软失败按梯度冷却，冷却期结束自动回切；异常账号的探测只走轻量请求，健康账号不产生额外流量。
+- **限流闸门**：每个 Provider 可设最大并发、首包超时与 RPM，账号级 `LaneGroup` 把多个模型归并到同一配额池。
+- **备选链**：首选 Provider 限流 / 5xx / 鉴权失败 / 连接错误时自动切下一个，并在日志里留下调度轨迹。
+
+### 4. 成本账本与每密钥额度
+
+- 价格表按模型维护输入、输出、缓存读、缓存写单价（USD / 百万 token），逐请求换算成微美元入库。
+- 未配置价格的请求显示「未计价」并给出覆盖率，**绝不按 $0 记账**。
+- 密钥可设置日 / 月额度：Token 上限、成本上限，请求前预扣、超限直接 429，避免单个调用方吃满账号。
+- 单个 Provider 可开启 **RTK 工具输出压缩**（本机安装 `rtk` 后生效），减少上行 Token，节省量在用量页单独统计。
+
+### 5. 观测与告警
+
+- **API 日志 / 用量统计**：全链路耗时、TTFT、缓存命中、成本、流量。
+- **监控中心**：集群容灾与 SLA 矩阵、轻量探测（chat + tools 两发、不消耗订阅额度）、事件流、18 条内置规则（可启停、改阈值）、静默窗口。
+- **告警通道**：飞书、钉钉、企业微信、Telegram，可按严重级别过滤。
+- **机器状态**：CPU、内存、磁盘、温度、风扇（macOS/Linux）。
+
+### 6. 运维能力
+
+- **公网访问**：Cloudflare 快速隧道零配置对外，也可绑定自有域名；API 与 UI 可分别使用不同域名，并互相屏蔽对方的路由。
+- **额度保活**：按「每天定点 / 每 N 小时 / 每 N 分钟」定时发一条极短探测，把订阅额度窗口钉在固定时刻，支持静默时段。
+- **每日签到**：Qoder 两站与 WorkBuddy 国内版的积分活动可托管，按北京时间划分日期，失败自动重试。
+- **用户与角色**：管理员可用全部 Provider；普通用户只看到输入 Provider、模型列表、API 密钥、API 日志、用量统计、额度保活六个页面，且只能操作自己的数据。
+- **登录**：远程首次访问需设置管理员密码，本机 `127.0.0.1` 直连免密（SSH 端口转发同样可用）。
 
 ---
 
 ## 🚀 快速开始
 
-一键启动（编译网关，并在缺失/过期时自动构建 `web/dist`）：
-
 ```bash
 cd web
 npm install
-npm run dev
+npm run dev        # 编译网关 + 必要时的 web/dist，启动看护进程与 Vite
 ```
 
-- 本地开发 UI：`http://127.0.0.1:5173`（Vite HMR）
-- 网关 API / 公网入口 / 管理页：`http://127.0.0.1:18093`
+- 开发界面：`http://127.0.0.1:5173`（Vite HMR）
+- 网关 API / 管理页：`http://127.0.0.1:18093`
 
-仅起后端：
+只起后端：
 
 ```bash
 go run ./cmd/gateway
-# 自定义端口
-GATEWAY_ADDR=127.0.0.1:18090 go run ./cmd/gateway
+GATEWAY_ADDR=127.0.0.1:18090 go run ./cmd/gateway   # 自定义端口
 ```
 
-> 只跑 `go run ./cmd/gateway` 时，公网管理页依赖网关内的 `web/dist`，需先 `cd web && npm install && npm run build`，
-> 否则公网 UI 域名会 404（`npm run dev` / `scripts/ensure-gateway.sh` 会自动构建）。
+> 只跑 `go run ./cmd/gateway` 时，管理页依赖仓库内的 `web/dist`；先 `cd web && npm run build`，或改用 `npm run dev`。
 
-配置存储：`~/Library/Application Support/llm-protocol-gateway/`（SQLite）。
+常用校验与构建：
+
+```bash
+go build ./... && go test ./...   # 编译 + 全量测试
+cd web && npm run build           # tsc -b && vite build
+cd web && npm run verify          # 健康检查网关与 Vite 代理
+```
+
+本地状态默认存放在用户配置目录（macOS 为 `~/Library/Application Support/llm-protocol-gateway/`，Linux 为 `~/.config/llm-protocol-gateway/`），可用 `GATEWAY_DB` 指定 SQLite 位置。
 
 ---
 
-## 🐳 容器部署（Docker）
+## 📦 部署
 
-镜像已发布到 Docker Hub（多架构 `linux/amd64` + `linux/arm64`，约 57MB）：
+### Docker / Compose / Kubernetes
 
-**`yangyongyong/llm-protocol-gateway`** — https://hub.docker.com/r/yangyongyong/llm-protocol-gateway
-
-标签：`latest`、`X.Y.Z`（与 GitHub tag `vX.Y.Z` 一一对应）、`X.Y`
+镜像已发布到 Docker Hub（`linux/amd64` + `linux/arm64`）：[`yangyongyong/llm-protocol-gateway`](https://hub.docker.com/r/yangyongyong/llm-protocol-gateway)
 
 ```bash
-# 一键运行
 docker run -d --name llm-protocol-gateway \
   -p 18093:18093 \
   -v llm-gateway-data:/data \
   --restart unless-stopped \
   yangyongyong/llm-protocol-gateway:latest
 
-curl -s http://127.0.0.1:18093/__health   # {"status":"ok",...}
+curl -s http://127.0.0.1:18093/__health
 ```
 
-或用仓库根目录的 `docker-compose.yml`：`docker compose up -d`；K8s 用 `deploy/k8s.yaml`。
+- 仓库根目录的 `docker-compose.yml`：`docker compose up -d`
+- Kubernetes：`deploy/k8s.yaml`（Namespace + PVC + Deployment + Service + `/__health` 探针，单副本）
+- 完整说明（环境变量、发布流程、持久化）见 **[容器部署](docs/deploy.md)**
+- 无 Docker 的服务器可参考 **[裸机部署（systemd）](docs/deploy-linux-bare-metal.md)**
 
-- 打开 `http://<服务器IP>:18093/`，非本机访问首次需**设置管理员密码**。
-- 数据持久化在 `/data` 卷（Provider / API Key / 日志），务必挂载。
-- 完整说明（环境变量、K8s、发布流程、OAuth/持久化注意事项）见 **[容器部署文档](docs/deploy.md)**。
+### 桌面 App
+
+Wails 打包的 macOS 菜单栏应用，内置同一套核心与 `web/dist`，支持一键 Cloudflare 公网访问，详见 **[macOS App](docs/macos-app.md)**。
+
+```bash
+bash scripts/build-macos-app.sh
+```
 
 ---
 
-## ☁️ Cloudflare 公网访问
+## 🧭 控制台导航
 
-默认关闭；在 UI 开启后可选：
-
-- **随机模式**：`cloudflared tunnel --url http://127.0.0.1:18093`，取输出的 `trycloudflare.com` 地址，无需账号。
-- **自有域名模式**：在 Cloudflare Zero Trust 建 Tunnel，为域名添加指向 `http://127.0.0.1:18093`
-  的 Public Hostname，把 Tunnel Token 填入 App，网关以 `cloudflared tunnel run --token <token>` 运行。
-
-> Tunnel Token 属敏感信息，当前明文持久化在本地（后续计划接入 Keychain）。
+| 分组 | 页面 |
+| --- | --- |
+| 核心配置 | 输入 Provider · API 密钥 · 接入地址 · 额度保活 |
+| 数据洞察 | 模型列表 · 用量统计 · API 日志 |
+| 系统管理 | 公网访问 · 监控中心 · 用户管理 · 机器状态 · 设置 |
 
 ---
 
 ## 📚 文档
 
-- [Bearer 令牌 Provider 说明](docs/bearer-provider.md) —— 配置、鉴权、健康探测、故障转移、自注册
+- [Bearer 令牌 Provider](docs/bearer-provider.md) —— 配置、鉴权、健康探测、故障转移、自注册
+- [容器部署（Docker / Compose / K8s）](docs/deploy.md)
+- [Linux 裸机部署（systemd）](docs/deploy-linux-bare-metal.md)
 - [macOS App](docs/macos-app.md)
-- [容器部署（Docker / Compose / K8s）](docs/deploy.md) —— 一键部署；镜像 docker.io/yangyongyong/llm-protocol-gateway
-- [Linux 裸机部署（systemd 原生二进制，无 Docker）](docs/deploy-linux-bare-metal.md)
 - [已知问题 / 踩坑记录](docs/known-issues.md)
 
 ---
@@ -213,5 +240,15 @@ curl http://127.0.0.1:18093/v1/models
 
 curl -s http://127.0.0.1:18093/v1/chat/completions \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+---
+
+## 🔒 安全说明
+
+- API Key、OAuth 令牌、Tunnel Token 只在网关进程内使用，不会出现在 `/__state`、管理接口或前端页面中。
+- 远程访问必须通过管理员密码登录；只有本机 loopback 请求才享受免密。
+- 上游凭证、请求/响应正文与日志均存放在本地 SQLite，请自行做好磁盘与备份的访问控制。
+- 截图与文档不得包含真实密钥、账号邮箱或服务器地址。
