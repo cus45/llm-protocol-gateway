@@ -7305,6 +7305,43 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 /* ----------------------------------------------------------------
    RTK 工具输出压缩（Provider 开关 + 用量页节省统计）
    ---------------------------------------------------------------- */
+/* Provider 旋钮区（RTK / 首包超时 / 并发上限）：一张卡、三行网格。
+   原来三块各起一张 .rtk-provider-panel，每块都带 margin-top:12 + padding:12/14，
+   纵向被拉成近 300px，而每块里只有一行控件。现在共用一张卡，行间用发丝线分隔。 */
+.provider-knobs {
+  display: grid;
+  gap: 0;
+  margin-top: 12px;
+  padding: 2px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+/* 每行「标签在上、控件在下」：控件组（四个输入 + 保存）本身就有两百多像素宽，
+   与标签并排时在弹窗宽度里必然折行，反而更乱。竖排后每个旋钮行都是定高的。 */
+.provider-knob-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 0;
+  border-top: 1px dashed var(--border);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.provider-knob-row:first-child { border-top: 0; }
+.provider-knob-row .provider-knob-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.provider-knob-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+/* 旋钮外观沿用原来的 .knob-input / .btn-sm，这里只负责把控件推到行的右侧，
+   不再让它另起一行把卡片撑高。 */
+/* 控件组不锁 nowrap：四个输入 + 保存按钮在窄弹窗里放不下时，控件自己换行，
+   而不是把左侧标签压成「上/限」这种竖排字。 */
+.provider-knob-row .provider-knob-control { flex-wrap: wrap; gap: 8px 12px; }
+.provider-knob-field > span:first-child { white-space: nowrap; }
+.provider-knob-row .toggle-row { cursor: pointer; }
+
+.provider-knob-label { white-space: nowrap; }
 .rtk-provider-panel {
   margin-top: 12px;
   padding: 12px 14px;
