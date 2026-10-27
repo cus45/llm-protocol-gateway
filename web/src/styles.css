@@ -5321,7 +5321,25 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   min-width: 0;
 }
 
-.traffic-toolbar-row .traffic-search-row { flex: 1 1 auto; min-width: 0; }
+/* 搜索框只是「快速定位」的入口，不独占整行：给它一个上限，把省下的宽度交给
+   右边的密钥 / Provider / 用户筛选。窗口很宽时也不再无限拉长空白。 */
+.traffic-toolbar-row .traffic-search-row { flex: 1 1 360px; min-width: 180px; max-width: 520px; }
+
+/* 主行里的三个下拉：与日期、搜索同高同底，标签靠 title/aria-label 说，
+   不再各占一行 —— 原来它们在折叠面板里，两行筛选被撑成一大块。 */
+/* min-width 别压到 120 以下：Provider 是「图标 + 名字」，再窄就只剩「全部 Pro…」。 */
+.traffic-inline-field { flex: 0 1 190px; min-width: 120px; }
+.traffic-inline-field select,
+.traffic-inline-field .icon-select-trigger {
+  width: 100%;
+  height: var(--control-h);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.traffic-inline-field.traffic-select .icon-select-trigger { padding: 0 24px 0 8px; gap: 5px; }
+/* Provider 是「图标 + 名字 + 下拉箭头」，比原生 select 多占两块：基础宽度多给一点，
+   否则中等宽度下会被挤成「全部 Pro…」。 */
+.traffic-inline-field.traffic-select { flex-basis: 210px; }
 
 .traffic-date-field { position: relative; flex: 0 0 auto; }
 
@@ -5427,9 +5445,10 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 .traffic-advanced-row .btn { margin-left: auto; }
 
 /* 窄屏：搜索框独占一行，日期与高级按钮跟到下一行右侧。 */
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .traffic-toolbar-row { flex-wrap: wrap; }
-  .traffic-toolbar-row .traffic-search-row { flex: 1 1 100%; }
+  .traffic-toolbar-row .traffic-search-row { flex: 1 1 100%; max-width: none; }
+  .traffic-inline-field { flex: 1 1 140px; }
   .traffic-date-field { flex: 1 1 auto; }
   .traffic-date-pop { right: auto; left: 0; }
   .traffic-status-meta { margin-left: 0; }

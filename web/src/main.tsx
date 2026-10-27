@@ -6029,7 +6029,10 @@ function App() {
                     </svg>
                     <input
                       type="search"
-                      placeholder="快速过滤模型、路径、客户端IP、报错信息、密钥名称（实时匹配）"
+                      // 占位写短：搜索框不再独占整行，中等宽度下长句会被截成半截；
+                      // 能搜哪些字段放进 title，需要时悬停即可见。
+                      placeholder="搜索模型、路径、IP、报错…"
+                      title="实时过滤：模型、请求路径、客户端 IP、报错摘要、密钥名称、账号"
                       value={logsKeyword}
                       onChange={(e) => setLogsKeyword(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { setLogsPage(1); void refreshLogs(1); } }}
@@ -6076,12 +6079,53 @@ function App() {
                       </div>
                     ) : null}
                   </div>
+                  {/* 密钥 / Provider / 用户直接从高级面板提到主行：搜索框让出宽度后，
+                      这三个是最常用的筛选，不该再藏在一次点击后面。 */}
+                  <label className="traffic-inline-field">
+                    <select
+                      value={logsApiKeyName}
+                      aria-label="按 API 密钥筛选"
+                      title="按 API 密钥筛选"
+                      onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); void refreshLogs(1, undefined, undefined, { apiKeyName: e.target.value }); }}
+                    >
+                      <option value="">全部密钥</option>
+                      {(state.apiKeys || []).map((key) => (
+                        <option key={key.id} value={key.name}>{key.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="traffic-inline-field traffic-select">
+                    <IconSelect
+                      value={logsProviderFilter || ALL_PROVIDERS_VALUE}
+                      placeholder="全部 Provider"
+                      searchable={false}
+                      renderPortal={false}
+                      options={trafficProviderFilterOptions}
+                      onChange={(next) => { setLogsPage(1); setLogsProviderFilter(next === ALL_PROVIDERS_VALUE ? '' : next); void refreshLogs(1); }}
+                    />
+                  </div>
+                  {!isNormalUser ? (
+                    <label className="traffic-inline-field">
+                      <select
+                        value={logsOwnerFilter}
+                        aria-label="按所属用户筛选"
+                        title="按所属用户筛选"
+                        onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); void refreshLogs(1); }}
+                      >
+                        <option value="">全部用户</option>
+                        <option value={LOG_OWNER_FILTER_ADMIN}>内置 admin</option>
+                        {consoleUsers.map((user) => (
+                          <option key={user.id} value={user.id}>{user.username}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <button
                     type="button"
                     className={`traffic-adv-btn${logsAdvancedOpen ? ' active' : ''}`}
                     onClick={() => setLogsAdvancedOpen((open) => !open)}
                     aria-expanded={logsAdvancedOpen}
-                    title="更多筛选：密钥、Provider、用户"
+                    title="更多：记录 2xx 正文、留存天数、重置筛选"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5.5h16l-6.2 7.4V20l-3.6-2v-5.1L4 5.5Z" /></svg>
                   </button>
@@ -6143,40 +6187,6 @@ function App() {
 
                 {logsAdvancedOpen ? (
                   <div className="traffic-advanced-row">
-                    <label className="field">
-                      <span>API 密钥</span>
-                      <select value={logsApiKeyName} onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}>
-                        <option value="">全部密钥</option>
-                        {(state.apiKeys || []).map((key) => (
-                          <option key={key.id} value={key.name}>{key.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="field">
-                      <span>输入 Provider</span>
-                      <div className="traffic-select">
-                        <IconSelect
-                          value={logsProviderFilter || ALL_PROVIDERS_VALUE}
-                          placeholder="全部 Provider"
-                          searchable={false}
-                          renderPortal={false}
-                          options={trafficProviderFilterOptions}
-                          onChange={(next) => { setLogsPage(1); setLogsProviderFilter(next === ALL_PROVIDERS_VALUE ? '' : next); }}
-                        />
-                      </div>
-                    </div>
-                    {!isNormalUser ? (
-                      <label className="field">
-                        <span>所属用户</span>
-                        <select value={logsOwnerFilter} onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}>
-                          <option value="">全部用户</option>
-                          <option value={LOG_OWNER_FILTER_ADMIN}>内置 admin（无归属）</option>
-                          {consoleUsers.map((user) => (
-                            <option key={user.id} value={user.id}>{user.username}</option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
                     {!isNormalUser ? (
                       <label className="traffic-quick-switch" title="开启后，2xx 正常请求也将完整落盘请求体与响应体（便于全量审计，但会增加 SQLite 写入量）；关闭时仅 4xx/5xx 错误请求记录正文以保障极限吞吐。">
                         <input type="checkbox" checked={log2xxBodies} disabled={saving} onChange={(e) => void updateLog2xxBodies(e.target.checked)} />
