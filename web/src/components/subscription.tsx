@@ -111,13 +111,20 @@ export function SubscriptionConnect({ providerId, kind, connected, accountLabel,
   if (connected && !state.authUrl) {
     return (
       <>
-        <div className="hint-text">{`已登录${accountLabel ? ` · ${accountLabel}` : ''}${plan ? ` · ${plan}` : ''}${expiresAt ? ` · 令牌到期：${new Date(expiresAt).toLocaleString()}` : ''}`}</div>
-        {hint ? <div className="hint-text">{hint}</div> : null}
-        {state.error ? <div className="hint-line error">{state.error}</div> : null}
-        <div className="actions" style={{ gap: 8 }}>
-          <button className="btn" disabled={waiting} onClick={() => void start()}>{waiting ? '等待授权…' : '换账号登录'}</button>
-          <button className="btn danger" disabled={state.busy} onClick={() => void setDisconnected(true)}>{state.busy ? '处理中…' : '暂停使用'}</button>
+        {/* 「已登录…」与两个按钮同一行：原来按钮单独占一行，账号信息与按钮之间
+            隔着面板 12px 行距 + 按钮本身一行高度，看起来就是一段莫名的空白。 */}
+        <div className="sub-account-row">
+          <div className="sub-account-info">
+            <span>{`已登录${accountLabel ? ` · ${accountLabel}` : ''}${plan ? ` · ${plan}` : ''}`}</span>
+            {expiresAt ? <span className="sub-account-expiry">{`令牌到期：${new Date(expiresAt).toLocaleString()}`}</span> : null}
+            {hint ? <span className="sub-account-hint">{hint}</span> : null}
+          </div>
+          <div className="sub-account-actions">
+            <button className="btn btn-sm" disabled={waiting} onClick={() => void start()}>{waiting ? '等待授权…' : '换账号登录'}</button>
+            <button className="btn btn-sm danger" disabled={state.busy} onClick={() => void setDisconnected(true)}>{state.busy ? '处理中…' : '暂停使用'}</button>
+          </div>
         </div>
+        {state.error ? <div className="hint-line error">{state.error}</div> : null}
       </>
     );
   }

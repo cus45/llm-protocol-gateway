@@ -1257,6 +1257,9 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
   color: var(--text);
   background: var(--surface);
   line-height: 1.2;
+  /* 与上面同一理由：不剥掉系统外观，控件在部分平台上仍是浏览器自带的灰边灰底。 */
+  appearance: none;
+  -webkit-appearance: none;
   transition: border-color 0.13s ease, box-shadow 0.13s ease;
 }
 
@@ -3992,12 +3995,79 @@ details:not([open]) > *:not(summary) { display: none !important; }
    账号登录/额度面板收在一条分隔线下，不再是一堆各自带间距的盒子。 */
 .provider-form { row-gap: 14px; }
 .provider-form .icon-select-trigger { min-width: 0; }
+/* 订阅账号卡（Qoder / ZCode / Trae）的一行式摘要：左侧账号与到期时间，右侧两个
+   操作按钮。原来按钮独占一行，加上面板 12px 行距，账号信息与按钮之间空出一大块。 */
+.sub-account-row {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px 12px; min-width: 0;
+}
+.sub-account-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12.5px; color: var(--text); }
+.sub-account-info > span:first-child { font-weight: 600; overflow-wrap: anywhere; }
+.sub-account-expiry { color: var(--muted); font-size: 11.5px; }
+.sub-account-hint { color: var(--subtle); font-size: 11.5px; line-height: 1.5; }
+.sub-account-actions { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.sub-account-actions .btn { font-size: 12px; }
+/* 模型数量与「重新同步」同一行：它只是一条状态，不该占满一整段提示行。 */
+.sub-models-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px 12px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted);
+}
+.sub-models-row b { color: var(--text-strong); font-family: var(--mono); }
+/* 令牌折叠面板：紧凑版 .usage-details（后者是给用量明细页的大块留的）。 */
+.sub-token-details { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.sub-token-details > summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; cursor: pointer; list-style: none;
+  font-size: 12.5px; font-weight: 600; color: var(--muted);
+}
+.sub-token-details > summary::-webkit-details-marker { display: none; }
+.sub-token-details > summary::before {
+  content: ""; flex: 0 0 auto;
+  width: 0; height: 0;
+  border-left: 5px solid var(--subtle);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform 0.16s ease;
+}
+.sub-token-details[open] > summary { transform: none; border-bottom: 1px solid var(--border); color: var(--text-strong); }
+.sub-token-details[open] > summary::before { transform: rotate(90deg); }
+.sub-token-body { display: grid; gap: 8px; padding: 10px; }
+.sub-token-body p { margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--muted); overflow-wrap: anywhere; }
+/* 输入框与「完成连接」贴在一起：给 input 一个确定宽度上限，不再让 field-inline
+   把按钮甩到最右边。 */
+.sub-token-input { display: flex; align-items: center; gap: 8px; }
+.sub-token-input input { flex: 1 1 auto; min-width: 0; }
+.sub-token-input .mini-btn { flex: 0 0 auto; }
 .claude-oauth-panel {
   display: grid; gap: 12px;
   margin-top: 16px; padding-top: 16px;
   border-top: 1px solid var(--border);
 }
 .claude-oauth-panel > .btn, .claude-oauth-panel > details { justify-self: start; }
+/* 兜底：详情面板里任何没有专属样式的裸输入框，一律走主题外观。
+   这一区（账号连接、令牌、模型同步）的控件分散在多个组件里，各自的样式又常挂在
+   某个容器选择器上——容器一改，input 就退回系统灰底（appearance:auto）。
+   把基线放在容器上，新增控件不会再漏。 */
+.claude-oauth-panel input:not([type="checkbox"]):not([type="radio"]),
+.sub-token-input input {
+  height: var(--control-h-sm);
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.claude-oauth-panel input:not([type="checkbox"]):not([type="radio"]):focus,
+.sub-token-input input:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.claude-oauth-panel input::placeholder,
+.sub-token-input input::placeholder { color: var(--subtle); }
 .provider-account-block { display: grid; gap: 10px; }
 .auth-terminal-hint-line {
   font-size: 13px;

@@ -7610,24 +7610,29 @@ function App() {
                       }}
                       onPaused={() => void refreshState(false)}
                     />
-                    <div className="hint-text" style={{ marginTop: 8 }}>
-                        模型 {editingProvider?.models?.length ?? 0} 个（登录时自动取该账号可用的清单）
-                        <button className="mini-btn" style={{ marginLeft: 8 }} disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '重新同步'}</button>
+                    <div className="sub-models-row">
+                      <span>模型 <b>{editingProvider?.models?.length ?? 0}</b> 个 · 取自该账号可用的清单</span>
+                      <button className="mini-btn" disabled={testingProviderID === editingProviderID} onClick={() => void fetchProviderModels(editingProviderID, editingProvider?.name || '', true)}>{testingProviderID === editingProviderID ? '同步中…' : '重新同步'}</button>
                     </div>
                     {/* 备用门：Qoder 的个人访问令牌长期有效，headless 部署打不开
                         浏览器时用它换同一个作业令牌；两个门连的是同一个账号结构。 */}
-                    <details className="usage-details">
+                    {/* 令牌面板用紧凑样式（.sub-token-details）：默认 .usage-details 是给
+                        用量明细页的大块留的 20px 外边距 + 12/18px 内边距，放在这里会撑出
+                        一圈空白，输入框也被拉开。 */}
+                    <details className="sub-token-details">
                       <summary>用个人访问令牌连接（没有浏览器时）</summary>
-                      <div className="hint-text" style={{ marginTop: 8 }}>
+                      <div className="sub-token-body">
+                        <p>
                           {qoder?.signInMode === 'pat' && qoder?.hasStoredToken
                             ? '当前就是令牌连接；换账号可粘贴另一个 pt- 开头的令牌覆盖。'
-                            : `在 ${providerDraft.authType === 'qoder_cn' ? 'qoder.cn' : 'qoder.com'}/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里。令牌只用来兑换短期作业令牌，不会回传到浏览器。`}
+                            : `在 ${providerDraft.authType === 'qoder_cn' ? 'qoder.cn' : 'qoder.com'}/account/integrations 生成个人访问令牌（pt- 开头）后粘贴到这里；令牌只用来兑换短期作业令牌，不会回传到浏览器。`}
+                        </p>
+                        <div className="sub-token-input">
+                          <input type="text" placeholder="粘贴 pt- 开头的个人访问令牌" value={qoderPatInput} onChange={(event) => setQoderPatInput(event.target.value)} />
+                          <button className="mini-btn" disabled={qoderPatBusy || !qoderPatInput.trim()} onClick={() => void connectQoderPAT()}>{qoderPatBusy ? '连接中…' : '完成连接'}</button>
+                        </div>
+                        {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
                       </div>
-                      <div className="field-inline" style={{ marginTop: 8 }}>
-                        <input type="text" placeholder="粘贴 pt- 开头的个人访问令牌" value={qoderPatInput} onChange={(event) => setQoderPatInput(event.target.value)} />
-                        <button className="mini-btn" disabled={qoderPatBusy || !qoderPatInput.trim()} onClick={() => void connectQoderPAT()}>{qoderPatBusy ? '连接中…' : '完成连接'}</button>
-                      </div>
-                      {qoderPatError && <div className="hint-line error">{qoderPatError}</div>}
                     </details>
                   </>
                 );
