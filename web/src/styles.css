@@ -5336,10 +5336,41 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   font-size: 12.5px;
   color: var(--text);
 }
+/* 原生 select 必须显式剥掉系统外观：不给 appearance:none 时控件还是浏览器自己的
+   灰底灰边（暗色主题下尤其突兀），下面这几条主题色也就不生效。与日期按钮、搜索框
+   统一成同一套「表面色 + 细边框 + 自绘箭头」。 */
+.traffic-inline-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background-color: var(--surface);
+  background-image: var(--select-caret);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  color: var(--text-strong);
+  cursor: pointer;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.traffic-inline-field select:hover { border-color: var(--border-strong); }
+.traffic-inline-field select:focus { outline: none; border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+/* 展开后的选项同样走主题色，否则暗色下是一块白底。 */
+.traffic-inline-field select option { background: var(--surface-strong); color: var(--text); }
 .traffic-inline-field.traffic-select .icon-select-trigger { padding: 0 24px 0 8px; gap: 5px; }
 /* Provider 是「图标 + 名字 + 下拉箭头」，比原生 select 多占两块：基础宽度多给一点，
    否则中等宽度下会被挤成「全部 Pro…」。 */
 .traffic-inline-field.traffic-select { flex-basis: 210px; }
+/* 两栏弹层默认「锚左边、向右展开」且最小 520px：这个触发器在主行靠右，弹层会
+   一路溢出视口，把 body 撑宽、拉出横向滚动条，整页随之一左一右地跳。
+   这里改成与触发器右缘对齐、向左展开；万一左侧空间不够，再用视口宽度兜底。 */
+.traffic-inline-field.traffic-select .searchable-select-menu {
+  left: auto;
+  right: 0;
+  min-width: min(520px, calc(100vw - 24px));
+}
 
 .traffic-date-field { position: relative; flex: 0 0 auto; }
 
