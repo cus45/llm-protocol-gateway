@@ -7745,118 +7745,113 @@ function App() {
                   网格里——第一行 RTK 开关（独占一行），第二行首包超时与并发上限并排，
                   每行左侧是标签、右侧是控件，整体高度减半。 */}
               <div className="provider-knobs">
-                <label className="provider-knob-row toggle-row">
-                  <span className="provider-knob-label">
-                    <input
-                      type="checkbox"
-                      checked={!!editingProvider.rtkCompress}
-                      disabled={saving}
-                      onChange={() => void toggleProviderRTK(editingProvider)}
-                    />
-                    <span>RTK 工具输出压缩</span>
-                    <InfoTip text="开启后网关在转发前用 rtk pipe 过滤 tool_result 里的命令输出（git status/diff、go test、grep 等），节省量会累计到用量页的「RTK 节省」卡片。需要网关主机已安装 rtk CLI（或设置 GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。" />
-                  </span>
-                  <span className="provider-knob-control" />
+                <label className="provider-knob-toggle">
+                  <input
+                    type="checkbox"
+                    checked={!!editingProvider.rtkCompress}
+                    disabled={saving}
+                    onChange={() => void toggleProviderRTK(editingProvider)}
+                  />
+                  <span>RTK 工具输出压缩</span>
+                  <InfoTip text="开启后网关在转发前用 rtk pipe 过滤 tool_result 里的命令输出（git status/diff、go test、grep 等），节省量会累计到用量页的「RTK 节省」卡片。需要网关主机已安装 rtk CLI（或设置 GATEWAY_RTK_PATH）；压缩失败、超时或输出没有更小时自动透传原文。" />
                 </label>
 
-                <div className="provider-knob-row">
-                  <span className="provider-knob-label">
-                    <span>首包超时</span>
-                    <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
-                  </span>
-                  <div className="provider-knob-control">
+                {/* 「上限 / 排队 / 每分钟」是一组并发限制，各占一格；「账号」和保存
+                    按钮同排收尾。两列而不是四个一排：弹窗内容宽 630px，四个字段加
+                    按钮要 574px，挤在一行必然把标签压成竖排字、按钮掉到下一行。 */}
+                <div className="provider-knob-grid">
+                  <label className="provider-knob-field">
+                    <span>并发上限</span>
                     <span className="knob-input">
                       <input
-                        ref={providerFirstPacketRef}
-                        key={`first-packet-${editingProviderID}`}
+                        ref={providerConcurrencyRef}
+                        key={`concurrency-${editingProviderID}`}
                         type="number"
                         min={0}
-                        max={600}
+                        max={1000}
                         step={1}
-                        defaultValue={editingProvider.firstPacketTimeoutSec || ''}
+                        defaultValue={editingProvider.maxConcurrentRequests || ''}
                         placeholder="不限制"
                         disabled={saving}
-                        aria-label="首包超时（秒）"
+                      />
+                      <span className="knob-input-unit">个</span>
+                    </span>
+                  </label>
+                  <label className="provider-knob-field">
+                    <span>排队等待</span>
+                    <span className="knob-input">
+                      <input
+                        ref={providerQueueWaitRef}
+                        key={`queue-wait-${editingProviderID}`}
+                        type="number"
+                        min={0}
+                        max={60}
+                        step={1}
+                        defaultValue={editingProvider.queueWaitSeconds || ''}
+                        placeholder="不排队"
+                        disabled={saving}
                       />
                       <span className="knob-input-unit">秒</span>
                     </span>
-                    <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
-                  </div>
-                </div>
-
-                <div className="provider-knob-row">
-                  <span className="provider-knob-label">
-                    <span>并发上限</span>
-                    <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。账号：留空 = 这一行自己一份额度；填同一个名字的几行（同一个订阅的多把密钥、同一账号的不同 BaseURL）共用这一份额度，避免每行各拿一份把账号打出 429。" />
-                  </span>
-                  <div className="provider-knob-control">
-                    <label className="provider-knob-field">
-                      <span>上限</span>
+                  </label>
+                  <label className="provider-knob-field">
+                    <span>每分钟请求</span>
+                    <span className="knob-input">
+                      <input
+                        ref={providerRPMRef}
+                        key={`rpm-${editingProviderID}`}
+                        type="number"
+                        min={0}
+                        max={100000}
+                        step={1}
+                        defaultValue={editingProvider.requestsPerMinute || ''}
+                        placeholder="不限速"
+                        disabled={saving}
+                      />
+                      <span className="knob-input-unit">次</span>
+                    </span>
+                  </label>
+                  <div className="provider-knob-field">
+                    <span>首包超时</span>
+                    <span className="provider-knob-unit-row">
                       <span className="knob-input">
                         <input
-                          ref={providerConcurrencyRef}
-                          key={`concurrency-${editingProviderID}`}
+                          ref={providerFirstPacketRef}
+                          key={`first-packet-${editingProviderID}`}
                           type="number"
                           min={0}
-                          max={1000}
+                          max={600}
                           step={1}
-                          defaultValue={editingProvider.maxConcurrentRequests || ''}
+                          defaultValue={editingProvider.firstPacketTimeoutSec || ''}
                           placeholder="不限制"
                           disabled={saving}
-                        />
-                        <span className="knob-input-unit">个</span>
-                      </span>
-                    </label>
-                    <label className="provider-knob-field">
-                      <span>排队</span>
-                      <span className="knob-input">
-                        <input
-                          ref={providerQueueWaitRef}
-                          key={`queue-wait-${editingProviderID}`}
-                          type="number"
-                          min={0}
-                          max={60}
-                          step={1}
-                          defaultValue={editingProvider.queueWaitSeconds || ''}
-                          placeholder="不排队"
-                          disabled={saving}
+                          aria-label="首包超时（秒）"
                         />
                         <span className="knob-input-unit">秒</span>
                       </span>
-                    </label>
-                    <label className="provider-knob-field">
-                      <span>每分钟</span>
-                      <span className="knob-input">
-                        <input
-                          ref={providerRPMRef}
-                          key={`rpm-${editingProviderID}`}
-                          type="number"
-                          min={0}
-                          max={100000}
-                          step={1}
-                          defaultValue={editingProvider.requestsPerMinute || ''}
-                          placeholder="不限速"
-                          disabled={saving}
-                        />
-                        <span className="knob-input-unit">次</span>
-                      </span>
-                    </label>
-                    <label className="provider-knob-field">
-                      <span>账号</span>
-                      <span className="knob-input knob-input-wide">
-                        <input
-                          ref={providerLaneGroupRef}
-                          key={`lane-group-${editingProviderID}`}
-                          type="text"
-                          maxLength={120}
-                          defaultValue={editingProvider.laneGroup || ''}
-                          placeholder="各自独立"
-                          disabled={saving}
-                        />
-                      </span>
-                    </label>
-                    <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存</button>
+                      <button className="btn btn-sm" disabled={saving} onClick={() => void saveProviderFirstPacketTimeout(editingProvider.id)}>保存</button>
+                    </span>
+                    <InfoTip text="网关等这台上游给出「响应头」的最长时间，超时即放弃它、继续这条密钥链路上的下一个 Provider；留空或 0 = 不限制。它只约束开流之前的等待，上游已经开播的思考或长回答不会被切断。适合挂在容易假死的上游上。" />
                   </div>
+                  <label className="provider-knob-field">
+                    <span>账号分组</span>
+                    <span className="knob-input knob-input-wide">
+                      <input
+                        ref={providerLaneGroupRef}
+                        key={`lane-group-${editingProviderID}`}
+                        type="text"
+                        maxLength={120}
+                        defaultValue={editingProvider.laneGroup || ''}
+                        placeholder="各自独立"
+                        disabled={saving}
+                      />
+                    </span>
+                  </label>
+                  <button className="btn btn-sm provider-knob-save" disabled={saving} onClick={() => void saveProviderConcurrency(editingProvider.id)}>保存并发设置</button>
+                </div>
+                <div className="provider-knob-note">
+                  <InfoTip text="并发上限：这台上游同时只允许这么多个请求在飞；每分钟：任意滚动一分钟内最多发这么多次请求（按准入计数）。超出的由网关先拒绝（429 + Retry-After），而不是让厂商回 429 把账号判成异常；留空或 0 = 不限制，两项可只设其一。排队秒数在任一限制生效时才有意义：0 直接拒绝，>0 先在队列里等一个空闲位。如果这条密钥链路上还有别的候选，被限住的请求会先自动换到别的账号，换不出去才回 429。账号分组：留空 = 这一行自己一份额度；填同一个名字的几行（同一个订阅的多把密钥、同一账号的不同 BaseURL）共用这一份额度，避免每行各拿一份把账号打出 429。" />
+                  <span>并发与排队留空 = 不限制；账号分组填同一个名字的几行共用一份额度</span>
                 </div>
               </div>
 

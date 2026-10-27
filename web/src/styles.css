@@ -7308,40 +7308,48 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 /* Provider 旋钮区（RTK / 首包超时 / 并发上限）：一张卡、三行网格。
    原来三块各起一张 .rtk-provider-panel，每块都带 margin-top:12 + padding:12/14，
    纵向被拉成近 300px，而每块里只有一行控件。现在共用一张卡，行间用发丝线分隔。 */
+/* Provider 旋钮区：RTK 开关 + 两列参数网格。
+   原来是三张各自带内外边距的卡片、控件四个一排；弹窗内容宽 630px，四个字段加
+   按钮要 574px，挤在一行会把标签压成竖排字、按钮掉到下一行。两列后每个字段都有
+   确定的宽度，整块高度也只占三行。 */
 .provider-knobs {
   display: grid;
-  gap: 0;
+  gap: 10px;
   margin-top: 12px;
-  padding: 2px 14px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface-soft);
-}
-/* 每行「标签在上、控件在下」：控件组（四个输入 + 保存）本身就有两百多像素宽，
-   与标签并排时在弹窗宽度里必然折行，反而更乱。竖排后每个旋钮行都是定高的。 */
-.provider-knob-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  padding: 8px 0;
-  border-top: 1px dashed var(--border);
-  font-size: 12.5px;
-  font-weight: 600;
   color: var(--text-strong);
+  font-size: 12.5px;
 }
-.provider-knob-row:first-child { border-top: 0; }
-.provider-knob-row .provider-knob-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.provider-knob-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
-/* 旋钮外观沿用原来的 .knob-input / .btn-sm，这里只负责把控件推到行的右侧，
-   不再让它另起一行把卡片撑高。 */
-/* 控件组不锁 nowrap：四个输入 + 保存按钮在窄弹窗里放不下时，控件自己换行，
-   而不是把左侧标签压成「上/限」这种竖排字。 */
-.provider-knob-row .provider-knob-control { flex-wrap: wrap; gap: 8px 12px; }
-.provider-knob-field > span:first-child { white-space: nowrap; }
-.provider-knob-row .toggle-row { cursor: pointer; }
-
-.provider-knob-label { white-space: nowrap; }
+.provider-knob-toggle {
+  display: inline-flex; align-items: center; gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+  font-weight: 600;
+}
+.provider-knob-toggle > span:first-of-type { margin-left: 8px; }
+.provider-knob-toggle input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+.provider-knob-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  align-items: end;
+}
+.provider-knob-field { display: grid; gap: 4px; min-width: 0; font-weight: 500; color: var(--muted); }
+.provider-knob-field > span:first-child,
+.provider-knob-field > span:not(.knob-input) { white-space: nowrap; font-weight: 600; color: var(--text); }
+.provider-knob-field .knob-input { width: 100%; }
+.provider-knob-field .knob-input input { flex: 1 1 auto; width: auto; min-width: 0; }
+.provider-knob-unit-row { display: flex; align-items: center; gap: 8px; }
+.provider-knob-unit-row .knob-input { flex: 1 1 auto; min-width: 0; }
+.provider-knob-save { justify-self: start; align-self: end; }
+/* 说明折叠成一行：原来整段解释撑在每块标题后面，读起来比控件本身还长。 */
+.provider-knob-note { display: flex; align-items: center; gap: 6px; color: var(--subtle); font-size: 11.5px; font-weight: 500; line-height: 1.5; }
+@media (max-width: 640px) {
+  .provider-knob-grid { grid-template-columns: 1fr; }
+}
 .rtk-provider-panel {
   margin-top: 12px;
   padding: 12px 14px;
