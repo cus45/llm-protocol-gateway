@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -135,22 +136,36 @@ func (s *Store) startUsageWorker() {
 }
 
 // CloseUsageWorker persists whatever the worker has queued and waits for it to
-// finish. Called on graceful shutdown so a restart does not discard the current
-// batch. Safe to call when the worker never started, and safe to call twice.
+// finish. Safe to call when the worker never started, and safe to call twice.
+// Graceful shutdown uses CloseUsageWorkerContext, which bounds that wait.
 //
 // Deliberately signals via a stop channel rather than closing usageEvents:
 // EnqueueUsage runs on request goroutines, and a send on a closed channel would
 // panic if a request landed mid-shutdown.
 func (s *Store) CloseUsageWorker() {
+	_ = s.CloseUsageWorkerContext(context.Background())
+}
+
+// CloseUsageWorkerContext is CloseUsageWorker with a deadline on the wait. The
+// worker's flush commits through the single SQLite writer connection, which a
+// long maintenance statement can hold for minutes; shutting down must not wait
+// that out, or systemd SIGKILLs the process and the restart loses far more than
+// this batch.
+func (s *Store) CloseUsageWorkerContext(ctx context.Context) error {
 	s.mu.RLock()
 	stop := s.usageStop
 	stopped := s.usageStopped
 	s.mu.RUnlock()
 	if stop == nil || stopped == nil {
-		return
+		return nil
 	}
 	s.usageCloseOnce.Do(func() { close(stop) })
-	<-stopped
+	select {
+	case <-stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Store) usageWorker() {

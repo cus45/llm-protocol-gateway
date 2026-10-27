@@ -187,7 +187,10 @@ func (a *App) domReady(ctx context.Context) {
 }
 
 func (a *App) shutdown(_ context.Context) {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The runtime's own budget, not a shorter one: every step of Stop (drain,
+	// landing the deferred writes, closing the DB) needs room to finish, and Stop
+	// guarantees it returns inside this deadline either way.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), app.DefaultShutdownBudget)
 	defer cancel()
 	if err := a.rt.Stop(shutdownCtx); err != nil {
 		slog.Error("gateway shutdown failed", "error", err)

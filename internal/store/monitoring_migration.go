@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -212,34 +213,53 @@ func (s *Store) migrateLegacyTelegram(cfg *monitoring.Config) error {
 	return cfg.SaveChannels(channels)
 }
 
-// PruneMonitoringData drops history past its retention window. monitor_events
-// has no foreign key to pushes, so orphaned push rows are removed explicitly.
 func (s *Store) PruneMonitoringData(now time.Time) error {
-	if _, err := s.db.Exec(`DELETE FROM monitor_events WHERE time < ?`,
-		monitorTime(now.AddDate(0, 0, -90))); err != nil {
-		return err
+	return s.PruneMonitoringDataContext(context.Background(), now)
+}
+
+// PruneMonitoringDataContext drops history past its retention window, in bounded
+// batches (see deleteInBatches: one statement wiping a big table would own the
+// single writer connection past a shutdown deadline). monitor_events has no
+// foreign key to pushes, so orphaned push rows are removed explicitly.
+func (s *Store) PruneMonitoringDataContext(ctx context.Context, now time.Time) error {
+	passes := []struct {
+		statement string
+		args      []any
+	}{
+		{`DELETE FROM monitor_events WHERE id IN (
+				SELECT id FROM monitor_events WHERE time < ? ORDER BY time LIMIT ?)`,
+			[]any{monitorTime(now.AddDate(0, 0, -90)), pruneBatchRows}},
+		{`DELETE FROM monitor_event_pushes WHERE rowid IN (
+				SELECT rowid FROM monitor_event_pushes
+				WHERE event_id NOT IN (SELECT id FROM monitor_events) LIMIT ?)`,
+			[]any{pruneBatchRows}},
+		{`DELETE FROM provider_metric_samples WHERE rowid IN (
+				SELECT rowid FROM provider_metric_samples WHERE hour < ? ORDER BY hour LIMIT ?)`,
+			[]any{monitorTime(now.AddDate(0, 0, -30)), pruneBatchRows}},
+		{`DELETE FROM monitor_probe_runs WHERE rowid IN (
+				SELECT rowid FROM monitor_probe_runs WHERE time < ? ORDER BY time LIMIT ?)`,
+			[]any{monitorTime(now.AddDate(0, 0, -30)), pruneBatchRows}},
+		{`DELETE FROM checkin_history WHERE rowid IN (
+				SELECT rowid FROM checkin_history WHERE day < ? ORDER BY day LIMIT ?)`,
+			[]any{now.AddDate(0, 0, -90).UTC().Format("2006-01-02"), pruneBatchRows}},
+		// 探测记录比事件短：它每天最多几条、只用来回答「昨天到底通不通」，
+		// 30 天足够复盘，再久就是白占写放大。
+		{`DELETE FROM monitor_alert_states WHERE rowid IN (
+				SELECT rowid FROM monitor_alert_states
+				WHERE status = 'resolved' AND last_seen < ?
+				  AND id NOT IN (SELECT id FROM monitor_alert_states
+				                 WHERE status = 'resolved' ORDER BY last_seen DESC LIMIT 1000)
+				LIMIT ?)`,
+			[]any{monitorTime(now.AddDate(0, 0, -90)), pruneBatchRows}},
 	}
-	if _, err := s.db.Exec(`DELETE FROM monitor_event_pushes
-		WHERE event_id NOT IN (SELECT id FROM monitor_events)`); err != nil {
-		return err
+	for _, step := range passes {
+		if _, err := s.deleteInBatches(ctx, step.statement, step.args...); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			// Stopped on purpose (shutdown); the next pass continues. Not a failure.
+			return nil
+		}
 	}
-	if _, err := s.db.Exec(`DELETE FROM provider_metric_samples WHERE hour < ?`,
-		monitorTime(now.AddDate(0, 0, -30))); err != nil {
-		return err
-	}
-	// 探测记录比事件短：它每天最多几条、只用来回答「昨天到底通不通」，
-	// 30 天足够复盘，再久就是白占写放大。
-	if _, err := s.db.Exec(`DELETE FROM monitor_probe_runs WHERE time < ?`,
-		monitorTime(now.AddDate(0, 0, -30))); err != nil {
-		return err
-	}
-	if _, err := s.db.Exec(`DELETE FROM checkin_history WHERE day < ?`,
-		now.AddDate(0, 0, -90).UTC().Format("2006-01-02")); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`DELETE FROM monitor_alert_states
-		WHERE status = 'resolved' AND last_seen < ?
-		  AND id NOT IN (SELECT id FROM monitor_alert_states WHERE status = 'resolved' ORDER BY last_seen DESC LIMIT 1000)`,
-		monitorTime(now.AddDate(0, 0, -90)))
-	return err
+	return nil
 }

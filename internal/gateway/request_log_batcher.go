@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -150,10 +151,23 @@ func (b *requestLogBatcher) writeOne(entry monitor.RequestLog) {
 	}
 }
 
-// Close flushes pending logs and stops the background goroutine.
+// Close flushes pending logs and stops the background goroutine, waiting as long
+// as the flush takes. Shutdown uses CloseContext instead.
 func (b *requestLogBatcher) Close() {
+	_ = b.CloseContext(context.Background())
+}
+
+// CloseContext signals the flusher to land what it holds and waits for it only up
+// to ctx's deadline.
+//
+// The wait is bounded on purpose: landing the batch is a SQLite write queued
+// behind the single writer connection, and a long statement (startup pruning, a
+// vacuum) can hold that connection for minutes. Unflushed rows cost dashboard
+// numbers; an unbounded wait costs the whole restart, because systemd turns
+// TimeoutStopSec into a SIGKILL that also discards everything still in flight.
+func (b *requestLogBatcher) CloseContext(ctx context.Context) error {
 	if b == nil {
-		return
+		return nil
 	}
 	b.once.Do(func() {
 		b.mu.Lock()
@@ -161,5 +175,10 @@ func (b *requestLogBatcher) Close() {
 		b.mu.Unlock()
 		close(b.stop)
 	})
-	<-b.stopped
+	select {
+	case <-b.stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

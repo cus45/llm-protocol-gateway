@@ -63,12 +63,13 @@ func TestShutdownFlushLandsRowsRecordedDuringDrain(t *testing.T) {
 	}()
 	<-arrived // the in-flight request is parked inside the handler
 
-	// Same order as app.Runtime.Stop: drain, then flush, then close the DB.
+	// Same order as app.Runtime.Stop: drain, then flush (inside the shutdown
+	// budget), then close the DB.
 	stopDone := make(chan struct{})
 	go func() {
 		defer close(stopDone)
 		_ = httpServer.Shutdown(context.Background())
-		server.FlushDeferredWrites()
+		_ = server.FlushDeferredWrites(context.Background())
 	}()
 	time.Sleep(100 * time.Millisecond) // let Shutdown start waiting on the handler
 	close(release)

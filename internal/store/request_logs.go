@@ -1,9 +1,12 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +18,9 @@ const (
 	defaultRequestLogDays = 7
 	defaultRequestLogPage = 100
 	maxRequestLogPageSize = 500
+	// defaultPageSizeBytes is only a fallback for reporting when PRAGMA page_size
+	// answers something unusable.
+	defaultPageSizeBytes = 4096
 	// incrementalVacuumThresholdPages 是触发增量回收的空闲页阈值。默认页大小
 	// 4 KiB，2560 页约 10 MiB：低于此不回收，避免频繁小额 IO；高于此才把空闲
 	// 空间还给操作系统。
@@ -122,63 +128,216 @@ func (s *Store) AppendRequestLogWithRetention(log monitor.RequestLog, retentionD
 }
 
 func (s *Store) PruneRequestLogs(retentionDays int) error {
+	return s.PruneRequestLogsContext(context.Background(), retentionDays)
+}
+
+// pruneBatchRows bounds how many rows one prune statement deletes and
+// pruneBatchLimit how many such statements a single pass runs.
+//
+// Both exist because the prune shares the *single* SQLite writer connection with
+// request-log writes and with the shutdown flush. One statement deleting hundreds
+// of thousands of rows holds that connection for minutes: the gateway then cannot
+// exit inside systemd's TimeoutStopSec, gets SIGKILLed mid-transaction, and the
+// rollback leaves the table exactly as it was — so the next start repeats the same
+// unfinished work. A deploy into that state stalls for 90s and looks hung.
+const (
+	pruneBatchRows  = 2000
+	pruneBatchLimit = 500
+	// storageReclaimBatchPages bounds how many free pages one
+	// PRAGMA incremental_vacuum releases, for the same reason: a single statement
+	// returning gigabytes of pages to the OS would own the writer connection while
+	// shutdown was trying to use it.
+	storageReclaimBatchPages = 8192
+	storageReclaimBatchLimit = 512
+)
+
+// fullVacuumAutoConvertMaxPages caps the file size the gateway will convert
+// NONE/FULL → INCREMENTAL on its own. Converting rewrites the entire file in one
+// statement: seconds on a small database, minutes on a multi-gigabyte one.
+// A var so tests can exercise both sides of the guard.
+var fullVacuumAutoConvertMaxPages = 65536 // 256 MiB with the default 4 KiB pages
+
+// PruneRequestLogsContext drops expired rows and enforces the row cap in bounded
+// batches. A cancelled ctx stops the pass without failing it: the scheduled
+// maintenance picks up where it left off.
+func (s *Store) PruneRequestLogsContext(ctx context.Context, retentionDays int) error {
 	if retentionDays <= 0 {
 		retentionDays = defaultRequestLogDays
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.RFC3339Nano)
-	if _, err := s.db.Exec(`DELETE FROM request_logs WHERE time < ?`, cutoff); err != nil {
+	if _, err := s.deleteInBatches(ctx,
+		`DELETE FROM request_logs WHERE id IN (
+			SELECT id FROM request_logs WHERE time < ? ORDER BY time LIMIT ?)`,
+		cutoff, pruneBatchRows); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM request_logs WHERE id NOT IN (
-		SELECT id FROM request_logs ORDER BY time DESC, id DESC LIMIT ?
-	)`, requestLogSafetyCap)
+	// Safety cap: the inner select lists everything beyond the newest
+	// requestLogSafetyCap rows, the outer LIMIT takes one batch of them.
+	_, err := s.deleteInBatches(ctx,
+		`DELETE FROM request_logs WHERE id IN (
+			SELECT id FROM (
+				SELECT id FROM request_logs ORDER BY time DESC, id DESC LIMIT -1 OFFSET ?
+			) LIMIT ?)`,
+		requestLogSafetyCap, pruneBatchRows)
 	return err
+}
+
+// deleteInBatches repeats statement until it matches no rows or the pass budget
+// runs out, committing each batch separately so the writer connection is released
+// between them.
+func (s *Store) deleteInBatches(ctx context.Context, statement string, args ...any) (int, error) {
+	deleted := 0
+	for batch := 0; batch < pruneBatchLimit; batch++ {
+		if err := ctx.Err(); err != nil {
+			slog.Info("prune stopped between batches", "deleted", deleted, "reason", err)
+			return deleted, nil
+		}
+		result, err := s.db.ExecContext(ctx, statement, args...)
+		if err != nil {
+			return deleted, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += int(rows)
+		if rows == 0 {
+			return deleted, nil
+		}
+	}
+	if deleted > 0 {
+		slog.Info("prune pass hit its batch budget; remaining rows go to the next one", "deleted", deleted)
+	}
+	return deleted, nil
 }
 
 // MaintainStorage reclaims disk space that pruning frees inside the SQLite file.
 //
 // 背景：request_logs 里错误请求体最大留 256 KiB，坏 Provider 一次故障风暴可能
-// 把库撑大数百 MB。删行（PruneRequestLogs）只把页放回 freelist，默认
-// auto_vacuum=NONE 时这些空闲页不会还给操作系统，文件只增不减。
+// 把库撑大数 GB。删行（PruneRequestLogs）只把页放回 freelist，不还给操作系统，
+// 文件只增不减。
 //
 // 处理策略：
-//   - 老库（auto_vacuum=NONE，历史遗留）：一次性 VACUUM 重建为 INCREMENTAL 模式，
-//     顺带把当前所有空闲页回收给 OS（首次调用可能耗时，故放后台执行）。
-//   - 增量库（auto_vacuum=INCREMENTAL，新库或已转换）：仅当空闲页超过阈值时执行
-//     PRAGMA incremental_vacuum，把空闲页还给 OS。增量回收远比全量 VACUUM 轻，
-//     不重写整个文件，可安全周期性调用。
-//
-// 所有语句都走单写连接（MaxOpenConns=1），与请求日志写入天然串行，不会并发冲突。
+//   - 增量库（auto_vacuum=INCREMENTAL）：分批 PRAGMA incremental_vacuum，每批只放还
+//     有限页数，批与批之间写连接是空的。
+//   - 老库（NONE/FULL）：只有空闲页够多、且文件小于 fullVacuumAutoConvertMaxPages
+//     才自动做一次全量 VACUUM 重建；大库留给维护窗口显式放行（GATEWAY_ALLOW_VACUUM）。
+//     这条语句重写整个文件：生产上那个 4.28 GB 的库跑了 30 分钟，期间任何重启都会被
+//     SIGKILL 打断、整段回滚，下次启动再从头发一遍——发布因此看起来卡死，库也永远收不拢。
 func (s *Store) MaintainStorage() error {
-	var autoVacuum int
-	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&autoVacuum); err != nil {
-		return fmt.Errorf("read auto_vacuum: %w", err)
+	return s.MaintainStorageContext(context.Background())
+}
+
+func (s *Store) MaintainStorageContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
+	autoVacuum, err := s.autoVacuumMode(ctx)
+	if err != nil {
+		return err
+	}
+	free, pages, pageSize, err := s.storagePages(ctx)
+	if err != nil {
+		return err
+	}
+	if free < incrementalVacuumThresholdPages {
+		// Nothing worth handing back yet, in any mode. This is the steady state on
+		// a healthy database, so it stays quiet.
+		return nil
 	}
 
 	// auto_vacuum: 0=NONE, 1=FULL, 2=INCREMENTAL。
 	if autoVacuum != 2 {
-		// 切换 auto_vacuum 模式必须配合一次全量 VACUUM 才能生效（重写文件）。
+		// 切换 auto_vacuum 模式必须配合一次全量 VACUUM 才能生效（重写整个文件）。
+		if pages > fullVacuumAutoConvertMaxPages && !fullVacuumAllowed() {
+			slog.Warn("storage reclaim deferred: this database is not in incremental mode and needs a full VACUUM",
+				"fileMiB", mib(pages, pageSize), "freeMiB", mib(free, pageSize),
+				"hint", "run VACUUM in a maintenance window, or restart once with GATEWAY_ALLOW_VACUUM=1")
+			return nil
+		}
 		if _, err := s.db.Exec(`PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
 			return fmt.Errorf("set auto_vacuum incremental: %w", err)
 		}
 		if _, err := s.db.Exec(`VACUUM`); err != nil {
 			return fmt.Errorf("vacuum: %w", err)
 		}
+		slog.Info("storage reclaim rewrote the database", "fileMiB", mib(pages, pageSize))
 		return nil
 	}
 
-	// 已是增量模式：仅当空闲页较多时才回收，避免无谓 IO。
-	var freePages int
-	if err := s.db.QueryRow(`PRAGMA freelist_count`).Scan(&freePages); err != nil {
-		return fmt.Errorf("read freelist_count: %w", err)
+	// 增量模式：分批把空闲页还给操作系统。不带参数的 PRAGMA incremental_vacuum
+	// 会把 freelist 一次全部放还，大库上同样是分钟级的单语句；分批执行，每批之间
+	// 写连接是空的。
+	statement := fmt.Sprintf(`PRAGMA incremental_vacuum(%d)`, storageReclaimBatchPages)
+	released := 0
+	for batch := 0; batch < storageReclaimBatchLimit; batch++ {
+		if err := ctx.Err(); err != nil {
+			slog.Info("storage reclaim stopped between batches", "releasedMiB", mib(released, pageSize), "reason", err)
+			return nil
+		}
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("incremental_vacuum: %w", err)
+		}
+		released += storageReclaimBatchPages
+		remaining, _, _, err := s.storagePages(ctx)
+		if err != nil {
+			return err
+		}
+		if remaining < storageReclaimBatchPages {
+			break
+		}
 	}
-	if freePages < incrementalVacuumThresholdPages {
-		return nil
-	}
-	if _, err := s.db.Exec(`PRAGMA incremental_vacuum`); err != nil {
-		return fmt.Errorf("incremental_vacuum: %w", err)
+	if released >= storageReclaimBatchPages*storageReclaimBatchLimit {
+		slog.Info("storage reclaim hit its batch budget; the rest waits for the next pass",
+			"releasedMiB", mib(released, pageSize))
+	} else {
+		slog.Info("storage reclaim returned free pages to the OS", "releasedMiB", mib(released, pageSize))
 	}
 	return nil
+}
+
+// autoVacuumMode reports how the open database will treat freed pages. Measured
+// against a legacy file, the writer connection answers the file's own mode even
+// though the DSN asks for INCREMENTAL, so this is the value the branches above
+// need.
+func (s *Store) autoVacuumMode(ctx context.Context) (int, error) {
+	var mode int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		return 0, fmt.Errorf("read auto_vacuum: %w", err)
+	}
+	return mode, nil
+}
+
+// storagePages reports the freelist depth, how many pages the file holds, and the
+// page size.
+func (s *Store) storagePages(ctx context.Context) (free int, pages int, pageSize int, err error) {
+	if err := s.db.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&free); err != nil {
+		return 0, 0, 0, fmt.Errorf("read freelist_count: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pages); err != nil {
+		return 0, 0, 0, fmt.Errorf("read page_count: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return 0, 0, 0, fmt.Errorf("read page_size: %w", err)
+	}
+	if pageSize <= 0 {
+		pageSize = defaultPageSizeBytes
+	}
+	return free, pages, pageSize, nil
+}
+
+// mib converts a page count to megabytes so the log says something an operator can
+// act on.
+func mib(pages int, pageSize int) int64 {
+	return int64(pages) * int64(pageSize) / (1 << 20)
+}
+
+// fullVacuumAllowed opts a large database into the one-time conversion VACUUM.
+// Opt-in by design: that statement rewrites the whole file on the single writer
+// connection, which is a maintenance-window cost rather than a startup one.
+func fullVacuumAllowed() bool {
+	value := strings.TrimSpace(os.Getenv("GATEWAY_ALLOW_VACUUM"))
+	return value == "1" || strings.EqualFold(value, "true")
 }
 
 func (s *Store) ListRequestLogs(limit int) ([]monitor.RequestLog, error) {

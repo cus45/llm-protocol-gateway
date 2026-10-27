@@ -37,9 +37,22 @@ func main() {
 	defer stop()
 	<-ctx.Done()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Log the entry point: without it a restart during a long maintenance pass
+	// shows nothing between "Stopping…" and the kill, which reads as a hung deploy.
+	slog.Info("shutdown requested")
+	// Last-resort guarantee that the process leaves: Stop bounds every step it
+	// takes, but a wait on the runtime lock itself cannot be interrupted from
+	// inside. Exiting here lands no more than the deadline already cost; being
+	// SIGKILLed at TimeoutStopSec loses the whole write backlog.
+	guard := time.AfterFunc(app.ShutdownHardLimit, func() {
+		slog.Error("gateway did not finish shutting down; exiting anyway", "limit", app.ShutdownHardLimit.String())
+		os.Exit(1)
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), app.DefaultShutdownBudget)
 	defer cancel()
 	if err := rt.Stop(shutdownCtx); err != nil {
 		slog.Error("gateway shutdown failed", "error", err)
 	}
+	guard.Stop()
+	slog.Info("gateway stopped")
 }

@@ -1594,16 +1594,44 @@ func (s *Server) CloseRequestLogBatcher() {
 // Every deferred writer must be represented here — each one buys lower disk
 // wear by holding data in memory, and that trade is only sound if a clean
 // shutdown still writes it out.
-func (s *Server) FlushDeferredWrites() {
+//
+// Each step is bounded by ctx and, when it overruns, reported and abandoned
+// rather than waited on forever: every one of these writes queues behind the
+// single SQLite writer connection, which a long maintenance statement can hold
+// for minutes. Unlanded rows cost dashboard numbers; an unbounded wait costs the
+// restart itself, since systemd answers TimeoutStopSec with SIGKILL and that
+// discards the whole in-memory backlog instead of just the last batch.
+func (s *Server) FlushDeferredWrites(ctx context.Context) error {
 	// Batched success rows (up to requestLogBatchInterval of them).
-	s.requestLogBatcher.Close()
+	if err := s.requestLogBatcher.CloseContext(ctx); err != nil {
+		slog.Warn("deferred write did not land before the shutdown deadline", "writer", "request_logs", "error", err)
+		return err
+	}
 	// Queued usage deltas (up to one batch window).
-	s.logs.CloseUsageWorker()
+	if err := s.logs.CloseUsageWorkerContext(ctx); err != nil {
+		slog.Warn("deferred write did not land before the shutdown deadline", "writer", "usage_deltas", "error", err)
+		return err
+	}
 	// last_used_at values skipped by the 5-min-per-key throttle.
-	s.apiKeyToucher.Close()
+	if err := s.apiKeyToucher.CloseContext(ctx); err != nil {
+		slog.Warn("deferred write did not land before the shutdown deadline", "writer", "api_key_last_used", "error", err)
+		return err
+	}
 	// last_active_at values skipped by the 5-min-per-user throttle. The flush
-	// goroutine's ctx is never cancelled, so force a flush directly here.
-	s.flushUserActivity(true)
+	// goroutine's ctx is never cancelled, so force a flush directly here — in a
+	// goroutine we are willing to walk away from, for the same reason as above.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.flushUserActivity(true)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		slog.Warn("deferred write did not land before the shutdown deadline", "writer", "user_last_active", "error", ctx.Err())
+		return ctx.Err()
+	}
 }
 
 func truncateForLog(data []byte, limit int) string {

@@ -80,18 +80,19 @@ type Config struct {
 type Runtime struct {
 	mu sync.Mutex
 
-	db              *store.Store
-	logs            *monitor.Store
-	router          *gateway.Router
-	server          *gateway.Server
-	tunnelManager   *tunnel.Manager
-	httpServer      *http.Server
-	port            int
-	webExposed      bool
-	addrOverride    string // non-empty when PreferEnvAddr / Config.Addr forces host:port
-	started         bool
-	onListenChange  func(addr string)
-	stopMaintenance chan struct{} // closed on Stop to end the storage maintenance loop
+	db                *store.Store
+	logs              *monitor.Store
+	router            *gateway.Router
+	server            *gateway.Server
+	tunnelManager     *tunnel.Manager
+	httpServer        *http.Server
+	port              int
+	webExposed        bool
+	addrOverride      string // non-empty when PreferEnvAddr / Config.Addr forces host:port
+	started           bool
+	onListenChange    func(addr string)
+	stopMaintenance   chan struct{}      // closed on Stop to end the storage maintenance loop
+	maintenanceCancel context.CancelFunc // cancels the one-shot startup maintenance
 }
 
 func New() *Runtime {
@@ -321,16 +322,22 @@ func (rt *Runtime) Start(cfg Config) error {
 	go func() {
 		server.RestorePublicAccess()
 	}()
+	// Startup maintenance runs on a cancellable context. It rewrites through the
+	// single SQLite writer connection, and a deploy restarting the process must be
+	// able to abandon it instead of queueing its own shutdown writes behind it.
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
+	rt.maintenanceCancel = cancelMaintenance
 	go func() {
-		if err := db.PruneRequestLogs(retentionDays); err != nil {
+		if err := db.PruneRequestLogsContext(maintenanceCtx, retentionDays); err != nil {
 			slog.Warn("request log prune failed", "error", err)
 		}
-		if err := db.PruneMonitoringData(time.Now()); err != nil {
+		if err := db.PruneMonitoringDataContext(maintenanceCtx, time.Now()); err != nil {
 			slog.Warn("monitoring data prune failed", "error", err)
 		}
-		// Reclaim disk space that pruning frees (legacy DBs convert to
-		// incremental auto_vacuum on first run; may be slow once, hence async).
-		if err := db.MaintainStorage(); err != nil {
+		// Reclaim disk space that pruning frees. A legacy (NONE/FULL) database
+		// needs one whole-file VACUUM to switch modes, which MaintainStorage
+		// defers unless the file is small or GATEWAY_ALLOW_VACUUM opts in.
+		if err := db.MaintainStorageContext(maintenanceCtx); err != nil {
 			slog.Warn("storage maintenance failed", "error", err)
 		}
 		// 每日用量汇总永久保留；仅清理请求明细，不裁剪 usage_daily。
@@ -356,7 +363,7 @@ func (rt *Runtime) Start(cfg Config) error {
 		// concurrent-IP rules are evaluated by its collector, which also folds
 		// the frozen `alerts` history into the event stream on startup.
 		server.StartMonitoring(context.Background())
-		rt.startStorageMaintenance(db, retentionDays)
+		rt.startStorageMaintenance(maintenanceCtx, db, retentionDays)
 	}()
 
 	rt.started = true
@@ -368,10 +375,11 @@ func (rt *Runtime) Start(cfg Config) error {
 // 同时避免无谓 IO。
 const storageMaintenanceInterval = 6 * time.Hour
 
-// startStorageMaintenance 周期性回收 request_logs 删行后遗留的空闲页（增量
-// VACUUM）。首次维护已在启动 goroutine 内同步跑过，这里只负责稳态周期回收。
-// 随 rt.stopMaintenance（在 Stop 中关闭）退出，避免泄漏 goroutine。
-func (rt *Runtime) startStorageMaintenance(db *store.Store, retentionDays int) {
+// startStorageMaintenance 周期性回收 request_logs 删行后遗留的空闲页（分批
+// incremental_vacuum）。首次维护已在启动 goroutine 内同步跑过，这里只负责稳态
+// 周期回收。随 rt.stopMaintenance（Stop 中关闭）和 maintenanceCtx（Stop 中取消）
+// 退出，避免泄漏 goroutine，也避免关停时排在一个长维护语句后面出不来。
+func (rt *Runtime) startStorageMaintenance(ctx context.Context, db *store.Store, retentionDays int) {
 	rt.mu.Lock()
 	if rt.stopMaintenance != nil {
 		// 已在运行（理论上不会重复启动），先关旧的。
@@ -388,14 +396,16 @@ func (rt *Runtime) startStorageMaintenance(db *store.Store, retentionDays int) {
 			select {
 			case <-stop:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.C:
-				if err := db.PruneRequestLogs(retentionDays); err != nil {
+				if err := db.PruneRequestLogsContext(ctx, retentionDays); err != nil {
 					slog.Warn("periodic request log prune failed", "error", err)
 				}
-				if err := db.PruneMonitoringData(time.Now()); err != nil {
+				if err := db.PruneMonitoringDataContext(ctx, time.Now()); err != nil {
 					slog.Warn("periodic monitoring prune failed", "error", err)
 				}
-				if err := db.MaintainStorage(); err != nil {
+				if err := db.MaintainStorageContext(ctx); err != nil {
 					slog.Warn("periodic storage maintenance failed", "error", err)
 				}
 			}
@@ -465,12 +475,51 @@ func (rt *Runtime) SetWebExposed(enabled bool) error {
 	return nil
 }
 
+// Per-step shutdown caps.
+//
+// The whole sequence has to finish far inside the ~90s systemd grants before it
+// escalates SIGTERM to SIGKILL. A kill is not just uglier than a slow exit: it
+// discards every queued write (not just the last batch), leaves a long statement
+// mid-flight so its work rolls back and the next start repeats it from scratch,
+// and stalls the deploy with 90s of silence that reads as a hang.
+const (
+	shutdownDrainBudget   = 5 * time.Second
+	shutdownFlushBudget   = 10 * time.Second
+	shutdownDBCloseBudget = 3 * time.Second
+)
+
+// DefaultShutdownBudget is the deadline a headless caller should give Stop:
+// every step cap plus slack for the runtime lock to change hands.
+const DefaultShutdownBudget = shutdownDrainBudget + shutdownFlushBudget + shutdownDBCloseBudget + 2*time.Second
+
+// ShutdownHardLimit is the backstop a supervisor process should arm: Stop bounds
+// each step it takes, but nothing inside it can interrupt a wait on the runtime
+// lock itself. Exiting by ourselves at this point is strictly better than being
+// SIGKILLed at systemd's TimeoutStopSec, which lands no data and looks like a
+// hung deploy.
+const ShutdownHardLimit = DefaultShutdownBudget + 5*time.Second
+
 // Stop shuts down the tunnel and HTTP server and closes the DB.
+//
+// Each step runs under its own slice of ctx and gives up when that expires, so
+// Stop always returns. Abandoning a step costs the rows it had not landed;
+// waiting on it costs the restart.
 func (rt *Runtime) Stop(ctx context.Context) error {
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), DefaultShutdownBudget)
+		defer cancel()
+	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if !rt.started {
 		return nil
+	}
+	// Cancel the maintenance pass first: it holds the single SQLite writer
+	// connection that every step below needs, and it is the reason a restart
+	// during startup used to block until the kill.
+	if rt.maintenanceCancel != nil {
+		rt.maintenanceCancel()
 	}
 	if rt.stopMaintenance != nil {
 		close(rt.stopMaintenance)
@@ -489,25 +538,50 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// still being served.
 	var shutdownErr error
 	if rt.httpServer != nil {
-		if ctx == nil {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+		drainCtx, cancelDrain := context.WithTimeout(ctx, shutdownDrainBudget)
+		shutdownErr = rt.httpServer.Shutdown(drainCtx)
+		cancelDrain()
+		if shutdownErr != nil {
+			slog.Warn("http drain gave up with requests still in flight", "error", shutdownErr)
 		}
-		shutdownErr = rt.httpServer.Shutdown(ctx)
 	}
 	if rt.server != nil {
 		// Deferred/batched writers hold data in memory to save disk wear; land
 		// it all once nothing is serving, and before the DB closes so a restart
 		// loses nothing.
-		rt.server.FlushDeferredWrites()
+		flushCtx, cancelFlush := context.WithTimeout(ctx, shutdownFlushBudget)
+		defer cancelFlush()
+		if err := rt.server.FlushDeferredWrites(flushCtx); err != nil && shutdownErr == nil {
+			shutdownErr = err
+		}
 	}
 	if rt.db != nil {
-		_ = rt.db.Close()
+		closeCtx, cancelClose := context.WithTimeout(ctx, shutdownDBCloseBudget)
+		defer cancelClose()
+		if err := closeStore(closeCtx, rt.db); err != nil && shutdownErr == nil {
+			shutdownErr = err
+		}
 	}
 	rt.started = false
 	rt.httpServer = nil
 	return shutdownErr
+}
+
+// closeStore closes the DB without waiting indefinitely: Close blocks until every
+// in-flight statement returns, and the statement we already decided not to wait
+// for is the one that would keep blocking it. SQLite's WAL is crash-safe, so
+// leaving the handle to the process exit loses nothing beyond what the deadline
+// already cost.
+func closeStore(ctx context.Context, db *store.Store) error {
+	done := make(chan error, 1)
+	go func() { done <- db.Close() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		slog.Warn("database close gave up; letting the process exit release it", "error", ctx.Err())
+		return ctx.Err()
+	}
 }
 
 // WaitHealthy polls /__health until ok or timeout.

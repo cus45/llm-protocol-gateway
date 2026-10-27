@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -27,10 +28,11 @@ type apiKeyToucher struct {
 	pending   map[string]string    // apiKeyID -> latest RFC3339 timestamp (not yet persisted)
 	persisted map[string]time.Time // apiKeyID -> last DB write time of that key
 
-	wake    chan struct{}
-	stop    chan struct{}
-	stopped chan struct{}
-	nowFn   func() time.Time
+	wake      chan struct{}
+	stop      chan struct{}
+	stopped   chan struct{}
+	closeOnce sync.Once
+	nowFn     func() time.Time
 }
 
 // newAPIKeyToucher starts a background flusher. flushInterval<=0 defaults to 2s.
@@ -131,16 +133,25 @@ func (t *apiKeyToucher) flush(force bool) {
 	}
 }
 
-// Close flushes remaining touches and stops the background goroutine.
+// Close flushes remaining touches and stops the background goroutine, waiting as
+// long as it takes. Shutdown uses CloseContext instead.
 func (t *apiKeyToucher) Close() {
+	_ = t.CloseContext(context.Background())
+}
+
+// CloseContext signals a forced flush and waits for the flusher only up to ctx's
+// deadline, for the same reason as requestLogBatcher.CloseContext: the writes sit
+// behind the single SQLite writer connection, which a long maintenance statement
+// can hold far past a acceptable shutdown budget.
+func (t *apiKeyToucher) CloseContext(ctx context.Context) error {
 	if t == nil {
-		return
+		return nil
 	}
+	t.closeOnce.Do(func() { close(t.stop) })
 	select {
-	case <-t.stop:
-		// already closed
-	default:
-		close(t.stop)
+	case <-t.stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	<-t.stopped
 }

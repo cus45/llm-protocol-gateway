@@ -336,6 +336,11 @@ rsh "
 
   mkdir -p \$WS && tar xzf ${REMOTE_TMP} -C \$WS
 
+  # 上一轮如果在「重启等待」里被 Ctrl-C，远程脚本来不及跑自己末尾的清理，
+  # 包和解包目录会留在 /tmp。只动 3 小时前的，避免碰正在并行的另一轮部署。
+  find /tmp -maxdepth 1 -name 'gateway-dist-*.tar.gz' -mmin +180 -delete 2>/dev/null || true
+  find /tmp -maxdepth 1 -type d -name 'gw-deploy-*' -mmin +180 -exec rm -rf {} + 2>/dev/null || true
+
   # 备份现有产物（用于回滚 / 失败自动恢复）
   if [ -f ${INSTALL_DIR}/bin/gateway ]; then
     cp ${INSTALL_DIR}/bin/gateway \$BK
@@ -401,8 +406,13 @@ rsh "
     rm -f \$RTK_SH
   fi
 
-  # 重启服务
+  # 重启服务。systemd 在这一步会一直等旧进程退出，最长到 unit 的 TimeoutStopSec
+  # （默认 90s）才升级为 SIGKILL；那段时间脚本一个字都不打，看起来就像卡死了。
+  # 所以先报一行进度，并且把等待时长也报出来。
+  echo '重启服务（等待旧进程优雅退出…）'
+  RESTART_TS=\$(date +%s)
   systemctl restart ${SERVICE_NAME}
+  echo \"重启耗时 \$(( \$(date +%s) - RESTART_TS ))s\"
   sleep 3
 
   # 健康检查（失败自动回滚）
