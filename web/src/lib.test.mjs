@@ -438,3 +438,39 @@ test('promoteApiKeyProvider：不是备选就原样交回，别拆掉别人的�
   assert.deepEqual(swap.fallbackProviderIds, ['b', 'c']);
   assert.deepEqual(swap.fallbackModelOverrides, {c: 'm'});
 });
+
+// 双栏选择器的列表操作（R39 用户报告「配置备选界面很难用」后的重做）。
+test('fallbackAdd：追加到链尾，重复与已存在的跳过', () => {
+  assert.deepEqual(lib.fallbackAdd(['a'], ['b', 'c']), ['a', 'b', 'c'], '新加的一律排在末尾，不改已有位次');
+  assert.deepEqual(lib.fallbackAdd(['a', 'b'], ['b', 'c']), ['a', 'b', 'c'], '已在链上的不重复加');
+  assert.deepEqual(lib.fallbackAdd(['a'], []), ['a']);
+  assert.deepEqual(lib.fallbackAdd([], ['x', 'x', '']), ['x'], '空 id 与批内重复都要挡掉');
+});
+
+test('fallbackRemove：批量移除，其余顺序不变', () => {
+  assert.deepEqual(lib.fallbackRemove(['a', 'b', 'c', 'd'], ['b', 'd']), ['a', 'c']);
+  assert.deepEqual(lib.fallbackRemove(['a'], ['z']), ['a'], '不在链上的 id 不影响结果');
+  const ids = ['a', 'b'];
+  assert.equal(lib.fallbackRemove(ids, []), ids, '没有要移除的直接返回原引用，调用方可据此跳过保存');
+});
+
+test('fallbackMove：上移/下移与拖到指定行前后', () => {
+  assert.deepEqual(lib.fallbackMove(['a', 'b', 'c'], 'c', 'a', false), ['c', 'a', 'b'], '拖到首行之前');
+  assert.deepEqual(lib.fallbackMove(['a', 'b', 'c'], 'a', 'c', true), ['b', 'c', 'a'], '拖到末行之后');
+  assert.deepEqual(lib.fallbackMove(['a', 'b', 'c'], 'b', 'c', true), ['a', 'c', 'b'], '下移一位');
+  const ids = ['a', 'b', 'c'];
+  assert.equal(lib.fallbackMove(ids, 'a', 'b', false), ids, '位置没变返回原引用，避免无谓保存');
+  assert.equal(lib.fallbackMove(ids, 'z', 'a', false), ids, '不在链上的拖动一律忽略');
+});
+
+test('providerMatchesQuery：空格分词按 AND 收窄，账号也能搜到', () => {
+  const provider = {
+    id: 'prov-1', name: 'Qoder CN 账号-dengmluan', protocol: 'openai_chat', authType: 'qoder_cn',
+    qoderPat: {accountLabel: '邓丽霞', email: 'deng@example.com'},
+  };
+  assert.equal(lib.providerMatchesQuery(provider, ''), true);
+  assert.equal(lib.providerMatchesQuery(provider, 'qoder'), true, '名字命中');
+  assert.equal(lib.providerMatchesQuery(provider, '邓丽霞'), true, '账号命中');
+  assert.equal(lib.providerMatchesQuery(provider, 'qoder 邓丽霞'), true, '多个词按 AND 收窄');
+  assert.equal(lib.providerMatchesQuery(provider, 'qoder workbuddy'), false, '任一词不命中就过滤掉');
+});

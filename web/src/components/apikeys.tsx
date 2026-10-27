@@ -43,6 +43,7 @@ import {
 import {Badge, CopyButton, InfoTip, Modal, Switch} from './ui';
 import {ProviderLabel} from './provider_label';
 import {providerSelectOptions} from './provider_select';
+import {FallbackProviderPicker} from './fallback_picker';
 
 /**
  * 密钥面板可以单独 PATCH 的字段。这里只有一处定义：以前三个地方各抄一遍，
@@ -647,10 +648,11 @@ export function ApiKeyFallbackProvidersModal({
   // 同协议 = 上游说同一种 API 方言，请求里的模型名可以原样带过去；
   // 跨协议才必须为备选锁一个它自己目录里的模型。
   const sameProtocol = (provider: Provider) => Boolean(primaryProvider && provider.protocol === primaryProvider.protocol);
-  const [orderedIds, setOrderedIds] = React.useState<string[]>(() => (
+  // 备选链就是一个有序 id 列表；增删、排序都只改它，保存时再落盘。
+  const [orderedIds, setOrderedIds] = useState<string[]>(() => (
     selectedIds.filter((id) => id !== preferredProviderId && providers.some((item) => item.id === id))
   ));
-  const [overrides, setOverrides] = React.useState<Record<string, string>>(() => {
+  const [overrides, setOverrides] = useState<Record<string, string>>(() => {
     const next: Record<string, string> = {};
     for (const id of selectedIds) {
       const model = (modelOverrides[id] || '').trim();
@@ -658,45 +660,32 @@ export function ApiKeyFallbackProvidersModal({
     }
     return next;
   });
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [showModels, setShowModels] = useState(false);
   const selectedProviders = orderedIds
     .map((id) => candidates.find((item) => item.id === id))
     .filter((item): item is Provider => Boolean(item));
-  const unselectedProviders = candidates.filter((item) => !orderedIds.includes(item.id));
+  const crossProtocolProviders = selectedProviders.filter((item) => !sameProtocol(item));
   const missingModelIds = orderedIds.filter((id) => {
     const provider = candidates.find((item) => item.id === id);
     if (provider && sameProtocol(provider)) return false;
     return !(overrides[id] || '').trim();
   });
 
-  function toggleProvider(id: string) {
+  // 链变短时顺手清掉被移除 Provider 的模型覆盖，免得它下次被加回来时带着旧值。
+  const applyChain = (next: string[]) => {
     setError('');
-    setOrderedIds((current) => {
-      if (current.includes(id)) {
-        setOverrides((prev) => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-        return current.filter((item) => item !== id);
+    setOrderedIds(next);
+    setOverrides((current) => {
+      const kept: Record<string, string> = {};
+      for (const id of next) {
+        const model = (current[id] || '').trim();
+        if (model) kept[id] = model;
       }
-      return [...current, id];
+      return kept;
     });
-  }
-
-  function moveProvider(id: string, delta: number) {
-    setOrderedIds((current) => {
-      const index = current.indexOf(id);
-      if (index < 0) return current;
-      const next = index + delta;
-      if (next < 0 || next >= current.length) return current;
-      const copy = [...current];
-      const [item] = copy.splice(index, 1);
-      copy.splice(next, 0, item);
-      return copy;
-    });
-  }
+  };
 
   function setProviderModel(id: string, model: string) {
     setError('');
@@ -706,14 +695,11 @@ export function ApiKeyFallbackProvidersModal({
   return (
     <Modal
       title="配置备选 Provider"
-      description="按优先级排序（#1 在最上）。与首选同协议的备选沿用请求模型；不同协议必须选一个固定模型替换。"
+      description="左边挑 Provider，右边是降级顺序（#1 最先试）。与首选同协议的备选沿用请求模型；不同协议必须为它锁定一个模型。"
       onClose={onClose}
       size="wide"
     >
       <div className="api-key-fallback-modal">
-        <div className="field-label-row">
-          <div className="hint-text">首选 Provider 不在此列表中。已选按优先级从上到下排列；同协议备选可以留空模型，跨协议备选保存前必须选好。</div>
-        </div>
         {staleCount > 0 ? (
           <div className="hint-text">
             另有 {staleCount} 个备选指向已删除的 Provider：它们不会出现在列表里，点击保存后会被一并移除。
@@ -722,79 +708,75 @@ export function ApiKeyFallbackProvidersModal({
         {candidates.length === 0 ? (
           <div className="empty-state compact">没有可配置的备选 Provider，请先添加更多输入 Provider。</div>
         ) : (
-          <div className="api-key-fallback-list">
-            {selectedProviders.map((provider, orderIndex) => {
-              const providerModels = models.filter((model) => model.providerId === provider.id);
-              const crossProtocol = !sameProtocol(provider);
-              return (
-                <div className="api-key-fallback-item selected" key={provider.id}>
-                  <div className="api-key-fallback-item-main">
-                    <label className="checkbox-field">
-                      <input
-                        type="checkbox"
-                        checked
-                        disabled={busy || saving}
-                        onChange={() => toggleProvider(provider.id)}
-                      />
-                      <ProviderLabel provider={provider} size={16} />
-                    </label>
-                    <div className="api-key-fallback-order">
-                      <span className="api-key-fallback-rank">#{orderIndex + 1}</span>
-                      <button className="mini-btn" type="button" disabled={busy || saving || orderIndex <= 0} onClick={() => moveProvider(provider.id, -1)}>上移</button>
-                      <button className="mini-btn" type="button" disabled={busy || saving || orderIndex >= selectedProviders.length - 1} onClick={() => moveProvider(provider.id, 1)}>下移</button>
-                    </div>
-                  </div>
-                  <div className="api-key-fallback-model">
-                    <label>{crossProtocol ? '固定模型替换（必选）' : '固定模型替换（可选）'}</label>
-                    <div className="field-inline">
-                      <SearchableModelSelect
-                        value={overrides[provider.id] || ''}
-                        models={providerModels}
-                        disabled={busy || saving}
-                        emptyLabel="请选择该 Provider 的固定模型"
-                        onChange={(value) => setProviderModel(provider.id, value)}
-                      />
-                      <button
-                        className="mini-btn"
-                        type="button"
-                        disabled={busy || saving || testingProviderID === provider.id}
-                        onClick={() => void onRefreshModels(provider.id, provider.name)}
-                        title="刷新该 Provider 模型列表"
-                      >
-                        {testingProviderID === provider.id ? '刷新中…' : '刷新模型'}
-                      </button>
-                    </div>
-                    {!(overrides[provider.id] || '').trim() ? (
-                      crossProtocol ? (
-                        <div className="hint-line error">与首选协议不同，必须为该备选选择固定模型</div>
-                      ) : (
-                        <div className="hint-text">与首选同协议：留空则沿用请求模型；模型名对不上时再选一个固定替换</div>
-                      )
-                    ) : (
-                      <div className="hint-text">切换到此备选时，将强制使用该模型</div>
-                    )}
-                  </div>
+          <>
+            <FallbackProviderPicker
+              providers={candidates}
+              selectedIds={orderedIds}
+              sameProtocol={sameProtocol}
+              onChange={applyChain}
+            />
+            {/* 模型替换收进一个折叠区：多数情况下同协议备选留空即可，默认不展开
+                能省掉一大块表单；有跨协议备选或已经锁过模型时自动展开。 */}
+            {selectedProviders.length > 0 ? (
+              <details
+                className="api-key-fallback-models"
+                open={showModels || missingModelIds.length > 0}
+                onToggle={(event) => setShowModels((event.currentTarget as HTMLDetailsElement).open)}
+              >
+                <summary>
+                  <span>固定模型替换</span>
+                  <span className="api-key-fallback-models-note">
+                    {crossProtocolProviders.length > 0
+                      ? `${crossProtocolProviders.length} 个跨协议备选必须指定模型`
+                      : '可选：留空则沿用请求里的模型名'}
+                  </span>
+                  {missingModelIds.length > 0 ? <span className="api-key-fallback-models-missing">还差 {missingModelIds.length} 个</span> : null}
+                </summary>
+                <div className="api-key-fallback-models-list">
+                  {selectedProviders.map((provider) => {
+                    const providerModels = models.filter((model) => model.providerId === provider.id);
+                    const crossProtocol = !sameProtocol(provider);
+                    const chosen = (overrides[provider.id] || '').trim();
+                    return (
+                      <div className="api-key-fallback-models-row" key={provider.id}>
+                        <ProviderLabel provider={provider} size={16} />
+                        <div className="field-inline">
+                          <SearchableModelSelect
+                            value={overrides[provider.id] || ''}
+                            models={providerModels}
+                            disabled={busy || saving}
+                            emptyLabel={crossProtocol ? '请选择该 Provider 的固定模型' : '留空 = 沿用请求模型'}
+                            onChange={(value) => setProviderModel(provider.id, value)}
+                          />
+                          <button
+                            className="mini-btn"
+                            type="button"
+                            disabled={busy || saving || testingProviderID === provider.id}
+                            onClick={() => void onRefreshModels(provider.id, provider.name)}
+                            title="刷新该 Provider 模型列表"
+                          >
+                            {testingProviderID === provider.id ? '刷新中…' : '刷新模型'}
+                          </button>
+                        </div>
+                        {!chosen && crossProtocol ? (
+                          <div className="hint-line error">与首选协议不同，必须为该备选选择固定模型</div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-            {unselectedProviders.map((provider) => (
-              <div className="api-key-fallback-item" key={provider.id}>
-                <label className="checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={false}
-                    disabled={busy || saving}
-                    onChange={() => toggleProvider(provider.id)}
-                  />
-                  <ProviderLabel provider={provider} size={16} />
-                </label>
-              </div>
-            ))}
-          </div>
+              </details>
+            ) : null}
+          </>
         )}
         {error ? <div className="hint-line error">{error}</div> : null}
       </div>
       <div className="actions modal-actions">
+        <span className="api-key-fallback-summary-text">
+          {orderedIds.length === 0
+            ? '未配置备选：首选额度耗尽后，这个密钥不会自动换到别的 Provider'
+            : `共 ${orderedIds.length} 个备选${missingModelIds.length > 0 ? `，${missingModelIds.length} 个待选模型` : ''}`}
+        </span>
         <button className="btn" type="button" disabled={busy || saving} onClick={onClose}>取消</button>
         <button
           className="btn primary"
@@ -802,6 +784,7 @@ export function ApiKeyFallbackProvidersModal({
           disabled={busy || saving || missingModelIds.length > 0}
           onClick={() => {
             if (missingModelIds.length > 0) {
+              setShowModels(true);
               setError('与首选协议不同的备选必须选择固定模型替换');
               return;
             }

@@ -1918,6 +1918,70 @@ export function apiKeyReferencesProvider(key: APIKey, routes: Route[], providerI
 }
 
 /**
+ * fallbackAdd 把一批 Provider 追加到备选链末尾；已经在链上的跳过。
+ * 备选链是有序的（先试的在前），新增一律排在末尾，不改动已有位次。
+ */
+export function fallbackAdd(ids: string[], add: string[]): string[] {
+  const have = new Set(ids);
+  const next = ids.slice();
+  for (const id of add) {
+    if (!id || have.has(id)) continue;
+    have.add(id);
+    next.push(id);
+  }
+  return next;
+}
+
+/**
+ * fallbackRemove 把一批 Provider 从备选链移除，其余顺序不变。
+ */
+export function fallbackRemove(ids: string[], remove: string[]): string[] {
+  if (remove.length === 0) return ids;
+  const drop = new Set(remove);
+  return ids.filter((id) => !drop.has(id));
+}
+
+/**
+ * fallbackMove 把 fromId 挪到 toId 的前面（before）或后面（after）。
+ * 只在两边都在链上时生效；位置没变就原样返回，调用方据此跳过保存。
+ */
+export function fallbackMove(ids: string[], fromId: string, toId: string, after: boolean): string[] {
+  if (fromId === toId) return ids;
+  const fromIndex = ids.indexOf(fromId);
+  if (fromIndex < 0 || !ids.includes(toId)) return ids;
+  const next = ids.filter((id) => id !== fromId);
+  const targetIndex = next.indexOf(toId);
+  next.splice(after ? targetIndex + 1 : targetIndex, 0, fromId);
+  return next.every((id, index) => id === ids[index]) ? ids : next;
+}
+
+/**
+ * providerMatchesQuery 是备选选择器里两侧共用的搜索口径：品牌名、账号、ID、
+ * 协议名任一命中即可。多个词按 AND 收窄（"claude 4947" 只留 Claude 里账号含
+ * 4947 的那条）。
+ */
+export function providerMatchesQuery(provider: Provider, query: string): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  // providerAccountLabel 只在账号有区分度时才给值（昵称 "1" 这类会被换掉），
+  // 但用户搜的往往正是那个昵称本身，所以各家的原始标签也一起进索引。
+  const haystack = [
+    providerOptionLabel(provider),
+    provider.name,
+    providerAccountLabel(provider),
+    provider.claudeOAuth?.accountLabel,
+    provider.cursorOAuth?.accountLabel,
+    provider.chatgptOAuth?.accountLabel,
+    provider.qoderPat?.accountLabel,
+    provider.qoderPat?.email,
+    provider.workbuddyOAuth?.accountLabel,
+    provider.id,
+    providerConnectKind(provider),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return words.every((word) => haystack.includes(word));
+}
+
+/**
  * promoteApiKeyProvider 把一台备选提为首选，返回要一起提交的绑定字段。
  *
  * 「设为首选」是交换，不是删除：旧首选回到被提升者原来的位次，其余备选顺序不变。

@@ -1717,6 +1717,189 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .api-key-profile-tab:not(.active):hover { border-color: var(--accent-border); color: var(--text); }
 .api-key-profile-tab-mark { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--green-soft); color: var(--green); }
 .api-key-fallback-modal { display: grid; gap: 14px; }
+/* 备选选择器：左「可选 Provider」右「备选链」，单击一行挪到对面，勾选批量挪。
+   备选链是有序的，所以右侧用编号 + 拖动/↑↓ 表达先后；左侧用 › 表示「加入」。 */
+.fpp { display: grid; gap: 10px; }
+.fpp-search { position: relative; display: flex; align-items: center; }
+.fpp-search svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+.fpp-search input[type="search"] {
+  width: 100%; height: 32px; box-sizing: border-box;
+  padding: 0 32px 0 32px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 12.5px; outline: none;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.fpp-search input[type="search"]:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.fpp-search-clear {
+  position: absolute; right: 8px;
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  border: none; border-radius: 50%;
+  background: var(--surface-hover); color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.fpp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fpp-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 9px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--muted);
+  font: inherit; font-size: 11.5px; font-weight: 500;
+  cursor: pointer; transition: border-color 0.13s ease, color 0.13s ease, background 0.13s ease;
+}
+.fpp-chip:hover { border-color: var(--accent-border); color: var(--text); }
+.fpp-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.fpp-chip-icon { flex: 0 0 auto; }
+.fpp-chip-label { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fpp-chip-count { color: var(--subtle); font-family: var(--mono); font-size: 10.5px; }
+.fpp-chip.active .fpp-chip-count { color: var(--accent-strong); }
+
+.fpp-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+/* 窄屏上下排，免得两栏都挤成省略号。 */
+@media (max-width: 720px) { .fpp-cols { grid-template-columns: 1fr; } }
+.fpp-col {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); overflow: hidden;
+}
+.fpp-col-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.fpp-col-count {
+  min-width: 18px; padding: 0 5px; height: 17px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: var(--surface-sunken); color: var(--muted);
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+}
+.fpp-link {
+  margin-left: auto; padding: 0;
+  border: 0; background: none; color: var(--accent-strong);
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.fpp-link:disabled { color: var(--subtle); cursor: default; }
+.fpp-list { flex: 1 1 auto; min-height: 180px; max-height: 320px; overflow: auto; padding: 4px; display: grid; align-content: start; gap: 2px; }
+.fpp-empty { padding: 28px 12px; color: var(--muted); font-size: 12px; text-align: center; line-height: 1.5; }
+.fpp-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; border-radius: var(--r-sm);
+  cursor: default; min-width: 0;
+  transition: background-color 0.13s ease;
+}
+.fpp-row:hover { background: var(--surface-hover); }
+.fpp-row.picked { background: var(--accent-soft); }
+.fpp-row.chain { cursor: grab; touch-action: none; }
+.fpp-row.chain:active { cursor: grabbing; }
+.fpp-row.dragging { opacity: 0.45; }
+.fpp-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.fpp-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* 刚挪过来的那一行闪一下，视线不用在两侧之间找它去了哪。 */
+.fpp-row.arrived { animation: fpp-arrive 0.45s ease-out; }
+@keyframes fpp-arrive { from { box-shadow: inset 2px 0 0 var(--accent); } to { box-shadow: none; } }
+body.fpp-dragging, body.fpp-dragging * { cursor: grabbing !important; user-select: none !important; }
+.fpp-check { flex: 0 0 auto; margin: 0; width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent); }
+.fpp-row-main {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center;
+  padding: 2px 0;
+  border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.fpp-face { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; }
+/* 名字占主位、账号让位：同一服务商每多一个账号名字就长一截，「Qoder CN 账号-」
+   是重复的，真正区分人的是后面的昵称/尾号——所以名字先省略，账号放在第二行
+   整行显示，而不是挤在同一行里被一起省略掉。 */
+.fpp-face-text { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.fpp-face-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--text); line-height: 1.25; }
+.fpp-face-account { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.2; }
+/* 协议名是次要信息（首选与备选的协议本来就一栏一个说法，链路里也另有标记）：
+   两栏并排时宽度紧张，直接不显示，把空间留给账号。 */
+.fpp-face-proto { display: none; }
+.fpp-rank {
+  flex: 0 0 auto; min-width: 26px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.fpp-flag {
+  flex: 0 0 auto; padding: 0 5px; height: 16px;
+  display: inline-flex; align-items: center;
+  border-radius: 999px; background: var(--amber-soft); color: var(--amber);
+  font-size: 10px; font-weight: 600;
+}
+.fpp-order { display: inline-flex; flex-direction: column; gap: 0; flex: 0 0 auto; }
+.fpp-order-btn {
+  height: 14px; width: 18px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--r-xs);
+  background: none; color: var(--muted);
+  font-size: 9px; line-height: 1; cursor: pointer;
+}
+.fpp-order-btn:hover:not(:disabled) { border-color: var(--border); background: var(--surface); color: var(--text); }
+.fpp-order-btn:disabled { opacity: 0.3; cursor: default; }
+.fpp-row-actions { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.fpp-row-act {
+  flex: 0 0 auto; width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--r-xs);
+  background: none; color: var(--muted);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.fpp-row-act:hover { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-strong); }
+.fpp-row-act.add { margin-left: auto; }
+.fpp-col-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+.fpp-hint { flex: 1 1 auto; min-width: 0; color: var(--subtle); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fpp-batch {
+  flex: 0 0 auto; height: 24px; padding: 0 10px;
+  border: 1px solid var(--accent-border); border-radius: var(--r-xs);
+  background: var(--accent-soft); color: var(--accent-strong);
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.fpp-batch:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.fpp-batch.danger { border-color: var(--border); background: var(--surface); color: var(--muted); }
+.fpp-batch.danger:hover:not(:disabled) { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+.fpp-batch:disabled { opacity: 0.45; cursor: default; }
+
+/* 固定模型替换：默认收起，给选择器让出竖向空间。 */
+.api-key-fallback-models {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface);
+}
+.api-key-fallback-models > summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; cursor: pointer; list-style: none;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.api-key-fallback-models > summary::-webkit-details-marker { display: none; }
+.api-key-fallback-models > summary::before {
+  content: ""; flex: 0 0 auto;
+  width: 0; height: 0;
+  border-left: 4px solid var(--subtle);
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform 0.16s ease;
+}
+.api-key-fallback-models[open] > summary::before { transform: rotate(90deg); }
+.api-key-fallback-models[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-soft); }
+.api-key-fallback-models-note { color: var(--subtle); font-weight: 500; font-size: 11px; }
+.api-key-fallback-models-missing {
+  margin-left: auto; padding: 0 6px; height: 17px;
+  display: inline-flex; align-items: center;
+  border-radius: 999px; background: var(--red-soft); color: var(--red);
+  font-size: 10.5px; font-weight: 700;
+}
+.api-key-fallback-models-list { display: grid; gap: 8px; padding: 8px 10px; max-height: 220px; overflow: auto; }
+.api-key-fallback-models-row { display: grid; gap: 4px; min-width: 0; }
+.api-key-fallback-summary-text { margin-right: auto; color: var(--subtle); font-size: 11.5px; }
+
 .api-key-fallback-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; padding-right: 4px; }
 .api-key-fallback-item {
   display: grid; gap: 10px;
