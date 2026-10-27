@@ -746,15 +746,17 @@ func (s *Server) ensureFreshTraeToken(provider domain.Provider) (domain.Provider
 	renewed, err := renew(ctx, site, current, "")
 	if err != nil {
 		s.recordRenewal(provider, "trae", time.Now(), err)
-		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
-		if traeErrorMeansSignIn(err) {
-			return provider, fmt.Errorf("Trae 登录已失效，请重新登录：%w", err)
-		}
 		// A renewal that merely failed now is not a reason to stop serving while
 		// the stored token still works. Once it is past its expiry, though,
 		// returning nil turns into an upstream 401 the client reads as "bad key";
-		// say what actually happened instead.
-		if traeCredentialExpired(&current) {
+		// say what actually happened instead. The waiters read the same answer
+		// (settleOauthRenew), so they have to reach the same verdict as this one.
+		expired := traeCredentialExpired(&current)
+		settleOauthRenew(provider.ID, current.RefreshToken, provider, err, expired)
+		if traeErrorMeansSignIn(err) {
+			return provider, fmt.Errorf("Trae 登录已失效，请重新登录：%w", err)
+		}
+		if expired {
 			s.logs.AddApp("error", "trae renewal failed and the token has expired", provider.ID+": "+err.Error())
 			return provider, fmt.Errorf("Trae 令牌已过期且续期失败：%w", err)
 		}

@@ -37,6 +37,13 @@ type oauthRenewOutcome struct {
 	// read from the router under the lock: never the renewer's own snapshot,
 	// which a sign-in may have overtaken.
 	current domain.Provider
+	// credentialExpired says whether the token the renewal was for was already
+	// past its expiry while it ran. The renewer itself answers "serve" or
+	// "refuse" on that same fact (a failed renewal is not a reason to stop
+	// serving with a token that still works, and is a reason once it doesn't),
+	// so the waiters have to answer on it too — otherwise a jitter fails every
+	// queued request but the one that went out to find out.
+	credentialExpired bool
 }
 
 type oauthRenewLockEntry struct {
@@ -46,11 +53,6 @@ type oauthRenewLockEntry struct {
 	// that were waiting on the lock while it ran: a failed renewal must not be
 	// retried once per waiter with the same one-shot refresh token.
 	outcome *oauthRenewOutcome
-}
-
-// oauthRenewOutcomeFrom wraps a renewal's result so later waiters can reuse it.
-func oauthRenewOutcomeFrom(provider domain.Provider, err error) *oauthRenewOutcome {
-	return &oauthRenewOutcome{provider: provider, err: err}
 }
 
 var oauthRenewLocks struct {
@@ -112,7 +114,8 @@ func beginOauthRenew(providerID, refreshToken string, fresh readOauthRenewProvid
 // settleOauthRenew records the outcome of a renewal that failed, so the callers
 // queued behind it share its answer instead of retrying the same token. A
 // renewal that succeeded retires the lock instead (retireOauthRenewLock): its
-// token is spent and nobody should wait on it again.
+// token is spent and nobody should wait on it again. expired is what the
+// renewer's own answer to it was based on (see oauthRenewOutcome).
 //
 // The outcome is recorded even when this caller no longer holds the entry (the
 // renewal it waited on succeeded while its own attempt failed) and even when
@@ -120,7 +123,7 @@ func beginOauthRenew(providerID, refreshToken string, fresh readOauthRenewProvid
 // current credential, so the old token's error cannot be pinned on requests
 // that already carry a new one — but a spent token that just failed must not
 // have its failure forgotten either.
-func settleOauthRenew(providerID, refreshToken string, provider domain.Provider, err error) {
+func settleOauthRenew(providerID, refreshToken string, provider domain.Provider, err error, expired bool) {
 	oauthRenewLocks.Lock()
 	if oauthRenewLocks.entries == nil {
 		oauthRenewLocks.entries = map[string]*oauthRenewLockEntry{}
@@ -130,7 +133,7 @@ func settleOauthRenew(providerID, refreshToken string, provider domain.Provider,
 		entry = &oauthRenewLockEntry{}
 		oauthRenewLocks.entries[oauthRenewLockKey(providerID, refreshToken)] = entry
 	}
-	entry.outcome = &oauthRenewOutcome{provider: provider, err: err, at: time.Now()}
+	entry.outcome = &oauthRenewOutcome{provider: provider, err: err, at: time.Now(), credentialExpired: expired}
 	entry.last = time.Now()
 	oauthRenewLocks.Unlock()
 }
@@ -262,12 +265,22 @@ func (s *Server) oauthRenewProviderReader(providerID string) readOauthRenewProvi
 }
 
 // settledOauthRenewFailure turns an answer a waiter queued behind into what the
-// waiter acts on: the failure itself, and the provider carrying the router's
-// credential as it stands now. The shared answer suppresses the network spend of
-// one token, never the use of a credential that has changed since (a sign-in).
+// waiter acts on: the provider carrying the router's credential as it stands
+// now, and the failure only if there is nothing left to serve with. The shared
+// answer suppresses the network spend of one token, never the use of a
+// credential that has changed since (a sign-in) — and never the use of the one
+// that was being renewed either, while it still works: a renewal that fails
+// just before its token lapses is a failed bet, not a dead account, which is
+// exactly how the caller that ran it reads it. Without that, one jitter fails
+// every request queued behind it while the request that went out to find out
+// serves on.
 func settledOauthRenewFailure(settled *oauthRenewOutcome, forProvider domain.Provider) (domain.Provider, error) {
+	provider := forProvider
 	if settled.current.ID != "" {
-		return settled.current, settled.err
+		provider = settled.current
 	}
-	return forProvider, settled.err
+	if !settled.credentialExpired {
+		return provider, nil
+	}
+	return provider, settled.err
 }

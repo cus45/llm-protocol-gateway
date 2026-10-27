@@ -1,3 +1,4 @@
+import React from 'react';
 import {PROVIDER_PRESETS} from '../provider_presets';
 import {
     protocolLabel,
@@ -5,9 +6,11 @@ import {
     providerConnectKind,
     providerGroupLabel,
     providerOptionLabel,
+    reportIfLooksLikeAutofill,
     shortenAccountLabel,
 } from '../lib';
 import {providerIcon} from './provider_label';
+import {BrandIcon} from './ui';
 import type {IconSelectOption} from './selects';
 import type {Provider, ProviderConnectKind, ProviderPresetSection} from '../types';
 
@@ -135,6 +138,92 @@ export function providerSelectOptions(providers: Provider[], options: { withProt
       };
     });
   });
+}
+
+/**
+ * 多选 Provider 的搜索框 + 常驻勾选列表：给用户授权 Provider 用。
+ *
+ * 搜索框照 API 日志页的常驻搜索做（放大镜、清空 ×），列表直接铺开、输入即时
+ * 过滤，不再用下拉弹层——弹层在弹窗里会盖住角色说明，勾选时也看不到整体都有
+ * 哪些 Provider。
+ */
+export function ProviderChecklist({ providers, selected, onChange }: {
+  providers: Provider[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [query, setQuery] = React.useState('');
+
+  const filtered = React.useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return providers;
+    return providers.filter((provider) =>
+      [providerOptionLabel(provider), provider.name, providerAccountLabel(provider), provider.id]
+        .join(' ')
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [providers, query]);
+
+  const toggle = (id: string) => {
+    onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+  };
+
+  return (
+    <div className="provider-checklist">
+      <div className="provider-checklist-search">
+        <svg className="provider-checklist-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <input
+          type="search"
+          value={query}
+          // 弹窗里紧挨着用户名 + 密码，Chrome 会把保存的账号灌进来；语义换成
+          // one-time-code 才不被当成登录表单，再关掉密码管理器注入。
+          autoComplete="one-time-code"
+          data-1p-ignore
+          data-lpignore="true"
+          name="providerCheckQuery"
+          placeholder="搜索名称、账号或 ID…"
+          aria-label="搜索可用输入 Provider"
+          onChange={(event) => {
+            reportIfLooksLikeAutofill('provider-checklist-filled', query, event.target.value, event);
+            setQuery(event.target.value);
+          }}
+        />
+        {query ? (
+          <button type="button" className="provider-checklist-clear" title="清空搜索词" onClick={() => setQuery('')}>
+            ×
+          </button>
+        ) : null}
+      </div>
+      <div className="provider-checklist-list" role="listbox" aria-multiselectable="true" aria-label="可用输入 Provider">
+        {filtered.length === 0 ? (
+          <div className="provider-checklist-empty">无匹配项</div>
+        ) : filtered.map((provider) => {
+          const checked = selected.includes(provider.id);
+          const label = providerOptionLabel(provider);
+          return (
+            <button
+              key={provider.id}
+              type="button"
+              role="option"
+              aria-selected={checked}
+              className={`provider-checklist-row${checked ? ' selected' : ''}`}
+              title={label}
+              onClick={() => toggle(provider.id)}
+            >
+              <span className={`provider-checklist-box${checked ? ' on' : ''}`} aria-hidden="true">{checked ? '✓' : ''}</span>
+              <BrandIcon icon={providerIcon(provider)} name={provider.name} size={15} className="filter-option-icon" />
+              <span className="provider-checklist-label">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="provider-checklist-count">已选 {selected.length} / 共 {providers.length}</div>
+    </div>
+  );
 }
 
 /** 目录里匹配得上就按磁贴分段，匹配不上（自建反代、换过域名）排到最后的自定义段。 */

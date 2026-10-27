@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,7 +19,7 @@ func TestOauthRenewRetireKeepsLiveFailure(t *testing.T) {
 	key := oauthRenewLockKey(providerID, refreshToken)
 	lock := oauthRenewLock(providerID, refreshToken)
 	lock.Lock()
-	settleOauthRenew(providerID, refreshToken, domain.Provider{ID: providerID}, errDeadRefreshTokenForTest)
+	settleOauthRenew(providerID, refreshToken, domain.Provider{ID: providerID}, errDeadRefreshTokenForTest, true)
 	retireOauthRenewLock(providerID, refreshToken, lock)
 	lock.Unlock()
 	oauthRenewLocks.Lock()
@@ -81,6 +82,10 @@ func (*deadRefreshTokenError) Error() string { return "refresh token revoked" }
 // 等锁时路由里已经换了凭证（用户在控制台重新登录），而续期依然失败：共享的失败
 // 结论只省掉那次网络开销，waiter 拿到的 provider 必须带上路由里当前的凭证，
 // 而不是调用方手里那份旧快照。
+//
+// R39 D39-2 修掉了这条路径的后半段：带回来的当前凭证若本身可用（这里就是那次
+// 重新登录），错误不能和它一起交出去——sendWorkBuddyChat 见 error 就返回，401
+// 的重试照样不会发生。可重试的凭证在手时，401 挣得的是一次重发，不是失败。
 func TestWorkBuddyForceRefreshFailureHandsWaitersTheCurrentCredential(t *testing.T) {
 	hold := make(chan struct{})
 	calls := workBuddyFailingRefreshRound(t, hold)
@@ -154,11 +159,69 @@ func TestWorkBuddyForceRefreshFailureHandsWaitersTheCurrentCredential(t *testing
 		t.Fatalf("got %d answers, want 5", len(all))
 	}
 	for _, res := range all {
-		if res.err == nil {
-			t.Fatalf("a failed renewal must reach the caller as an error, not a provider to retry with")
+		if res.err != nil {
+			t.Fatalf("a waiter given a working credential must retry with it, not inherit the shared failure: %v", res.err)
 		}
 		if got := res.provider.WorkBuddy.AccessToken; got != signedIn.AccessToken {
 			t.Fatalf("a waiter got access token %q, want the router's current %q: a dead snapshot turns the upstream 401 into a transport error", got, signedIn.AccessToken)
 		}
+	}
+}
+
+// R39 D39-2：等锁时路由里**没有**换过凭证，探针自己去续并成功了——这次成功必须
+// 变成 401 的重试机会，而不是被共享的旧失败结论吞掉。修复前 sendWorkBuddyChat
+// 拿到 (latest, settled.err) 就返回，重发永远不发生。
+func TestWorkBuddyForceRefreshProbeSuccessEarnsTheRetry(t *testing.T) {
+	defer resetOauthRenewLocks(t)
+	calls := workBuddyRefreshRound(t, 0)
+	server, router := newRefreshLockServer(t)
+	provider := workBuddyExpiredProvider("wb-probe")
+	provider.WorkBuddy.AccessToken = "revoked-access"
+	provider.WorkBuddy.RefreshToken = "probe-shared-refresh"
+	added, err := router.AddProvider(provider)
+	if err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	// 另一个请求的续期刚刚失败过：这枚 refresh token 的共享结论还在窗口里。
+	settleOauthRenew(added.ID, provider.WorkBuddy.RefreshToken, provider, errDeadRefreshTokenForTest, true)
+
+	refreshed, err := server.forceRefreshWorkBuddyToken(added.ID)
+	if err != nil {
+		t.Fatalf("the probe renewed the credential, so the 401 must be able to retry: %v", err)
+	}
+	if refreshed.WorkBuddy == nil || !strings.HasPrefix(refreshed.WorkBuddy.AccessToken, "new-access-") {
+		t.Fatalf("the retry was handed %+v, want the probe's fresh credential", refreshed.WorkBuddy)
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("the probe called the refresh endpoint %d times, want exactly 1", got)
+	}
+	stored, _ := router.ProviderByID(added.ID)
+	if stored.WorkBuddy == nil || stored.WorkBuddy.AccessToken != refreshed.WorkBuddy.AccessToken {
+		t.Fatalf("the router kept %+v, want the probe's credential", stored.WorkBuddy)
+	}
+}
+
+// 探针也失败、路由里也没有可重试的凭证时，401 的续期确实没成：这条失败必须
+// 交给调用方（它是鉴权失败，不是传输错误）。
+func TestWorkBuddyForceRefreshReportsFailureWhenNothingIsLeftToRetryWith(t *testing.T) {
+	defer resetOauthRenewLocks(t)
+	hold := make(chan struct{})
+	workBuddyFailingRefreshRound(t, hold)
+	server, router := newRefreshLockServer(t)
+	provider := workBuddyExpiredProvider("wb-probe-fail")
+	provider.WorkBuddy.AccessToken = "revoked-access"
+	provider.WorkBuddy.RefreshToken = "probe-fail-refresh"
+	added, err := router.AddProvider(provider)
+	if err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	settleOauthRenew(added.ID, provider.WorkBuddy.RefreshToken, provider, errDeadRefreshTokenForTest, true)
+	// 探针的上游同样 5xx：放行它返回。
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(hold)
+	}()
+	if _, err := server.forceRefreshWorkBuddyToken(added.ID); err == nil {
+		t.Fatal("neither a sign-in nor the probe left anything to retry with: the 401 must be reported")
 	}
 }

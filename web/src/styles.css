@@ -1489,8 +1489,88 @@ html[data-theme="dark"] .models-search-input { background-image: url("data:image
 .icon-select-search input:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
 /* 页面内联展开：不挂 portal，被筛选栏的横排约束，菜单向下展开盖在日志表格上。 */
 .searchable-select-menu.inline { max-height: 320px; }
-.modal-multi-select { margin: 0; width: 100%; }
-.modal-multi-select .searchable-select-input { height: var(--control-h); }
+
+/* ProviderChecklist：用户弹窗里授权 Provider。搜索框照 API 日志页的常驻搜索
+   （放大镜 + 清空 ×），列表直接铺开勾选，不再用下拉弹层——弹层会盖住角色说明，
+   也看不到整体有哪些 Provider。列表定高滚动，弹窗不会被几十条 Provider 撑爆。 */
+.provider-checklist { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.provider-checklist-search { position: relative; display: flex; align-items: center; }
+.provider-checklist-search-icon { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+.field .provider-checklist-search input[type="search"] {
+  width: 100%;
+  height: var(--control-h);
+  box-sizing: border-box;
+  padding: 0 32px 0 34px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.field .provider-checklist-search input[type="search"]:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.provider-checklist-clear {
+  position: absolute;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-hover);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.provider-checklist-list {
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.provider-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.provider-checklist-row:hover { background: var(--hover); }
+.provider-checklist-row.selected { color: var(--accent-strong); font-weight: 600; }
+.provider-checklist-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.provider-checklist-box.on { background: var(--accent); border-color: var(--accent); }
+.provider-checklist-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-checklist-empty { padding: 12px 10px; color: var(--muted); font-size: 13px; text-align: center; }
+.provider-checklist-count { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
 /* ----------------------------------------------------------------
    11. API 密钥页

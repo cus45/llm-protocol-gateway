@@ -26,9 +26,9 @@ import {
     antiAutofillProps,
     API_BASE,
     API_KEY_VIEW_STORAGE_KEY,
-    authRejectionMessage,
     API_KEYS_PAGE_SIZE,
     apiKeyReferencesProvider,
+    authRejectionMessage,
     BACKEND_FAIL_STREAK_LIMIT,
     BACKEND_POLL_MS_LOCAL,
     BACKEND_POLL_MS_REMOTE,
@@ -36,10 +36,10 @@ import {
     buildCurlCommand,
     buildProviderChatCurl,
     buildRouteTestCurl,
-    chatTestToastText,
-    chatTestVerdictFromBody,
     buildSelfRegistrationPrompt,
     chatgptAccountLabelFriendly,
+    chatTestToastText,
+    chatTestVerdictFromBody,
     clearUICache,
     compactRequestAdapterJSON,
     composeCustomDomain,
@@ -61,9 +61,9 @@ import {
     fixedOutputLabels,
     formatBytes,
     formatCostMicros,
+    formatDateInZone,
     formatDuration,
     formatJsonDisplay,
-    formatDateInZone,
     formatLocalISODate,
     formatRate,
     formatTrafficLogDetail,
@@ -157,11 +157,11 @@ import {
 import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
 import {MonitoringPage} from './monitoring/MonitoringPage';
-import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
+import {groupProvidersByBrand, ProviderChecklist, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
 import {ReplayPanel, ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
-import {IconSelect, MultiSelectFilter} from './components/selects';
+import {IconSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
 import {
@@ -8035,35 +8035,14 @@ function App() {
                 <label>可用输入 Provider（未选中的不可用）</label>
                 {state.providers.length === 0 ? <div className="hint-text">暂无输入 Provider。</div> : (
                   <>
-                    <MultiSelectFilter
-                      options={state.providers.map((provider) => ({ id: provider.id, label: providerOptionLabel(provider), icon: providerIcon(provider) }))}
+                    <ProviderChecklist
+                      providers={state.providers}
                       selected={userFormProviders}
                       onChange={setUserFormProviders}
-                      allLabel="点击选择可用 Provider…"
-                      fieldClassName="modal-multi-select"
                     />
-                    {userFormProviders.length > 0 ? (
-                      <div className="provider-chips">
-                        {userFormProviders.map((id) => {
-                          const provider = state.providers.find((item) => item.id === id);
-                          return (
-                            <span key={id} className="provider-chip">
-                              {provider ? providerOptionLabel(provider) : id}
-                              <button
-                                type="button"
-                                className="provider-chip-remove"
-                                aria-label={`移除 ${provider?.name || id}`}
-                                onClick={() => setUserFormProviders((current) => current.filter((item) => item !== id))}
-                              >
-                                ×
-                              </button>
-                            </span>
-                          );
-                        })}
-                      </div>
-                    ) : (
+                    {userFormProviders.length === 0 ? (
                       <div className="hint-text">尚未选择任何 Provider，该用户将没有可用的输入 Provider。</div>
-                    )}
+                    ) : null}
                   </>
                 )}
               </div>

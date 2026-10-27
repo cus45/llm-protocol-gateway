@@ -347,7 +347,7 @@ func (s *Server) ensureFreshCursorToken(provider domain.Provider) (domain.Provid
 	refreshed, err := refreshCursorOAuthToken(current.RefreshToken)
 	if err != nil {
 		s.recordRenewal(provider, "cursor", time.Now(), err)
-		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
+		settleOauthRenew(provider.ID, current.RefreshToken, provider, err, cursorTokenNeedsRefresh(&current))
 		return provider, err
 	}
 	updated, err := s.router.SetProviderCursorOAuth(provider.ID, refreshed)

@@ -617,6 +617,14 @@ func (s *Server) pollWorkBuddyJSON(
 // already cost one request.
 const workBuddyAccessTokenLifetime = 30 * time.Minute
 
+// workBuddyTokenNeedsRefresh reports whether the access token is close enough
+// to its expiry to renew.
+//
+// 判定写成这几行是有原因的：Go 1.26.1（Windows 工具链）会把「在同一函数里比较
+// 两个相邻时刻」的写法编错，把明显在未来的时刻判成已到（memory
+// go126-windows-slice-compare-miscompile）。续期锁的失败结论要靠「过期 / 没过
+// 期」决定放行还是拦下，判反了会让一次抖动手撕掉所有排队的请求，所以这里只留
+// 最简单的形态，别把它折叠回一行。
 func workBuddyTokenNeedsRefresh(credential *domain.WorkBuddyCredential) bool {
 	if credential == nil {
 		return true
@@ -737,9 +745,12 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 		// 未过期时一次续期抖动不该拦请求（手上这枚或许还能用）；已过期就没有
 		// 可用的令牌了，报错（与 Trae 6626556 同口径）。
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
-		// 失败也记下来：排在这枚令牌后面的请求不该各花一次。
-		settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
-		if workBuddyCredentialExpired(&current) {
+		// 失败也记下来：排在这枚令牌后面的请求不该各花一次。结论里要带「续期时
+		// 这枚令牌是否已过期」——续期者自己据此决定拦不拦，等锁方必须同一个口径，
+		// 否则一次抖动会把排队的请求全打掉，而出去探路的那个照常服务。
+		expired := workBuddyCredentialExpired(&current)
+		settleOauthRenew(provider.ID, current.RefreshToken, provider, err, expired)
+		if expired {
 			s.logs.AddApp("error", "workbuddy token refresh failed and the token expired", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 			return provider, fmt.Errorf("WorkBuddy 令牌已过期且续期失败：%w", err)
 		}
@@ -751,7 +762,8 @@ func (s *Server) ensureFreshWorkBuddyToken(provider domain.Provider) (domain.Pro
 
 // workBuddyCredentialExpired reports whether the stored access token is past its
 // expiry (not merely inside the refresh lead): a failed renewal then has
-// nothing left to serve with.
+// nothing left to serve with. 与 workBuddyTokenNeedsRefresh 一样只留最简单的
+// 比较形态（见那里关于 Go 1.26 Windows 工具链的说明）。
 func workBuddyCredentialExpired(credential *domain.WorkBuddyCredential) bool {
 	if credential == nil {
 		return true
@@ -789,20 +801,29 @@ func (s *Server) forceRefreshWorkBuddyToken(providerID string) (domain.Provider,
 	defer renewLock.Unlock()
 	if settled != nil && settled.err != nil {
 		// This request's own 401 filed its renewal attempt behind another request's,
-		// and that attempt failed. Only that attempt's failure is shared. A newer
-		// credential in the router (a sign-in) is spent by the 401 retry; otherwise
-		// this request still owes its own probe — the vendor may have recovered,
-		// and handing back the dead access token would end the request before any
-		// upstream response exists, losing the retry a 401 is supposed to get.
-		// Either way the 401's refresh did not happen, and an auth failure (not a
-		// transport one) is what the failover loop reports.
+		// and that attempt failed. Only that attempt's failure is shared.
 		current := s.readWorkBuddyCredential(provider)
 		if current.AccessToken == credential.AccessToken {
+			// No newer credential to retry with yet: spend this request's own
+			// probe — the vendor may have recovered — and hand back whatever the
+			// router holds afterwards.
 			_, _ = s.refreshWorkBuddyProbe(provider, site, current, renewLock)
+			current = s.readWorkBuddyCredential(provider)
 		}
-		// The credential to retry with, and the failure this 401 ran into: a
-		// waiter that answered without it would hand on a token nobody verified.
+		// The credential to retry with. A 401 is what brought this request here,
+		// so the shared failure describes the token it already lost; whether it
+		// is the error to report turns on what is left to retry with, exactly as
+		// the caller that ran the shared renewal decides it: a router credential
+		// that works (a sign-in, or the probe above) earns the 401 the re-send it
+		// exists for. Handing the error back beside it would end the request
+		// before any upstream response exists, and the retry a 401 is supposed
+		// to get would never happen. Nothing usable left: report the failure
+		// (an auth failure, not a transport one), which is what the failover
+		// loop acts on.
 		latest, _ := s.latestWorkBuddyProvider(provider)
+		if current.AccessToken != credential.AccessToken && !workBuddyCredentialExpired(&current) {
+			return latest, nil
+		}
 		return latest, settled.err
 	}
 
@@ -842,7 +863,7 @@ func (s *Server) renewWorkBuddyToken(provider domain.Provider, site workBuddySit
 	if err != nil {
 		s.logs.AddApp("warn", "workbuddy token refresh failed", fmt.Sprintf("provider=%s %s", provider.ID, err.Error()))
 		if settleFailure {
-			settleOauthRenew(provider.ID, current.RefreshToken, provider, err)
+			settleOauthRenew(provider.ID, current.RefreshToken, provider, err, true)
 		} else {
 			retireSpreadOauthRenewLock(provider.ID, current.RefreshToken, renewLock)
 		}
