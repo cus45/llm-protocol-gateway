@@ -870,7 +870,6 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 }
 .metric-note { margin-top: 4px; color: var(--subtle); font-size: 11.5px; }
 
-
 .host-metrics-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .host-metrics-strip .metric { min-height: 108px; padding: 16px 18px; }
 @media (max-width: 720px) { .host-metrics-strip { grid-template-columns: 1fr; } }
@@ -2278,7 +2277,6 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--subtle); font-family: var(--mono); font-size: 12px;
 }
-
 
 .log-header {
   padding: 0 14px 4px;
@@ -5143,6 +5141,409 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   border: 1px solid var(--border);
 }
 @media (max-width: 899px) { .log-audit-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+.log-audit-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+}
+.log-audit-chip span {
+  color: var(--muted);
+  font-weight: 500;
+}
+.log-audit-chip b {
+  color: var(--text-strong);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+/* ----------------------------------------------------------------
+   34. 全链路 APM 耗时瀑布流与弹窗选项卡 (APM Waterfall & Log Tabs)
+   ---------------------------------------------------------------- */
+.log-modal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.log-modal-tab {
+  padding: 6px 14px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.log-modal-tab:hover {
+  color: var(--text-strong);
+  background: var(--surface-hover);
+}
+.log-modal-tab.active {
+  color: var(--accent);
+  background: var(--surface-soft);
+  border-color: var(--border);
+}
+
+.log-waterfall-card {
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.log-waterfall-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.log-waterfall-title-row b {
+  font-family: var(--mono);
+  color: var(--accent);
+}
+.log-waterfall-stack-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  overflow: hidden;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+}
+.log-waterfall-slice {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.log-waterfall-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px 18px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.log-waterfall-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.log-waterfall-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.log-waterfall-name {
+  color: var(--muted);
+}
+.log-waterfall-ms {
+  font-family: var(--mono);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.log-waterfall-item small {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.log-body-card {
+  margin-top: 10px;
+}
+.log-body-empty-notice {
+  padding: 20px 24px;
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  border: 1px dashed var(--border-strong);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ----------------------------------------------------------------
+   35. API 日志统一控制台 (Traffic Filter Dashboard)
+   ---------------------------------------------------------------- */
+/* 日志页筛选条：日志才是这一页的主体，筛选只占两行——
+   一行「搜索 + 日期 + 高级」，一行「状态芯片 + 生效中的条件 + 计数」。
+   日期换成弹层里的月历（原来常驻一块 353px 的日历，加上右侧空档一次吃掉
+   近 400px 纵向空间），密钥/Provider/用户与 2xx 正文开关收进「高级」。 */
+.traffic-toolbar {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-soft);
+}
+
+.traffic-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.traffic-toolbar-row .traffic-search-row { flex: 1 1 auto; min-width: 0; }
+
+.traffic-date-field { position: relative; flex: 0 0 auto; }
+
+.traffic-date-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: var(--control-h);
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.13s ease, color 0.13s ease;
+}
+.traffic-date-btn:hover, .traffic-date-btn.open { border-color: var(--accent-border); color: var(--accent-strong); }
+.traffic-date-btn svg { flex: 0 0 auto; opacity: 0.8; }
+
+/* 弹层：贴在日期按钮下方，右侧对齐，避免在窄屏里被推出视口。 */
+.traffic-date-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+.traffic-date-pop .usage-calendar { width: 280px; }
+
+.traffic-adv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--control-h);
+  height: var(--control-h);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.13s ease, color 0.13s ease, background 0.13s ease;
+}
+.traffic-adv-btn:hover { border-color: var(--accent-border); color: var(--accent-strong); }
+.traffic-adv-btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+
+.traffic-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.traffic-status-count {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.traffic-status-count b { color: var(--text-strong); font-family: var(--mono); }
+.traffic-status-meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--subtle);
+  white-space: nowrap;
+}
+.traffic-active-filters { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.traffic-filter-tag {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.traffic-filter-tag:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* 高级筛选：一行放下密钥/Provider/用户，右侧放 2xx 正文开关与重置。 */
+.traffic-advanced-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.traffic-advanced-row .field { flex: 1 1 170px; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.traffic-advanced-row .field > span { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.traffic-advanced-row .field select { height: var(--control-h); font-size: 12.5px; }
+.traffic-advanced-note { font-size: 11.5px; color: var(--subtle); }
+.traffic-advanced-row .btn { margin-left: auto; }
+
+/* 窄屏：搜索框独占一行，日期与高级按钮跟到下一行右侧。 */
+@media (max-width: 720px) {
+  .traffic-toolbar-row { flex-wrap: wrap; }
+  .traffic-toolbar-row .traffic-search-row { flex: 1 1 100%; }
+  .traffic-date-field { flex: 1 1 auto; }
+  .traffic-date-pop { right: auto; left: 0; }
+  .traffic-status-meta { margin-left: 0; }
+}
+
+.traffic-status-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.16s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.traffic-status-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.traffic-status-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-strong);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+.traffic-status-chip.green.active {
+  background: var(--green-soft);
+  border-color: rgba(22, 163, 74, 0.4);
+  color: var(--green);
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.4);
+}
+.traffic-status-chip.amber.active {
+  background: var(--amber-soft);
+  border-color: rgba(217, 119, 6, 0.4);
+  color: var(--amber);
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.4);
+}
+.traffic-status-chip.red.active {
+  background: var(--red-soft);
+  border-color: rgba(220, 38, 38, 0.4);
+  color: var(--red);
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.4);
+}
+
+/* ----------------------------------------------------------------
+   33. 仪表盘指标卡与进度条优化 (Dashboard Metric Bars)
+   ---------------------------------------------------------------- */
+.usage-bar.ok > span {
+  background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+}
+.usage-bar.warn > span {
+  background: linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%);
+}
+.usage-bar.danger > span {
+  background: linear-gradient(90deg, #ef4444 0%, #f87171 100%);
+}
+
+/* ----------------------------------------------------------------
+   34. API 密钥详情分区选项卡 (API Key Detail Tabs)
+   ---------------------------------------------------------------- */
+.api-key-detail-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: var(--surface-soft);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  margin: 14px 0 16px;
+  width: fit-content;
+  flex-wrap: wrap;
+}
+.api-key-detail-tab {
+  padding: 6px 14px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+.api-key-detail-tab:hover {
+  color: var(--text-strong);
+}
+.api-key-detail-tab.active {
+  background: var(--surface);
+  color: var(--accent-strong);
+  box-shadow: var(--shadow-soft);
+  border-color: var(--border);
+}
+
+.usage-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+@media (max-width: 900px) {
+  .usage-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 540px) {
+  .usage-metric-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ----------------------------------------------------------------
+   35. API 日志调用审计卡片与异常行高亮 (Log Audit & Tracing)
+   ---------------------------------------------------------------- */
+.traffic-log-row.has-error {
+  border-left: 3px solid var(--red);
+  background: rgba(220, 38, 38, 0.03);
+}
+html[data-theme="dark"] .traffic-log-row.has-error {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+/* 9 个等宽格子：以前是 flex-wrap + min-width:68px，一行塞 7 个、第 9 个单独换行，
+   行尾留一大片空白。改成 7 列栅格让 9 个格子排成 7+2 的确定格局；窄屏两档各自
+   收列，最后一行仍是满宽栅格的一部分而不是孤零零一颗。 */
+.log-audit-metrics {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px 16px;
+  margin: 12px 0 14px;
+  padding: 12px 14px;
+  background: var(--surface-soft);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+}
+@media (max-width: 899px) { .log-audit-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 @media (max-width: 599px) { .log-audit-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .log-audit-chip {
   display: flex;
@@ -5279,99 +5680,6 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 /* ----------------------------------------------------------------
    35. API 日志统一控制台 (Traffic Filter Dashboard)
    ---------------------------------------------------------------- */
-.traffic-filter-dashboard {
-  display: grid;
-  grid-template-columns: 270px 1fr;
-  gap: 0;
-  padding: 16px;
-  background: var(--surface-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  margin-bottom: 16px;
-  align-items: start;
-}
-@media (max-width: 980px) {
-  .traffic-filter-dashboard {
-    grid-template-columns: 1fr;
-  }
-}
-
-.traffic-calendar-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.traffic-calendar-pane .usage-calendar {
-  width: 100%;
-}
-
-.traffic-calendar-badge {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--muted);
-  font-family: var(--mono);
-  text-align: center;
-  padding: 5px 8px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-}
-
-.traffic-controls-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.traffic-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.traffic-meta-stats {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.traffic-meta-stat {
-  font-size: 12px;
-  color: var(--muted);
-}
-.traffic-meta-stat b {
-  color: var(--text-strong);
-  font-family: var(--mono);
-}
-
-.traffic-quick-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text);
-  cursor: pointer;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  transition: all 0.15s ease;
-}
-.traffic-quick-switch:hover {
-  border-color: var(--border-strong);
-}
-.traffic-quick-switch input {
-  cursor: pointer;
-}
 
 .traffic-search-row {
   display: flex;
@@ -5426,28 +5734,6 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   cursor: pointer;
 }
 
-.traffic-chips-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* 窄屏：搜索框与「应用筛选」各自占满一行（按钮不再被压到 84px），
-   然后才由下方 .traffic-fields-grid 的三档栅格排下拉。 */
-@media (max-width: 599px) {
-  .traffic-search-row { flex-wrap: wrap; row-gap: 8px; }
-  /* 简写 flex 的 basis 必须带单位：裸 100% 会让整条声明失效，按钮仍挤在搜索框右边 */
-  .traffic-search-row > input { flex: 1 1 100%; }
-  .traffic-action-group { flex: 1 1 100%; justify-content: flex-end; }
-}
-
-.traffic-chips-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
 .traffic-status-chip {
   padding: 4px 12px;
   border-radius: 999px;
@@ -5494,46 +5780,12 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 /* 原本的 grid 写法 repeat(auto-fit, minmax(150px,1fr)) auto 是非法组合
    （auto-repeat 不能与 auto 同列），整条声明被浏览器丢弃、字段被迫竖排；
    改用 flex 实现「字段等宽横排 + 按钮靠右」。 */
-.traffic-fields-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-end;
-  margin-top: 2px;
-}
 /* 筛选栏和日历等高：日历 353px、工具栏 230px，拉伸工具栏并把字段行贴底 */
-.traffic-controls-pane { align-self: stretch; }
-.traffic-controls-pane .traffic-fields-grid { margin-top: auto; }
-
-.traffic-fields-grid .field {
-  flex: 1 1 170px;
-  margin: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 
 /* 应用筛选 / 重置：宽度与控件同档（--control-h），窄屏换行到搜索框下一行后仍可点。 */
-.traffic-fields-grid .traffic-action-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; white-space: nowrap; }
-
-.traffic-fields-grid .field span {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--muted);
-}
 
 /* 控件高度统一走 --control-h（表单级 36px）：同一筛选条里的搜索框 36 / 下拉 34 /
    按钮 34 三档混用，正是这三处写死了 34。 */
-.traffic-fields-grid .field select {
-  height: var(--control-h);
-  font-size: 12.5px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  color: var(--text-strong);
-  width: 100%;
-}
 
 /* Provider 筛选：与旁边两个原生 select 同尺寸同底色（同用 --control-h、字号 12.5px）。
    筛选项列表一屏放得下，不弹搜索框，直接向下展开。 */
@@ -5544,23 +5796,6 @@ html[data-theme="dark"] .traffic-log-row.has-error {
 .traffic-select .icon-select-meta { display: none; }
 .traffic-select .searchable-select-menu.inline { max-height: min(360px, 60vh); }
 .traffic-select .searchable-select-option { font-family: inherit; padding: 7px 9px; }
-
-
-.traffic-action-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--control-h);
-}
-
-.traffic-action-group .btn {
-  height: var(--control-h);
-  padding: 0 16px;
-  font-size: 12.5px;
-  font-weight: 600;
-  border-radius: var(--r-md);
-  white-space: nowrap;
-}
 
 .traffic-log-row.clickable {
   cursor: pointer;
@@ -6302,7 +6537,6 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   height: 100%;
 }
 
-
 /* ==========================================================================
    多维实体下钻透视中心 (UsagePivotExplorer)
    ========================================================================== */
@@ -6646,8 +6880,6 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   color: var(--accent);
   background: var(--accent-soft);
 }
-
-
 
 /* ── 添加 Provider 目录弹窗 ────────────────────────────────────────────── */
 /* 检索条钉在弹窗顶部：标题随内容滚走，检索框常驻，50 个磁贴滚动时始终可过滤。
@@ -7794,7 +8026,6 @@ html[data-theme="dark"] .mon-header-btn.is-accent .mon-header-btn-icon { color: 
 .m-event-detail { color: var(--subtle); font-size: 11.5px; overflow-wrap: anywhere; }
 .m-event-link { border: 0; background: none; padding: 0; margin-left: 6px; color: var(--accent-strong); font: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; }
 .m-event-link:hover { text-decoration: underline; }
-
 
 /* 单列后两卡上下排：告警卡再撑满全量就会把账号卡推到很下面，内容轨限高、卡内滚动。 */
 @media (max-width: 1280px) {
@@ -11468,7 +11699,6 @@ select.mon-acc-select-input { border-radius: 12px; }
    这里让两卡按自身内容排（`align-items: start`）、卡体 max-content，卡高 = 头部 + 体 + 脚注。 */
 .mon-duo { align-items: start; }
 .mon-duo-card { align-self: start; grid-template-rows: max-content max-content max-content; }
-
 
 /* ═══ 外壳（全局）：主栏固定高、只有内容区滚动（P1 遗留）═════════════════════════
    .main 之前是隐式 grid 行（grid-template-rows 为 auto），行高靠内容撑；只要有一页内容

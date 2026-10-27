@@ -339,6 +339,17 @@ function App() {
   const [logsKeyword, setLogsKeyword] = useState('');
   // 会话视图：按 sessionId 过滤请求日志（后端 json_extract 查询）。
   const [logsSessionFilter, setLogsSessionFilter] = useState('');
+  // 日志页筛选条的两个弹层/折叠状态：日期日历改到弹层里，密钥/Provider/用户
+  // 筛选收进「高级」折叠，主条只占两行，把纵向空间还给日志本身。
+  const [logsDateOpen, setLogsDateOpen] = useState(false);
+  const [logsAdvancedOpen, setLogsAdvancedOpen] = useState(false);
+  const logsDateRef = useRef<HTMLDivElement | null>(null);
+  // 日期按钮上显示当前区间：同一天就只写那一天，区间写两端，未筛写「全部日期」。
+  const logsDateLabel = !logsFrom && !logsTo
+    ? '全部日期'
+    : logsFrom === logsTo || !logsTo
+      ? (logsFrom || logsTo)
+      : `${logsFrom} ~ ${logsTo}`;
   const displayedLogs = useMemo(() => {
     if (!logsKeyword.trim()) return logs;
     const kw = logsKeyword.trim().toLowerCase();
@@ -1266,6 +1277,24 @@ function App() {
       return '';
     });
   }, [state.publicAccess]);
+
+  // 日期弹层：点外面或按 Esc 收起。只在打开时挂监听，避免常驻一个 document 级
+  // 捕获阶段回调。
+  useEffect(() => {
+    if (!logsDateOpen) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!logsDateRef.current?.contains(event.target as Node)) setLogsDateOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setLogsDateOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [logsDateOpen]);
 
   useEffect(() => () => {
     if (cloudflarePollRef.current != null) {
@@ -5985,68 +6014,12 @@ function App() {
                 </div>
               </div>
 
-              {/* 统一过滤控制台 */}
-              <div className="traffic-filter-dashboard">
-                {/* 左栏：日期日历 */}
-                <div className="traffic-calendar-pane">
-                  <UsageRangeCalendar
-                    from={logsFrom}
-                    to={logsTo}
-                    onSelect={(nextFrom, nextTo) => {
-                      logsFollowTodayRef.current = isFollowingTodayRange(nextFrom, nextTo);
-                      setLogsFrom(nextFrom);
-                      setLogsTo(nextTo);
-                      void refreshLogs(1, nextFrom, nextTo);
-                    }}
-                    onClear={() => {
-                      logsFollowTodayRef.current = false;
-                      setLogsFrom('');
-                      setLogsTo('');
-                      void refreshLogs(1, '', '');
-                    }}
-                  />
-                  <div className="traffic-calendar-badge">
-                    {logsFrom || logsTo
-                      ? `当前区间：${logsFrom === logsTo ? logsFrom : `${logsFrom} ~ ${logsTo}`}`
-                      : '全部历史日期'}
-                  </div>
-                </div>
-
-                {/* 右栏：多维控制台 */}
-                <div className="traffic-controls-pane">
-                  {/* 第一行：状态统计与 2xx 正文开关 */}
-                  <div className="traffic-meta-row">
-                    <div className="traffic-meta-stats">
-                      <span className="traffic-meta-stat">日志总数: <b>{logsTotal}</b> 条</span>
-                      <span className="traffic-meta-stat">当前页码: <b>{logsPage}</b> / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))}</span>
-                      {/* 留存天数是管理员设置：/__state 对 role=user 不发这个值，
-                          显示出来的会是前端默认的 7 天而不是真实设置。 */}
-                      {!isNormalUser ? <span className="traffic-meta-stat">历史留存: <b>{requestLogRetentionDays} 天</b></span> : null}
-                    </div>
-                    {!isNormalUser && (
-                      <label
-                        className="traffic-quick-switch"
-                        title="开启后，2xx 正常请求也将完整落盘请求体与响应体（便于全量审计，但会增加 SQLite 写入量）；关闭时仅 4xx/5xx 错误请求记录正文以保障极限吞吐。"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={log2xxBodies}
-                          disabled={saving}
-                          onChange={(e) => void updateLog2xxBodies(e.target.checked)}
-                        />
-                        <span>记录 2xx 成功正文</span>
-                        <Badge tone={log2xxBodies ? 'green' : 'slate'}>{log2xxBodies ? '已开启' : '已关闭'}</Badge>
-                      </label>
-                    )}
-                      {/* 「更新于」放在尾部：和「记录 2xx 正文」开关并排时会把开关顶到第二行，行高翻倍 */}
-                      {dataFetchedAt && (
-                        <span className="traffic-meta-stat" style={{ color: 'var(--subtle)' }}>
-                          更新于 <b>{dataFetchedAt.toLocaleTimeString()}</b>
-                        </span>
-                      )}
-                  </div>
-
-                  {/* 第二行：即时关键词搜索 + 主操作按钮 */}
+              {/* 筛选条：日志页的主人是日志本身，所以这里只占两行——一行「搜索 + 日期
+                  + 高级」，一行「状态芯片」。日期用弹层里的日历，不再常驻一块月历把
+                  半个屏幕吃掉；「记录 2xx 正文 / 命中数 / 更新于」这类低频信息收进
+                  高级面板，主条只留「看完这段日志要做什么」。 */}
+              <div className="traffic-toolbar">
+                <div className="traffic-toolbar-row">
                   <div className="traffic-search-row">
                     <svg className="traffic-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="11" cy="11" r="8" />
@@ -6054,90 +6027,129 @@ function App() {
                     </svg>
                     <input
                       type="search"
-                      placeholder="快速过滤模型、请求路径、IP、报错摘要、密钥名称..."
+                      placeholder="快速过滤模型、路径、客户端IP、报错信息、密钥名称（实时匹配）"
                       value={logsKeyword}
                       onChange={(e) => setLogsKeyword(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { setLogsPage(1); void refreshLogs(1); } }}
                     />
-                    {logsKeyword && (
-                      <button
-                        type="button"
-                        className="traffic-search-clear"
-                        onClick={() => setLogsKeyword('')}
-                        title="清空搜索词"
-                      >
-                        ×
-                      </button>
-                    )}
-                    <div className="traffic-action-group">
-                      <button
-                        className="btn primary"
-                        type="button"
-                        title="回到第 1 页并刷新日志"
-                        onClick={() => { setLogsPage(1); void refreshLogs(1); }}
-                      >
-                        应用筛选
-                      </button>
-                      {logsUsageTarget && <span className="muted">{logsUsageTarget.type === 'model' ? '模型' : 'API 密钥'}：{logsUsageTarget.label}</span>}
-                      {(logsUsageTarget || logsApiKeyName || logsProviderFilter || logsOwnerFilter || logsStatusFilter !== 'all' || logsKeyword) && (
-                        <button
-                          className="btn secondary"
-                          type="button"
-                          title="重置所有筛选项"
-                          onClick={() => {
-                            setLogsUsageTarget(null);
-                            setLogsApiKeyName('');
-                            setLogsProviderFilter('');
-                            setLogsOwnerFilter('');
-                            setLogsStatusFilter('all');
-                            setLogsKeyword('');
+                    {logsKeyword ? (
+                      <button type="button" className="traffic-search-clear" onClick={() => setLogsKeyword('')} title="清空搜索词">×</button>
+                    ) : null}
+                  </div>
+                  <div className="traffic-date-field" ref={logsDateRef}>
+                    <button
+                      type="button"
+                      className={`traffic-date-btn${logsDateOpen ? ' open' : ''}`}
+                      onClick={() => setLogsDateOpen((open) => !open)}
+                      aria-expanded={logsDateOpen}
+                      title="选择日期区间"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="3.5" y="5" width="17" height="15.5" rx="2.4" />
+                        <path d="M3.5 10h17M8 3v4M16 3v4" />
+                      </svg>
+                      <span>{logsDateLabel}</span>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 10 6 6 6-6" /></svg>
+                    </button>
+                    {logsDateOpen ? (
+                      <div className="traffic-date-pop">
+                        <UsageRangeCalendar
+                          from={logsFrom}
+                          to={logsTo}
+                          onSelect={(nextFrom, nextTo) => {
+                            logsFollowTodayRef.current = isFollowingTodayRange(nextFrom, nextTo);
+                            setLogsFrom(nextFrom);
+                            setLogsTo(nextTo);
                             setLogsPage(1);
-                            void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' });
+                            void refreshLogs(1, nextFrom, nextTo);
                           }}
-                        >
-                          重置
-                        </button>
-                      )}
-                    </div>
+                          onClear={() => {
+                            logsFollowTodayRef.current = false;
+                            setLogsFrom('');
+                            setLogsTo('');
+                            setLogsPage(1);
+                            void refreshLogs(1, '', '');
+                          }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
+                  <button
+                    type="button"
+                    className={`traffic-adv-btn${logsAdvancedOpen ? ' active' : ''}`}
+                    onClick={() => setLogsAdvancedOpen((open) => !open)}
+                    aria-expanded={logsAdvancedOpen}
+                    title="更多筛选：密钥、Provider、用户"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5.5h16l-6.2 7.4V20l-3.6-2v-5.1L4 5.5Z" /></svg>
+                  </button>
+                </div>
 
-                  {/* 第三行：状态筛选芯片；「应用筛选 / 重置」与搜索框同排，避免再来一行把控件挤到日历下方 */}
-                  <div className="traffic-chips-row">
-                    <span className="traffic-chips-label">状态筛选：</span>
-                    {[
-                      { id: 'all', label: '全部状态' },
-                      { id: '2xx', label: '2xx 正常', tone: 'green' },
-                      { id: '4xx', label: '4xx 客户端异常', tone: 'amber' },
-                      { id: '5xx', label: '5xx 服务端错误', tone: 'red' },
-                    ].map((chip) => (
-                      <button
-                        key={chip.id}
-                        type="button"
-                        className={`traffic-status-chip ${chip.tone || ''} ${logsStatusFilter === chip.id ? 'active' : ''}`}
-                        onClick={() => {
-                          setLogsPage(1);
-                          setLogsStatusFilter(chip.id as typeof logsStatusFilter);
-                        }}
-                      >
-                        {chip.label}
+                <div className="traffic-status-row">
+                  {([
+                    { id: 'all', label: '全部状态', tone: '' },
+                    { id: '2xx', label: '2xx 正常', tone: 'green' },
+                    { id: '4xx', label: '4xx 限流/异常', tone: 'amber' },
+                    { id: '5xx', label: '5xx 熔断/故障', tone: 'red' },
+                  ] as const).map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      className={`traffic-status-chip ${chip.tone} ${logsStatusFilter === chip.id ? 'active' : ''}`}
+                      onClick={() => { setLogsPage(1); setLogsStatusFilter(chip.id); }}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                  <span className="traffic-status-count" title="当前筛选条件命中的日志总数">
+                    共 <b>{logsTotal}</b> 条
+                  </span>
+                  {/* 生效中的筛选条件在这里显形：进了高级面板、或者日期不是今天，
+                      主条上仍看得见「现在按什么在看」。点一下就撤掉那一条。 */}
+                  <span className="traffic-active-filters">
+                    {logsProviderFilter ? (
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsProviderFilter(''); void refreshLogs(1); }}>
+                        Provider：{providerDisplayLabel((state.providers || []).find((item) => item.id === logsProviderFilter), logsProviderFilter)} ×
                       </button>
-                    ))}
-                  </div>
+                    ) : null}
+                    {logsApiKeyName ? (
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsApiKeyName(''); void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' }); }}>
+                        密钥：{logsApiKeyName} ×
+                      </button>
+                    ) : null}
+                    {logsOwnerFilter ? (
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsOwnerFilter(''); void refreshLogs(1); }}>
+                        用户：{logsOwnerFilter === LOG_OWNER_FILTER_ADMIN ? '内置 admin' : (consoleUsers.find((u) => u.id === logsOwnerFilter)?.username || logsOwnerFilter)} ×
+                      </button>
+                    ) : null}
+                    {logsUsageTarget ? (
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsUsageTarget(null); setLogsPage(1); void refreshLogs(1); }}>
+                        {logsUsageTarget.type === 'model' ? '模型' : '密钥'}：{logsUsageTarget.label} ×
+                      </button>
+                    ) : null}
+                    {logsKeyword ? (
+                      <button type="button" className="traffic-filter-tag" onClick={() => setLogsKeyword('')}>
+                        关键词：{logsKeyword} ×
+                      </button>
+                    ) : null}
+                  </span>
+                  <span className="traffic-status-meta">
+                    {dataFetchedAt ? <>更新于 {dataFetchedAt.toLocaleTimeString()} · </> : null}
+                    第 {logsPage} / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))} 页
+                  </span>
+                </div>
 
-                  {/* 第三行：下拉表单项 */}
-                  <div className="traffic-fields-grid">
+                {logsAdvancedOpen ? (
+                  <div className="traffic-advanced-row">
                     <label className="field">
                       <span>API 密钥</span>
-                      <select
-                        value={logsApiKeyName}
-                        onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}
-                      >
+                      <select value={logsApiKeyName} onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}>
                         <option value="">全部密钥</option>
                         {(state.apiKeys || []).map((key) => (
                           <option key={key.id} value={key.name}>{key.name}</option>
                         ))}
                       </select>
                     </label>
-
                     <div className="field">
                       <span>输入 Provider</span>
                       <div className="traffic-select">
@@ -6151,14 +6163,10 @@ function App() {
                         />
                       </div>
                     </div>
-
-                    {!isNormalUser && (
+                    {!isNormalUser ? (
                       <label className="field">
                         <span>所属用户</span>
-                        <select
-                          value={logsOwnerFilter}
-                          onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}
-                        >
+                        <select value={logsOwnerFilter} onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}>
                           <option value="">全部用户</option>
                           <option value={LOG_OWNER_FILTER_ADMIN}>内置 admin（无归属）</option>
                           {consoleUsers.map((user) => (
@@ -6166,9 +6174,48 @@ function App() {
                           ))}
                         </select>
                       </label>
-                    )}
+                    ) : null}
+                    {!isNormalUser ? (
+                      <label className="traffic-quick-switch" title="开启后，2xx 正常请求也将完整落盘请求体与响应体（便于全量审计，但会增加 SQLite 写入量）；关闭时仅 4xx/5xx 错误请求记录正文以保障极限吞吐。">
+                        <input type="checkbox" checked={log2xxBodies} disabled={saving} onChange={(e) => void updateLog2xxBodies(e.target.checked)} />
+                        <span>记录 2xx 成功正文</span>
+                      </label>
+                    ) : null}
+                    {!isNormalUser ? <span className="traffic-advanced-note">历史留存：{requestLogRetentionDays} 天</span> : null}
+                    {logsFrom || logsTo ? (
+                      <button
+                        className="mini-btn"
+                        type="button"
+                        onClick={() => {
+                          logsFollowTodayRef.current = true;
+                          setLogsFrom('');
+                          setLogsTo('');
+                          setLogsPage(1);
+                          void refreshLogs(1, '', '');
+                        }}
+                      >
+                        全部历史日期
+                      </button>
+                    ) : null}
+                    <button
+                      className="btn secondary"
+                      type="button"
+                      title="重置所有筛选项"
+                      onClick={() => {
+                        setLogsUsageTarget(null);
+                        setLogsApiKeyName('');
+                        setLogsProviderFilter('');
+                        setLogsOwnerFilter('');
+                        setLogsStatusFilter('all');
+                        setLogsKeyword('');
+                        setLogsPage(1);
+                        void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' });
+                      }}
+                    >
+                      重置筛选
+                    </button>
                   </div>
-                </div>
+                ) : null}
               </div>
 
               {decisionAggregate.length > 0 ? (
