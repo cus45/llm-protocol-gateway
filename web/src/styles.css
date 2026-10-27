@@ -2289,6 +2289,30 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   font-family: var(--mono); color: var(--muted); font-size: 11px;
 }
 .traffic-panel { width: 100%; }
+
+/* 日志页也吃满可视高度（与密钥全量表格同一套口径，门槛同为 901px）：
+   卡片底边与侧栏底边齐平，日志列表在卡内滚动，否则内容少时下方留着一条空带。
+   901 而不是 900：侧栏在该宽度变顶部横条，页面从侧栏下面开始，钉 100dvh 会溢出。 */
+@media (min-width: 901px) {
+  .section-full.logs-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 32px);
+  }
+  .section-full.logs-page > .traffic-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* 工具栏与面板标题按内容高度，剩下全给日志表。 */
+  .section-full.logs-page .traffic-panel > .panel-header,
+  .section-full.logs-page .traffic-toolbar,
+  .section-full.logs-page .decision-aggregate,
+  .section-full.logs-page .log-session-bar { flex: 0 0 auto; }
+  .section-full.logs-page .log-table { flex: 1 1 auto; min-height: 0; overflow: auto; }
+}
+body:has(.logs-page) { display: flow-root; }
 .log-key { color: var(--slate); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-user { color: var(--text); font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

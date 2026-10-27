@@ -6003,7 +6003,9 @@ function App() {
           )}
 
           {activeNav === 'traffic-tokens' && (
-          <section className="section-full">
+          // logs-page：与密钥全量表格同一套「吃满可视高度」口径（见 akc.css），
+          // 日志列表在卡内滚动，卡片底边与侧栏底边齐平。
+          <section className="section-full logs-page">
             <div className="card panel traffic-panel">
               <div className="panel-header">
                 <div>
