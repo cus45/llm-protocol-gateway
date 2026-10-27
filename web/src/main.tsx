@@ -341,6 +341,11 @@ function App() {
   const [logsSessionFilter, setLogsSessionFilter] = useState('');
   // 日志页筛选条的两个弹层/折叠状态：日期日历改到弹层里，密钥/Provider/用户
   // 筛选收进「高级」折叠，主条只占两行，把纵向空间还给日志本身。
+  // 每页条数跟随可用高度：筛选区收窄后空出的高度要变成「多看到几条日志」，
+  // 而不是一片空白。行高与表头在渲染后量（固定 10 条会和任何布局变化脱节）。
+  const [logsPageSize, setLogsPageSize] = useState(LOGS_PAGE_SIZE);
+  const pageSizeRef = useRef(LOGS_PAGE_SIZE);
+  const logsTableRef = useRef<HTMLDivElement | null>(null);
   const [logsDateOpen, setLogsDateOpen] = useState(false);
   const [logsAdvancedOpen, setLogsAdvancedOpen] = useState(false);
   const logsDateRef = useRef<HTMLDivElement | null>(null);
@@ -1381,6 +1386,35 @@ function App() {
     void refreshRTKStats();
   }, [activeNav, rtkStatsDays]);
 
+  // 日志每页条数按可用高度算：拿不到表格（还没渲染）就沿用上次的值。
+  // 只在数值真的变了才 setState，避免 ResizeObserver 与重渲染互相触发。
+  useEffect(() => {
+    if (activeNav !== 'traffic-tokens') return;
+    const host = logsTableRef.current;
+    if (!host) return;
+    const measure = () => {
+      // 日志表是 div + grid 拼的（.tlog-grid），不是 <table>：按类名量表头与行，
+      // 量不到就等下一帧（首次渲染时表体还没铺开）。
+      const head = host.querySelector('.tlog-head');
+      const firstRow = host.querySelector('.tlog-row');
+      const rowHeight = firstRow?.getBoundingClientRect().height || 0;
+      const headHeight = head?.getBoundingClientRect().height || 0;
+      const avail = host.clientHeight - headHeight;
+      if (rowHeight <= 0 || avail <= 0) return;
+      const next = Math.min(200, Math.max(LOGS_PAGE_SIZE, Math.floor(avail / rowHeight)));
+      if (next === pageSizeRef.current) return;
+      pageSizeRef.current = next;
+      setLogsPageSize(next);
+    };
+    measure();
+    // 首次渲染时表格还没铺开（数据未到、或行高还是 0），观察器只会在尺寸变化时
+    // 再触发；补一个短定时重试，拿到真实行高后再算一次。
+    const retry = window.setTimeout(measure, 600);
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => { window.clearTimeout(retry); observer.disconnect(); };
+  }, [activeNav, logsAdvancedOpen, logsPageSize]);
+
   useEffect(() => {
     if (activeNav !== 'traffic-tokens') return;
     // 跟随今天：跨午夜后从侧边栏再进本页，把日期滚到真实今天再拉日志。
@@ -1410,7 +1444,7 @@ function App() {
     }
     if (logsPageRef.current !== 1) setLogsPage(1);
     void refreshLogs(1, effectiveFrom, effectiveTo, { silent: Boolean(cached?.items?.length) });
-  }, [activeNav, logsStatusFilter, logsFrom, logsTo, logsApiKeyName, logsProviderFilter, logsOwnerFilter, logsUsageTarget]);
+  }, [activeNav, logsStatusFilter, logsFrom, logsTo, logsApiKeyName, logsProviderFilter, logsOwnerFilter, logsUsageTarget, logsPageSize]);
 
   // 仅第 1 页自动轮询；翻到第 2 页及以后立刻停表，绝不自动刷新。
   useEffect(() => {
@@ -1854,7 +1888,7 @@ function App() {
   function buildLogsQueryParams(page: number, includeBodies = false, fromOverride?: string, toOverride?: string, apiKeyNameOverride?: string) {
     const params = new URLSearchParams();
     params.set('page', String(page));
-    params.set('pageSize', String(LOGS_PAGE_SIZE));
+    params.set('pageSize', String(pageSizeRef.current));
     params.set('status', logsStatusFilter);
     if (includeBodies) params.set('includeBodies', '1');
     // 日历选完立即刷新时 state 尚未生效，需显式传入新区间
@@ -6181,7 +6215,7 @@ function App() {
                   </span>
                   <span className="traffic-status-meta">
                     {dataFetchedAt ? <>更新于 {dataFetchedAt.toLocaleTimeString()} · </> : null}
-                    第 {logsPage} / {Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE))} 页
+                    第 {logsPage} / {Math.max(1, Math.ceil(logsTotal / logsPageSize))} 页
                   </span>
                 </div>
 
@@ -6267,7 +6301,7 @@ function App() {
               ) : null}
 
               {/* 日志表格 */}
-              <div className="log-table">
+              <div className="log-table" ref={logsTableRef}>
                 {logsLoading || !logsFetchedOnce ? (
                   <div className="empty-state">加载流量日志中…</div>
                 ) : logs.length === 0 ? (
@@ -6290,14 +6324,14 @@ function App() {
                     />
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                       <span>
-                        共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {LOGS_PAGE_SIZE} 条
+                        共 {logsTotal} 条 · 第 {logsPage} 页 · 每页 {logsPageSize} 条
                         {logsKeyword ? ` · 当前关键词过滤匹配 ${displayedLogs.length} 条` : ''}
                         {logsSessionFilter ? ` · 会话 ${logsSessionFilter.slice(0, 8)}` : ''}
                         {logsPage > 1 ? ' · 当前页不自动刷新（避免新日志把翻页顶得乱跳），需要看最新请回到第 1 页' : ''}
                       </span>
                       <span style={{ display: 'flex', gap: 8 }}>
                         <button className="mini-btn" type="button" disabled={logsPage <= 1} onClick={() => void refreshLogs(logsPage - 1)}>上一页</button>
-                        <button className="mini-btn" type="button" disabled={logsPage * LOGS_PAGE_SIZE >= logsTotal} onClick={() => void refreshLogs(logsPage + 1)}>下一页</button>
+                        <button className="mini-btn" type="button" disabled={logsPage * logsPageSize >= logsTotal} onClick={() => void refreshLogs(logsPage + 1)}>下一页</button>
                       </span>
                     </div>
                   </>

@@ -2297,7 +2297,9 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
   .section-full.logs-page {
     display: flex;
     flex-direction: column;
-    height: calc(100dvh - 32px);
+    /* shell 已去掉外边距、面板也没有上下外边距：卡片的顶/底就是 section 的顶/底，
+       高度按视口减 32px 算，底边与侧栏（bottom 16px）齐平。 */
+    height: calc(100dvh - 16px);
   }
   .section-full.logs-page > .traffic-panel {
     display: flex;
