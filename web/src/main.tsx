@@ -4612,7 +4612,7 @@ function App() {
       <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
         <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
           <div className="brand">
-            <div className="brand-logo">PG</div>
+            <div className="brand-logo"><img src="/logo.svg" alt="" aria-hidden="true" /></div>
             <div className="brand-text">
               <div className="brand-title">协议网关</div>
               <div className="brand-subtitle">LLM Protocol Gateway</div>
