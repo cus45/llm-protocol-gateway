@@ -3194,12 +3194,25 @@ html[data-theme="dark"] .checkin-row[data-state="ok"] .checkin-say { color: #6ee
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--surface-soft);
 }
+/* min-height 而不是固定高度：卡片收窄到 230px 左右时这一行要能折成两行，
+   否则会自动最小宽度撑破卡片，按钮被右边缘裁掉（用户截图复现）。 */
 .chatgpt-reset-credits-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; min-height: 26px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+  gap: 6px 10px; min-height: 26px;
   font-size: 11.5px; font-weight: 500; color: var(--muted);
+  /* 摘要行不是摘要正文：折行后的按钮与标题都该靠左，不继承外层的居中。 */
+  text-align: left;
 }
-.chatgpt-reset-credits-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+/* 摘要文字是可伸缩的那一半：空间不够时先省略「最早到期」，布局绝不溢出。
+   flex-basis auto 而不是 100%：宽度够时按钮留在同一行右侧；不够时按钮因为
+   flex:0 0 auto 放不下而整颗折到下一行，不必把每张卡片都强制成两行。
+   margin-left 给固定的展开三角让位（三角是绝对定位，不参与 flex 分配）。 */
+.chatgpt-reset-credits-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex: 1 1 auto; min-width: 0;
+  margin-left: 14px;
+  overflow: hidden; white-space: nowrap;
+}
 .chatgpt-reset-credits-label { color: var(--text); font-weight: 600; flex: 0 0 auto; }
 .chatgpt-reset-credits-count {
   display: inline-flex; align-items: center; justify-content: center;
@@ -3217,7 +3230,9 @@ html[data-theme="dark"] .checkin-row[data-state="ok"] .checkin-say { color: #6ee
   overflow: hidden; text-overflow: ellipsis;
 }
 .chatgpt-reset-credits-expiry::before { content: "·"; margin-right: 6px; color: var(--subtle); }
-.chatgpt-reset-credits-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+/* 按钮永远整颗可见：同一行时由 margin-left:auto 靠右；放不下时整颗折到下一行，
+   仍由 auto 外边距推到右侧，与第一行的收尾对齐。 */
+.chatgpt-reset-credits-actions { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; margin-left: auto; max-width: 100%; }
 .chatgpt-reset-consume-btn {
   display: inline-flex; align-items: center; justify-content: center;
   height: 24px; padding: 0 11px;
@@ -3237,7 +3252,14 @@ details.chatgpt-reset-credits.expandable { padding: 0; gap: 0; }
 details.chatgpt-reset-credits.expandable > summary {
   list-style: none;
   cursor: pointer;
+  /* min-width:0：summary 是 details 的块级子元素，content-box 的最小宽度来自
+     不可断行的标题行；不给 0 的话窄卡片下整块会被撑出边框。 */
+  min-width: 0;
+  /* 三角是指示器，把它做成行内首元素而不是 flex item：作为 flex item 时它独占
+     flex item 编号 0，标题块 flex-basis:auto 量到的可用宽度会少掉按钮那一截，
+     宽度充足也提前折行。 */
   padding: 7px 10px;
+  position: relative;
   user-select: none;
   border-radius: var(--r-md);
   transition: background 0.13s ease;
@@ -3245,14 +3267,15 @@ details.chatgpt-reset-credits.expandable > summary {
 details.chatgpt-reset-credits.expandable > summary::-webkit-details-marker { display: none; }
 details.chatgpt-reset-credits.expandable > summary::before {
   content: "";
-  flex: 0 0 auto;
+  position: absolute; left: 11px; top: 50%;
+  margin-top: -3.5px;
   width: 0; height: 0;
   border-left: 4px solid var(--subtle);
   border-top: 3.5px solid transparent;
   border-bottom: 3.5px solid transparent;
   transition: transform 0.16s ease;
 }
-details.chatgpt-reset-credits.expandable[open] > summary::before { transform: rotate(90deg); }
+details.chatgpt-reset-credits.expandable[open] > summary::before { transform: rotate(90deg); transform-origin: 1.5px 3.5px; }
 details.chatgpt-reset-credits.expandable > summary:hover { background: var(--surface-sunken); }
 details.chatgpt-reset-credits.expandable > summary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
 details.chatgpt-reset-credits.expandable[open] > summary { border-bottom: 1px solid var(--border); border-radius: var(--r-md) var(--r-md) 0 0; }
