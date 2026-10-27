@@ -7362,8 +7362,14 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 /* 面板里的数字旋钮：输入框和单位包进同一个控件框，外观与 .field input 一致
    （同底色、同边框、同圆角、同聚焦环），高度与同排的 .btn-sm（--btn-h: 30px）
    等高。光秃秃的 input 会拿到浏览器默认的灰底白边，跟主题完全是两套东西。 */
-.rtk-provider-panel .toggle-row input[type="number"] {
-  width: 66px;
+/* 旋钮里的输入框：挂在 .knob-input 上而不是某个外层区块上。
+   原来写的是 .rtk-provider-panel .toggle-row input——旋钮挪到 .provider-knobs 后
+   这些规则全部失效，input 退回浏览器默认外观（2px 灰边、系统假输入框），
+   在撑满格子的宽度下一眼可见。 */
+.knob-input input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   padding: 0;
   border: 0;
   outline: none;
@@ -7372,27 +7378,20 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   font-family: var(--mono);
   font-size: 12.5px;
   font-weight: 600;
+}
+.knob-input input[type="number"] {
   text-align: right;
   font-variant-numeric: tabular-nums;
   appearance: textfield;
   -moz-appearance: textfield;
 }
-.rtk-provider-panel .toggle-row input[type="number"]::-webkit-outer-spin-button,
-.rtk-provider-panel .toggle-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.rtk-provider-panel .toggle-row input[type="number"]::placeholder { color: var(--subtle); font-weight: 500; }
-/* 文本旋钮（账号名）：与数字旋钮同一套外观，只是左对齐、等宽字体保留。 */
-.rtk-provider-panel .toggle-row input[type="text"] {
-  padding: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-.rtk-provider-panel .toggle-row input[type="text"]::placeholder { color: var(--subtle); font-weight: 500; }
-.provider-knob-control { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.knob-input input[type="number"]::-webkit-outer-spin-button,
+.knob-input input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.knob-input input::placeholder { color: var(--subtle); font-weight: 500; }
+/* 数字右对齐是为了让真实数值贴近单位；占位符（「不限制」「不排队」）是说明文字，
+   右对齐会把它挤到单位旁边，读起来像一串没有归属的字，所以占位时左对齐。 */
+.knob-input input[type="number"]:placeholder-shown { text-align: left; }
+
 /* 旋钮面板统一左对齐：.toggle-row 原本把「标签 + 旋钮组」横排，而下方那块是
    「标签」和「旋钮组」各自成行，于是同一区块出现 x=501 与 x=415 两套起点。
    这里让带旋钮组的 toggle-row 一律竖向排：标签一行、控件组从同一条左边线起。
