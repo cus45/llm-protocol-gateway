@@ -4787,7 +4787,8 @@ function App() {
 
         <main className="main">
           {activeNav === 'api-keys' && (
-          <section className={`section-full akc-page${apiKeyViewMode === 'split' ? ' akc-page-split' : ''}`}>
+          // 两种视图都吃满可视高度（见 akc.css）：模式 class 决定由哪块内部滚动。
+          <section className={`section-full akc-page${apiKeyViewMode === 'split' ? ' akc-page-split' : ' akc-page-full'}`}>
             <ApiKeysTopBar
               totalKeys={(state.apiKeys || []).length}
               enabledKeys={(state.apiKeys || []).filter((key) => key.enabled).length}
