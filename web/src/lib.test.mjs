@@ -401,3 +401,40 @@ test('轮询驱动：检查抛错时继续轮询，不会卡在「等待授权�
   assert.equal(settledWith, null, '抛错不能当作授权成功或失败');
   poll.stop();
 });
+
+// 「设为首选」是交换，不是删除：只改 routeId 时后端会把新首选从备选里剔掉、
+// 旧首选又不补回来，于是每点一次节点就少一个（R39 用户报告）。
+test('promoteApiKeyProvider：首选与备选交换，位次守恒，其余顺序不变', () => {
+  const swap = lib.promoteApiKeyProvider(
+    'b',
+    {providerIds: ['b', 'c', 'd'], modelOverrides: {b: 'm-b', d: 'm-d'}},
+    'a',
+  );
+  assert.equal(swap.providerId, 'b', '被提升的 Provider 成为首选');
+  assert.deepEqual(swap.fallbackProviderIds, ['a', 'c', 'd'], '旧首选回到被提升者原来的位次，节点总数不变');
+  assert.deepEqual(swap.fallbackModelOverrides, {d: 'm-d'}, '新首选的备选固定模型不再留在备选里');
+});
+
+test('promoteApiKeyProvider：旧首选带着自己的固定模型进入备选', () => {
+  const swap = lib.promoteApiKeyProvider(
+    'b',
+    {providerIds: ['b', 'c'], modelOverrides: {a: 'm-a', b: 'm-b'}},
+    'a',
+  );
+  assert.deepEqual(swap.fallbackProviderIds, ['a', 'c']);
+  assert.equal(swap.fallbackModelOverrides.a, 'm-a', '旧首选锁定的模型要跟着它搬进备选条目');
+  assert.equal(swap.fallbackModelOverrides.b, undefined, '新首选的固定模型交给首选侧');
+});
+
+test('promoteApiKeyProvider：没有旧首选时只移除自己，不凭空塞节点', () => {
+  const swap = lib.promoteApiKeyProvider('b', {providerIds: ['b', 'c'], modelOverrides: {}}, '');
+  assert.deepEqual(swap.fallbackProviderIds, ['c']);
+  assert.deepEqual(swap.fallbackModelOverrides, {});
+});
+
+test('promoteApiKeyProvider：不是备选就原样交回，别拆掉别人的链', () => {
+  const swap = lib.promoteApiKeyProvider('z', {providerIds: ['b', 'c'], modelOverrides: {c: 'm'}}, 'a');
+  assert.equal(swap.providerId, 'z');
+  assert.deepEqual(swap.fallbackProviderIds, ['b', 'c']);
+  assert.deepEqual(swap.fallbackModelOverrides, {c: 'm'});
+});

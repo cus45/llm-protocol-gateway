@@ -1917,6 +1917,43 @@ export function apiKeyReferencesProvider(key: APIKey, routes: Route[], providerI
   return false;
 }
 
+/**
+ * promoteApiKeyProvider 把一台备选提为首选，返回要一起提交的绑定字段。
+ *
+ * 「设为首选」是交换，不是删除：旧首选回到被提升者原来的位次，其余备选顺序不变。
+ * 只改 routeId 会让后端把新首选从备选里剔掉（normalizeFallbackProviderIDs），
+ * 旧首选又不补回来，于是每点一次就少一个节点。
+ *
+ * 固定的模型（fallbackModelOverrides 按 Provider 记）跟着 Provider 走：旧首选的
+ * 条目要搬进新首选的备选条目，否则后端会把它当成已删除 Provider 的残留丢掉。
+ */
+export function promoteApiKeyProvider(
+  promoteProviderId: string,
+  fallbacks: { providerIds: string[]; modelOverrides: Record<string, string> },
+  currentPrimaryProviderId: string,
+): { providerId: string; fallbackProviderIds: string[]; fallbackModelOverrides: Record<string, string> } {
+  const ids = fallbacks.providerIds.slice();
+  const index = ids.indexOf(promoteProviderId);
+  if (index < 0) {
+    // 不是备选（界面上不会出现这个按钮）：原样交回，宁可不动也别拆掉别人。
+    return { providerId: promoteProviderId, fallbackProviderIds: ids, fallbackModelOverrides: { ...fallbacks.modelOverrides } };
+  }
+  if (currentPrimaryProviderId && currentPrimaryProviderId !== promoteProviderId) {
+    // 位次守恒：旧首选站在被提升者原来的位置，其余相对顺序不变。
+    ids[index] = currentPrimaryProviderId;
+  } else {
+    ids.splice(index, 1);
+  }
+  const overrides: Record<string, string> = {};
+  for (const id of ids) {
+    const model = (fallbacks.modelOverrides[id] || '').trim();
+    if (model) overrides[id] = model;
+  }
+  // 旧首选的固定模型跟着它搬到备选位置上：后端会丢掉不属于任何备选的条目，
+  // 不搬就等于把原首选锁的模型顺手清空。
+  return { providerId: promoteProviderId, fallbackProviderIds: ids, fallbackModelOverrides: overrides };
+}
+
 export function formatTokenSummary(stats: Pick<APIKeyDayStats, 'inputTokens' | 'outputTokens' | 'cacheTokens'>) {
   const { totalInput, cacheHits } = normalizePromptTokenStats(stats.inputTokens, stats.cacheTokens || 0);
   return `in ${formatTokenCount(totalInput)} · out ${formatTokenCount(stats.outputTokens)} · cache ${formatTokenCount(cacheHits)}`;

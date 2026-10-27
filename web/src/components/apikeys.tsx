@@ -113,6 +113,7 @@ export function ApiKeyDetailPanel({
   fixedOutputLabels,
   onUpdateField,
   onUpdateBinding,
+  onPromoteFallback,
   onUpdateModelAliases,
   onUpdateFallbacks,
   onDelete,
@@ -140,6 +141,8 @@ export function ApiKeyDetailPanel({
   fixedOutputLabels: string[];
   onUpdateField: (key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) => Promise<void>;
   onUpdateBinding: (key: APIKey, providerId: string, outputProtocol: Protocol) => Promise<void>;
+  // 备选「设为首选」：绑定与备选列表一次提交（交换，不删节点）。
+  onPromoteFallback: (key: APIKey, providerId: string) => Promise<void>;
   onUpdateModelAliases: (key: APIKey, modelAliases: Record<string, string>) => Promise<void>;
   onUpdateFallbacks: (key: APIKey, fallbackProviderIds: string[], fallbackModelOverrides: Record<string, string>) => Promise<void>;
   onDelete: (key: APIKey) => Promise<void>;

@@ -47,6 +47,7 @@ export type ApiKeyPanelHandlers = Pick<
   React.ComponentProps<typeof ApiKeyDetailPanel>,
   | 'onUpdateField'
   | 'onUpdateBinding'
+  | 'onPromoteFallback'
   | 'onUpdateFallbacks'
   | 'onUpdateModelAliases'
   | 'onDelete'
@@ -899,6 +900,8 @@ function RoutingTab({
   saving: boolean;
   testingProviderID: string;
   primaryProviderId: string;
+  // 首选接线的输出协议。「设为首选」保持它不变：客户端手里的协议不因为换了一台
+  // 上游就变，需要转换由网关做。
   outputProtocol: Protocol;
   panel: ApiKeyPanelHandlers;
   onOpenFallbackModal: () => void;
@@ -1099,7 +1102,7 @@ function RoutingTab({
                 drag={drag}
                 onRefreshModels={panel.onRefreshModels}
                 onRemove={() => void panel.onUpdateFallbacks(keyItem, fallbackIds.filter((item) => item !== id), removeKey(overrides, id))}
-                onPromote={() => void panel.onUpdateBinding(keyItem, id, outputProtocol)}
+                onPromote={() => void panel.onPromoteFallback(keyItem, id)}
               />
             );
           })}

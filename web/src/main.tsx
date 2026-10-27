@@ -99,6 +99,7 @@ import {
     parseSSEStreamContent,
     pickCustomDomainRoot,
     previewRequestAdapterCurl,
+    promoteApiKeyProvider,
     protocolFromLabel,
     protocolIcon,
     protocolLabel,
@@ -2895,7 +2896,10 @@ function App() {
     setApiKeyModalOpen(true);
   }
 
-  async function ensureRouteForBinding(providerId: string, outputProtocol: Protocol) {
+  // template 是「换绑时新路由该长什么样」的来源：把一台新的 Provider 接进这条
+  // 密钥时，路由的其余属性（输出端点、模式）沿用原来的接线，只换 Provider。
+  // 不传就从默认值新建（首次为密钥建路由）。
+  async function ensureRouteForBinding(providerId: string, outputProtocol: Protocol, template?: Route) {
     const existing = findRouteForBinding(state.routes, providerId, outputProtocol);
     if (existing) return existing;
     const provider = state.providers.find((item) => item.id === providerId);
@@ -2906,7 +2910,8 @@ function App() {
         name: `${provider?.name || providerId} · ${protocolLabel(outputProtocol)}`,
         providerId,
         outputProtocol,
-        mode: 'auto',
+        outputEndpointId: template?.outputEndpointId || '',
+        mode: template?.mode || 'auto',
         enabled: true,
       }),
     });
@@ -3908,6 +3913,52 @@ function App() {
     }
   }
 
+  // promoteApiKeyFallback 是「设为首选」：一次 PATCH 同时交绑定与备选列表。
+  //
+  // 以前这个按钮只改 routeId，后端随后把新首选从备选里剔掉（normalizeFallback
+  // ProviderIDs），旧首选又不补回来 —— 每点一次就少一个节点。现在按「交换」
+  // 提交：旧首选回到被提升者原来的位次，其余备选顺序不变。
+  //
+  // 输出协议保持首选接线原样：客户端手里的协议不因为换了一台上游就变，母语协议
+  // 不同时由网关转换。固定模型跟着 Provider 走，由 promoteApiKeyProvider 搬。
+  async function promoteApiKeyFallback(key: APIKey, promoteProviderId: string) {
+    const currentRoute = state.routes.find((item) => item.id === key.routeId);
+    const currentPrimaryId = currentRoute?.providerId || '';
+    if (promoteProviderId === currentPrimaryId) return;
+    const swap = promoteApiKeyProvider(
+      promoteProviderId,
+      {
+        providerIds: key.fallbackProviderIds || [],
+        modelOverrides: key.fallbackModelOverrides || {},
+      },
+      currentPrimaryId,
+    );
+    setSaving(true);
+    try {
+      const route = await ensureRouteForBinding(promoteProviderId, currentRoute?.outputProtocol || 'openai_chat', currentRoute);
+      const response = await fetch(`${API_BASE}/__apikeys/${encodeURIComponent(key.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildApiKeyPatchBody(key, {
+          routeId: route.id,
+          // 首选换了 Provider：固定模型只跟输入 Provider 相关，旧的值留在旧首选
+          // 现在所在的备选条目里，首选侧清空。
+          modelOverride: '',
+          fallbackProviderIds: swap.fallbackProviderIds,
+          fallbackModelOverrides: swap.fallbackModelOverrides,
+        })),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      showToast(`已设为首选：${key.name}`);
+      await refreshState(false);
+      await refreshAppLogs();
+    } catch (error) {
+      showToast(`设为首选失败：${String(error)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function refreshApiKeyModelsForProvider(providerID: string, providerName: string) {
     const provider = state.providers.find((item) => item.id === providerID);
     if (!provider) {
@@ -4271,6 +4322,7 @@ function App() {
   const apiKeyPanelProps = {
     onUpdateField: updateApiKeyField,
     onUpdateBinding: updateApiKeyBinding,
+    onPromoteFallback: promoteApiKeyFallback,
     onUpdateFallbacks: updateApiKeyFallbacks,
     onUpdateModelAliases: updateApiKeyModelAliases,
     onUpdateOwner: updateApiKeyOwner,
