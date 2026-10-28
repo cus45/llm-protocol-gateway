@@ -1,5 +1,5 @@
 // 应用入口：App 组件 + 启动引导。通用类型/工具/组件已拆分到 types.ts、lib.ts、components/。
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './styles.css';
 import './rbac.css';
@@ -164,7 +164,7 @@ import {MonitoringPage} from './monitoring/MonitoringPage';
 import {groupProvidersByBrand, ProviderChecklist, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
-import {ReplayPanel, ScheduleTracePanel, TrafficLogTable} from './components/traffic_log';
+import {ReplayPanel, ScheduleTracePanel, TrafficLogTable, trafficLogRowKey} from './components/traffic_log';
 import {IconSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
@@ -234,6 +234,9 @@ import {
 
 // 「全部 Provider」筛选项的哨兵值：日志筛选的 providerId 为空串，下拉里得有个能选中的项。
 const ALL_PROVIDERS_VALUE = '__all_providers__';
+
+// 日志第 1 页走增量追加（新行插到表头），所以单独用更短的节奏，不受面板轮询的 15 秒影响。
+const LOGS_LIVE_POLL_MS = 5000;
 
 /** 请求量排名缓存的账号作用域：换用户就换一份，不把上一个用户的排名带过来。 */
 function trafficRankScopeOf(auth: AdminAuthStatus | null): string {
@@ -358,9 +361,6 @@ function App() {
   const [logsPage, setLogsPage] = useState(1);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsFetchedOnce, setLogsFetchedOnce] = useState(false);
-  // 轮询只探测「有没有新日志」，列表由用户点按钮才换：每 15 秒把整屏行往下顶
-  // 一格，读日志的人看到的就是「闪动」。数字是探测到的未采纳条数。
-  const [logsPendingNew, setLogsPendingNew] = useState(0);
   const [logsStatusFilter, setLogsStatusFilter] = useState<'all' | '2xx' | '4xx' | '5xx'>('all');
   const [logsApiKeyName, setLogsApiKeyName] = useState('');
   const [logsUsageTarget, setLogsUsageTarget] = useState<{ type: 'model' | 'apiKey'; value: string; label: string } | null>(null);
@@ -385,8 +385,9 @@ function App() {
   const logsSnapshotBeforeTimeRef = useRef('');
   const logsPageRef = useRef(1);
   const logsFetchGenRef = useRef(0);
-  // 当前已展示列表的表头：用于探测「有没有更新的日志」以及未采纳条数。
-  const logsNewestKeyRef = useRef('');
+  // 当前表里的行（增量轮询按它去重）与「往下翻时锚住的那一行」。
+  const logsItemsRef = useRef<LogEntry[]>([]);
+  const logsAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const logsTotalRef = useRef(0);
   // 「跟随今天」：默认/点「今天」/点选当日时为 true。跨午夜后侧边栏再进本页会滚到新的今天，
   // 不必整页刷新。用户选了历史单日、多日区间或清除日期后为 false，不再自动改日期。
@@ -1562,17 +1563,36 @@ function App() {
   }, [activeNav, logsStatusFilter, logsFrom, logsTo, logsApiKeyName, logsProviderFilter, logsOwnerFilter, logsUsageTarget, logsPageSize]);
 
   // 仅第 1 页自动轮询；翻到第 2 页及以后立刻停表，绝不自动刷新。
-  // 轮询只探测有没有新日志（pageSize=1），不替换可见列表——见 probeNewLogs。
+  // 第 1 页走增量追加（见 pollNewLogs）：新行插到表头，已有的行原地不动。
   useEffect(() => {
     if (activeNav !== 'traffic-tokens') return;
     if (logsPage !== 1) return;
     const timer = window.setInterval(() => {
       if (!isDocumentActive()) return;
       if (logsPageRef.current !== 1) return;
-      void probeNewLogs();
-    }, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
+      void pollNewLogs();
+    }, LOGS_LIVE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [activeNav, logsPage, logsStatusFilter, logsFrom, logsTo, logsApiKeyName, logsProviderFilter, logsOwnerFilter, logsUsageTarget]);
+
+  // 表里的行同步进 ref：增量轮询按它去重，不用等 React 状态落地。
+  useEffect(() => {
+    logsItemsRef.current = logs;
+  }, [logs]);
+
+  // 新行插到表头后补回滚动量：用户往下翻着看时，视线钉在原来那一行上。
+  useLayoutEffect(() => {
+    const anchor = logsAnchorRef.current;
+    logsAnchorRef.current = null;
+    if (!anchor) return;
+    const scroller = logsTableRef.current?.querySelector<HTMLElement>('.tlog-scroll');
+    if (!scroller) return;
+    const row = [...scroller.querySelectorAll<HTMLElement>('.tlog-row')]
+      .find((el) => el.dataset.logKey === anchor.key);
+    if (!row) return;
+    const delta = row.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
+  }, [logs]);
 
   // 筛选项（后端也只对 admin 生效），不需要拉取。
   useEffect(() => {
@@ -1928,8 +1948,6 @@ function App() {
       setLogsPage((current) => (current === nextPage ? current : nextPage));
       logsPageRef.current = nextPage;
       logsTotalRef.current = total;
-      logsNewestKeyRef.current = items[0] ? `${items[0].id ?? ''}|${items[0].time}` : '';
-      setLogsPendingNew(0);
       setLogsFetchedOnce(true);
       const fetchedAt = new Date();
       setDataFetchedAt(fetchedAt);
@@ -1951,49 +1969,69 @@ function App() {
   }
 
   /**
-   * 轮询只问「第 1 页最新一条变了吗」，不拉整页、也不动列表。
+   * 第 1 页增量轮询：拉最新一屏，只把排在「当前表头那一行」之前的行插到表头。
    *
-   * 旧实现每 15 秒把第 1 页整段 setLogs：只要这期间来了一条新请求，整屏行就
-   * 往下顶一格——读日志的人看到的是「频繁闪动」（Chrome 的 layout-shift 记录
-   * 里能量到整表位移）。现在把「有新日志」变成按钮，用户点一下才换表，跟
-   * 「输入 Provider 列表不跟着轮询重排」是同一口径。
+   * 不整段替换 = 已有行不重建、不闪；用户往下翻时按锚点行补回滚动量，
+   * 新行从上方进来而视线不动。整表替换曾把每一行都往下顶一格，
+   * layout-shift 里能量到整表位移，读日志的人看到的就是「频繁闪动」。
    */
-  async function probeNewLogs(fromOverride?: string, toOverride?: string) {
+  async function pollNewLogs(fromOverride?: string, toOverride?: string) {
     if (logsPageRef.current !== 1) return;
+    const gen = logsFetchGenRef.current;
     const params = buildLogsQueryParams(1, false, fromOverride, toOverride);
-    params.set('pageSize', '1');
+    // 多要一些：页面矮时一屏只有 5~10 行，一次来了几条也能全部接住。
+    params.set('pageSize', String(Math.max(pageSizeRef.current, 25)));
     try {
       const response = await fetch(`${API_BASE}/__logs?${params.toString()}`, { credentials: 'same-origin' });
       if (!response.ok) return;
+      if (gen !== logsFetchGenRef.current || logsPageRef.current !== 1) return;
       const data = await response.json() as LogPage | LogEntry[];
       const items = Array.isArray(data) ? data : (data.items || []);
       const total = Array.isArray(data) ? data.length : (data.total || 0);
-      const newest = items[0];
-      if (!newest) return;
-      // 列表还是空的：没有可「闪」的内容，直接填进去省一次点击。
-      if (logsTotalRef.current === 0) {
-        void refreshLogs(1, fromOverride, toOverride, { silent: true });
+      const current = logsItemsRef.current;
+      // 首屏还没落表（或表还是空的）：直接整页拉一次，省掉合并。
+      if (current.length === 0) {
+        if (items.length > 0) void refreshLogs(1, fromOverride, toOverride, { silent: true });
         return;
       }
-      const key = `${newest.id ?? ''}|${newest.time}`;
-      if (key === logsNewestKeyRef.current) {
-        setLogsPendingNew((current) => (current === 0 ? current : 0));
+      // 新行 = 排在「当前表头那一行」之前的那些。不能用「不在表里」判断：
+      // 多要的窗口（25 行 > 一屏）会带出当前页之外的老行，那些不能插到表头。
+      const topKey = trafficLogRowKey(current[0]);
+      const cut = items.findIndex((item) => trafficLogRowKey(item) === topKey);
+      const fresh = cut === 0 ? [] : (cut > 0 ? items.slice(0, cut) : items);
+      if (fresh.length === 0) {
+        if (total !== logsTotalRef.current) {
+          logsTotalRef.current = total;
+          setLogsTotal(total);
+        }
         return;
       }
-      // total 差值就是这期间新增的条数；条数被保留策略清掉时回落到「至少 1 条」。
-      setLogsPendingNew(Math.max(1, total - logsTotalRef.current));
+      // 用户已经往下翻了：记住第一行可见行，插入后把滚动量补回去。
+      const scroller = logsTableRef.current?.querySelector<HTMLElement>('.tlog-scroll');
+      if (scroller && scroller.scrollTop > 4) {
+        const edge = scroller.getBoundingClientRect().top;
+        const row = [...scroller.querySelectorAll<HTMLElement>('.tlog-row')]
+          .find((el) => el.getBoundingClientRect().bottom > edge + 1);
+        if (row?.dataset.logKey) {
+          logsAnchorRef.current = { key: row.dataset.logKey, top: row.getBoundingClientRect().top };
+        }
+      }
+      logsTotalRef.current = total;
+      setLogsTotal(total);
+      // 函数式更新兜住并发：两次轮询同时在途时，后到的那次不会把同一行插两遍。
+      setLogs((prev) => {
+        const seen = new Set(prev.map(trafficLogRowKey));
+        const extra = fresh.filter((item) => !seen.has(trafficLogRowKey(item)));
+        if (extra.length === 0) {
+          logsAnchorRef.current = null;
+          return prev;
+        }
+        return [...extra, ...prev].slice(0, pageSizeRef.current);
+      });
+      setDataFetchedAt(new Date());
     } catch {
-      /* 探测失败保持现状，不打扰用户 */
+      /* 轮询失败保持现状，不打扰用户 */
     }
-  }
-
-  /** 采纳探测到的新日志：回到第 1 页按当前筛选重拉一次，并把表滚回顶部。 */
-  function applyPendingLogs() {
-    if (logsPendingNew <= 0) return;
-    setLogsPendingNew(0);
-    logsTableRef.current?.scrollTo({ top: 0 });
-    logsTableRef.current?.querySelector('.tlog-scroll')?.scrollTo({ top: 0 });
-    void refreshLogs(1);
   }
 
   async function openTrafficLogDetail(log: LogEntry) {
@@ -6264,17 +6302,6 @@ function App() {
                       </button>
                     ) : null}
                   </span>
-                  {logsPendingNew > 0 ? (
-                    // 新日志不再自动顶表：亮个按钮，用户点一下才换（见 probeNewLogs）。
-                    <button
-                      type="button"
-                      className="traffic-new-pill"
-                      onClick={applyPendingLogs}
-                      title="有新请求落盘。点击把列表刷到最新（并回到第 1 页顶部）"
-                    >
-                      ↑ {logsPendingNew} 条新日志
-                    </button>
-                  ) : null}
                   <span className="traffic-status-meta">
                     {dataFetchedAt ? <>更新于 {dataFetchedAt.toLocaleTimeString()} · </> : null}
                     第 {logsPage} / {Math.max(1, Math.ceil(logsTotal / logsPageSize))} 页

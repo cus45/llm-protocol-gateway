@@ -5640,26 +5640,6 @@ html[data-theme="dark"] .traffic-log-row.has-error {
   color: var(--subtle);
   white-space: nowrap;
 }
-/* 「有新日志」按钮：日志表不再自动换行，靠它显形。不用动画，避免又变成一处闪动。 */
-.traffic-new-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 0.13s ease, border-color 0.13s ease, color 0.13s ease;
-}
-.traffic-new-pill:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
 .traffic-active-filters { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .traffic-filter-tag {
   height: 22px;

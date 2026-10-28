@@ -240,6 +240,11 @@ export function ReplayPanel({ log, apiKeys }: { log: LogEntry; apiKeys: APIKey[]
   );
 }
 
+/** 一行日志的稳定标识：增量轮询靠它判断「这条是不是已经在表里」。 */
+export function trafficLogRowKey(log: LogEntry): string {
+  return `${log.id ?? log.time}-${log.model}-${log.latencyMs}`;
+}
+
 export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
   logs: LogEntry[];
   providers: Provider[];
@@ -282,7 +287,8 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
           return (
             <div
               className={`tlog-grid tlog-row${error ? ' error' : ''}`}
-              key={`${log.id ?? log.time}-${log.model}-${log.latencyMs}`}
+              key={trafficLogRowKey(log)}
+              data-log-key={trafficLogRowKey(log)}
               onClick={() => onOpen(log)}
               title="点击查看请求链路 APM 耗时分解与完整报文"
               role="button"
