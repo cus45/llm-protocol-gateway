@@ -6340,7 +6340,7 @@ function App() {
           )}
 
           {activeNav === 'quota-keeper' && (
-            <QuotaKeeperPanel providers={state.providers} isAdmin={!isNormalUser} />
+            <QuotaKeeperPanel providers={state.providers} isAdmin={!isNormalUser} canManage={canDo('quota.manage')} />
           )}
 
           {/* 只读角色（users.view）也能看列表；拉取账号列表的初始请求只在 users.manage 时发出 */}

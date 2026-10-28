@@ -7263,6 +7263,9 @@ html[data-theme="dark"] .pivot-entity-card:hover {
   color: var(--muted); font-size: 11px; font-weight: 600;
 }
 .quota-switch input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; }
+/* 只读角色的开关是禁用的，别再用 pointer 暗示可以点。 */
+.quota-switch:has(input:disabled) { cursor: default; }
+.quota-switch input:disabled { cursor: not-allowed; }
 
 .quota-clock-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .quota-clock-chip {

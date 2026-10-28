@@ -189,7 +189,7 @@ async function readError(response: Response) {
   return nested || `HTTP ${response.status}`;
 }
 
-export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]; isAdmin: boolean }) {
+export function QuotaKeeperPanel({ providers, isAdmin, canManage }: { providers: Provider[]; isAdmin: boolean; canManage: boolean }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [recentRuns, setRecentRuns] = useState<ScheduledTaskRun[]>([]);
   const [providerQuota, setProviderQuota] = useState<Record<string, MonitorQuota>>({});
@@ -302,10 +302,13 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
             <p className="panel-desc">
               按指定时间自动向上游发一条极短的探测对话，把订阅额度窗口钉在固定小时上，让重置时间可预测（例如 09:00 → 14:00 → 19:00）。建议只放订阅类 Provider，探测成本可忽略。
             </p>
+            {canManage ? null : <p className="quota-hint">你的角色只有查看权限，任务由有维护权限的账号创建和调整。</p>}
           </div>
-          <button type="button" className="btn primary" onClick={() => setEditor({ draft: emptyDraft() })}>
-            新建任务
-          </button>
+          {canManage ? (
+            <button type="button" className="btn primary" onClick={() => setEditor({ draft: emptyDraft() })}>
+              新建任务
+            </button>
+          ) : null}
         </div>
 
         {error ? <div className="quota-error">{error}</div> : null}
@@ -327,6 +330,7 @@ export function QuotaKeeperPanel({ providers, isAdmin }: { providers: Provider[]
                 providers={providers}
                 runs={runsByTask[task.id] || []}
                 providerQuota={providerQuota}
+                canManage={canManage}
                 busy={busyId === task.id}
                 expanded={expanded === task.id}
                 onToggleExpansion={() => setExpanded(expanded === task.id ? '' : task.id)}
@@ -385,11 +389,12 @@ function quotaResetWindows(task: ScheduledTask, providers: Provider[], providerQ
   return out.sort((left, right) => left.at - right.at);
 }
 
-function QuotaTaskCard({ task, providers, runs, providerQuota, busy, expanded, onToggleExpansion, onToggle, onRun, onEdit, onDelete, now, owner, serverZone }: {
+function QuotaTaskCard({ task, providers, runs, providerQuota, canManage, busy, expanded, onToggleExpansion, onToggle, onRun, onEdit, onDelete, now, owner, serverZone }: {
   task: ScheduledTask;
   providers: Provider[];
   runs: ScheduledTaskRun[];
   providerQuota: Record<string, MonitorQuota>;
+  canManage: boolean;
   busy: boolean;
   expanded: boolean;
   onToggleExpansion: () => void;
@@ -418,8 +423,8 @@ function QuotaTaskCard({ task, providers, runs, providerQuota, busy, expanded, o
         <h3 className="quota-card-title" title={task.name}>{task.name}</h3>
         {owner ? <span className="quota-owner" title="该任务由这位用户创建">来自 {owner}</span> : null}
         <Badge tone={task.enabled ? 'blue' : 'slate'}>{MODE_LABELS[task.mode]}</Badge>
-        <label className="quota-switch">
-          <input type="checkbox" checked={task.enabled} onChange={(event) => onToggle(event.target.checked)} />
+        <label className="quota-switch" title={canManage ? undefined : '没有额度保活维护权限，只能查看'}>
+          <input type="checkbox" checked={task.enabled} disabled={!canManage} onChange={(event) => onToggle(event.target.checked)} />
           <span>{task.enabled ? '运行中' : '已暂停'}</span>
         </label>
       </header>
@@ -487,16 +492,22 @@ function QuotaTaskCard({ task, providers, runs, providerQuota, busy, expanded, o
       </div>
 
       <footer className="quota-card-foot">
-        <button type="button" className="btn btn-sm" onClick={onRun} disabled={busy || task.providerIds.length === 0}>
-          {busy ? '执行中…' : '立即执行'}
-        </button>
-        <button type="button" className="btn btn-sm subtle" onClick={onEdit}>编辑</button>
-        <MoreMenu
-          items={[
-            { label: expanded ? '收起明细' : '查看明细', onClick: onToggleExpansion },
-            { label: '删除任务', danger: true, onClick: onDelete },
-          ]}
-        />
+        {canManage ? (
+          <button type="button" className="btn btn-sm" onClick={onRun} disabled={busy || task.providerIds.length === 0}>
+            {busy ? '执行中…' : '立即执行'}
+          </button>
+        ) : null}
+        {canManage ? <button type="button" className="btn btn-sm subtle" onClick={onEdit}>编辑</button> : null}
+        {canManage ? (
+          <MoreMenu
+            items={[
+              { label: expanded ? '收起明细' : '查看明细', onClick: onToggleExpansion },
+              { label: '删除任务', danger: true, onClick: onDelete },
+            ]}
+          />
+        ) : (
+          <button type="button" className="btn btn-sm subtle" onClick={onToggleExpansion}>{expanded ? '收起明细' : '查看明细'}</button>
+        )}
         <span className="quota-run-hint">{runs.length > 0 ? `近 ${runs.length} 条记录` : '尚无执行记录'}</span>
       </footer>
 

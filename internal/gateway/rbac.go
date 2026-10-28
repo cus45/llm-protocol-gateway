@@ -247,10 +247,17 @@ func routePermission(method, path string) *domain.Permission {
 		return perm(domain.PermProvidersCreate)
 	case "/__routes":
 		return perm(domain.PermRoutesWrite)
-	case "/__quota-tasks", "/__quota-tasks/preview":
-		if read || method == http.MethodPost {
-			return perm(domain.PermQuotaKeeperManage)
+	case "/__quota-tasks":
+		// Reading the list is the page itself; creating needs manage. Before
+		// this split a read-only role could not even open 额度保活.
+		if read {
+			return perm(domain.PermQuotaKeeperView)
 		}
+		return perm(domain.PermQuotaKeeperManage)
+	case "/__quota-tasks/preview":
+		// Preview fires a real upstream probe against the draft, so it stays a
+		// manage action even though nothing is persisted.
+		return perm(domain.PermQuotaKeeperManage)
 	case "/__prices":
 		return perm(domain.PermPricing)
 	case "/__monitor/stream":

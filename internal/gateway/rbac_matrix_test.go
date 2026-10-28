@@ -425,6 +425,67 @@ func TestUserGrantsAddToOwnScope(t *testing.T) {
 	}
 }
 
+// 用户报告的原文：「给了角色查看权限，额度保活显示 permission denied:
+// missing quota.manage」。只读角色必须能打开页面（列表 + 明细），
+// 但新建、改、删、立即执行仍然要求 quota.manage。
+func TestQuotaViewOnlyRoleCanOpenPage(t *testing.T) {
+	f := newRBACFixture(t)
+	f.server.scheduledTaskStore = newFakeScheduledTaskStore()
+	tasks := f.server.scheduledTaskStore
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(tasks.SaveScheduledTask(domain.ScheduledTask{
+		ID: "q-alice", Name: "alice 的保活", OwnerUserID: "alice", Enabled: true,
+		Mode: domain.ScheduleEveryHours, Interval: 5, ProviderIDs: []string{"alice-private"},
+	}))
+	must(tasks.SaveScheduledTask(domain.ScheduledTask{
+		ID: "q-admin", Name: "admin 的保活", OwnerUserID: "admin", Enabled: true,
+		Mode: domain.ScheduleEveryHours, Interval: 5, ProviderIDs: []string{"shared"},
+	}))
+	must(f.roles.SaveRole(domain.Role{
+		ID: "quota-auditor", Name: "保活只读", Scope: domain.ScopeOwn,
+		Permissions: []domain.Permission{domain.PermQuotaKeeperView},
+	}))
+	alice := f.users.users["alice"]
+	alice.RoleID = "quota-auditor"
+	f.users.users["alice"] = alice
+
+	list := f.call(t, "alice", http.MethodGet, "/__quota-tasks", "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("view-only list status=%d body=%s", list.Code, list.Body.String())
+	}
+	var payload struct {
+		Tasks []domain.ScheduledTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Tasks) != 1 || payload.Tasks[0].ID != "q-alice" {
+		t.Fatalf("view-only list = %+v, want only own task", payload.Tasks)
+	}
+
+	denied := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/__quota-tasks", `{"name":"x","providerIds":["alice-private"]}`},
+		{http.MethodPost, "/__quota-tasks/preview", `{"providerIds":["alice-private"]}`},
+		{http.MethodPatch, "/__quota-tasks/q-alice", `{"name":"renamed"}`},
+		{http.MethodDelete, "/__quota-tasks/q-alice", ""},
+		{http.MethodPost, "/__quota-tasks/q-alice/run", ""},
+	}
+	for _, tc := range denied {
+		if recorder := f.call(t, "alice", tc.method, tc.path, tc.body); recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s status=%d, want 403 body=%s", tc.method, tc.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 // 角色接口：内置不可改不可删、改角色名冲突由存储层兜底、权限点必须存在。
 func TestRoleAPIValidation(t *testing.T) {
 	f := newRBACFixture(t)
