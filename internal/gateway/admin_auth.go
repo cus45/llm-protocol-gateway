@@ -383,8 +383,10 @@ func wantsJSONAuthError(r *http.Request) bool {
 }
 
 func isLocalAdminBypass(r *http.Request) bool {
+	// 反代后面的网关永远看到 127.0.0.1 的对端：只看地址就会把公网域名访问当成
+	// 本机操作员，等于整站免登录。带域名时必须是回环名；空 Host 留给桌面端。
 	host := requestHostname(r.Host)
-	if !isLoopbackHost(host) {
+	if host != "" && !isLoopbackHost(host) {
 		return false
 	}
 	ip := requestRemoteIP(r)
