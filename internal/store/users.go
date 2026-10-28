@@ -11,22 +11,25 @@ import (
 // scanUser reads a users row in SELECT column order.
 func scanUser(rows *sql.Rows) (domain.User, error) {
 	var user domain.User
-	var role string
-	var allowedProviderIDs string
+	var role, roleID string
 	var enabled int
-	if err := rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &role, &allowedProviderIDs, &enabled, &user.CreatedAt, &user.LastLoginAt, &user.LastActiveAt); err != nil {
+	if err := rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &role, &roleID,
+		&user.DisplayName, &user.AvatarURL, &enabled, &user.CreatedAt, &user.LastLoginAt, &user.LastActiveAt); err != nil {
 		return domain.User{}, err
 	}
 	user.Role = domain.UserRole(strings.TrimSpace(role))
 	if user.Role == "" {
 		user.Role = domain.UserRoleUser
 	}
-	user.AllowedProviderIDs = decodeProviderIDList(allowedProviderIDs)
+	user.RoleID = strings.TrimSpace(roleID)
+	if user.RoleID == "" {
+		user.RoleID = string(user.Role)
+	}
 	user.Enabled = enabled != 0
 	return user, nil
 }
 
-const userSelectColumns = `id, username, password_hash, role, allowed_provider_ids, enabled, created_at, last_login_at, last_active_at`
+const userSelectColumns = `id, username, password_hash, role, role_id, display_name, avatar_url, enabled, created_at, last_login_at, last_active_at`
 
 // ListUsers returns all console users ordered by creation time.
 func (s *Store) ListUsers() ([]domain.User, error) {
@@ -76,10 +79,15 @@ func (s *Store) CreateUser(user domain.User) error {
 	if user.Enabled {
 		enabled = 1
 	}
+	if user.RoleID == "" {
+		user.RoleID = string(user.Role)
+	}
 	_, err := s.db.Exec(`INSERT INTO users
-		(id, username, password_hash, role, allowed_provider_ids, enabled, created_at, last_login_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		user.ID, strings.TrimSpace(user.Username), user.PasswordHash, string(user.Role), encodeProviderIDList(user.AllowedProviderIDs), enabled, user.CreatedAt, user.LastLoginAt, user.LastActiveAt)
+		(id, username, password_hash, role, role_id, display_name, avatar_url, enabled, created_at, last_login_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, strings.TrimSpace(user.Username), user.PasswordHash, string(user.Role), user.RoleID,
+		strings.TrimSpace(user.DisplayName), strings.TrimSpace(user.AvatarURL), enabled,
+		user.CreatedAt, user.LastLoginAt, user.LastActiveAt)
 	return err
 }
 
@@ -88,16 +96,33 @@ func (s *Store) UpdateUser(user domain.User) error {
 	if user.Enabled {
 		enabled = 1
 	}
+	if user.RoleID == "" {
+		user.RoleID = string(user.Role)
+	}
 	_, err := s.db.Exec(`UPDATE users
-		SET username = ?, password_hash = ?, role = ?, allowed_provider_ids = ?, enabled = ?, last_login_at = ?, last_active_at = ?
+		SET username = ?, password_hash = ?, role = ?, role_id = ?, display_name = ?, avatar_url = ?,
+		    enabled = ?, last_login_at = ?, last_active_at = ?
 		WHERE id = ?`,
-		strings.TrimSpace(user.Username), user.PasswordHash, string(user.Role), encodeProviderIDList(user.AllowedProviderIDs), enabled, user.LastLoginAt, user.LastActiveAt, user.ID)
+		strings.TrimSpace(user.Username), user.PasswordHash, string(user.Role), user.RoleID,
+		strings.TrimSpace(user.DisplayName), strings.TrimSpace(user.AvatarURL), enabled,
+		user.LastLoginAt, user.LastActiveAt, user.ID)
 	return err
 }
 
+// DeleteUser removes the account and its resource grants in one transaction.
 func (s *Store) DeleteUser(id string) error {
-	_, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, id)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM user_resource_grants WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // TouchUserLogin records the latest successful login time.
@@ -112,4 +137,46 @@ func (s *Store) TouchUserLogin(id string, lastLoginAt string) error {
 func (s *Store) TouchUserActive(id string, lastActiveAt string) error {
 	_, err := s.db.Exec(`UPDATE users SET last_active_at = ? WHERE id = ?`, lastActiveAt, id)
 	return err
+}
+
+// ListResourceGrants returns userID -> granted provider IDs.
+func (s *Store) ListResourceGrants() (map[string][]string, error) {
+	rows, err := s.reader().Query(`SELECT user_id, resource_id FROM user_resource_grants ORDER BY user_id, resource_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var userID, resourceID string
+		if err := rows.Scan(&userID, &resourceID); err != nil {
+			return nil, err
+		}
+		out[userID] = append(out[userID], resourceID)
+	}
+	return out, rows.Err()
+}
+
+// SetResourceGrants replaces one user's provider grants.
+func (s *Store) SetResourceGrants(userID string, resourceIDs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM user_resource_grants WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, resourceID := range resourceIDs {
+		resourceID = strings.TrimSpace(resourceID)
+		if resourceID == "" || seen[resourceID] {
+			continue
+		}
+		seen[resourceID] = true
+		if _, err := tx.Exec(`INSERT INTO user_resource_grants (user_id, resource_id) VALUES (?, ?)`, userID, resourceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

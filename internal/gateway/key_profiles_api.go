@@ -26,7 +26,7 @@ func (s *Server) ownsKey(identity sessionIdentity, keyID string) bool {
 // validateProfileProvidersForUser reuses the key provider whitelist check by
 // projecting a profile's routing fields onto a temporary APIKey.
 func (s *Server) validateProfileProvidersForUser(identity sessionIdentity, profile domain.KeyProfile) error {
-	return s.validateKeyProvidersForUser(identity, domain.APIKey{
+	return s.validateKeyProvidersForUser(s.principalFor(identity), domain.APIKey{
 		RouteID:             profile.RouteID,
 		FallbackProviderIDs: profile.FallbackProviderIDs,
 	})

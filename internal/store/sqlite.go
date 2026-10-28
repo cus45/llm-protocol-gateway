@@ -356,6 +356,46 @@ func (s *Store) migrate() error {
 	if err := addColumnIfMissing(tx, "users", "last_active_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate users: %w", err)
 	}
+	// RBAC columns. role_id holds the role row (or built-in role name); a
+	// legacy row keeps role but gets role_id backfilled below.
+	for _, column := range []struct{ name, definition string }{
+		{"role_id", "TEXT NOT NULL DEFAULT ''"},
+		{"display_name", "TEXT NOT NULL DEFAULT ''"},
+		{"avatar_url", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(tx, "users", column.name, column.definition); err != nil {
+			return fmt.Errorf("migrate users: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE users SET role_id = CASE WHEN role = 'admin' THEN 'admin' ELSE 'user' END
+		WHERE TRIM(role_id) = ''`); err != nil {
+		return fmt.Errorf("migrate users role_id: %w", err)
+	}
+	// Role assignment of shared resources: which providers a "granted"-scope
+	// user may bind keys to. Kept separate from the role so changing a role
+	// does not silently widen or narrow an individual's grants.
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS user_resource_grants (
+		user_id TEXT NOT NULL,
+		resource_id TEXT NOT NULL,
+		PRIMARY KEY (user_id, resource_id)
+	)`); err != nil {
+		return fmt.Errorf("migrate user_resource_grants: %w", err)
+	}
+	if err := backfillResourceGrants(tx); err != nil {
+		return fmt.Errorf("migrate user_resource_grants backfill: %w", err)
+	}
+	// Custom roles. Built-ins are answered from code and never stored here.
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS roles (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		scope TEXT NOT NULL DEFAULT 'own',
+		permissions TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return fmt.Errorf("migrate roles: %w", err)
+	}
 	if err := ensureMonitoringSchema(tx); err != nil {
 		return err
 	}
@@ -364,6 +404,40 @@ func (s *Store) migrate() error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// backfillResourceGrants copies the legacy allowed_provider_ids column into
+// user_resource_grants, but only for users who have no grant rows yet so a
+// second migration pass never resurrects grants an admin revoked.
+func backfillResourceGrants(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id, allowed_provider_ids FROM users
+		WHERE TRIM(allowed_provider_ids) <> ''
+		AND id NOT IN (SELECT user_id FROM user_resource_grants)`)
+	if err != nil {
+		return err
+	}
+	type grant struct{ userID, providerID string }
+	grants := []grant{}
+	for rows.Next() {
+		var userID, raw string
+		if err := rows.Scan(&userID, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		for _, providerID := range decodeProviderIDList(raw) {
+			grants = append(grants, grant{userID: userID, providerID: providerID})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range grants {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO user_resource_grants (user_id, resource_id) VALUES (?, ?)`, item.userID, item.providerID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN for the given column only

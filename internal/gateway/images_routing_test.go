@@ -76,7 +76,8 @@ func TestImagesEffectiveProviderRefusesRouteDefaultAfterRegrant(t *testing.T) {
 	)
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
-		AllowedProviderIDs: []string{"img-b"}, Enabled: true,
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"img-b"}, Enabled: true,
 	})
 	key := domain.APIKey{ID: "k1", OwnerUserID: "u1", RouteID: "img-route"}
 
@@ -95,7 +96,8 @@ func TestImagesEffectiveProviderUsesGrantedFallback(t *testing.T) {
 	)
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
-		AllowedProviderIDs: []string{"img-own"}, Enabled: true,
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"img-own"}, Enabled: true,
 	})
 	key := domain.APIKey{ID: "k1", OwnerUserID: "u1", RouteID: "img-route", FallbackProviderIDs: []string{"img-own"}}
 
@@ -109,7 +111,8 @@ func TestImagesEffectiveProviderRefusesRevokedKey(t *testing.T) {
 	server := imagesTestServer(t, imagesImageProvider("img-a", false))
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
-		AllowedProviderIDs: []string{"img-b"}, Enabled: true,
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"img-b"}, Enabled: true,
 	})
 	key := domain.APIKey{ID: "k1", OwnerUserID: "u1", RouteID: "img-route"}
 
@@ -196,7 +199,8 @@ func TestImagesHandlerRefusesRevokedGrant(t *testing.T) {
 	server := imagesKeyServer(t, provider, domain.APIKey{ID: "k1", Key: "sk-gw-user", OwnerUserID: "u1"})
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
-		AllowedProviderIDs: []string{"img-b"}, Enabled: true,
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"img-b"}, Enabled: true,
 	})
 
 	recorder := imagesRequest(t, server, "sk-gw-user", `{"model":"gpt-image-2","prompt":"x"}`)

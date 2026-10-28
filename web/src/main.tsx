@@ -2,6 +2,7 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './styles.css';
+import './rbac.css';
 import {ApiKeyEditableField, ApiKeyFixedModelField, ApiKeyModelMappingControl} from './components/apikeys';
 import {LogTimingWaterfall, MachineMetric, UsageRangeCalendar} from './components/charts';
 import {
@@ -37,6 +38,7 @@ import {
     buildProviderChatCurl,
     buildRouteTestCurl,
     buildSelfRegistrationPrompt,
+    can,
     chatgptAccountLabelFriendly,
     chatTestToastText,
     chatTestVerdictFromBody,
@@ -44,7 +46,6 @@ import {
     compactRequestAdapterJSON,
     composeCustomDomain,
     copyToClipboard,
-    coreNavIDs,
     defaultProviderChatTestOptions,
     defaultPublicAccess,
     defaultThinkingValueForField,
@@ -90,10 +91,11 @@ import {
     LOGS_PAGE_SIZE,
     mapFromTrafficRanks,
     modelAlias,
-    navGroups,
     navIDFromPath,
     navItems,
     navPathForID,
+    navSections,
+    navVisibleFor,
     normalizeGatewayState,
     normalizeRequestStats,
     parseSSEStreamContent,
@@ -117,6 +119,7 @@ import {
     publicStatusTone,
     qoderDefaultBaseURL,
     readConnectResponse,
+    readStoredNavCollapsed,
     readStoredProviderDensity,
     readStoredSidebarCollapsed,
     readUICache,
@@ -138,8 +141,8 @@ import {
     trafficRanksEqual,
     trafficRanksFromMap,
     uiCacheScope,
-    userAllowedNavIDs,
     USERS_TABLE_GRID,
+    writeStoredNavCollapsed,
     writeStoredProviderDensity,
     writeStoredSidebarCollapsed,
     writeUICache
@@ -219,6 +222,8 @@ import {
     URLRow
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
+import {useRoles, RolesPage} from './components/roles_page';
+import {UsersPage, ProfileModal} from './components/users_page';
 import {
     CURRENT_APP_VERSION,
     dismissUpgrade,
@@ -233,6 +238,75 @@ const ALL_PROVIDERS_VALUE = '__all_providers__';
 /** 请求量排名缓存的账号作用域：换用户就换一份，不把上一个用户的排名带过来。 */
 function trafficRankScopeOf(auth: AdminAuthStatus | null): string {
   return uiCacheScope(auth);
+}
+
+// 旧版「普通用户」：没有权限列表的会话按旧白名单兜底（navVisibleFor 内部处理）。
+function isLegacyUserAuth(auth: AdminAuthStatus | null | undefined): boolean {
+  return auth?.role === 'user';
+}
+
+// 登录落地页 / 无权限兜底页：侧栏顺序里第一个有权限的页面；一个都没有时退回 API 密钥。
+function firstVisibleNavID(auth: AdminAuthStatus | null | undefined): NavItemID {
+  const legacyUser = isLegacyUserAuth(auth);
+  for (const item of navItems) {
+    if (navVisibleFor(auth?.permissions, item.id, legacyUser)) return item.id;
+  }
+  return 'api-keys';
+}
+
+// 侧栏账号卡：有头像用头像，没有就退回用户名首字母；副标题显示角色与数据更新时间。
+function SidebarUserCard({ auth, busy, dataFetchedAt, onLogout, onEditProfile }: {
+  auth: AdminAuthStatus;
+  busy: boolean;
+  dataFetchedAt: Date | null;
+  onLogout: () => void;
+  onEditProfile: () => void;
+}) {
+  const name = auth.displayName || auth.username || '';
+  return (
+    <div className="user-card">
+      {auth.avatarUrl ? (
+        <img className="user-avatar user-avatar-img" src={auth.avatarUrl} alt="" referrerPolicy="no-referrer" />
+      ) : (
+        <div className="user-avatar">{name.slice(0, 1).toUpperCase()}</div>
+      )}
+      <div className="user-meta">
+        <b title={name}>{name}</b>
+        <span title={dataFetchedAt ? `页面数据最近一次成功拉取的时间（约每 5 秒自动刷新）` : undefined}>
+          {dataFetchedAt ? <i className="live-dot" aria-hidden="true" /> : null}
+          {auth.roleName || (auth.role === 'user' ? '普通用户' : '管理员')}
+          {dataFetchedAt ? ` · 更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
+        </span>
+      </div>
+      <button
+        className="icon-btn"
+        type="button"
+        onClick={onEditProfile}
+        title="个人资料（显示名称与头像）"
+        aria-label="个人资料"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="8.5" r="3.5" />
+          <path d="M5 20a7 7 0 0 1 14 0" />
+        </svg>
+      </button>
+      {auth.requireAuth ? (
+        <button
+          className="icon-btn"
+          type="button"
+          disabled={busy}
+          onClick={onLogout}
+          title="退出登录"
+          aria-label="退出登录"
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" />
+            <path d="M10 8l-4 4 4 4M6 12h10" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function App() {
@@ -258,6 +332,8 @@ function App() {
     };
   }, [sidebarMoreOpen]);
   useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
+  // 侧栏分组的展开/收起：只按当前用户持久化（换账号不串），搜索词不落盘。
+  const [navQuery, setNavQuery] = useState('');
   const [showScrollTop, setShowScrollTop] = useState(false);
   useEffect(() => {
     const onScroll = () => setShowScrollTop(window.scrollY > 360);
@@ -449,6 +525,20 @@ function App() {
   const backendFailStreakRef = useRef(0);
   const [backendReconnecting, setBackendReconnecting] = useState(false);
   const [authStatus, setAuthStatus] = useState<AdminAuthStatus | null>(() => bootSession.auth);
+  // 权限点：管理员为 ['*']；旧会话没有列表时 navVisibleFor 回退到旧白名单。
+  const permissions = authStatus?.permissions;
+  const legacyUser = isLegacyUserAuth(authStatus);
+  // 侧栏分组折叠状态按用户 id 分开记忆；切换账号时重新读取该用户的偏好。
+  const navCollapseUserKey = authStatus?.userId || authStatus?.username || 'anonymous';
+  const [navCollapsedGroups, setNavCollapsedGroups] = useState<string[]>(() => readStoredNavCollapsed(navCollapseUserKey));
+  useEffect(() => { setNavCollapsedGroups(readStoredNavCollapsed(navCollapseUserKey)); }, [navCollapseUserKey]);
+  function toggleNavGroup(sectionID: string) {
+    setNavCollapsedGroups((current) => {
+      const next = current.includes(sectionID) ? current.filter((id) => id !== sectionID) : [...current, sectionID];
+      writeStoredNavCollapsed(navCollapseUserKey, next);
+      return next;
+    });
+  }
   useEffect(() => {
     authStatusRef.current = authStatus;
   }, [authStatus]);
@@ -469,19 +559,12 @@ function App() {
   });
   const [authError, setAuthError] = useState('');
 
-  // 用户管理页（仅 admin）
+  // 用户管理 / 角色管理共用：账号列表由 UsersPage 自己拉取，这里只保留 owner 名字映射。
   const [consoleUsers, setConsoleUsers] = useState<ConsoleUser[]>([]);
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [userModalOpen, setUserModalOpen] = useState(false);
-  const [editingUserID, setEditingUserID] = useState<string | null>(null);
-  const [userFormName, setUserFormName] = useState('');
-  const [userFormPassword, setUserFormPassword] = useState('');
-  const [userFormProviders, setUserFormProviders] = useState<string[]>([]);
-  const [userFormRole, setUserFormRole] = useState<'user' | 'admin'>('user');
-  const [userFormBusy, setUserFormBusy] = useState(false);
-  // 用户管理表格排序：null = 默认创建顺序；userActive/keyActive 可点击列名切换。
-  const [usersSortBy, setUsersSortBy] = useState<'userActive' | 'keyActive' | null>(null);
-  const [usersSortDir, setUsersSortDir] = useState<'asc' | 'desc'>('desc');
+  // RBAC：角色列表 + 下拉选项 + 权限目录，角色页与用户编辑弹窗共用。
+  // 没有 users.manage 的账号既进不了这两处，也不该去拉 /__roles 吃 403。
+  const rolesModel = useRoles(Boolean(permissions && (permissions.includes('*') || permissions.includes('users.manage'))));
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   // Provider 用户权限弹窗（仅管理员）：查看/新增/移除哪些普通用户可用某个输入 Provider。
   const [providerUsersModalID, setProviderUsersModalID] = useState<string | null>(null);
   const [providerUsersBusyID, setProviderUsersBusyID] = useState('');
@@ -1121,6 +1204,9 @@ function App() {
     setApiKeyProtocolFilter([]);
   }, []);
 
+  // 具备某项权限：本地直连（无鉴权）与管理员都按放行处理。
+  const canDo = (key: string) => !authStatus?.requireAuth || can(permissions, key);
+
   const apiKeyFiltersProps = useMemo(() => ({
     keyword: apiKeyKeyword,
     setKeyword: setApiKeyKeyword,
@@ -1131,7 +1217,8 @@ function App() {
     ],
     owner: apiKeyOwnerFilter,
     setOwner: setApiKeyOwnerFilter,
-    showOwner: authStatus?.role !== 'user',
+    // 只有能看全员数据（usage.all / 全资源范围）时才显示「所属用户」列
+    showOwner: authStatus?.scope === 'all' || canDo('usage.all'),
     provider: apiKeyProviderFilter,
     setProvider: setApiKeyProviderFilter,
     protocol: apiKeyProtocolFilter,
@@ -1140,7 +1227,7 @@ function App() {
     sort: apiKeySortBy,
     setSort: (value: string) => setApiKeySortBy(value as 'name' | 'createdAt' | 'owner'),
     reset: resetApiKeyFilters,
-  }), [apiKeyKeyword, apiKeyOwnerFilter, apiKeyProviderFilter, apiKeyProtocolFilter, state.providers, consoleUsers, authStatus?.role, resetApiKeyFilters, apiKeySortBy]);
+  }), [apiKeyKeyword, apiKeyOwnerFilter, apiKeyProviderFilter, apiKeyProtocolFilter, state.providers, consoleUsers, authStatus?.role, authStatus?.scope, permissions, resetApiKeyFilters, apiKeySortBy]);
 
   useEffect(() => {
     const resolved = applyThemeMode(themeMode);
@@ -1486,12 +1573,13 @@ function App() {
     void refreshConsoleUsers();
   }, [activeNav, authStatus?.role]);
 
-  // 普通用户访问未授权页面时强制跳回 API 密钥页
+  // 访问无权限的页面时跳回第一个可见页（不再硬编码 API 密钥页）
   useEffect(() => {
-    if (!authStatus?.authenticated || authStatus.role !== 'user') return;
-    if (userAllowedNavIDs.includes(activeNav)) return;
-    window.history.replaceState({}, '', navPathForID('api-keys'));
-    setActiveNav('api-keys');
+    if (!authStatus?.authenticated) return;
+    if (navVisibleFor(authStatus.permissions, activeNav, isLegacyUserAuth(authStatus))) return;
+    const fallbackNav = firstVisibleNavID(authStatus);
+    window.history.replaceState({}, '', navPathForID(fallbackNav));
+    setActiveNav(fallbackNav);
   }, [authStatus, activeNav]);
 
 
@@ -1570,14 +1658,14 @@ function App() {
       writeUICache('session', 'auth', data);
       setAuthPassword('');
       setAuthPasswordConfirm('');
-      const isNormalUserLogin = data.role === 'user';
+      const landing = firstVisibleNavID(data);
+      const currentNav = navIDFromPath(window.location.pathname);
       if (window.location.pathname === '/login') {
-        const landing = isNormalUserLogin ? 'api-keys' : 'input-providers';
         window.history.replaceState({}, '', navPathForID(landing));
         setActiveNav(landing);
-      } else if (isNormalUserLogin && !userAllowedNavIDs.includes(navIDFromPath(window.location.pathname))) {
-        window.history.replaceState({}, '', navPathForID('api-keys'));
-        setActiveNav('api-keys');
+      } else if (!navVisibleFor(data.permissions, currentNav, isLegacyUserAuth(data))) {
+        window.history.replaceState({}, '', navPathForID(landing));
+        setActiveNav(landing);
       }
       await bootstrapAuthenticatedSession(data);
       setStateHydrated(true);
@@ -1645,41 +1733,33 @@ function App() {
   }
 
   async function refreshConsoleUsers() {
-    setUsersLoading(true);
     try {
       const response = await fetch(`${API_BASE}/__users`, { credentials: 'same-origin' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setConsoleUsers(await response.json() as ConsoleUser[]);
     } catch {
-      // 非管理员或后端异常时静默
-    } finally {
-      setUsersLoading(false);
+      // 无 users.view 权限或后端异常时静默：owner 名字退回 id 显示
     }
   }
 
-  function toggleUsersSort(field: 'userActive' | 'keyActive') {
-    if (usersSortBy === field) {
-      setUsersSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
-      return;
-    }
-    setUsersSortBy(field);
-    setUsersSortDir('desc'); // 默认最近的在前
-  }
-
-  // 授予/移除某个普通用户对指定输入 Provider 的使用权限（管理员专用，
-  // 复用 PATCH /__users/{id} 的 allowedProviderIds 字段）。
+  // 授予/移除某个用户对指定输入 Provider 的使用权限（管理员专用）。
+  // 走 RBAC 的资源授权表：写入该用户的 grantedProviderIds；角色范围不是「被授权资源」时
+  // 顺带把角色切成内置的「受限用户」，否则范围是 own/all 时授权不会生效。
   async function updateUserProviderPermission(user: ConsoleUser, providerId: string, grant: boolean) {
     setProviderUsersBusyID(user.id);
     try {
-      const current = user.allowedProviderIds || [];
+      const current = user.grantedProviderIds || [];
       const next = grant
         ? Array.from(new Set([...current, providerId]))
         : current.filter((id) => id !== providerId);
+      const body = user.roleScope === 'granted'
+        ? { grantedProviderIds: next }
+        : { roleId: 'grantee', grantedProviderIds: next };
       const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(user.id)}`, {
         method: 'PATCH',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowedProviderIds: next }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error(await response.text());
       await refreshConsoleUsers();
@@ -1688,113 +1768,6 @@ function App() {
       showToast(`更新用户权限失败：${String(error)}`);
     } finally {
       setProviderUsersBusyID('');
-    }
-  }
-
-  function openUserModal(user?: ConsoleUser) {
-    setEditingUserID(user?.id ?? null);
-    setUserFormName(user?.username ?? '');
-    setUserFormPassword('');
-    setUserFormProviders(user?.allowedProviderIds ?? []);
-    setUserFormRole(user?.role === 'admin' ? 'admin' : 'user');
-    setUserModalOpen(true);
-  }
-
-  async function submitUserForm() {
-    setUserFormBusy(true);
-    try {
-      const username = userFormName.trim();
-      if (!username) {
-        showToast('用户名不能为空');
-        return;
-      }
-      if (!editingUserID && userFormPassword.trim().length < 8) {
-        showToast('初始密码至少 8 位');
-        return;
-      }
-      // 撤销自己的管理员权限会立刻收起整个管理面板，属于易误点的不可逆感操作，先确认。
-      if (editingUserID && userFormRole !== 'admin' && authStatus?.userId === editingUserID
-        && !window.confirm('确定撤销自己的管理员权限？保存后当前会话会立刻失去管理页面。')) {
-        return;
-      }
-      const url = editingUserID ? `${API_BASE}/__users/${encodeURIComponent(editingUserID)}` : `${API_BASE}/__users`;
-      const response = await fetch(url, {
-        method: editingUserID ? 'PATCH' : 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingUserID
-          ? { username, role: userFormRole, allowedProviderIds: userFormProviders }
-          : { username, password: userFormPassword, role: userFormRole, allowedProviderIds: userFormProviders }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      setUserModalOpen(false);
-      await refreshConsoleUsers();
-      showToast(editingUserID ? '用户已更新' : '用户已创建');
-    } catch (error) {
-      showToast(`保存用户失败：${String(error)}`);
-    } finally {
-      setUserFormBusy(false);
-    }
-  }
-
-  async function toggleUserEnabled(user: ConsoleUser) {
-    try {
-      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(user.id)}`, {
-        method: 'PATCH',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !user.enabled }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      await refreshConsoleUsers();
-      showToast(user.enabled ? '用户已禁用' : '用户已启用');
-    } catch (error) {
-      showToast(`操作失败：${String(error)}`);
-    }
-  }
-
-  async function deleteConsoleUser(user: ConsoleUser) {
-    if (!window.confirm(`确定删除用户「${user.username}」？其名下 Key 将归还管理员。`)) return;
-    try {
-      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(user.id)}`, {
-        method: 'DELETE',
-        credentials: 'same-origin',
-      });
-      if (!response.ok) throw new Error(await response.text());
-      await Promise.all([refreshConsoleUsers(), refreshState(false)]);
-      showToast('用户已删除');
-    } catch (error) {
-      showToast(`删除失败：${String(error)}`);
-    }
-  }
-
-  // 重置用户密码走应用内弹窗：window.prompt 在部分嵌入式浏览器会被静默拦截，按钮形同虚设
-  const [passwordResetUser, setPasswordResetUser] = useState<ConsoleUser | null>(null);
-  const [passwordResetValue, setPasswordResetValue] = useState('');
-  const [passwordResetBusy, setPasswordResetBusy] = useState(false);
-
-  async function confirmPasswordReset() {
-    if (!passwordResetUser) return;
-    if (passwordResetValue.trim().length < 8) {
-      showToast('密码至少 8 位');
-      return;
-    }
-    setPasswordResetBusy(true);
-    try {
-      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(passwordResetUser.id)}/reset-password`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: passwordResetValue.trim() }),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      showToast('密码已重置');
-      setPasswordResetUser(null);
-      setPasswordResetValue('');
-    } catch (error) {
-      showToast(`重置失败：${String(error)}`);
-    } finally {
-      setPasswordResetBusy(false);
     }
   }
 
@@ -2787,7 +2760,15 @@ function App() {
     setSelfRegBusy(false);
   }
 
+  // 权限门：按钮已经按权限隐藏，这里再挡一层，防键盘/残留入口绕过界面。
+  function denyAction(key: string): boolean {
+    if (canDo(key)) return false;
+    showToast('当前角色没有该操作权限');
+    return true;
+  }
+
   function openProviderModal() {
+    if (denyAction('providers.create')) return;
     setEditingProviderID('');
     setProviderDraft({
       name: '我的 OpenAI 对话 Provider',
@@ -2869,6 +2850,7 @@ function App() {
   }
 
   function openCloneProviderModal(provider: Provider) {
+    if (denyAction('providers.create')) return;
     // Clone opens the create flow (no editingProviderID) pre-filled from an
     // existing provider so the user can tweak and save it as a new provider.
     setEditingProviderID('');
@@ -2929,6 +2911,7 @@ function App() {
   }
 
   function openApiKeyModal() {
+    if (denyAction('keys.create')) return;
     setApiKeyDraft({
       name: '新 API 密钥',
       providerId: selectedProvider?.id || state.providers[0]?.id || '',
@@ -2944,6 +2927,7 @@ function App() {
   }
 
   function openCloneApiKeyModal(key: APIKey) {
+    if (denyAction('keys.create')) return;
     const { binding } = getApiKeyBinding(key, state.routes, state.providers);
     setApiKeyDraft({
       name: `${key.name} Copy`,
@@ -3668,6 +3652,7 @@ function App() {
   }
 
   async function deleteProvider(providerID: string, providerName: string) {
+    if (denyAction('providers.delete')) return;
     const usedBy = state.routes.filter((route) => route.providerId === providerID);
     if (!window.confirm(`确定删除输入 Provider：${providerName}？\n\n绑定到该 Provider 的 API 密钥引用（备选 / 故障转移 / 模型覆盖）将自动重置为空${usedBy.length > 0 ? `；使用它的 ${usedBy.length} 个路由（${usedBy.map((route) => route.name).join('、')}）将一并删除，绑定这些路由的密钥 RouteID 重置为空` : ''}。`)) return;
     setSaving(true);
@@ -3690,6 +3675,7 @@ function App() {
   }
 
   async function deleteSelectedProviders() {
+    if (denyAction('providers.delete')) return;
     const ids = selectedExportProviderIDs.filter((id) => (state.providers || []).some((provider) => provider.id === id));
     if (ids.length === 0) return;
     const names = ids.map((id) => (state.providers || []).find((provider) => provider.id === id)?.name || id);
@@ -4052,6 +4038,8 @@ function App() {
   }
 
   async function updateApiKeyField(key: APIKey, field: ApiKeyEditableField, value: string | boolean | number) {
+    // 额度字段单列一个权限点，其余字段走编辑权限
+    if (denyAction(field.startsWith('quota') ? 'keys.quota' : 'keys.edit')) return;
     setSaving(true);
     try {
       const patch: Partial<APIKey> = {};
@@ -4257,6 +4245,7 @@ function App() {
   }
 
   async function deleteApiKey(key: APIKey) {
+    if (denyAction('keys.delete')) return;
     if (!window.confirm(`确定删除 API 密钥：${key.name}？`)) return;
     setSaving(true);
     try {
@@ -4399,6 +4388,7 @@ function App() {
   };
 
   async function deleteCheckedApiKeys() {
+    if (denyAction('keys.delete')) return;
     const ids = checkedApiKeyIDs.filter((id) => (state.apiKeys || []).some((key) => key.id === id));
     if (ids.length === 0) return;
     if (!window.confirm(`确定删除选中的 ${ids.length} 个 API 密钥？此操作不可恢复。`)) return;
@@ -4592,14 +4582,27 @@ function App() {
   const isExplicitLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
   const needsAuthGate = Boolean((authChecked && authStatus?.requireAuth && !authStatus.authenticated) || isExplicitLoginPage);
   const authSetupMode = Boolean(needsAuthGate && authStatus && !authStatus.configured);
-  // 普通用户角色：仅显示 API 密钥 / 流量 / 用量三个页面
   const isNormalUser = Boolean(authStatus?.authenticated && authStatus.role === 'user');
-  const roleNavItems = isNormalUser ? navItems.filter((item) => userAllowedNavIDs.includes(item.id)) : navItems;
-  // 「输入 Provider」「API 密钥」置顶，其余保持原顺序。
-  const visibleNavItems = [
-    ...roleNavItems.filter((item) => coreNavIDs.includes(item.id)),
-    ...roleNavItems.filter((item) => !coreNavIDs.includes(item.id)),
-  ];
+  // 侧栏模型：按权限点过滤后的分层分组（隐藏项不渲染，空分组整组不渲染），
+  // 再按搜索词同时匹配菜单名与分组名。搜索时命中的分组强制展开，不写回折叠状态。
+  const navSearch = navQuery.trim().toLowerCase();
+  const navModel = navSections
+    .map((section) => {
+      const items = section.children
+        .map((child) => navItems.find((item) => item.id === child.id))
+        .filter((item): item is typeof navItems[number] => Boolean(item))
+        .filter((item) => navVisibleFor(permissions, item.id, legacyUser));
+      const groupHit = navSearch.length > 0 && section.label.toLowerCase().includes(navSearch);
+      const hits = items.filter((item) => groupHit || item.label.toLowerCase().includes(navSearch));
+      return { id: section.id, label: section.label, items, hits };
+    })
+    .filter((group) => group.items.length > 0 && (navSearch.length === 0 || group.hits.length > 0));
+  const jumpToFirstNavResult = () => {
+    const first = navModel.flatMap((group) => group.hits)[0];
+    if (!first) return;
+    goToPage(first.id);
+    setNavQuery('');
+  };
 
   if (!authChecked) {
     return null;
@@ -4720,37 +4723,90 @@ function App() {
             </button>
           )}
 
-          <nav className="nav">
-            {navGroups.map((group) => {
-              const items = group.ids
-                .map((id) => visibleNavItems.find((item) => item.id === id))
-                .filter((item): item is typeof visibleNavItems[number] => Boolean(item));
-              if (items.length === 0) return null;
+          {/* 菜单搜索：回车直达第一个结果，Esc 清空并还原折叠状态；图标栏里只留一个放大镜。 */}
+          <div className={`nav-search${navQuery ? ' has-query' : ''}`}>
+            <span className="nav-search-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m16 16 4 4" />
+              </svg>
+            </span>
+            <input
+              type="search"
+              value={navQuery}
+              placeholder="搜索菜单"
+              aria-label="搜索菜单"
+              title="搜索菜单"
+              onChange={(event) => setNavQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  jumpToFirstNavResult();
+                } else if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setNavQuery('');
+                }
+              }}
+            />
+            {navQuery ? (
+              <button
+                type="button"
+                className="nav-search-clear"
+                aria-label="清空搜索"
+                title="清空搜索（Esc）"
+                onClick={() => setNavQuery('')}
+              >
+                {"\u00d7"}
+              </button>
+            ) : null}
+          </div>
+
+          <nav className="nav" aria-label="主导航">
+            {navModel.length === 0 ? (
+              <div className="nav-empty" role="status">没有匹配的菜单</div>
+            ) : navModel.map((group) => {
+              // 当前页所在的分组始终展开；搜索时只显示命中的菜单项。
+              const searching = navSearch.length > 0;
+              const expanded = searching || group.items.some((item) => item.id === activeNav) || !navCollapsedGroups.includes(group.id);
+              const items = searching ? group.hits : group.items;
               return (
-                <div className="nav-group" key={group.label}>
-                  <div className="nav-group-label">{group.label}</div>
+                <div className={`nav-group${expanded ? '' : ' collapsed'}`} key={group.id}>
+                  <button
+                    type="button"
+                    className="nav-group-label"
+                    aria-expanded={expanded}
+                    title={`${group.label}（${expanded ? '收起' : '展开'}）`}
+                    onClick={() => { if (!searching) toggleNavGroup(group.id); }}
+                  >
+                    <span className="nav-group-text">{group.label}</span>
+                    <svg className="nav-group-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
                   <div className="nav-group-rule" aria-hidden="true" title={group.label} />
-                  {items.map((item) => (
-                    <a
-                      className={`nav-item ${activeNav === item.id ? 'active' : ''}`}
-                      href={navPathForID(item.id)}
-                      key={item.id}
-                      title={item.label}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        goToPage(item.id);
-                      }}
-                    >
-                      <span className="nav-icon"><NavIcon id={item.id} /></span>
-                      <span className="nav-label">{item.label}</span>
-                      {item.id === 'public-access' ? (
-                        <span
-                          className={`nav-status-dot ${tunnelRunning ? 'on' : 'off'}`}
-                          title={tunnelRunning ? '公网隧道已开启' : '公网隧道已关闭'}
-                        />
-                      ) : null}
-                    </a>
-                  ))}
+                  <div className="nav-group-items">
+                    {items.map((item) => (
+                      <a
+                        className={`nav-item ${activeNav === item.id ? 'active' : ''}`}
+                        href={navPathForID(item.id)}
+                        key={item.id}
+                        title={item.label}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          goToPage(item.id);
+                        }}
+                      >
+                        <span className="nav-icon"><NavIcon id={item.id} /></span>
+                        <span className="nav-label">{item.label}</span>
+                        {item.id === 'public-access' ? (
+                          <span
+                            className={`nav-status-dot ${tunnelRunning ? 'on' : 'off'}`}
+                            title={tunnelRunning ? '公网隧道已开启' : '公网隧道已关闭'}
+                          />
+                        ) : null}
+                      </a>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -4759,32 +4815,7 @@ function App() {
           <div className="sidebar-footer">
             <ThemeSwitch value={themeMode} onChange={setThemeMode} size="compact" />
             {authStatus?.authenticated && authStatus.username ? (
-              <div className="user-card">
-                <div className="user-avatar">{authStatus.username.slice(0, 1).toUpperCase()}</div>
-                <div className="user-meta">
-                  <b>{authStatus.username}</b>
-                  <span title={dataFetchedAt ? `页面数据最近一次成功拉取的时间（约每 5 秒自动刷新）` : undefined}>
-                    {dataFetchedAt ? <i className="live-dot" aria-hidden="true" /> : null}
-                    {authStatus.role === 'user' ? '普通用户' : '管理员'}
-                    {dataFetchedAt ? ` · 更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
-                  </span>
-                </div>
-                {authStatus?.requireAuth ? (
-                  <button
-                    className="icon-btn"
-                    type="button"
-                    disabled={authBusy}
-                    onClick={() => void logoutAdmin()}
-                    title="退出登录"
-                    aria-label="退出登录"
-                  >
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" />
-                      <path d="M10 8l-4 4 4 4M6 12h10" />
-                    </svg>
-                  </button>
-                ) : null}
-              </div>
+              <SidebarUserCard auth={authStatus} busy={authBusy} dataFetchedAt={dataFetchedAt} onLogout={() => void logoutAdmin()} onEditProfile={() => setProfileModalOpen(true)} />
             ) : authStatus?.requireAuth ? (
               <button className="btn" type="button" disabled={authBusy} onClick={() => void logoutAdmin()}>
                 退出登录
@@ -4812,32 +4843,7 @@ function App() {
               <div className="sidebar-more-panel">
                 <ThemeSwitch value={themeMode} onChange={setThemeMode} size="compact" />
                 {authStatus?.authenticated && authStatus.username ? (
-                  <div className="user-card">
-                    <div className="user-avatar">{authStatus.username.slice(0, 1).toUpperCase()}</div>
-                    <div className="user-meta">
-                      <b>{authStatus.username}</b>
-                      <span title={dataFetchedAt ? `页面数据最近一次成功拉取的时间（约每 5 秒自动刷新）` : undefined}>
-                        {dataFetchedAt ? <i className="live-dot" aria-hidden="true" /> : null}
-                        {authStatus.role === 'user' ? '普通用户' : '管理员'}
-                        {dataFetchedAt ? ` · 更新于 ${dataFetchedAt.toLocaleTimeString()}` : ''}
-                      </span>
-                    </div>
-                    {authStatus?.requireAuth ? (
-                      <button
-                        className="icon-btn"
-                        type="button"
-                        disabled={authBusy}
-                        onClick={() => void logoutAdmin()}
-                        title="退出登录"
-                        aria-label="退出登录"
-                      >
-                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" />
-                          <path d="M10 8l-4 4 4 4M6 12h10" />
-                        </svg>
-                      </button>
-                    ) : null}
-                  </div>
+                  <SidebarUserCard auth={authStatus} busy={authBusy} dataFetchedAt={dataFetchedAt} onLogout={() => void logoutAdmin()} onEditProfile={() => setProfileModalOpen(true)} />
                 ) : authStatus?.requireAuth ? (
                   <button className="btn" type="button" disabled={authBusy} onClick={() => void logoutAdmin()}>
                     退出登录
@@ -4858,7 +4864,7 @@ function App() {
               viewMode={apiKeyViewMode}
               onViewModeChange={setApiKeyViewMode}
               onCreate={openApiKeyModal}
-              createDisabled={saving || state.providers.length === 0}
+              createDisabled={saving || !canDo('keys.create') || state.providers.length === 0}
             />
             {state.providers.length === 0 ? (
               <div className="akc-banner">请先创建至少一个输入 Provider，再添加 API 密钥。</div>
@@ -4881,11 +4887,11 @@ function App() {
                   onToggleCheck={toggleApiKeyCheck}
                   onSelectAll={selectAllFilteredApiKeys}
                   onClearSelection={clearApiKeyChecks}
-                  onBatchDelete={() => void deleteCheckedApiKeys()}
+                  onBatchDelete={() => { if (!canDo('keys.delete')) return; void deleteCheckedApiKeys(); }}
                   onCopyKey={copyApiKeyValue}
                   copiedKeyId={copiedApiKeyID}
                   onToggleEnabled={toggleApiKeyEnabled}
-                  createDisabled={saving || state.providers.length === 0}
+                  createDisabled={saving || !canDo('keys.create') || state.providers.length === 0}
                   onCreate={openApiKeyModal}
                 />
                 {selectedApiKey ? (
@@ -4895,9 +4901,10 @@ function App() {
                     models={state.models}
                     routes={state.routes}
                     endpoints={state.endpoints}
-                    owners={!isNormalUser ? consoleUsers : undefined}
+                    owners={authStatus?.scope === 'all' || canDo('usage.all') ? consoleUsers : undefined}
                     saving={saving}
-                    canWriteQuota={!isNormalUser}
+                    canWriteQuota={canDo('keys.quota')}
+                    canDelete={canDo('keys.delete')}
                     testingProviderID={testingProviderID}
                     tunnelRunning={tunnelRunning}
                     livePublicURL={livePublicURL}
@@ -4938,7 +4945,7 @@ function App() {
                 copiedKeyId={copiedApiKeyID}
                 onDelete={(key) => void deleteApiKey(key)}
                 onToggleEnabled={toggleApiKeyEnabled}
-                onBatchDelete={() => void deleteCheckedApiKeys()}
+                onBatchDelete={() => { if (!canDo('keys.delete')) return; void deleteCheckedApiKeys(); }}
                 pagination={apiKeyTotalPages > 1 ? {
                   page: currentApiKeyPage,
                   total: apiKeyTotalPages,
@@ -4957,9 +4964,10 @@ function App() {
                   models={state.models}
                   routes={state.routes}
                   endpoints={state.endpoints}
-                  owners={!isNormalUser ? consoleUsers : undefined}
+                  owners={authStatus?.scope === 'all' || canDo('usage.all') ? consoleUsers : undefined}
                   saving={saving}
-                  canWriteQuota={!isNormalUser}
+                  canWriteQuota={canDo('keys.quota')}
+                  canDelete={canDo('keys.delete')}
                   testingProviderID={testingProviderID}
                   tunnelRunning={tunnelRunning}
                   livePublicURL={livePublicURL}
@@ -4979,7 +4987,7 @@ function App() {
               onClear={clearApiKeyChecks}
               onEnable={() => void setCheckedApiKeysEnabled(true)}
               onDisable={() => void setCheckedApiKeysEnabled(false)}
-              onDelete={() => void deleteCheckedApiKeys()}
+              onDelete={() => { if (!canDo('keys.delete')) return; void deleteCheckedApiKeys(); }}
             />
           </section>
           )}
@@ -4996,7 +5004,7 @@ function App() {
                       : '自定义上游 Provider，按近 3 日请求量排序；勾选后可批量导出 / 导入配置（含 OAuth 元数据）。删除时绑定的 API 密钥引用会自动重置为空。'}
                   </p>
                 </div>
-                {isNormalUser ? (
+                {isNormalUser && canDo('providers.create') ? (
                   <div className="panel-header-actions">
                     <button className="btn primary" disabled={saving} onClick={() => setProviderSheetOpen(true)}>添加输入 Provider</button>
                   </div>
@@ -5006,7 +5014,7 @@ function App() {
                     <button className="btn" disabled={saving || selectedExportProviderIDs.length === 0} onClick={() => void exportProviders(selectedExportProviderIDs)}>导出选中{selectedExportProviderIDs.length > 0 ? ` (${selectedExportProviderIDs.length})` : ''}</button>
                     <button className="btn" disabled={saving || sortedProviders.length === 0} onClick={() => void exportProviders()}>导出全部</button>
                     <button className="btn" disabled={saving || importingProviders} onClick={() => providerImportInputRef.current?.click()}>导入</button>
-                    <button className="btn primary" disabled={saving} onClick={() => setProviderSheetOpen(true)}>添加输入 Provider</button>
+                    {canDo('providers.create') ? <button className="btn primary" disabled={saving} onClick={() => setProviderSheetOpen(true)}>添加输入 Provider</button> : null}
                     <input
                       ref={providerImportInputRef}
                       type="file"
@@ -5128,7 +5136,7 @@ function App() {
                     });
                   })()}
                 </div>
-                {isNormalUser ? (
+                {isNormalUser || !canDo('providers.create') ? (
                   <div className="models-toolbar-meta">
                     显示 {filteredProviders.length} / {sortedProviders.length}
                     {providersStatusFilter !== 'all' ? ` · 状态「${providersStatusFilter === 'healthy' ? '运行健康' : providersStatusFilter === 'unavailable' ? '异常待试' : providersStatusFilter === 'disabled' ? '已停用' : 'OAuth'}」` : ''}
@@ -5137,7 +5145,7 @@ function App() {
                   </div>
                 ) : null}
               </div>
-              {!isNormalUser && filteredProviders.length > 0 ? (
+              {!isNormalUser && canDo('providers.create') && filteredProviders.length > 0 ? (
                 <div className="providers-toolbar">
                   <label className="checkbox-field">
                     <input
@@ -5159,7 +5167,7 @@ function App() {
                     <span>全选</span>
                   </label>
                   <span className="providers-toolbar-meta">
-                    已选 {selectedExportProviderIDs.length} / {sortedProviders.length} · 显示 {filteredProviders.length} / {sortedProviders.length}
+                    {(selectedExportProviderIDs.length > 0 ? `已选 ${selectedExportProviderIDs.length} / ` : '共 ')}{sortedProviders.length} · 显示 {filteredProviders.length} / {sortedProviders.length}
                     {providersStatusFilter !== 'all' ? ` · 状态「${providersStatusFilter === 'healthy' ? '运行健康' : providersStatusFilter === 'unavailable' ? '异常待试' : providersStatusFilter === 'disabled' ? '已停用' : 'OAuth'}」` : ''}
                     {providersSearchQuery.trim() ? ` · 检索「${providersSearchQuery.trim()}」` : ''}
                     {providersConnectFilter ? ` · ${providerConnectLabel(providersConnectFilter)}` : ''}
@@ -5215,11 +5223,11 @@ function App() {
                         nextRetryAt={provider.nextRetryAt}
                         testing={testingProviderID === provider.id}
                         chatTesting={chatTestingKeys.includes(`provider:${provider.id}`)}
-                        readOnly={isNormalUser && provider.ownerUserId !== authStatus?.userId}
-                        selectable={!isNormalUser}
+                        readOnly={(isNormalUser && provider.ownerUserId !== authStatus?.userId) || !canDo('providers.edit')}
+                        selectable={!isNormalUser && canDo('providers.create')}
                         providerDisabled={!!provider.disabled}
-                        onToggleEnabled={!isNormalUser ? () => void toggleProviderEnabled(provider) : undefined}
-                        onToggleRTK={!isNormalUser ? () => void toggleProviderRTK(provider) : undefined}
+                        onToggleEnabled={!isNormalUser && canDo('providers.toggle') ? () => void toggleProviderEnabled(provider) : undefined}
+                        onToggleRTK={!isNormalUser && canDo('providers.toggle') ? () => void toggleProviderRTK(provider) : undefined}
                         subtitle={providerAccountLabel(provider) || undefined}
                         icon={resolveProviderIcon(provider)}
                         isClaudeOAuth={provider.authType === 'claude_oauth'}
@@ -5234,11 +5242,11 @@ function App() {
                         workBuddyConnected={provider.workbuddyOAuth?.connected}
                         provider={provider}
                         cursorBridge={provider.authType === 'cursor_oauth' ? state.cursorBridge : undefined}
-                        ownerName={!isNormalUser ? providerOwnerName(provider) : undefined}
-                        authorizedUserCount={!isNormalUser
-                          ? consoleUsers.filter((user) => user.role !== 'admin' && (user.id === provider.ownerUserId || (user.allowedProviderIds || []).includes(provider.id))).length
+                        ownerName={authStatus?.scope === 'all' || canDo('usage.all') ? providerOwnerName(provider) : undefined}
+                        authorizedUserCount={canDo('users.manage')
+                          ? consoleUsers.filter((user) => user.role !== 'admin' && (user.id === provider.ownerUserId || (user.grantedProviderIds || []).includes(provider.id))).length
                           : undefined}
-                        onShowUsers={!isNormalUser
+                        onShowUsers={canDo('users.manage')
                           ? () => { setProviderUsersModalID(provider.id); void refreshConsoleUsers(); }
                           : undefined}
                         onToggleSelect={() => toggleExportProviderSelection(provider.id)}
@@ -5246,12 +5254,12 @@ function App() {
                           setSelectedProviderID(provider.id);
                           showToast(`已选择输入 Provider：${provider.name}`);
                         }}
-                        onTest={() => void fetchProviderModels(provider.id, provider.name, true)}
-                        onChatTest={() => openChatTestForProvider(provider)}
-                        onConformance={() => void runProviderConformance(provider)}
-                        onEdit={() => openEditProviderModal(provider)}
-                        onClone={() => openCloneProviderModal(provider)}
-                        onDelete={() => void deleteProvider(provider.id, provider.name)}
+                        onTest={canDo('providers.test') ? () => void fetchProviderModels(provider.id, provider.name, true) : undefined}
+                        onChatTest={canDo('providers.test') ? () => openChatTestForProvider(provider) : undefined}
+                        onConformance={canDo('providers.test') ? () => void runProviderConformance(provider) : undefined}
+                        onEdit={canDo('providers.edit') ? () => openEditProviderModal(provider) : undefined}
+                        onClone={canDo('providers.create') ? () => openCloneProviderModal(provider) : undefined}
+                        onDelete={canDo('providers.delete') ? () => void deleteProvider(provider.id, provider.name) : undefined}
                       />
                     );
                   })}
@@ -5269,7 +5277,7 @@ function App() {
           </section>
           )}
 
-          {activeNav === 'output-providers' && !isNormalUser && (
+          {activeNav === 'output-providers' && navVisibleFor(permissions, 'output-providers', legacyUser) && (
           <section className="section-full">
             <div className="card panel">
               <div className="panel-header">
@@ -5443,7 +5451,7 @@ function App() {
             />
           )}
 
-          {activeNav === 'public-access' && !isNormalUser && (
+          {activeNav === 'public-access' && navVisibleFor(permissions, 'public-access', legacyUser) && (
           <section className="section-grid public-access-grid">
             <div className="card panel" style={{ gridColumn: '1 / -1' }}>
               <div className="panel-header">
@@ -6341,7 +6349,7 @@ function App() {
           </section>
           )}
 
-          {activeNav === 'monitoring' && !isNormalUser && (
+          {activeNav === 'monitoring' && navVisibleFor(permissions, 'monitoring', legacyUser) && (
           <section className="section-full">
             <MonitoringPage
               iconOf={(providerID) => {
@@ -6362,111 +6370,23 @@ function App() {
             <QuotaKeeperPanel providers={state.providers} isAdmin={!isNormalUser} />
           )}
 
-          {activeNav === 'users' && !isNormalUser && (
-          <section className="section-full">
-            <div className="card panel">
-              <div className="panel-header">
-                <div>
-                  <h2 className="panel-title">用户管理</h2>
-                  <p className="panel-desc">创建控制台账号并分配角色：普通用户仅能管理自己的 API 密钥、查看自己 Key 的流量日志与用量统计；管理员可用全部输入 Provider 并进入所有管理页。授予或撤销角色立即生效，无需对方重新登录。（内置 admin 账号不在此列表，它始终可用）</p>
-                </div>
-                <button className="btn primary" onClick={() => openUserModal()}>新建用户</button>
-              </div>
-              {usersLoading && consoleUsers.length === 0 ? <div className="empty-state">加载中…</div> : null}
-              {!usersLoading && consoleUsers.length === 0 ? <div className="empty-state">暂无用户。点击「新建用户」创建第一个控制台账号。</div> : null}
-              {consoleUsers.length > 0 ? (
-                <div className="log-table">
-                  <div className="users-table-head" style={{ gridTemplateColumns: USERS_TABLE_GRID }}>
-                    <span>用户名</span>
-                    <span>角色</span>
-                    <span>状态</span>
-                    <span>Provider</span>
-                    <span>Key</span>
-                    <button
-                      type="button"
-                      className={`api-keys-sort-btn${usersSortBy === 'userActive' ? ' active' : ''}`}
-                      onClick={() => toggleUsersSort('userActive')}
-                      title="用户浏览器最近一次访问控制台的时间（点击排序）"
-                    >
-                      user 活跃{usersSortBy === 'userActive' ? (usersSortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                    </button>
-                    <button
-                      type="button"
-                      className={`api-keys-sort-btn${usersSortBy === 'keyActive' ? ' active' : ''}`}
-                      onClick={() => toggleUsersSort('keyActive')}
-                      title="该用户的 API Key 最近一次被调用的时间（点击排序）"
-                    >
-                      key 活跃{usersSortBy === 'keyActive' ? (usersSortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                    </button>
-                    <span />
-                  </div>
-                  {consoleUsers.map((user) => {
-                    const ownedKeys = (state.apiKeys || []).filter((key) => key.ownerUserId === user.id);
-                    // 最近活跃：优先后端内存精确值，老账号回退到登录时间。
-                    const lastActive = user.lastActiveAt || user.lastLoginAt;
-                    // Key 最近使用：取该用户所有 Key 里最新的 lastUsedAt（内存精确值）。
-                    const lastUsedMs = ownedKeys.reduce((acc, key) => {
-                      const ts = Date.parse(key.lastUsedAt || '');
-                      return Number.isNaN(ts) ? acc : Math.max(acc, ts);
-                    }, 0);
-                    return { user, ownedKeys, lastActive, lastUsedMs };
-                  }).sort((a, b) => {
-                    if (!usersSortBy) return 0; // 默认保持创建顺序
-                    const dir = usersSortDir === 'asc' ? 1 : -1;
-                    const va = usersSortBy === 'userActive' ? (Date.parse(a.lastActive || '') || 0) : a.lastUsedMs;
-                    const vb = usersSortBy === 'userActive' ? (Date.parse(b.lastActive || '') || 0) : b.lastUsedMs;
-                    if (va !== vb) return (va - vb) * dir;
-                    return a.user.username.localeCompare(b.user.username, 'zh-CN');
-                  }).map(({ user, ownedKeys, lastActive, lastUsedMs }) => {
-                    // 「Provider」列此前只读 allowedProviderIds（管理员手动授权的白名单），
-                    // 漏掉了用户自己创建的 Provider——后端权限判定
-                    // （allowedProviderIDsForUser，见 user_isolation.go）本身是"白名单 ∪ 自建"，
-                    // 用户能正常用自建 Provider，只是这一列没显示出来，看起来像"没权限"。
-                    const allowedIds = user.allowedProviderIds || [];
-                    const ownedProviderIds = state.providers
-                      .filter((provider) => provider.ownerUserId === user.id)
-                      .map((provider) => provider.id);
-                    const providerIds = Array.from(new Set([...allowedIds, ...ownedProviderIds]));
-                    const providerNames = providerIds.map((id) => {
-                      const name = state.providers.find((provider) => provider.id === id)?.name || id;
-                      return ownedProviderIds.includes(id) && !allowedIds.includes(id) ? `${name}（自建）` : name;
-                    });
-                    return (
-                      <div className="log-row" key={user.id}>
-                        <div className="log-row-main" style={{ gridTemplateColumns: USERS_TABLE_GRID }}>
-                          <span style={{ fontWeight: 700 }}>{user.username}</span>
-                          <span>
-                            <span className={`badge ${user.role === 'admin' ? 'purple' : 'slate'}`} style={{ fontSize: 11 }}>
-                              {user.role === 'admin' ? '管理员' : '普通用户'}
-                            </span>
-                          </span>
-                          <span className={user.enabled ? 'ok' : 'err'}>{user.enabled ? '启用' : '禁用'}</span>
-                          <span className="muted-text" title={user.role === 'admin' ? '管理员不受 Provider 授权限制' : providerNames.join('、')}>
-                            {user.role === 'admin' ? '全部（管理员）' : (providerNames.length > 0 ? providerNames.join('、') : '未分配')}
-                          </span>
-                          <span className="muted-text" title={ownedKeys.map((key) => key.name).join('、')}>
-                            {ownedKeys.length > 0 ? ownedKeys.map((key) => key.name).join('、') : '暂无'}
-                          </span>
-                          <span className="muted-text" title="用户浏览器最近一次访问控制台的时间">{lastActive ? new Date(lastActive).toLocaleString() : '从未活跃'}</span>
-                          <span className="muted-text" title="该用户的 API Key 最近一次被调用的时间">{lastUsedMs > 0 ? new Date(lastUsedMs).toLocaleString() : '未使用'}</span>
-                          <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                            <button className="mini-btn" type="button" onClick={() => openUserModal(user)}>编辑</button>
-                            <button className="mini-btn" type="button" onClick={() => { setPasswordResetValue(''); setPasswordResetUser(user); }}>重置密码</button>
-                            <button className="mini-btn" type="button" onClick={() => void toggleUserEnabled(user)}>{user.enabled ? '禁用' : '启用'}</button>
-                            <button className="mini-btn danger" type="button" onClick={() => void deleteConsoleUser(user)}>删除</button>
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          </section>
+          {/* 只读角色（users.view）也能看列表；拉取账号列表的初始请求只在 users.manage 时发出 */}
+          {activeNav === 'users' && navVisibleFor(permissions, 'users', legacyUser) && (
+            <UsersPage
+              canView={canDo('users.view') || canDo('users.manage')}
+              canManage={canDo('users.manage')}
+              roleOptions={rolesModel.options}
+              refreshRoleOptions={rolesModel.refresh}
+              onToast={showToast}
+              onChanged={() => { void refreshConsoleUsers(); void refreshState(false); }}
+            />
           )}
 
+          {activeNav === 'roles' && navVisibleFor(permissions, 'roles', legacyUser) && (
+            <RolesPage model={rolesModel} canManage={canDo('roles.manage')} onToast={showToast} />
+          )}
 
-          {activeNav === 'machine' && !isNormalUser && (
+          {activeNav === 'machine' && navVisibleFor(permissions, 'machine', legacyUser) && (
           <section className="section-full">
             <div className="panel-header" style={{ marginBottom: 0 }}>
               <div>
@@ -6580,7 +6500,7 @@ function App() {
           </section>
           )}
 
-          {activeNav === 'settings' && !isNormalUser && (
+          {activeNav === 'settings' && navVisibleFor(permissions, 'settings', legacyUser) && (
           <section className="section-grid settings-grid">
             <div className="settings-stack">
             <div className="card panel">
@@ -7253,38 +7173,6 @@ function App() {
         );
       })()}
 
-      {passwordResetUser && (
-        <Modal
-          title="重置用户密码"
-          description={`为用户「${passwordResetUser.username}」设置新密码，至少 8 位。该用户当前会话不受影响，新密码立即生效。`}
-          onClose={() => { setPasswordResetUser(null); setPasswordResetValue(''); }}
-        >
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void confirmPasswordReset();
-            }}
-          >
-            <div className="form-grid modal-form">
-              <div className="field field-full">
-                <label>新密码（至少 8 位）</label>
-                <input
-                  type="text"
-                  autoComplete="new-password"
-                  value={passwordResetValue}
-                  disabled={passwordResetBusy}
-                  placeholder="至少 8 位"
-                  onChange={(event) => setPasswordResetValue(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="actions modal-actions">
-              <button type="button" className="btn" disabled={passwordResetBusy} onClick={() => { setPasswordResetUser(null); setPasswordResetValue(''); }}>取消</button>
-              <button type="submit" className="btn primary" disabled={passwordResetBusy || passwordResetValue.trim().length < 8}>{passwordResetBusy ? '重置中…' : '重置密码'}</button>
-            </div>
-          </form>
-        </Modal>
-      )}
 
       {providerModalOpen && (
         <Modal title={editingProviderID ? '编辑输入 Provider' : '创建输入 Provider'} description={editingProviderID ? '修改后保存即生效。' : '选好连接方式与接入地址即可；订阅类保存后在下方登录一次。'} onClose={() => { setProviderModalOpen(false); setEditingProviderID(''); resetClaudeOAuthFlowState(); resetCursorOAuthFlowState(); resetChatGPTOAuthFlowState(); resetQoderPATFlowState(); resetWorkBuddyOAuthFlowState(); resetSelfRegistrationState(); }}>
@@ -7740,7 +7628,7 @@ function App() {
               );
             })()}
           </details>
-          {editingProviderID && !isNormalUser && (() => {
+          {editingProviderID && canDo('providers.edit') && (() => {
             const editingProvider = state.providers.find((item) => item.id === editingProviderID);
             if (!editingProvider) return null;
             return (
@@ -8087,16 +7975,16 @@ function App() {
         </Modal>
       )}
 
-      {providerUsersModalID && !isNormalUser && (() => {
+      {providerUsersModalID && canDo('users.manage') && (() => {
         const modalProvider = state.providers.find((item) => item.id === providerUsersModalID);
         if (!modalProvider) return null;
         const normalUsers = consoleUsers.filter((user) => user.role !== 'admin');
-        const authorizedUsers = normalUsers.filter((user) => (user.allowedProviderIds || []).includes(modalProvider.id));
-        const candidateUsers = normalUsers.filter((user) => !(user.allowedProviderIds || []).includes(modalProvider.id));
+        const authorizedUsers = normalUsers.filter((user) => (user.grantedProviderIds || []).includes(modalProvider.id));
+        const candidateUsers = normalUsers.filter((user) => !(user.grantedProviderIds || []).includes(modalProvider.id));
         return (
           <Modal
             title={`用户权限 · ${modalProvider.name}`}
-            description="管理哪些普通用户可以使用该输入 Provider。管理员账号不受此限制，始终可用全部 Provider。"
+            description="管理哪些用户被授权使用该输入 Provider。授权会自动把这些账号的角色切到内置「受限用户」（只能使用被授权的 Provider），管理员角色不受此限制。"
             onClose={() => setProviderUsersModalID(null)}
           >
             <div className="field field-full">
@@ -8151,62 +8039,20 @@ function App() {
         );
       })()}
 
-      {userModalOpen && (
-        <Modal
-          title={editingUserID ? '编辑用户' : '新建用户'}
-          description={editingUserID ? '修改用户名、角色或可用的输入 Provider。' : '创建控制台账号：设置用户名与初始密码，并按需授予管理员角色。'}
-          onClose={() => setUserModalOpen(false)}
-        >
-          <div className="form-grid modal-form">
-            <Field label="用户名" value={userFormName} onChange={setUserFormName} />
-            {!editingUserID ? (
-              <div className="field">
-                <label>初始密码（至少 8 位）</label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={userFormPassword}
-                  onChange={(event) => setUserFormPassword(event.target.value)}
-                  placeholder="用户登录后可自行修改"
-                />
-              </div>
-            ) : null}
-            <div className="field field-full">
-              <label>角色</label>
-              <div className="usage-segmented-toggle">
-                <button type="button" className={userFormRole === 'user' ? 'active' : ''} onClick={() => setUserFormRole('user')}>普通用户</button>
-                <button type="button" className={userFormRole === 'admin' ? 'active' : ''} onClick={() => setUserFormRole('admin')}>管理员</button>
-              </div>
-              <div className="hint-text">{userFormRole === 'admin'
-                  ? '管理员可用全部输入 Provider，并进入所有管理页面（含用户管理）。改角色立即生效，无需对方重新登录。'
-                  : '普通用户只能管理自己的 API 密钥，以及自己 Key 的日志与用量；下方勾选决定他能用哪些输入 Provider。'}</div>
-            </div>
-            {userFormRole === 'admin' ? null : (
-              <div className="field field-full">
-                <label>可用输入 Provider（未选中的不可用）</label>
-                {state.providers.length === 0 ? <div className="hint-text">暂无输入 Provider。</div> : (
-                  <>
-                    <ProviderChecklist
-                      providers={state.providers}
-                      selected={userFormProviders}
-                      onChange={setUserFormProviders}
-                    />
-                    {userFormProviders.length === 0 ? (
-                      <div className="hint-text">尚未选择任何 Provider，该用户将没有可用的输入 Provider。</div>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="actions modal-actions">
-            <button className="btn" onClick={() => setUserModalOpen(false)}>取消</button>
-            <button className="btn primary" disabled={userFormBusy} onClick={() => void submitUserForm()}>
-              {userFormBusy ? '保存中…' : editingUserID ? '保存修改' : '创建用户'}
-            </button>
-          </div>
-        </Modal>
-      )}
+
+      {profileModalOpen && authStatus?.authenticated ? (
+        <ProfileModal
+          currentName={authStatus.username || ''}
+          currentDisplayName={authStatus.displayName}
+          currentAvatar={authStatus.avatarUrl}
+          onClose={() => setProfileModalOpen(false)}
+          onSaved={async () => {
+            setProfileModalOpen(false);
+            await refreshAuthStatus();
+          }}
+          onToast={showToast}
+        />
+      ) : null}
 
       <div className="toast" id="toast">已复制到剪贴板</div>
     </>

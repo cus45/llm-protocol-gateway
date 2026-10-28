@@ -23,7 +23,8 @@ func TestRequireProviderTesterForUser(t *testing.T) {
 	server := NewServer(router, monitor.NewStore())
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
-		AllowedProviderIDs: []string{"granted"},
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"granted"},
 	})
 
 	withUser := func(providerID string) *http.Request {
@@ -46,9 +47,12 @@ func TestRequireProviderTesterForUser(t *testing.T) {
 		t.Fatalf("un-granted provider status = %d, want 403", rec.Code)
 	}
 
-	// Edit/delete stay owner-only even for granted providers.
+	// Editing someone else's provider needs the edit permission, which the
+	// built-in "granted" role lacks even though it may use the provider.
+	outside := NewServer(router, monitor.NewStore())
+	outside.userStore = newMemoryUserStore(domain.User{ID: "u1", Username: "u1", Role: domain.UserRoleUser, RoleID: domain.RoleIDUser})
 	rec = httptest.NewRecorder()
-	if server.requireProviderOwnerForUser(rec, withUser("granted"), "granted") {
+	if outside.requireProviderOwnerForUser(rec, withUser("granted"), "granted") {
 		t.Fatal("granted-but-not-owned provider must not pass the owner-only check")
 	}
 	if rec.Code != http.StatusForbidden {

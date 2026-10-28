@@ -817,16 +817,27 @@ const (
 	UserRoleUser  UserRole = "user"
 )
 
-// User is a management-console account. Normal users only see their own API
-// keys / logs / usage; admins manage everything including user accounts.
+// User is a management-console account. What it may do comes from its role
+// (see Role); which resources it may touch comes from the role's scope plus
+// AllowedProviderIDs for the "granted" scope.
 type User struct {
 	ID           string   `json:"id"`
 	Username     string   `json:"username"`
 	PasswordHash string   `json:"-"`
 	Role         UserRole `json:"role"`
-	// AllowedProviderIDs restricts which input providers a normal user may bind
-	// API keys to. Admin-assigned; empty means no providers are available.
-	AllowedProviderIDs []string `json:"allowedProviderIds,omitempty"`
+	// RoleID is the RBAC role. Built-ins ("admin"/"user"/"viewer"/"grantee")
+	// are answered from code; anything else is a row in the roles table. Empty
+	// on legacy rows is resolved to "user" (or "admin" when Role is admin).
+	RoleID string `json:"roleId"`
+	// DisplayName is the human name shown in the console (falls back to
+	// Username). Provider/key owner labels use it, not a generic "管理员".
+	DisplayName string `json:"displayName,omitempty"`
+	// AvatarURL is a data URL or an /__avatars/... path served by the gateway.
+	AvatarURL string `json:"avatarUrl,omitempty"`
+	// AllowedResourceIDs restricts which input providers this user may bind
+	// API keys to when the role scope is "granted". Admin-assigned; empty means
+	// no shared providers are available.
+	AllowedResourceIDs []string `json:"allowedResourceIds,omitempty"`
 	Enabled            bool     `json:"enabled"`
 	CreatedAt          string   `json:"createdAt"`
 	LastLoginAt        string   `json:"lastLoginAt,omitempty"`

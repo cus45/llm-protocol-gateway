@@ -632,6 +632,8 @@ export type ApiKeyWorkspaceProps = {
   owners?: ConsoleUser[];
   saving: boolean;
   canWriteQuota: boolean;
+  // 没有 keys.delete 时不渲染删除按钮（额度编辑由 canWriteQuota 单独控制）
+  canDelete?: boolean;
   testingProviderID: string;
   tunnelRunning: boolean;
   livePublicURL: string;
@@ -663,6 +665,7 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
     keyItem, providers, models, routes, endpoints, owners, saving, canWriteQuota,
     testingProviderID, tunnelRunning, livePublicURL, fixedOutputLabels, panel, onToast,
   } = props;
+  const canDelete = props.canDelete !== false;
   const { route, primary, outputProtocol } = apiKeyRouteInfo(keyItem, routes, providers);
   const [tab, setTab] = React.useState<ApiKeyDetailTab>('routing');
   const [publicPreview, setPublicPreview] = React.useState(false);
@@ -759,10 +762,12 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
             <Icon path={ICONS.layers} size={13} />
             <span>克隆</span>
           </button>
-          <button type="button" className="akc-action danger" disabled={saving} onClick={() => void panel.onDelete(keyItem)} title="删除该密钥">
-            <Icon path={ICONS.trash} size={13} />
-            <span>删除</span>
-          </button>
+          {canDelete ? (
+            <button type="button" className="akc-action danger" disabled={saving} onClick={() => void panel.onDelete(keyItem)} title="删除该密钥">
+              <Icon path={ICONS.trash} size={13} />
+              <span>删除</span>
+            </button>
+          ) : null}
         </div>
       </header>
 

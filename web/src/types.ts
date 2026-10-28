@@ -17,13 +17,29 @@ export type AdminAuthStatus = {
   role?: string;
   username?: string;
   userId?: string;
+  roleId?: string;
+  roleName?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  scope?: 'own' | 'granted' | 'all';
+  /**
+   * 当前角色持有的权限点；管理员是 ['*']。后端 /__auth/status 下发，
+   * 控制台用它决定菜单与按钮是否可见（见 lib.tsx can()）。
+   */
+  permissions?: string[];
 };
 
 export type ConsoleUser = {
   id: string;
   username: string;
   role: string;
-  allowedProviderIds?: string[];
+  roleId: string;
+  roleName?: string;
+  roleScope?: 'own' | 'granted' | 'all';
+  displayName?: string;
+  avatarUrl?: string;
+  /** 仅 scope=granted 时有意义：管理员分配给该用户的 Provider。 */
+  grantedProviderIds?: string[];
   enabled: boolean;
   createdAt: string;
   lastLoginAt?: string;
@@ -998,6 +1014,44 @@ export type ProviderTestResult = {
 };
 
 export type NavItemID = typeof navItems[number]['id'];
+
+export type RolePermissionMeta = { key: string; label: string };
+
+export type RolePermissionModule = {
+  id: string;
+  label: string;
+  description: string;
+  permissions: RolePermissionMeta[];
+};
+
+export type RoleScope = 'own' | 'granted' | 'all';
+
+export type Role = {
+  id: string;
+  name: string;
+  description?: string;
+  builtin: boolean;
+  scope: RoleScope;
+  permissions: string[];
+  createdAt?: string;
+  updatedAt?: string;
+  /** /__roles 列表里带的在用人数。 */
+  userCount?: number;
+};
+
+export type RoleCatalog = {
+  modules: RolePermissionModule[];
+  scopes: Array<{ id: RoleScope; label: string; description: string }>;
+};
+
+export type GrantTarget = {
+  id: string;
+  name: string;
+  ownerId: string;
+  ownerName: string;
+  protocol: string;
+  disabled: boolean;
+};
 
 export type TrafficRankCache = {
   providers: Record<string, number>;

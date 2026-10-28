@@ -1,0 +1,251 @@
+
+/* ----------------------------------------------------------------
+   RBAC：角色管理 / 用户管理 / 个人资料（rbac- 前缀，只复用现有设计 token）
+   ---------------------------------------------------------------- */
+.rbac-form-error {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 角色卡片 */
+.rbac-role-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.rbac-role-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 16px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.rbac-role-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-soft); }
+.rbac-role-card.builtin { background: var(--surface-soft); }
+.rbac-role-card-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rbac-role-card-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.rbac-role-card-title b { font-size: 14px; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rbac-role-card-id { color: var(--subtle); font-family: var(--mono); font-size: 11px; }
+.rbac-role-card-desc {
+  margin: 0;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.rbac-role-card-stats { display: flex; gap: 18px; }
+.rbac-stat { display: flex; flex-direction: column; gap: 2px; }
+.rbac-stat span { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.rbac-stat b { color: var(--text); font-size: 13px; font-family: var(--mono); }
+.rbac-role-card-actions {
+  display: flex; justify-content: flex-end; gap: 4px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 角色编辑弹窗的权限模块 */
+.rbac-perm-summary {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 16px 0 10px;
+  color: var(--muted); font-size: 12px;
+}
+.rbac-perm-summary b { color: var(--text-strong); font-size: 13px; }
+.rbac-perm-modules {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 2px;
+}
+.rbac-perm-module {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.rbac-perm-module-head {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer;
+  color: var(--text-strong); font-size: 13px; font-weight: 600;
+}
+.rbac-perm-module-head input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.rbac-perm-module-title { flex: 1; min-width: 0; }
+.rbac-perm-module-count { color: var(--subtle); font-family: var(--mono); font-size: 11px; font-weight: 500; }
+.rbac-perm-module-desc { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.rbac-perm-list { display: grid; gap: 2px; margin-top: 8px; }
+.rbac-perm-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.rbac-perm-item:hover { background: var(--hover); }
+.rbac-perm-item input { width: 14px; height: 14px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+.rbac-perm-item-label { flex: 1; min-width: 0; }
+.rbac-perm-item-key { color: var(--subtle); font-family: var(--mono); font-size: 10.5px; }
+
+/* 用户列表工具条 */
+.rbac-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.rbac-search {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1; min-width: 200px;
+  height: var(--control-h-sm, 32px);
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--subtle);
+}
+.rbac-search:focus-within { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-ring); }
+.rbac-search input {
+  flex: 1; min-width: 0;
+  border: 0; outline: none; background: transparent;
+  color: var(--text); font: inherit; font-size: 13px;
+}
+.rbac-search-clear {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: 16px; line-height: 1;
+  padding: 0 2px;
+}
+.rbac-search-clear:hover { color: var(--text); }
+.rbac-filter {
+  height: var(--control-h-sm, 32px);
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.rbac-toolbar-count { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+
+/* 用户卡片 */
+.rbac-user-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.rbac-user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 16px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.rbac-user-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-soft); }
+.rbac-user-card.disabled { opacity: 0.72; }
+.rbac-user-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rbac-user-identity { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.rbac-user-identity b { color: var(--text-strong); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rbac-user-identity span { color: var(--muted); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rbac-user-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.rbac-user-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+}
+.rbac-user-meta > div { display: grid; gap: 2px; min-width: 0; }
+.rbac-user-meta span { color: var(--subtle); font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; }
+.rbac-user-meta b { color: var(--text); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rbac-user-actions {
+  display: flex; justify-content: flex-end; gap: 4px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 头像（侧栏 user-card 里替换掉纯色首字方块） */
+.rbac-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  object-fit: cover;
+  color: #fff;
+  font-weight: 600;
+  background: var(--accent-grad);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 3px 8px -3px rgba(79, 70, 229, 0.55);
+}
+.rbac-avatar.fallback { user-select: none; }
+img.rbac-avatar { background: var(--surface-sunken); box-shadow: none; }
+.rbac-avatar-img { border-radius: 8px !important; }
+
+/* 头像上传 */
+.rbac-avatar-uploader { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.rbac-avatar-uploader-body { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.rbac-avatar-uploader-actions { display: flex; gap: 6px; }
+.rbac-avatar-uploader-actions .mini-btn { border: 1px solid var(--border); background: var(--surface); }
+.rbac-avatar-uploader .hint-text { margin-top: 0; }
+
+/* 用户弹窗里的开关行（与输入框同高） */
+.rbac-switch-row { display: flex; align-items: center; height: var(--control-h); }
+
+/* 被授权资源的 Provider 多选 */
+.rbac-grant-block {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-soft);
+}
+.rbac-grant-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rbac-grant-head b { color: var(--text-strong); font-size: 13px; }
+.rbac-grant-head span { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.rbac-grant-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 8px;
+}
+.rbac-grant-item {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.rbac-grant-item:hover { background: var(--hover); }
+.rbac-grant-item.checked { border-color: var(--accent-border); background: var(--accent-soft); }
+.rbac-grant-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.rbac-grant-owner { flex-shrink: 0; color: var(--muted); font-size: 11px; }
+
+@media (max-width: 640px) {
+  .rbac-user-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rbac-perm-modules { grid-template-columns: 1fr; max-height: none; }
+}

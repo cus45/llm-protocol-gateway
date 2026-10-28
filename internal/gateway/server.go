@@ -153,6 +153,7 @@ type Server struct {
 	log2xxBodiesMu sync.RWMutex
 	adminAuth      AdminAuthStore
 	userStore      UserStore
+	roles          RoleStore
 	// authThrottle counts failed console logins per source IP and account.
 	authThrottle      *authThrottle
 	oauthUsageCache   *oauthUsageCache
@@ -291,6 +292,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		}
 		if users, ok := stateSaver[0].(UserStore); ok {
 			server.userStore = users
+		}
+		if roles, ok := stateSaver[0].(RoleStore); ok {
+			server.roles = roles
 		}
 		if tasks, ok := stateSaver[0].(ScheduledTaskStore); ok {
 			server.scheduledTaskStore = tasks
@@ -536,6 +540,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /__users/{id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /__users/{id}", s.handleDeleteUser)
 	mux.HandleFunc("POST /__users/{id}/reset-password", s.handleResetUserPassword)
+	// RBAC: roles, the permission catalog, resource grant targets, and the
+	// signed-in user's own profile (display name + avatar).
+	mux.HandleFunc("GET /__roles", s.handleListRoles)
+	mux.HandleFunc("GET /__roles/options", s.handleListRoleOptions)
+	mux.HandleFunc("GET /__roles/catalog", s.handleRoleCatalog)
+	mux.HandleFunc("GET /__roles/grant-targets", s.handleGrantTargets)
+	mux.HandleFunc("POST /__roles", s.handleCreateRole)
+	mux.HandleFunc("PATCH /__roles/{id}", s.handleUpdateRole)
+	mux.HandleFunc("POST /__roles/{id}/copy", s.handleCopyRole)
+	mux.HandleFunc("DELETE /__roles/{id}", s.handleDeleteRole)
+	mux.HandleFunc("PATCH /__profile", s.handleProfileUpdate)
 	mux.HandleFunc("GET /__quota-tasks", s.handleListScheduledTasks)
 	mux.HandleFunc("POST /__quota-tasks", s.handleCreateScheduledTask)
 	mux.HandleFunc("POST /__quota-tasks/preview", s.handlePreviewScheduledTask)
@@ -631,7 +646,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	// 服务器自己的"今天"（API 密钥今日计数、定时任务、纯日期的日界）按 time.Local
 	// 算；控制台据此把「今日」换算到同一个时区，两个页面才不会各说一天。
 	state.ServerTimeZone = serverTimeZoneName()
-	if !identity.isAdmin() {
+	if p := s.requestPrincipal(r); p.scopeOf() != domain.ScopeAll {
 		writeJSON(w, http.StatusOK, s.stateForUser(identity, state))
 		return
 	}
@@ -813,7 +828,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusNotFound, "request log not found")
 			return
 		}
-		if !identity.isAdmin() {
+		if s.requestPrincipal(r).scopeOf() != domain.ScopeAll {
 			owned := s.ownedKeyIDs(identity.UserID)
 			allowed := false
 			for _, k := range owned {
@@ -844,8 +859,8 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		PageSize:      atoiDefault(r.URL.Query().Get("pageSize"), 100),
 		IncludeBodies: parseBoolQuery(r.URL.Query().Get("includeBodies")),
 	}
-	if !identity.isAdmin() {
-		// Normal users only see logs of their own keys (empty set matches nothing).
+	if s.requestPrincipal(r).scopeOf() != domain.ScopeAll {
+		// Restricted scopes only see logs of their own keys (empty set matches nothing).
 		query.APIKeyIDs = s.ownedKeyIDs(identity.UserID)
 	} else if ownerUserID := strings.TrimSpace(r.URL.Query().Get("ownerUserId")); ownerUserID != "" {
 		// Admin-only "所属用户" log filter; empty param means no filter (see all users).
@@ -964,7 +979,7 @@ func (s *Server) handleRequestStats(w http.ResponseWriter, r *http.Request) {
 	// logs; longer ranges use every retained log and only report hourly coverage.
 	hourlyCoveredByRetention := to.Sub(from) <= time.Duration(s.RequestLogRetentionDays())*24*time.Hour
 	identity := s.requestIdentity(r)
-	if !identity.isAdmin() {
+	if s.requestPrincipal(r).scopeOf() != domain.ScopeAll {
 		// Per-user stats: computed from own keys only; cached per user.
 		keyIDs := s.ownedKeyIDs(identity.UserID)
 		userCacheKey := cacheKey + "|user:" + identity.UserID
@@ -2338,12 +2353,20 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid provider json: "+err.Error())
 		return
 	}
-	if identity := s.requestIdentity(r); !identity.isAdmin() {
-		// Normal users own the providers they create (including clones);
-		// OAuth connect/disconnect on owned providers is allowed too.
-		provider.OwnerUserID = identity.UserID
+	if p := s.requestPrincipal(r); p.scopeOf() != domain.ScopeAll {
+		// Restricted users own the providers they create (including clones),
+		// while every other account's provider is labelled with its own
+		// administrator's account rather than a generic owner.
+		provider.OwnerUserID = p.UserID
 		// The RTK switch is an admin-only, host-wide capability.
 		provider.RTKCompress = false
+	} else {
+		// Admin-created providers and keys are attributed to the administrator's
+		// own account, never left unowned (which the console would label with a
+		// generic "管理员" instead of the real username).
+		if strings.TrimSpace(provider.OwnerUserID) == "" {
+			provider.OwnerUserID = s.adminOwnerID()
+		}
 	}
 	if provider.RTKCompress {
 		if available, _ := s.rtk.status(); !available {
@@ -3754,8 +3777,7 @@ func (s *Server) handleTestRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	identity := s.requestIdentity(r)
-	writeJSON(w, http.StatusOK, keysVisibleTo(identity, s.router.State().APIKeys))
+	writeJSON(w, http.StatusOK, keysVisibleTo(s.requestPrincipal(r), s.router.State().APIKeys))
 }
 
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -3775,17 +3797,21 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		key.StreamEnabled = true
 	}
 	if identity.isAdmin() {
-		// Admin may assign any owner; validate the target user exists.
+		// Admin may assign any owner; validate the target user exists. An
+		// unassigned key belongs to the administrator's own account.
 		if owner := strings.TrimSpace(key.OwnerUserID); owner != "" && s.userStore != nil {
 			if _, err := s.userStore.UserByID(owner); err != nil {
 				writeOpenAIError(w, http.StatusBadRequest, "owner user not found")
 				return
 			}
 		}
+		if strings.TrimSpace(key.OwnerUserID) == "" {
+			key.OwnerUserID = s.adminOwnerID()
+		}
 	} else {
 		// Normal users always own their new keys and are provider-restricted.
 		key.OwnerUserID = identity.UserID
-		if err := s.validateKeyProvidersForUser(identity, key); err != nil {
+		if err := s.validateKeyProvidersForUser(s.principalFor(identity), key); err != nil {
 			writeOpenAIError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -3808,8 +3834,8 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	identity := s.requestIdentity(r)
 	keyID := r.PathValue("id")
-	// Ownership check: normal users may only touch their own keys.
-	if !identity.isAdmin() {
+	// Ownership check: restricted users may only touch their own keys.
+	if s.requestPrincipal(r).scopeOf() != domain.ScopeAll {
 		owned := false
 		for _, key := range s.router.State().APIKeys {
 			if key.ID == keyID && key.OwnerUserID == identity.UserID {
@@ -3838,7 +3864,12 @@ func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if !jsonHasKey(body, "fallbackProviderIds") {
 		patch.FallbackProviderIDs = nil
-	} else if patch.FallbackProviderIDs == nil {
+	}
+	// A key never changes hands except through the admin-only ownerUserId
+	// patch below; dropping the field here stops a stale client payload from
+	// silently reassigning ownership back to "" (i.e. the administrator).
+	patch.OwnerUserID = ""
+	if patch.FallbackProviderIDs == nil {
 		patch.FallbackProviderIDs = []string{}
 	}
 	if !jsonHasKey(body, "fallbackModelOverrides") {
@@ -3850,8 +3881,7 @@ func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	// it. A key's owner deciding their own budget is exactly the escalation this
 	// check exists to prevent.
 	quotaSent := jsonHasKey(body, "quotaWindow") || jsonHasKey(body, "quotaTokens") || jsonHasKey(body, "quotaCostMicros")
-	if quotaSent && !identity.isAdmin() {
-		writeOpenAIError(w, http.StatusForbidden, "额度只能由管理员设置")
+	if quotaSent && !s.requirePermission(w, r, domain.PermKeysQuota) {
 		return
 	}
 	// The three quota fields only mean something as a set (a limit needs a window),
@@ -3878,7 +3908,7 @@ func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if !identity.isAdmin() {
 		// Provider whitelist check for role=user (route + fallbacks).
-		if err := s.validateKeyProvidersForUser(identity, patch); err != nil {
+		if err := s.validateKeyProvidersForUser(s.principalFor(identity), patch); err != nil {
 			writeOpenAIError(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -3914,7 +3944,7 @@ func (s *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	identity := s.requestIdentity(r)
 	keyID := r.PathValue("id")
-	if !identity.isAdmin() {
+	if s.requestPrincipal(r).scopeOf() != domain.ScopeAll {
 		owned := false
 		for _, key := range s.router.State().APIKeys {
 			if key.ID == keyID && key.OwnerUserID == identity.UserID {

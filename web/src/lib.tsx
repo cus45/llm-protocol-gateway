@@ -399,23 +399,103 @@ export const navItems = [
   { id: 'monitoring', label: '监控中心' },
   { id: 'quota-keeper', label: '额度保活' },
   { id: 'users', label: '用户管理' },
+  { id: 'roles', label: '角色管理' },
   { id: 'machine', label: '机器状态' },
   { id: 'settings', label: '设置' },
 ] as const;
 
-// 核心配置项：新用户只需依次配好这两个即可使用，侧边栏置顶并加底色区分。
-export const coreNavIDs: NavItemID[] = ['input-providers', 'api-keys'];
+export type NavItemIDValue = typeof navItems[number]['id'];
 
-// 侧边栏导航分组：组内所有项都被角色过滤掉时，整组（含组标题）不渲染。
-export const navGroups: Array<{ label: string; ids: NavItemID[] }> = [
-  { label: '核心配置', ids: ['input-providers', 'api-keys', 'output-providers', 'quota-keeper'] },
-  { label: '数据洞察', ids: ['models-menu', 'usage-stats', 'traffic-tokens'] },
-  { label: '系统管理', ids: ['public-access', 'monitoring', 'users', 'machine', 'settings'] },
+/**
+ * 菜单层级：一个分组 = 一个功能板块（与后端角色编辑器的一级分类一致），
+ * 分组可折叠，折叠状态按用户记住。顺序即板块优先级。
+ */
+export type NavSection = {
+  id: string;
+  label: string;
+  /** 二级板块：用于跨板块聚合（如「权限与账户」下同时放用户与角色）。 */
+  children: Array<{ id: NavItemIDValue }>;
+};
+
+export const navSections: NavSection[] = [
+  { id: 'providers', label: '账号与模型', children: [{ id: 'input-providers' }, { id: 'models-menu' }] },
+  { id: 'keys', label: '密钥与接入', children: [{ id: 'api-keys' }, { id: 'output-providers' }, { id: 'public-access' }] },
+  { id: 'insights', label: '数据洞察', children: [{ id: 'usage-stats' }, { id: 'traffic-tokens' }] },
+  { id: 'operations', label: '运维监控', children: [{ id: 'monitoring' }, { id: 'quota-keeper' }, { id: 'machine' }] },
+  { id: 'admin', label: '权限与账户', children: [{ id: 'users' }, { id: 'roles' }] },
+  { id: 'system', label: '系统', children: [{ id: 'settings' }] },
 ];
 
-// 普通用户仅可访问的页面（其余仅管理员可见）。监控中心刻意不在列：它读账号矩阵、
-// 凭证到期与额度，还能触发续期，只给管理员。
-export const userAllowedNavIDs: NavItemID[] = ['input-providers', 'models-menu', 'api-keys', 'traffic-tokens', 'usage-stats', 'quota-keeper'];
+/** 核心菜单：登录后落地页与排序优先项。 */
+export const coreNavIDs: NavItemIDValue[] = ['input-providers', 'api-keys'];
+
+// 普通用户（旧版）可访问的页面；新版按权限点决定，仅用于没有权限列表的旧会话兜底。
+export const userAllowedNavIDs: NavItemIDValue[] = ['input-providers', 'models-menu', 'api-keys', 'traffic-tokens', 'usage-stats', 'quota-keeper'];
+
+/**
+ * 每个菜单项需要的最小权限：有其一即可显示。'*' 代表管理员。
+ * 与后端 internal/gateway/rbac.go 的 routePermission 表一一对应。
+ */
+export const navPermissions: Record<NavItemIDValue, string[]> = {
+  'input-providers': ['providers.view'],
+  'models-menu': ['models.view', 'providers.view'],
+  'api-keys': ['keys.view'],
+  'output-providers': ['endpoints.view', 'endpoints.edit'],
+  'public-access': ['public.access'],
+  'usage-stats': ['usage.view'],
+  'traffic-tokens': ['logs.view'],
+  'monitoring': ['monitor.view', 'monitor.manage'],
+  'quota-keeper': ['quota.view', 'quota.manage'],
+  'users': ['users.view', 'users.manage'],
+  'roles': ['roles.manage'],
+  'machine': ['system.machine'],
+  'settings': ['system.settings', 'system.settings.write'],
+};
+
+/** 权限判定：管理员（'*'）通过一切；未登录/无列表时按旧的 user 规则兜底。 */
+export function can(permissions: string[] | undefined, key: string): boolean {
+  if (!permissions) return false;
+  return permissions.includes('*') || permissions.includes(key);
+}
+
+/** 任一满足即可。 */
+export function canAny(permissions: string[] | undefined, keys: string[]): boolean {
+  if (!permissions) return false;
+  if (permissions.includes('*')) return true;
+  return keys.some((key) => permissions.includes(key));
+}
+
+/**
+ * 按权限过滤菜单：返回 null 表示该项隐藏。没有权限列表（旧会话/本地直连）时
+ * 回退到 userAllowedNavIDs 的旧行为，保证升级瞬间不会白屏。
+ */
+export function navVisibleFor(permissions: string[] | undefined, id: NavItemIDValue, legacyUser: boolean): boolean {
+  if (permissions && permissions.length > 0) {
+    return canAny(permissions, navPermissions[id]);
+  }
+  return legacyUser ? userAllowedNavIDs.includes(id) : true;
+}
+
+/** 侧栏折叠分组持久化（按用户 id 分开，换账号不串）。 */
+export const NAV_COLLAPSE_STORAGE_KEY = 'llm-gateway-nav-collapsed';
+
+export function readStoredNavCollapsed(userKey: string): string[] {
+  try {
+    const raw = localStorage.getItem(`${NAV_COLLAPSE_STORAGE_KEY}:${userKey}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeStoredNavCollapsed(userKey: string, collapsed: string[]) {
+  try {
+    localStorage.setItem(`${NAV_COLLAPSE_STORAGE_KEY}:${userKey}`, JSON.stringify(collapsed));
+  } catch {
+    /* 隐私模式写不进去也无所谓 */
+  }
+}
 
 // 侧边栏收起状态持久化 key（独立于主题，避免互相覆盖）
 export const SIDEBAR_STORAGE_KEY = 'llm-gateway-sidebar';

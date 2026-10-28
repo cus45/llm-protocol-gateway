@@ -38,8 +38,8 @@ func TestQuotaOwnerLostAccess(t *testing.T) {
 	}})
 	server := NewServer(router, monitor.NewStore())
 	server.userStore = newMemoryUserStore(
-		domain.User{ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true, AllowedProviderIDs: []string{"granted"}},
-		domain.User{ID: "u2", Username: "u2", Role: domain.UserRoleUser, Enabled: false, AllowedProviderIDs: []string{"granted"}},
+		domain.User{ID: "u1", Username: "u1", Role: domain.UserRoleUser, RoleID: domain.RoleIDGrantee, Enabled: true, AllowedResourceIDs: []string{"granted"}},
+		domain.User{ID: "u2", Username: "u2", Role: domain.UserRoleUser, RoleID: domain.RoleIDGrantee, Enabled: false, AllowedResourceIDs: []string{"granted"}},
 		domain.User{ID: "boss", Username: "boss", Role: domain.UserRoleAdmin, Enabled: true},
 	)
 
@@ -71,7 +71,7 @@ func TestProbeProviderForQuotaSkipsRevokedProvider(t *testing.T) {
 	upstream := chatUpstream(t, nil)
 	server, _ := newQuotaTestServer(t, upstream.URL)
 	server.userStore = newMemoryUserStore(domain.User{
-		ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true, AllowedProviderIDs: []string{"some-other"},
+		ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true, AllowedResourceIDs: []string{"some-other"},
 	})
 	run := server.probeProviderForQuota(context.Background(), domain.ScheduledTask{ID: "task-1", OwnerUserID: "u1"}, "p1", false)
 	if run.Outcome != domain.QuotaRunSkipped || !strings.Contains(run.Reason, "不再授权") {
@@ -87,7 +87,7 @@ func TestProbeProviderForQuotaSkipsRevokedProvider(t *testing.T) {
 func TestScheduledTaskVisibilityAndProviderGrants(t *testing.T) {
 	server, store := newQuotaTestServer(t, "http://127.0.0.1:1")
 	server.userStore = newMemoryUserStore(
-		domain.User{ID: "u1", Username: "alice", Role: domain.UserRoleUser, Enabled: true, AllowedProviderIDs: []string{"p1"}},
+		domain.User{ID: "u1", Username: "alice", Role: domain.UserRoleUser, Enabled: true, AllowedResourceIDs: []string{"p1"}},
 		domain.User{ID: "u2", Username: "bob", Role: domain.UserRoleUser, Enabled: true},
 	)
 	store.SaveScheduledTask(domain.ScheduledTask{ID: "t-admin", Name: "管理员的任务", OwnerUserID: legacyAdminUserID, ProviderIDs: []string{"p1"}, Enabled: true})
@@ -116,7 +116,7 @@ func TestScheduledTaskVisibilityAndProviderGrants(t *testing.T) {
 		if len(payload.Tasks) != 3 || len(payload.RecentRuns) != 3 {
 			t.Fatalf("admin view = %d tasks / %d runs", len(payload.Tasks), len(payload.RecentRuns))
 		}
-		if payload.OwnerNames["u1"] != "alice" || payload.OwnerNames[legacyAdminUserID] != "管理员" {
+		if payload.OwnerNames["u1"] != "alice" || payload.OwnerNames[legacyAdminUserID] != "内置管理员" {
 			t.Fatalf("owner names = %v", payload.OwnerNames)
 		}
 	})

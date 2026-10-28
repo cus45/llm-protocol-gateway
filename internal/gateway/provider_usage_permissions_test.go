@@ -20,7 +20,8 @@ func TestProviderUsageAllowedForGrantedUsers(t *testing.T) {
 	server := NewServer(router, monitor.NewStore())
 	server.userStore = newMemoryUserStore(domain.User{
 		ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true,
-		AllowedProviderIDs: []string{"granted"},
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"granted"},
 	})
 
 	handlers := map[string]http.HandlerFunc{

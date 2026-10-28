@@ -2,9 +2,7 @@ package gateway
 
 import (
 	"fmt"
-	"maps"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -21,49 +19,100 @@ func (s *Server) requestIdentity(r *http.Request) sessionIdentity {
 	return adminIdentity()
 }
 
-// allowedProviderIDsForUser returns the providers a normal user may access:
-// the admin-assigned whitelist plus every provider the user created
-// themselves (ownership implies access). Providers disabled by the admin are
-// excluded entirely — normal users cannot see, bind, or use them until
-// re-enabled.
+// allowedProviderIDsForUser returns the providers a non-admin user may access,
+// according to its role's resource scope:
+//   - all:     every enabled provider (a custom role granted resources:all)
+//   - granted: the admin-assigned grants plus providers the user created
+//   - own:     only providers the user created
+//
+// Providers disabled by the admin are excluded entirely — normal users cannot
+// see, bind, or use them until re-enabled.
 func (s *Server) allowedProviderIDsForUser(userID string) map[string]bool {
+	return s.allowedProviderIDsForPrincipal(s.principalForUserID(userID))
+}
+
+// principalForUserID resolves a stored user's principal (used by request-time
+// checks that only hold the key owner's id).
+func (s *Server) principalForUserID(userID string) principal {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return principal{IsAdmin: true, RoleID: domain.RoleIDAdmin, scope: domain.ScopeAll, localAdmin: true}
+	}
+	if userID == legacyAdminUserID {
+		return s.localAdminPrincipal()
+	}
+	identity := sessionIdentity{UserID: userID}
+	if s.userStore != nil {
+		if user, err := s.userStore.UserByID(userID); err == nil {
+			identity.Username = user.Username
+			identity.Role = user.Role
+		}
+	}
+	return s.principalFor(identity)
+}
+
+// localAdminPrincipal is the implicit administrator (loopback bypass, legacy
+// sessions). It holds every permission and sees every resource.
+func (s *Server) localAdminPrincipal() principal {
+	return principal{
+		UserID: legacyAdminUserID, Username: s.adminDisplayName(), Role: domain.UserRoleAdmin,
+		RoleID: domain.RoleIDAdmin, IsAdmin: true, scope: domain.ScopeAll, localAdmin: true,
+	}
+}
+
+func (s *Server) allowedProviderIDsForPrincipal(p principal) map[string]bool {
 	out := map[string]bool{}
-	if strings.TrimSpace(userID) == "" {
+	if p.UserID == "" {
+		return out
+	}
+	scope := p.scopeOf()
+	if scope == domain.ScopeAll {
+		for _, provider := range s.router.State().Providers {
+			if provider.Disabled || provider.Deleted {
+				continue
+			}
+			out[provider.ID] = true
+		}
 		return out
 	}
 	granted := map[string]bool{}
-	if s.userStore != nil {
-		if user, err := s.userStore.UserByID(userID); err == nil {
-			for _, id := range user.AllowedProviderIDs {
-				granted[id] = true
-			}
-		}
+	for _, id := range p.Grants {
+		granted[id] = true
 	}
 	for _, provider := range s.router.State().Providers {
 		if provider.Disabled || provider.Deleted {
 			continue
 		}
-		if granted[provider.ID] || strings.TrimSpace(provider.OwnerUserID) == userID {
+		owns := strings.TrimSpace(provider.OwnerUserID) == p.UserID
+		if owns || (scope == domain.ScopeGranted && granted[provider.ID]) {
 			out[provider.ID] = true
 		}
 	}
 	return out
 }
 
-// requireProviderOwnerForUser rejects normal users acting on providers they
-// did not create (edit/clone/delete/test are owner-only for role=user).
-// Admins always pass. Returns false after writing the error response.
+// providerVisibleTo reports whether the provider is in the principal's scope.
+func (s *Server) providerVisibleTo(p principal, providerID string) bool {
+	return s.allowedProviderIDsForPrincipal(p)[strings.TrimSpace(providerID)]
+}
+
+// requireProviderOwnerForUser rejects users acting on providers outside their
+// own resources: under the "own" scope that means providers they did not
+// create; under "granted" it means anything not granted; "all" passes. Admins
+// always pass. Returns false after writing the error response.
 func (s *Server) requireProviderOwnerForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {
-	identity := s.requestIdentity(r)
-	if identity.isAdmin() {
-		return true
-	}
+	p := s.requestPrincipal(r)
 	provider, err := s.router.ProviderByID(providerID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return false
 	}
-	if strings.TrimSpace(provider.OwnerUserID) != identity.UserID {
+	if p.scopeOf() == domain.ScopeAll {
+		return true
+	}
+	owns := strings.TrimSpace(provider.OwnerUserID) == p.UserID
+	allowed := owns || (p.scopeOf() == domain.ScopeGranted && s.providerVisibleTo(p, provider.ID))
+	if !allowed {
 		writeOpenAIError(w, http.StatusForbidden, "permission denied: only the provider owner or an admin can do this")
 		return false
 	}
@@ -76,63 +125,53 @@ func (s *Server) requireProviderOwnerForUser(w http.ResponseWriter, r *http.Requ
 // page must be testable. Edit/delete flows stay on the stricter
 // requireProviderOwnerForUser.
 func (s *Server) requireProviderTesterForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {
-	identity := s.requestIdentity(r)
-	if identity.isAdmin() {
+	p := s.requestPrincipal(r)
+	if s.providerVisibleTo(p, providerID) {
 		return true
 	}
-	if !s.allowedProviderIDsForUser(identity.UserID)[strings.TrimSpace(providerID)] {
-		writeOpenAIError(w, http.StatusForbidden, "permission denied: only the provider owner, granted users, or an admin can do this")
-		return false
-	}
-	return true
+	writeOpenAIError(w, http.StatusForbidden, "permission denied: only the provider owner, granted users, or an admin can do this")
+	return false
 }
 
-// requireRouteAccessForUser rejects normal users acting on a route whose
-// provider they may not use: reading, testing, retargeting or deleting it would
+// requireRouteAccessForUser rejects users acting on a route whose provider is
+// outside their scope: reading, testing, retargeting or deleting it would
 // otherwise reach another user's provider (or the administrator's) through a
 // route they were never granted. Admins always pass. A route that does not
 // exist is the caller's 404 to give, so it is let through here and answered by
 // the handler as it always was. Returns false after writing 403.
 func (s *Server) requireRouteAccessForUser(w http.ResponseWriter, r *http.Request, routeID string) bool {
-	identity := s.requestIdentity(r)
-	if identity.isAdmin() || s.router == nil {
+	p := s.requestPrincipal(r)
+	if p.scopeOf() == domain.ScopeAll || s.router == nil {
 		return true
 	}
 	route, err := s.router.RouteByID(routeID)
 	if err != nil {
 		return true
 	}
-	allowed := s.allowedProviderIDsForUser(identity.UserID)
-	if !s.router.ProviderAccessible(route.ProviderID, identity.UserID, slices.Collect(maps.Keys(allowed))) {
+	if !s.providerVisibleTo(p, route.ProviderID) {
 		writeOpenAIError(w, http.StatusForbidden, "permission denied")
 		return false
 	}
 	return true
 }
 
-// requireRouteRetargetForUser refuses a normal user's update that would move a
-// route onto a provider they were not granted — the same rule handleCreateRoute
+// requireRouteRetargetForUser refuses a user's update that would move a route
+// onto a provider outside their scope — the same rule handleCreateRoute
 // applies, so a granted route cannot be re-pointed at somebody else's account.
 func (s *Server) requireRouteRetargetForUser(w http.ResponseWriter, r *http.Request, patch domain.Route) bool {
-	identity := s.requestIdentity(r)
-	if identity.isAdmin() || strings.TrimSpace(patch.ProviderID) == "" {
+	if strings.TrimSpace(patch.ProviderID) == "" {
 		return true
 	}
 	return s.requireProviderAccessForUser(w, r, strings.TrimSpace(patch.ProviderID))
 }
 
-// requireProviderAccessForUser rejects normal users who were not granted the
-// given provider. Admins always pass. Returns false after writing 403.
+// requireProviderAccessForUser rejects users who cannot see the provider.
 func (s *Server) requireProviderAccessForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {
-	identity := s.requestIdentity(r)
-	if identity.isAdmin() {
+	if s.providerVisibleTo(s.requestPrincipal(r), providerID) {
 		return true
 	}
-	if !s.allowedProviderIDsForUser(identity.UserID)[providerID] {
-		writeOpenAIError(w, http.StatusForbidden, "permission denied")
-		return false
-	}
-	return true
+	writeOpenAIError(w, http.StatusForbidden, "permission denied")
+	return false
 }
 
 // providerAllowedForKeyOwner reports whether the owner of an API key may still
@@ -255,20 +294,79 @@ func ownerUserIDForStats(ownerUserID string) string {
 // reflected immediately because names are resolved fresh at query time. Unknown
 // / deleted users fall back to a readable label keyed by id.
 func (s *Server) resolveUserName(userID string) string {
+	userID = strings.TrimSpace(userID)
 	switch userID {
-	case "", "_anonymous":
+	case "_anonymous":
 		return "未绑定用户"
+	case "":
+		// Legacy keys without an owner belong to the administrator. Use the
+		// real administrator name rather than a synthetic label.
+		return s.adminDisplayName()
 	case legacyAdminUserID:
-		return "管理员"
+		return s.adminDisplayName()
 	}
 	if s.userStore != nil {
 		if user, err := s.userStore.UserByID(userID); err == nil {
+			if name := strings.TrimSpace(user.DisplayName); name != "" {
+				return name
+			}
 			if name := strings.TrimSpace(user.Username); name != "" {
 				return name
 			}
 		}
 	}
 	return "已删除用户(" + userID + ")"
+}
+
+// legacyAdminUsername is the display name of the implicit administrator: the
+// account named "admin" when one exists, otherwise "admin" itself. It is used
+// wherever an owner id is empty/legacy admin, so created providers and keys are
+// labelled with the administrator's own name instead of a hardcoded "管理员".
+func (s *Server) adminDisplayName() string {
+	if s.userStore != nil {
+		if user, err := s.userStore.UserByUsername(legacyAdminUserID); err == nil {
+			if name := strings.TrimSpace(user.DisplayName); name != "" {
+				return name
+			}
+			if name := strings.TrimSpace(user.Username); name != "" {
+				return name
+			}
+		}
+		// Fall back to the first administrator-role account, if any.
+		if users, err := s.userStore.ListUsers(); err == nil {
+			for _, user := range users {
+				if user.Role == domain.UserRoleAdmin {
+					if name := strings.TrimSpace(user.DisplayName); name != "" {
+						return name
+					}
+					return user.Username
+				}
+			}
+		}
+	}
+	return "内置管理员"
+}
+
+// adminOwnerID is the user id stored as the owner of everything the
+// administrator creates. When an account named "admin" exists it is that
+// account, so the console shows its real username instead of "管理员"; the
+// implicit legacy administrator keeps its stable id.
+func (s *Server) adminOwnerID() string {
+	if s.userStore != nil {
+		if user, err := s.userStore.UserByUsername(legacyAdminUserID); err == nil && strings.TrimSpace(user.ID) != "" {
+			return user.ID
+		}
+	}
+	return legacyAdminUserID
+}
+
+// displayNameOf resolves the label for one account: DisplayName, then the
+// login name. Used for the session's user card and for owner columns.
+func displayNameOf(user domain.User) string {
+	if name := strings.TrimSpace(user.DisplayName); name != "" {
+		return name
+	}
+	return user.Username
 }
 
 // fillUserNames resolves display names for a byUser stat slice in place.
@@ -314,14 +412,18 @@ func (s *Server) fillRequestLogUserNames(logs []monitor.RequestLog) {
 	}
 }
 
-// keysVisibleTo filters API keys per role: admins see all, users see own.
-func keysVisibleTo(identity sessionIdentity, keys []domain.APIKey) []domain.APIKey {
-	if identity.isAdmin() {
+// keysVisibleTo filters API keys per role: "all" scope (and admins) see every
+// key; "own"/"granted" scopes see the keys they own, plus — for "granted" —
+// keys issued on the administrators' behalf that were explicitly delegated to
+// them are not inherited, so a shared-resource user still only manages what it
+// created.
+func keysVisibleTo(p principal, keys []domain.APIKey) []domain.APIKey {
+	if p.scopeOf() == domain.ScopeAll {
 		return keys
 	}
 	out := make([]domain.APIKey, 0)
 	for _, key := range keys {
-		if key.OwnerUserID == identity.UserID {
+		if strings.TrimSpace(key.OwnerUserID) == p.UserID {
 			out = append(out, key)
 		}
 	}
@@ -329,12 +431,12 @@ func keysVisibleTo(identity sessionIdentity, keys []domain.APIKey) []domain.APIK
 }
 
 // validateKeyProvidersForUser rejects routes/fallbacks pointing at providers
-// the user has not been granted by the administrator.
-func (s *Server) validateKeyProvidersForUser(identity sessionIdentity, key domain.APIKey) error {
-	if identity.isAdmin() {
+// outside the user's resource scope.
+func (s *Server) validateKeyProvidersForUser(p principal, key domain.APIKey) error {
+	if p.scopeOf() == domain.ScopeAll {
 		return nil
 	}
-	allowed := s.allowedProviderIDsForUser(identity.UserID)
+	allowed := s.allowedProviderIDsForPrincipal(p)
 	if routeID := strings.TrimSpace(key.RouteID); routeID != "" {
 		state := s.router.State()
 		routeProvider := ""
@@ -362,7 +464,8 @@ func (s *Server) validateKeyProvidersForUser(identity sessionIdentity, key domai
 // Endpoints and models stay (non-secret) so the API-key page can render client
 // URLs and model pickers; never return nil slices — the UI assumes arrays.
 func (s *Server) stateForUser(identity sessionIdentity, state domain.GatewayState) domain.GatewayState {
-	allowed := s.allowedProviderIDsForUser(identity.UserID)
+	p := s.principalFor(identity)
+	allowed := s.allowedProviderIDsForPrincipal(p)
 	providers := make([]domain.Provider, 0)
 	for _, provider := range state.Providers {
 		if allowed[provider.ID] {
@@ -389,7 +492,7 @@ func (s *Server) stateForUser(identity sessionIdentity, state domain.GatewayStat
 	state.Providers = providers
 	state.Routes = routes
 	state.Models = models
-	state.APIKeys = keysVisibleTo(identity, state.APIKeys)
+	state.APIKeys = keysVisibleTo(p, state.APIKeys)
 	// 普通用户看不到未授权的 Provider：把「在服务」里指向它们的那一项按未设置处理，
 	// 否则界面会拿着一个不存在的 id 去画绿点。
 	for index := range state.APIKeys {

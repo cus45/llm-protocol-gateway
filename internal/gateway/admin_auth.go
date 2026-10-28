@@ -73,10 +73,33 @@ func (id sessionIdentity) isAdmin() bool { return id.Role == domain.UserRoleAdmi
 
 type authContextKey struct{}
 
+// principalContextKey carries the resolved RBAC principal alongside the raw
+// identity, so handlers never re-resolve the role on the hot path.
+type principalContextKey struct{}
+
 // identityFromRequest returns the authenticated identity stored by withAdminAuth.
 func identityFromRequest(r *http.Request) (sessionIdentity, bool) {
 	value, ok := r.Context().Value(authContextKey{}).(sessionIdentity)
 	return value, ok
+}
+
+// requestPrincipal returns the RBAC principal of the request, defaulting to
+// the implicit administrator for requests that carry no identity (loopback
+// bypass routes registered before multi-user).
+func (s *Server) requestPrincipal(r *http.Request) principal {
+	if value, ok := r.Context().Value(principalContextKey{}).(principal); ok {
+		return value
+	}
+	if identity, ok := identityFromRequest(r); ok {
+		return s.principalFor(identity)
+	}
+	return s.principalFor(adminIdentity())
+}
+
+func withPrincipal(r *http.Request, identity sessionIdentity, p principal) *http.Request {
+	ctx := context.WithValue(r.Context(), authContextKey{}, identity)
+	ctx = context.WithValue(ctx, principalContextKey{}, p)
+	return r.WithContext(ctx)
 }
 
 // adminIdentity is the implicit identity for local bypass and legacy sessions.
@@ -123,7 +146,8 @@ func (s *Server) withAdminAuth(next http.Handler) http.Handler {
 		localBypass := isLocalAdminBypass(r)
 		if localBypass {
 			// Local desktop app acts as the administrator.
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authContextKey{}, adminIdentity())))
+			identity := adminIdentity()
+			next.ServeHTTP(w, withPrincipal(r, identity, s.localAdminPrincipal()))
 			return
 		}
 
@@ -138,14 +162,17 @@ func (s *Server) withAdminAuth(next http.Handler) http.Handler {
 			s.denyAdminAuth(w, r, "authentication required")
 			return
 		}
-		// Normal users may only access a whitelisted subset of console APIs.
-		if !identity.isAdmin() && !isUserAllowedPath(r.Method, r.URL.Path) {
-			writeOpenAIError(w, http.StatusForbidden, "permission denied")
+		// RBAC: every console route resolves to one permission; a principal
+		// without it is refused here. Resource scope (own / granted / all) is
+		// enforced inside each handler by the require*ForUser helpers.
+		current := s.principalFor(identity)
+		if required := routePermission(r.Method, r.URL.Path); required != nil && !current.has(*required) {
+			deniedPermission(w, *required)
 			return
 		}
 		// 记录该用户浏览器最近一次控制台请求时间（内存精确，周期性节流落库）。
 		s.noteUserActivity(identity.UserID)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authContextKey{}, identity)))
+		next.ServeHTTP(w, withPrincipal(r, identity, current))
 	})
 }
 
@@ -442,25 +469,7 @@ func (s *Server) sessionIdentity(r *http.Request) (sessionIdentity, bool) {
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
-	localBypass := isLocalAdminBypass(r)
-	configured := s.adminAuthConfigured()
-	status := adminAuthStatus{
-		Configured:  configured,
-		RequireAuth: !localBypass,
-		LocalBypass: localBypass,
-	}
-	if localBypass {
-		status.Authenticated = true
-		status.Role = string(domain.UserRoleAdmin)
-		status.Username = "admin"
-		status.UserID = legacyAdminUserID
-	} else if identity, ok := s.sessionIdentity(r); ok {
-		status.Authenticated = true
-		status.Role = string(identity.Role)
-		status.Username = identity.Username
-		status.UserID = identity.UserID
-	}
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, s.authStatusFor(r))
 }
 
 func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {

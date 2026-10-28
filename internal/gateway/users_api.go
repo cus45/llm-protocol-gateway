@@ -25,6 +25,26 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (sessionId
 	return identity, true
 }
 
+// requirePrincipal resolves the RBAC principal of the request.
+func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (principal, bool) {
+	p := s.requestPrincipal(r)
+	if p.UserID == "" {
+		writeOpenAIError(w, http.StatusUnauthorized, "authentication required")
+		return principal{}, false
+	}
+	return p, true
+}
+
+// consoleUser is the /__users payload: the account plus its role summary and
+// its granted resource ids, so the console renders one row without extra calls.
+type consoleUser struct {
+	domain.User
+	RoleName    string   `json:"roleName"`
+	RoleScope   string   `json:"roleScope"`
+	ProviderIDs []string `json:"providerIds,omitempty"`
+	Grants      []string `json:"grantedProviderIds,omitempty"`
+}
+
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -38,35 +58,59 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 覆盖为内存中的精确活跃时间：落库最多 5 分钟一次，直接读库会偏旧。
-	for index := range users {
-		if at := s.userLastActive(users[index].ID); !at.IsZero() {
-			users[index].LastActiveAt = at.Format(time.RFC3339)
+	grants := s.resourceGrants()
+	out := make([]consoleUser, 0, len(users))
+	for _, user := range users {
+		// 覆盖为内存中的精确活跃时间：落库最多 5 分钟一次，直接读库会偏旧。
+		if at := s.userLastActive(user.ID); !at.IsZero() {
+			user.LastActiveAt = at.Format(time.RFC3339)
 		}
+		role := s.roleByID(user.RoleID)
+		item := consoleUser{User: user, RoleName: role.Name, RoleScope: string(role.EffectiveScope())}
+		item.Grants = grants[user.ID]
+		if item.Grants == nil {
+			item.Grants = []string{}
+		}
+		out = append(out, item)
 	}
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, out)
 }
 
 type userPayload struct {
-	Username           string   `json:"username"`
-	Password           string   `json:"password"`
-	Role               string   `json:"role"`
-	AllowedProviderIDs []string `json:"allowedProviderIds"`
-	Enabled            *bool    `json:"enabled"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	RoleID      string   `json:"roleId"`
+	DisplayName string   `json:"displayName"`
+	AvatarURL   string   `json:"avatarUrl"`
+	Enabled     *bool    `json:"enabled"`
+	GrantedIDs  []string `json:"grantedProviderIds"`
+	// Role is the legacy role field; accepted so old clients keep working.
+	Role string `json:"role"`
 }
 
-// parseUserRole maps the console role names. Empty means a normal user, so the
-// field stays optional for clients that predate role management.
-func parseUserRole(raw string) (domain.UserRole, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "":
-		return domain.UserRoleUser, true
-	case string(domain.UserRoleUser):
-		return domain.UserRoleUser, true
-	case string(domain.UserRoleAdmin):
-		return domain.UserRoleAdmin, true
+// resolveRoleID validates a requested role id and returns the role plus the
+// legacy role value it maps onto.
+func (s *Server) resolveRoleID(raw, legacy string) (domain.Role, bool) {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		raw = strings.ToLower(strings.TrimSpace(legacy))
 	}
-	return "", false
+	if raw == "" {
+		raw = domain.RoleIDUser
+	}
+	role := s.roleByID(raw, legacy)
+	// roleByID falls back to "user" for unknown ids, so check the id survived.
+	if role.ID != raw {
+		return domain.Role{}, false
+	}
+	return role, true
+}
+
+func legacyRoleFor(role domain.Role) domain.UserRole {
+	if role.Has(domain.PermAll) {
+		return domain.UserRoleAdmin
+	}
+	return domain.UserRoleUser
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -95,9 +139,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("password must be at least %d characters", adminPasswordMinLen))
 		return
 	}
-	role, validRole := parseUserRole(payload.Role)
+	role, validRole := s.resolveRoleID(payload.RoleID, payload.Role)
 	if !validRole {
-		writeOpenAIError(w, http.StatusBadRequest, `role must be "user" or "admin"`)
+		writeOpenAIError(w, http.StatusBadRequest, "unknown role")
 		return
 	}
 	if _, err := s.userStore.UserByUsername(username); err == nil {
@@ -122,12 +166,14 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			}
 			return false
 		}),
-		Username:           username,
-		PasswordHash:       string(hash),
-		Role:               role,
-		AllowedProviderIDs: s.sanitizeProviderIDs(payload.AllowedProviderIDs),
-		Enabled:            true,
-		CreatedAt:          nowRFC3339(),
+		Username:     username,
+		PasswordHash: string(hash),
+		Role:         legacyRoleFor(role),
+		RoleID:       role.ID,
+		DisplayName:  strings.TrimSpace(payload.DisplayName),
+		AvatarURL:    strings.TrimSpace(payload.AvatarURL),
+		Enabled:      true,
+		CreatedAt:    nowRFC3339(),
 	}
 	if payload.Enabled != nil {
 		user.Enabled = *payload.Enabled
@@ -136,7 +182,12 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.logs.AddApp("info", "user created", fmt.Sprintf("%s (role=%s)", user.Username, user.Role))
+	if grants := payload.GrantedIDs; len(grants) > 0 {
+		if store, ok := s.roleStoreRef(); ok {
+			_ = store.SetResourceGrants(user.ID, grants)
+		}
+	}
+	s.logs.AddApp("info", "user created", fmt.Sprintf("%s (role=%s)", user.Username, role.ID))
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -153,7 +204,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	previousRole := user.Role
+	previousRole := user.RoleID
 	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -172,23 +223,35 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if value, ok := raw["role"]; ok {
-		var role string
-		if err := json.Unmarshal(value, &role); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "role must be a string")
-			return
+	if _, hasRoleID := raw["roleId"]; hasRoleID || raw["role"] != nil {
+		var roleID, legacy string
+		if value, ok := raw["roleId"]; ok {
+			if err := json.Unmarshal(value, &roleID); err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "roleId must be a string")
+				return
+			}
 		}
-		parsedRole, validRole := parseUserRole(role)
+		if legacyValue, ok := raw["role"]; ok {
+			_ = json.Unmarshal(legacyValue, &legacy)
+		}
+		role, validRole := s.resolveRoleID(roleID, legacy)
 		if !validRole {
-			writeOpenAIError(w, http.StatusBadRequest, `role must be "user" or "admin"`)
+			writeOpenAIError(w, http.StatusBadRequest, "unknown role")
 			return
 		}
-		user.Role = parsedRole
+		user.RoleID = role.ID
+		user.Role = legacyRoleFor(role)
 	}
-	if value, ok := raw["allowedProviderIds"]; ok {
-		var ids []string
-		if err := json.Unmarshal(value, &ids); err == nil {
-			user.AllowedProviderIDs = s.sanitizeProviderIDs(ids)
+	if value, ok := raw["displayName"]; ok {
+		var name string
+		if err := json.Unmarshal(value, &name); err == nil {
+			user.DisplayName = strings.TrimSpace(name)
+		}
+	}
+	if value, ok := raw["avatarUrl"]; ok {
+		var avatar string
+		if err := json.Unmarshal(value, &avatar); err == nil {
+			user.AvatarURL = strings.TrimSpace(avatar)
 		}
 	}
 	if value, ok := raw["enabled"]; ok {
@@ -201,8 +264,21 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if user.Role != previousRole {
-		s.logs.AddApp("info", "user role changed", fmt.Sprintf("%s: %s -> %s", user.Username, previousRole, user.Role))
+	if value, ok := raw["grantedProviderIds"]; ok {
+		var ids []string
+		if err := json.Unmarshal(value, &ids); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "grantedProviderIds must be a string array")
+			return
+		}
+		if store, ok := s.roleStoreRef(); ok {
+			if err := store.SetResourceGrants(user.ID, ids); err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+	}
+	if user.RoleID != previousRole {
+		s.logs.AddApp("info", "user role changed", fmt.Sprintf("%s: %s -> %s", user.Username, previousRole, user.RoleID))
 	} else {
 		s.logs.AddApp("info", "user updated", user.Username)
 	}
@@ -223,14 +299,16 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	// Keys owned by the removed user fall back to admin ownership so traffic
-	// and history stay intact.
+	// Keys owned by the removed user fall back to the administrator's account
+	// (not to an empty owner, which the console would label as a generic
+	// "管理员"), so traffic and history stay intact and attributable.
+	adminID := s.adminOwnerID()
 	state := s.router.State()
 	for _, key := range state.APIKeys {
 		if key.OwnerUserID != userID {
 			continue
 		}
-		if updated, err := s.router.UpdateAPIKeyOwner(key.ID, ""); err == nil && s.apiKeyStore != nil {
+		if updated, err := s.router.UpdateAPIKeyOwner(key.ID, adminID); err == nil && s.apiKeyStore != nil {
 			_ = s.apiKeyStore.UpdateAPIKey(updated)
 		}
 	}
@@ -278,29 +356,4 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 	}
 	s.logs.AddApp("info", "user password reset", user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// sanitizeProviderIDs keeps only IDs of providers that actually exist.
-func (s *Server) sanitizeProviderIDs(ids []string) []string {
-	if len(ids) == 0 {
-		return []string{}
-	}
-	known := map[string]bool{}
-	for _, provider := range s.router.State().Providers {
-		if provider.Deleted {
-			continue
-		}
-		known[provider.ID] = true
-	}
-	out := make([]string, 0, len(ids))
-	seen := map[string]bool{}
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] || !known[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	return out
 }

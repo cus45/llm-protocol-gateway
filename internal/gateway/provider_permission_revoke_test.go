@@ -11,15 +11,37 @@ import (
 
 // memoryUserStore is a minimal in-memory UserStore for permission tests.
 type memoryUserStore struct {
-	users map[string]domain.User
+	users  map[string]domain.User
+	grants map[string][]string
 }
 
 func newMemoryUserStore(users ...domain.User) *memoryUserStore {
-	store := &memoryUserStore{users: map[string]domain.User{}}
+	store := &memoryUserStore{users: map[string]domain.User{}, grants: map[string][]string{}}
 	for _, user := range users {
 		store.users[user.ID] = user
 	}
 	return store
+}
+
+// newGrantedUserStore is newMemoryUserStore for the common "role=user plus these
+// providers were granted" fixture.
+func newGrantedUserStore(user domain.User, granted []string) *memoryUserStore {
+	store := newMemoryUserStore(user)
+	store.grants[user.ID] = granted
+	return store
+}
+
+func (m *memoryUserStore) ListResourceGrants() (map[string][]string, error) {
+	out := make(map[string][]string, len(m.grants))
+	for userID, ids := range m.grants {
+		out[userID] = append([]string{}, ids...)
+	}
+	return out, nil
+}
+
+func (m *memoryUserStore) SetResourceGrants(userID string, resourceIDs []string) error {
+	m.grants[userID] = append([]string{}, resourceIDs...)
+	return nil
 }
 
 func (m *memoryUserStore) ListUsers() ([]domain.User, error) {
@@ -89,7 +111,8 @@ func newRevokeTestServer(t *testing.T) *Server {
 		ID:                 "shouze",
 		Username:           "shouze",
 		Role:               domain.UserRoleUser,
-		AllowedProviderIDs: []string{"hj-claude"},
+		RoleID:             domain.RoleIDGrantee,
+		AllowedResourceIDs: []string{"hj-claude"},
 		Enabled:            true,
 	})
 	return server
@@ -200,4 +223,12 @@ func TestExecuteFailoverKeepsGrantedProviderWhenActiveRevoked(t *testing.T) {
 	if len(chain) != 1 || chain[0] != "hj-claude" {
 		t.Fatalf("chain = %v, want [hj-claude]", chain)
 	}
+}
+
+// grantedUser builds a role=user fixture; the allowed ids become the user's
+// resource grants, which the built-in "user" role's "granted" semantics read.
+func grantedUser(user domain.User, allowedProviderIDs []string) domain.User {
+	user.AllowedResourceIDs = append([]string{}, allowedProviderIDs...)
+	user.RoleID = domain.RoleIDGrantee
+	return user
 }

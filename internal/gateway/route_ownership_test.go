@@ -33,7 +33,7 @@ func routeOwnershipTestServer() *Server {
 	})
 	server := NewServer(router, monitor.NewStore())
 	server.userStore = newMemoryUserStore(
-		domain.User{ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true, AllowedProviderIDs: []string{"granted"}},
+		grantedUser(domain.User{ID: "u1", Username: "u1", Role: domain.UserRoleUser, Enabled: true}, []string{"granted"}),
 		domain.User{ID: "u2", Username: "u2", Role: domain.UserRoleUser, Enabled: true},
 		domain.User{ID: "boss", Username: "boss", Role: domain.UserRoleAdmin, Enabled: true},
 	)

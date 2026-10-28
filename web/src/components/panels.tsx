@@ -811,7 +811,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, accountKey, connected, comp
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete, layout = 'card' }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest: () => void; onChatTest: () => void; onConformance?: () => void; onEdit: () => void; onClone: () => void; onDelete: () => void; layout?: 'card' | 'list' }) {
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete, layout = 'card' }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest?: () => void; onChatTest?: () => void; onConformance?: () => void; onEdit?: () => void; onClone?: () => void; onDelete?: () => void; layout?: 'card' | 'list' }) {
   // 订阅类（ZCode / Trae）由后端返回的凭证对象决定卡片显示什么：整张 Provider 传进来
   // 比再加六个布尔参数更省事，也不会漏掉以后新增的连接方式。
   const connectKind = provider ? providerConnectKind(provider) : 'api_key';
@@ -846,20 +846,21 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
       {!providerDisabled && !isClaudeOAuth && !isCursorOAuth && !isChatGPTOAuth && !isQoderPAT && !isWorkBuddy && /deepseek\.com/i.test(url) ? <DeepSeekBalancePanel providerId={providerId} accountKey={usageAccountKeyFor(providerId)} compact subtitle={subtitle} /> : null}
     </>
   );
+  // 回调缺省＝没有该权限：对应按钮/菜单项不渲染（由父组件按权限点传入）
   const providerActions = (
     <div className="provider-actions">
-      <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button>
-      <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button>
-      {!readOnly ? (
+      {onTest ? <button className="icon-btn" disabled={testing} onClick={onTest} title="从 Provider 接口获取可用模型">{testing ? '获取中' : '获取模型'}</button> : null}
+      {onChatTest ? <button className="icon-btn" disabled={!!chatTesting} onClick={onChatTest} title="直连上游对话接口测试">{chatTesting ? '测试中' : '对话测试'}</button> : null}
+      {!readOnly && (onEdit || onClone || onDelete || onToggleEnabled || onToggleRTK) ? (
         <>
-          <button className="icon-btn" onClick={onEdit} title="编辑 Provider">编辑</button>
+          {onEdit ? <button className="icon-btn" onClick={onEdit} title="编辑 Provider">编辑</button> : null}
           <MoreMenu
             label="更多操作"
             items={[
-              { label: '克隆', onClick: onClone },
+              ...(onClone ? [{ label: '克隆', onClick: onClone }] : []),
               ...(onToggleEnabled ? [{ label: providerDisabled ? '启用' : '禁用', onClick: onToggleEnabled }] : []),
               ...(onToggleRTK ? [{ label: provider?.rtkCompress ? '关闭 RTK 压缩' : '开启 RTK 压缩', onClick: onToggleRTK }] : []),
-              { label: '删除', danger: true, onClick: onDelete },
+              ...(onDelete ? [{ label: '删除', danger: true, onClick: onDelete }] : []),
             ]}
           />
         </>
