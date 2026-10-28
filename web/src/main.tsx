@@ -4712,21 +4712,25 @@ function App() {
 
   if (needsAuthGate) {
     return (
-      <TerminalAuthGate
-        authSetupMode={authSetupMode}
-        authUsername={authUsername}
-        setAuthUsername={setAuthUsername}
-        authPassword={authPassword}
-        setAuthPassword={setAuthPassword}
-        authPasswordConfirm={authPasswordConfirm}
-        setAuthPasswordConfirm={setAuthPasswordConfirm}
-        authBusy={authBusy}
-        authError={authError}
-        setAuthError={setAuthError}
-        trustDevice={authTrustDevice}
-        setTrustDevice={setAuthTrustDevice}
-        onSubmit={submitAdminAuth}
-      />
+      <>
+        <TerminalAuthGate
+          authSetupMode={authSetupMode}
+          authUsername={authUsername}
+          setAuthUsername={setAuthUsername}
+          authPassword={authPassword}
+          setAuthPassword={setAuthPassword}
+          authPasswordConfirm={authPasswordConfirm}
+          setAuthPasswordConfirm={setAuthPasswordConfirm}
+          authBusy={authBusy}
+          authError={authError}
+          setAuthError={setAuthError}
+          trustDevice={authTrustDevice}
+          setTrustDevice={setAuthTrustDevice}
+          onSubmit={submitAdminAuth}
+        />
+        {/* 安装提示不依赖登录：先在登录页装到桌面，比登进来再找入口更自然。 */}
+        <PwaInstallPrompt/>
+      </>
     );
   }
 
