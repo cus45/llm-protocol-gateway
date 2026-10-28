@@ -6235,7 +6235,7 @@ function App() {
               </div>
 
               {decisionAggregate.length > 0 ? (
-                <div className="decision-aggregate" title="当前页日志里每个账号被如何调度：尝试 / 服务 / 失败 / 未发出">
+                <div className="decision-aggregate">
                   <div className="decision-aggregate-title">
                     调度决策（当前页）
                     <span className="decision-aggregate-sub">
@@ -6243,19 +6243,30 @@ function App() {
                       「失败」含限流/额度 429 与被丢弃后换号，不代表账号故障
                     </span>
                   </div>
-                  <div className="decision-aggregate-rows">
-                    {decisionAggregate.map((row) => (
-                      <div className="decision-aggregate-row" key={row.providerId}>
-                        <span className="decision-aggregate-provider">
-                          {providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId)}
-                        </span>
-                        <span className="num" title="被尝试的次数">尝试 {row.attempts}</span>
-                        <span className={`num${row.served ? ' ok' : ''}`} title="真正服务了请求的次数">服务 {row.served}</span>
-                        <span className={`num${row.failed ? ' bad' : ''}`} title="发出后失败或回答被丢弃的次数">失败 {row.failed}</span>
-                        <span className={`num${row.skipped ? ' muted' : ''}`} title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发 {row.skipped}</span>
-                        {row.avgServedMs != null ? <span className="num muted" title="服务成功时的平均耗时">均 {row.avgServedMs}ms</span> : null}
-                      </div>
-                    ))}
+                  <div className={`decision-aggregate-table${decisionAggregate.length > 1 ? ' multi' : ''}`}>
+                    <div className="decision-aggregate-row head" aria-hidden="true">
+                      <span>账号</span>
+                      <span title="被尝试的次数">尝试</span>
+                      <span title="真正服务了请求的次数">服务</span>
+                      <span title="发出后失败或回答被丢弃的次数">失败</span>
+                      <span title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发</span>
+                      <span title="服务成功时的平均耗时">均耗时</span>
+                    </div>
+                    {decisionAggregate.map((row) => {
+                      const label = providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId);
+                      return (
+                        <div className="decision-aggregate-row" key={row.providerId}>
+                          <span className="decision-aggregate-provider" title={label}>{label}</span>
+                          <span className="num">{row.attempts}</span>
+                          <span className={`num${row.served ? ' ok' : ''}`}>{row.served}</span>
+                          <span className={`num${row.failed ? ' bad' : ''}`}>{row.failed}</span>
+                          <span className={`num${row.skipped ? ' muted' : ''}`}>{row.skipped}</span>
+                          {row.avgServedMs != null
+                            ? <span className="num">{row.avgServedMs}ms</span>
+                            : <span className="num muted">—</span>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}

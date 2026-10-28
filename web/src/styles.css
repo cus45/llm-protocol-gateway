@@ -567,9 +567,29 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 }
 .decision-aggregate-title { font-weight: 600; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
 .decision-aggregate-sub { font-weight: 500; color: var(--subtle); margin-left: 4px; }
-.decision-aggregate-rows { display: flex; flex-wrap: wrap; gap: 6px 14px; }
-.decision-aggregate-row { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
-.decision-aggregate-provider { font-weight: 600; }
+/* 固定列宽 + 多账号时固定高度：轮询把「7」刷成「12」时只换数字不换几何，
+   账号进出页面也不会把下面的日志表顶着上下跳；只有 1 个账号时保持紧凑，
+   超过 4 个账号在这个框里滚动。 */
+.decision-aggregate-table {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.decision-aggregate-table.multi { height: 114px; } /* 表头 18 + 4 行 × 22 + 行距 8 */
+.decision-aggregate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 52px 52px 52px 76px;
+  align-items: center;
+  gap: 12px;
+  height: 22px;
+  font-size: 12.5px;
+}
+.decision-aggregate-row.head { height: 18px; font-size: 11.5px; font-weight: 600; color: var(--subtle); }
+.decision-aggregate-row.head span:not(:first-child) { text-align: right; }
+.decision-aggregate-provider { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decision-aggregate-row .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .decision-aggregate-row .num.ok { color: var(--green, #2f9e44); }
 .decision-aggregate-row .num.bad { color: var(--red, #e5484d); }
 .decision-aggregate-row .num.muted { color: var(--muted); }
