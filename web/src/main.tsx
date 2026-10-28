@@ -123,6 +123,7 @@ import {
     publicStatusTone,
     qoderDefaultBaseURL,
     readConnectResponse,
+    readStoredDecisionPanelOpen,
     readStoredNavCollapsed,
     readStoredProviderDensity,
     readStoredSidebarCollapsed,
@@ -147,6 +148,7 @@ import {
     uiCacheScope,
     writeStoredNavCollapsed,
     writeStoredProviderDensity,
+    writeStoredDecisionPanelOpen,
     writeStoredSidebarCollapsed,
     writeUICache
 } from './lib';
@@ -366,6 +368,8 @@ function App() {
   const [logsFetchedOnce, setLogsFetchedOnce] = useState(false);
   // 刚落表的新行：给它们挂进场动画，动画放完就清空，避免后续重渲染再演一遍。
   const [logsFreshKeys, setLogsFreshKeys] = useState<Set<string>>(() => new Set());
+  // 「调度决策」面板默认收起（它只是日志表的辅助说明，不值得常驻几十像素）。
+  const [decisionPanelOpen, setDecisionPanelOpen] = useState<boolean>(() => readStoredDecisionPanelOpen());
   const [logsStatusFilter, setLogsStatusFilter] = useState<'all' | '2xx' | '4xx' | '5xx'>('all');
   const [logsApiKeyName, setLogsApiKeyName] = useState('');
   const [logsUsageTarget, setLogsUsageTarget] = useState<{ type: 'model' | 'apiKey'; value: string; label: string } | null>(null);
@@ -6398,40 +6402,51 @@ function App() {
               </div>
 
               {decisionAggregate.length > 0 ? (
-                <div className="decision-aggregate">
-                  <div className="decision-aggregate-title">
+                <details
+                  className="decision-aggregate"
+                  open={decisionPanelOpen}
+                  onToggle={(event) => {
+                    const open = event.currentTarget.open;
+                    setDecisionPanelOpen(open);
+                    writeStoredDecisionPanelOpen(open);
+                  }}
+                >
+                  <summary>
                     调度决策（当前页）
-                    <span className="decision-aggregate-sub">
-                      · 统计了 {displayedLogs.filter((log) => (log.analysis?.attempts?.length ?? 0) > 0).length} 条带调度记录的请求；
+                    <span className="decision-aggregate-count">{decisionAggregate.length} 个账号</span>
+                  </summary>
+                  <div className="decision-aggregate-body">
+                    <div className="decision-aggregate-sub">
+                      统计了 {displayedLogs.filter((log) => (log.analysis?.attempts?.length ?? 0) > 0).length} 条带调度记录的请求；
                       「失败」含限流/额度 429 与被丢弃后换号，不代表账号故障
-                    </span>
-                  </div>
-                  <div className={`decision-aggregate-table${decisionAggregate.length > 1 ? ' multi' : ''}`}>
-                    <div className="decision-aggregate-row head" aria-hidden="true">
-                      <span>账号</span>
-                      <span title="被尝试的次数">尝试</span>
-                      <span title="真正服务了请求的次数">服务</span>
-                      <span title="发出后失败或回答被丢弃的次数">失败</span>
-                      <span title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发</span>
-                      <span title="服务成功时的平均耗时">均耗时</span>
                     </div>
-                    {decisionAggregate.map((row) => {
-                      const label = providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId);
-                      return (
-                        <div className="decision-aggregate-row" key={row.providerId}>
-                          <span className="decision-aggregate-provider" title={label}>{label}</span>
-                          <span className="num">{row.attempts}</span>
-                          <span className={`num${row.served ? ' ok' : ''}`}>{row.served}</span>
-                          <span className={`num${row.failed ? ' bad' : ''}`}>{row.failed}</span>
-                          <span className={`num${row.skipped ? ' muted' : ''}`}>{row.skipped}</span>
-                          {row.avgServedMs != null
-                            ? <span className="num">{row.avgServedMs}ms</span>
-                            : <span className="num muted">—</span>}
-                        </div>
-                      );
-                    })}
+                    <div className={`decision-aggregate-table${decisionAggregate.length > 1 ? ' multi' : ''}`}>
+                      <div className="decision-aggregate-row head" aria-hidden="true">
+                        <span>账号</span>
+                        <span title="被尝试的次数">尝试</span>
+                        <span title="真正服务了请求的次数">服务</span>
+                        <span title="发出后失败或回答被丢弃的次数">失败</span>
+                        <span title="根本没发出去（未授权 / 未锁定模型 / 已禁用）">未发</span>
+                        <span title="服务成功时的平均耗时">均耗时</span>
+                      </div>
+                      {decisionAggregate.map((row) => {
+                        const label = providerDisplayLabel((state.providers || []).find((item) => item.id === row.providerId), row.providerId);
+                        return (
+                          <div className="decision-aggregate-row" key={row.providerId}>
+                            <span className="decision-aggregate-provider" title={label}>{label}</span>
+                            <span className="num">{row.attempts}</span>
+                            <span className={`num${row.served ? ' ok' : ''}`}>{row.served}</span>
+                            <span className={`num${row.failed ? ' bad' : ''}`}>{row.failed}</span>
+                            <span className={`num${row.skipped ? ' muted' : ''}`}>{row.skipped}</span>
+                            {row.avgServedMs != null
+                              ? <span className="num">{row.avgServedMs}ms</span>
+                              : <span className="num muted">—</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
+                </details>
               ) : null}
 
               {logsSessionFilter ? (

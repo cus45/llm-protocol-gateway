@@ -500,6 +500,25 @@ export function writeStoredNavCollapsed(userKey: string, collapsed: string[]) {
 // 侧边栏收起状态持久化 key（独立于主题，避免互相覆盖）
 export const SIDEBAR_STORAGE_KEY = 'llm-gateway-sidebar';
 
+// 日志页「调度决策」面板展开状态：默认收起，点开过就记住。
+export const DECISION_PANEL_STORAGE_KEY = 'llm-gateway-logs-decision-open';
+
+export function readStoredDecisionPanelOpen(): boolean {
+  try {
+    return localStorage.getItem(DECISION_PANEL_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeStoredDecisionPanelOpen(open: boolean) {
+  try {
+    localStorage.setItem(DECISION_PANEL_STORAGE_KEY, open ? '1' : '0');
+  } catch {
+    /* 隐私模式写不进去也无所谓 */
+  }
+}
+
 export function readStoredSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1';
