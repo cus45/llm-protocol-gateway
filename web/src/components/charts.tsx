@@ -1652,29 +1652,6 @@ export function UsageSegmentedShare({
   );
 }
 
-export function UsageBar({ percent }: { percent?: number }) {
-  const value = Math.max(0, Math.min(100, percent ?? 0));
-  const tone = value >= 90 ? 'danger' : value >= 75 ? 'warn' : 'ok';
-  return (
-    <div className={`usage-bar ${tone}`} role="presentation">
-      <span style={{ width: `${value}%` }} />
-    </div>
-  );
-}
-
-export function MachineMetric({ label, value, note, percent }: { label: string; value: string; note: string; percent?: number }) {
-  return (
-    <div className="card metric machine-metric">
-      <div>
-        <div className="metric-label">{label}</div>
-        <div className="metric-value font-mono">{value}</div>
-        {percent != null ? <UsageBar percent={percent} /> : null}
-      </div>
-      <div className="metric-note">{note}</div>
-    </div>
-  );
-}
-
 export function UsageRangeCalendar({
   from,
   to,

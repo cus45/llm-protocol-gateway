@@ -312,15 +312,6 @@ func darwinReadTempSensors() []tempSensorReading {
 	return out
 }
 
-// darwinReadMemory returns total/used physical memory in bytes.
-func darwinReadMemory() (total, used uint64, ok bool) {
-	var st C.gw_vm_stats_t
-	if C.gw_read_vm_stats(&st) != 0 {
-		return 0, 0, false
-	}
-	return uint64(st.total), uint64(st.used), uint64(st.total) > 0
-}
-
 const darwinMaxInterfaces = 64
 
 // darwinReadInterfaceCounters returns per-interface cumulative rx/tx bytes.

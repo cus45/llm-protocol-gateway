@@ -222,6 +222,11 @@ type Server struct {
 	hostMetrics     *hostMetricsSampler
 	hostMetricsOnce sync.Once
 
+	// requestCounter increments once per completed model call (see the log
+	// middleware); the machine page's diagnosis turns it into a request rate.
+	requestCounter   atomic.Int64
+	activityBaseline atomic.Int64
+
 	// Quota keeper ("额度保活", see quota_keeper.go). The three fields below are
 	// runtime-only: in-flight claims stop a task or provider from being probed
 	// twice, and quotaLastProbeAt remembers probes this loop sent (they never
@@ -378,6 +383,11 @@ func (s *Server) Handler() http.Handler {
 	// release is live (see app_version.go).
 	mux.HandleFunc("GET /__app/version", s.handleAppVersion)
 	mux.HandleFunc("GET /__host-metrics", s.handleHostMetrics)
+	// On-demand A/B snapshot + findings, and the downloadable diagnostics bundle
+	// (see host_metrics_snapshot.go). Separate from the sampler above so a
+	// manual diagnose never disturbs the chart's baseline.
+	mux.HandleFunc("GET /__host-metrics/snapshot", s.handleHostMetricsSnapshot)
+	mux.HandleFunc("GET /__host-diagnostics", s.handleHostDiagnostics)
 	mux.HandleFunc("GET /__auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /__auth/setup", s.handleAuthSetup)
 	mux.HandleFunc("POST /__auth/login", s.handleAuthLogin)
@@ -1575,6 +1585,7 @@ func (s *Server) recordRequestLogEx(r *http.Request, started time.Time, matchedK
 		LatencyMs: latency,
 		TTFTMs:    ttftMs,
 	})
+	s.requestCounter.Add(1)
 	if s.requestLogStore != nil {
 		if s.requestLogBatcher != nil {
 			s.requestLogBatcher.Append(entry, treatAsFailure)
@@ -4842,6 +4853,10 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	requestModel, _ := req["model"].(string)
 	model, logModel := resolveConsumerModel(s.router, route, matchedKey, gatewayKeyMatched, requestModel)
 	r = attachAPIKeyMaxOutputTokens(r, matchedKey, gatewayKeyMatched)
+	thinkingOverride := ""
+	if gatewayKeyMatched {
+		thinkingOverride = matchedKey.ThinkingDepthOverride
+	}
 
 	stream, _ := req["stream"].(bool)
 	if s.rejectIfStreamDisabledForKey(w, gatewayKeyMatched, matchedKey, stream, domain.ProtocolClaude) {
@@ -4850,6 +4865,14 @@ func (s *Server) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	status := http.StatusOK
 	req["model"] = model
+	// Key 的思考深度与路由的 Provider 默认档位在 Claude 路径上同样要生效，
+	// 判定口径与 Chat 路径一致：Key 覆盖优先，否则用客户端要求的档位。
+	requestDepth := claudePayloadEffort(req)
+	if depth := s.router.ResolveThinkingDepth(route, thinkingOverride, requestDepth != "", requestDepth); depth != "" {
+		if applyClaudeEffort(req, model, depth) {
+			r = withReasoningEffort(r, fitModelEffort(depth, model))
+		}
+	}
 	var usage TokenUsage
 	var responseLog []byte
 	var ttftMs int64

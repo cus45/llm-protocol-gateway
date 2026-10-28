@@ -40,75 +40,46 @@ const darwinPressureMinInterval = 20 * time.Second
 const darwinPressureRetryAfter = 2 * time.Minute
 
 func collectHostMetrics(prev any) hostMetricsCollectResult {
+	started := time.Now()
 	ncpu := runtime.NumCPU()
 	m := HostMetrics{
 		CPUCount:    ncpu,
-		CollectedAt: time.Now(),
+		CollectedAt: started,
 	}
 	m.Load1, m.Load5, m.Load15 = darwinLoadAvg()
-	if ncpu > 0 {
-		m.CPUPercent = clampFloat(m.Load1/float64(ncpu)*100, 0, 100)
-	}
-	if tempC, source, ok := darwinCPUTempC(); ok {
-		m.TempC = tempC
-		m.TempAvailable = true
-		m.TempSource = source
-	}
-	if level, source, ok := darwinThermalPressure(); ok {
-		m.ThermalPressure = level
-		m.ThermalPressureAvailable = true
-		m.ThermalPressureSource = source
-	}
-	if total, used, ok := darwinReadMemory(); ok {
-		// hw.memsize is the authoritative capacity; the page sums miss a few
-		// kernel-reserved pages and would understate installed RAM.
-		if hw, err := unix.SysctlUint64("hw.memsize"); err == nil && hw > total {
-			total = hw
-		}
-		m.applyMem(total, used)
-	} else if total, err := unix.SysctlUint64("hw.memsize"); err == nil {
-		// Without cgo we can still report capacity; usage stays unknown.
-		m.MemTotal = total
-	}
-	m.SwapTotal, m.SwapUsed, m.SwapAvailable = darwinSwapUsage()
-	m.applyDiskRoot()
-	applyDiskTemps(&m)
-	applyFanSpeeds(&m)
+	m.CPULoad = loadPercent(m.Load1, ncpu)
+	// CPUPercent is filled from tick deltas by the gopsutil pass below; this is
+	// only the first-sample fallback.
+	m.CPUPercent = m.CPULoad
+
+	// hw.memsize is the authoritative capacity: the page sums miss a few
+	// kernel-reserved pages and would understate installed RAM.
+	memCapacity, _ := unix.SysctlUint64("hw.memsize")
 	m.UptimeSeconds = darwinUptimeSeconds()
-	m.applyProcess()
+	m.BootTime = time.Now().Add(-time.Duration(m.UptimeSeconds * float64(time.Second))).Truncate(time.Second)
+
+	var prevState any
+	if p, ok := prev.(gopsutilSampleState); ok {
+		prevState = p
+	}
+	next := collectHostMetricsExtra(&m, prevState)
+	if m.MemTotal < memCapacity {
+		m.MemTotal = memCapacity
+		m.MemPercent = percentOf(m.MemUsed, m.MemTotal)
+	}
+	m.finishProcess()
 
 	cur := sumInterfaceCounters(darwinReadInterfaceCounters())
 	var prevNet netCounters
-	if p, ok := prev.(netCounters); ok {
-		prevNet = p
+	if p, ok := prev.(gopsutilSampleState); ok {
+		prevNet = p.net
 	}
 	m.applyNet(prevNet, cur)
-	nextPrev := any(nil)
+	m.SampleCost = sampleCostMS(started)
 	if cur.ok {
-		nextPrev = cur
-	} else if prevNet.ok {
-		nextPrev = prevNet
+		next.net = cur
 	}
-	return hostMetricsCollectResult{metrics: m, prev: nextPrev}
-}
-
-// darwinSwapUsage reads vm.swapusage (struct xsw_usage). macOS backs swap with
-// dynamically-created files under /private/var/vm/, so total legitimately
-// reads 0 whenever no swap file is currently allocated (e.g. low memory
-// pressure right after boot) — that is NOT the same as swap being disabled.
-// ok reports whether the sysctl read itself succeeded, so callers/UI can tell
-// "known to be 0 right now" apart from "couldn't read this at all".
-func darwinSwapUsage() (total, used uint64, ok bool) {
-	raw, err := unix.SysctlRaw("vm.swapusage")
-	if err != nil || len(raw) < 24 {
-		return 0, 0, false
-	}
-	total = binary.LittleEndian.Uint64(raw[0:8])
-	used = binary.LittleEndian.Uint64(raw[16:24])
-	if used > total {
-		used = total
-	}
-	return total, used, true
+	return hostMetricsCollectResult{metrics: m, prev: next}
 }
 
 // darwinUptimeSeconds derives host uptime from kern.boottime.

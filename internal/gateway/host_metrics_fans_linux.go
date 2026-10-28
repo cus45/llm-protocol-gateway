@@ -10,18 +10,18 @@ import (
 )
 
 func readHostFans() []HostFanSpeed {
-	entries, err := os.ReadDir("/sys/class/hwmon")
+	entries, err := os.ReadDir(hostPath("/sys/class/hwmon"))
 	if err != nil {
 		return nil
 	}
 	var out []HostFanSpeed
 	id := 0
 	for _, e := range entries {
-		dir := filepath.Join("/sys/class/hwmon", e.Name())
-		labelChip := strings.TrimSpace(readFileQuiet(filepath.Join(dir, "name")))
+		dir := filepath.ToSlash(hostPath(filepath.Join("/sys/class/hwmon", e.Name())))
+		labelChip := strings.TrimSpace(hostText(filepath.Join(dir, "name")))
 		for i := 1; i <= 16; i++ {
 			inputPath := filepath.Join(dir, "fan"+strconv.Itoa(i)+"_input")
-			raw := strings.TrimSpace(readFileQuiet(inputPath))
+			raw := strings.TrimSpace(hostText(inputPath))
 			if raw == "" {
 				continue
 			}
@@ -29,9 +29,9 @@ func readHostFans() []HostFanSpeed {
 			if err != nil {
 				continue
 			}
-			minRPM, _ := strconv.ParseFloat(strings.TrimSpace(readFileQuiet(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_min"))), 64)
-			maxRPM, _ := strconv.ParseFloat(strings.TrimSpace(readFileQuiet(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_max"))), 64)
-			name := strings.TrimSpace(readFileQuiet(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_label")))
+			minRPM, _ := strconv.ParseFloat(strings.TrimSpace(hostText(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_min"))), 64)
+			maxRPM, _ := strconv.ParseFloat(strings.TrimSpace(hostText(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_max"))), 64)
+			name := strings.TrimSpace(hostText(filepath.Join(dir, "fan"+strconv.Itoa(i)+"_label")))
 			if name == "" {
 				if labelChip != "" {
 					name = labelChip + " fan" + strconv.Itoa(i)

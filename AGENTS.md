@@ -6,6 +6,7 @@
 - `web/` — Vite + React 19 + TypeScript admin UI. Entry is `web/src/main.tsx` (App orchestration only); shared code is split into `web/src/types.ts` (all API types), `web/src/lib.tsx` (pure helpers, formatters, client-config builders) and `web/src/components/` (`ui.tsx` 基础组件/Modal/主题, `selects.tsx` 可搜索下拉, `charts.tsx` 图表, `panels.tsx` Provider/用量面板, `apikeys.tsx` 密钥相关组件). Design system lives in `web/src/styles.css`; the build output `web/dist` is served by the gateway for public/admin pages.
 - `desktop/` — Wails macOS app with its own `go.mod`; it reuses the same core.
 - `scripts/` — dev and ops shell entry points. `docs/` — user docs and screenshots. `deploy/k8s.yaml`, `Dockerfile`, `docker-compose.yml` — deployment.
+- `.github/workflows/` — CI（`test.yml`）、`v*` tag 发布产物（`release.yml`）、多架构镜像（`docker-publish.yml`）与介绍站 Pages（`pages.yml`）；`.github/site/` 是纯静态介绍站，没有构建步骤，改完运行 `node scripts/check-site.mjs` 自检。
 
 ## Build, Test, and Development Commands
 ```bash

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"math"
 	"net/http"
-	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,23 +12,30 @@ import (
 )
 
 // hostMetricsPollInterval is how often the sampler refreshes while at least one
-// console client is actively requesting /__host-metrics.
-const hostMetricsPollInterval = 10 * time.Second
+// console client is actively requesting /__host-metrics. The console charts one
+// point per poll, so this is also the chart's resolution.
+const hostMetricsPollInterval = 3 * time.Second
 
 // hostMetricsIdleStopAfter stops the background sampler when no client has
 // polled for this long (≈3 missed polls). Keeps CPU near zero when the
 // homepage is closed or the tab is backgrounded.
 const hostMetricsIdleStopAfter = 30 * time.Second
 
-// HostMetrics is a lightweight snapshot of host CPU load / temperature for the
-// admin homepage. On recent macOS, Celsius may be unavailable; thermalPressure
-// (Nominal/Fair/…) is still exposed via powermetrics.
+// HostMetrics is one snapshot of the host the gateway runs on. It is only
+// collected while an admin console page is polling it (see the sampler below).
 type HostMetrics struct {
-	Load1                    float64 `json:"load1"`
-	Load5                    float64 `json:"load5"`
-	Load15                   float64 `json:"load15"`
-	CPUPercent               float64 `json:"cpuPercent"` // 0–100, all-core average
-	CPUCount                 int     `json:"cpuCount"`
+	Load1             float64       `json:"load1"`
+	Load5             float64       `json:"load5"`
+	Load15            float64       `json:"load15"`
+	CPUPercent        float64       `json:"cpuPercent"`     // 0–100, all-core average
+	CPULoad           float64       `json:"cpuLoadPercent"` // load1 ÷ cores
+	CPUCount          int           `json:"cpuCount"`
+	CPUMHz            float64       `json:"cpuMhz,omitempty"`
+	CPUPhysicalCores  int           `json:"cpuPhysicalCores,omitempty"` // 0 when the platform cannot tell
+	CPUModel          string        `json:"cpuModel,omitempty"`
+	CPUCores          []HostCPUCore `json:"cpuCores,omitempty"`
+	CPUCoresAvailable bool          `json:"cpuCoresAvailable"`
+
 	TempC                    float64 `json:"tempC,omitempty"`
 	TempAvailable            bool    `json:"tempAvailable"`
 	TempSource               string  `json:"tempSource,omitempty"`
@@ -38,20 +43,33 @@ type HostMetrics struct {
 	ThermalPressureAvailable bool    `json:"thermalPressureAvailable"`
 	ThermalPressureSource    string  `json:"thermalPressureSource,omitempty"`
 
-	// Memory (bytes). MemAvailable=false when the platform has no cheap probe.
-	MemTotal      uint64  `json:"memTotal,omitempty"`
-	MemUsed       uint64  `json:"memUsed,omitempty"`
-	MemPercent    float64 `json:"memPercent,omitempty"`
-	MemAvailable  bool    `json:"memAvailable"`
-	SwapTotal     uint64  `json:"swapTotal,omitempty"`
-	SwapUsed      uint64  `json:"swapUsed,omitempty"`
-	SwapAvailable bool    `json:"swapAvailable"`
+	// Memory (bytes). "Used" matches `free` (total − available), so page cache
+	// is counted as available; MemCached is that cache for the composition bar.
+	MemTotal       uint64  `json:"memTotal,omitempty"`
+	MemUsed        uint64  `json:"memUsed,omitempty"`
+	MemPercent     float64 `json:"memPercent,omitempty"`
+	MemAvailable   bool    `json:"memAvailable"`
+	MemCached      uint64  `json:"memCached,omitempty"`
+	MemAnon        uint64  `json:"memAnon,omitempty"`
+	MemSlab        uint64  `json:"memSlab,omitempty"`
+	HostMemHitRate float64 `json:"hostMemHitRate,omitempty"` // page-cache hit, −1 when unknown
+	SwapTotal      uint64  `json:"swapTotal,omitempty"`
+	SwapUsed       uint64  `json:"swapUsed,omitempty"`
+	SwapAvailable  bool    `json:"swapAvailable"`
 
-	// Root filesystem (bytes).
-	DiskTotal     uint64  `json:"diskTotal,omitempty"`
-	DiskUsed      uint64  `json:"diskUsed,omitempty"`
-	DiskPercent   float64 `json:"diskPercent,omitempty"`
-	DiskAvailable bool    `json:"diskAvailable"`
+	// Root filesystem (bytes) plus every mounted volume worth showing.
+	DiskTotal     uint64     `json:"diskTotal,omitempty"`
+	DiskUsed      uint64     `json:"diskUsed,omitempty"`
+	DiskPercent   float64    `json:"diskPercent,omitempty"`
+	DiskAvailable bool       `json:"diskAvailable"`
+	DiskDevice    string     `json:"diskDevice,omitempty"` // physical disk behind "/"
+	Volumes       []HostDisk `json:"volumes,omitempty"`
+
+	// Disk throughput of DiskDevice, derived from two samples.
+	DiskIO        *HostDiskIO `json:"diskIO,omitempty"`
+	DiskReadRate  float64     `json:"diskReadRate,omitempty"`  // bytes/s
+	DiskWriteRate float64     `json:"diskWriteRate,omitempty"` // bytes/s
+	DiskIOREady   bool        `json:"diskIOReady"`
 
 	// Physical disk temperatures (SMART / NVMe), when smartctl is available.
 	DiskTemps []HostDiskTemp `json:"diskTemps,omitempty"`
@@ -59,24 +77,87 @@ type HostMetrics struct {
 	// Chassis / CPU fans (SMC on macOS, hwmon on Linux).
 	Fans []HostFanSpeed `json:"fans,omitempty"`
 
-	// Network counters since boot + per-second rates across samples.
-	NetRxBytes    uint64  `json:"netRxBytes,omitempty"`
-	NetTxBytes    uint64  `json:"netTxBytes,omitempty"`
-	NetRxRate     float64 `json:"netRxRate,omitempty"` // bytes/s
-	NetTxRate     float64 `json:"netTxRate,omitempty"` // bytes/s
-	NetRateReady  bool    `json:"netRateReady"`        // false on the very first sample
-	NetAvailable  bool    `json:"netAvailable"`
-	NetInterfaces int     `json:"netInterfaces,omitempty"`
+	// Network counters since boot + per-second rates across samples. Only
+	// physical interfaces are summed (loopback / tunnels would double count).
+	NetRxBytes       uint64  `json:"netRxBytes,omitempty"`
+	NetTxBytes       uint64  `json:"netTxBytes,omitempty"`
+	NetRxRate        float64 `json:"netRxRate,omitempty"` // bytes/s
+	NetTxRate        float64 `json:"netTxRate,omitempty"`
+	NetRxPacketsRate float64 `json:"netRxPacketsRate,omitempty"`
+	NetTxPacketsRate float64 `json:"netTxPacketsRate,omitempty"`
+	NetRxErrors      uint64  `json:"netRxErrors,omitempty"`
+	NetTxErrors      uint64  `json:"netTxErrors,omitempty"`
+	NetDrops         uint64  `json:"netDrops,omitempty"`
+	NetRateReady     bool    `json:"netRateReady"` // false on the very first sample
+	NetAvailable     bool    `json:"netAvailable"`
+	NetInterfaces    int     `json:"netInterfaces,omitempty"`
 
-	// Host / process context.
-	Hostname       string  `json:"hostname,omitempty"`
-	Platform       string  `json:"platform,omitempty"` // e.g. "darwin/arm64"
-	UptimeSeconds  float64 `json:"uptimeSeconds,omitempty"`
-	ProcessUptime  float64 `json:"processUptimeSeconds,omitempty"`
-	Goroutines     int     `json:"goroutines,omitempty"`
-	ProcessHeapMiB float64 `json:"processHeapMiB,omitempty"`
+	// PSI (Linux): share of wall time some task was stalled on CPU / memory /
+	// IO. Zero is a real reading, hence the separate availability flag.
+	PressureCPU       float64 `json:"pressureCpu,omitempty"`
+	PressureCPUFull   float64 `json:"pressureCpuFull,omitempty"`
+	PressureMem       float64 `json:"pressureMem,omitempty"`
+	PressureMemFull   float64 `json:"pressureMemFull,omitempty"`
+	PressureIO        float64 `json:"pressureIo,omitempty"`
+	PressureIOFull    float64 `json:"pressureIoFull,omitempty"`
+	PressureAvailable bool    `json:"pressureAvailable"`
 
-	CollectedAt time.Time `json:"collectedAt"`
+	// Host / OS identity.
+	Hostname      string    `json:"hostname,omitempty"`
+	Platform      string    `json:"platform,omitempty"` // e.g. "linux/amd64"
+	OSName        string    `json:"osName,omitempty"`   // "Ubuntu 24.04.4 LTS"
+	Kernel        string    `json:"kernel,omitempty"`
+	BootTime      time.Time `json:"bootTime"`
+	UptimeSeconds float64   `json:"uptimeSeconds,omitempty"`
+
+	// Gateway process.
+	ProcessUptime         float64   `json:"processUptimeSeconds,omitempty"`
+	ProcessStarted        time.Time `json:"processStartedAt,omitempty"`
+	ProcessRestarts       int       `json:"processRestarts,omitempty"`
+	Goroutines            int       `json:"goroutines,omitempty"`
+	OSThreads             int       `json:"osThreads,omitempty"`
+	ProcessHeapMiB        float64   `json:"processHeapMiB,omitempty"`
+	ProcessSysMiB         float64   `json:"processSysMiB,omitempty"`
+	ProcessRSSMiB         float64   `json:"processRssMiB,omitempty"`
+	ProcessRSSFromRuntime bool      `json:"processRssFromRuntime"`
+	ProcessPeakMiB        float64   `json:"processPeakMiB,omitempty"`
+	ProcessThreads        int       `json:"processThreads,omitempty"`
+	ProcessFDs            int       `json:"processFds,omitempty"`
+	ProcessCPUPct         float64   `json:"processCpuPercent,omitempty"`
+	DBFileBytes           uint64    `json:"dbFileBytes,omitempty"`
+	DBFileUpdated         time.Time `json:"dbFileUpdated,omitempty"`
+
+	// Container memory limit (cgroup v2 / v1), when one applies.
+	CgroupMemLimit uint64 `json:"cgroupMemLimit,omitempty"`
+	CgroupMemUsed  uint64 `json:"cgroupMemUsed,omitempty"`
+
+	SampleCost  float64   `json:"sampleCostMs,omitempty"`
+	CollectedAt time.Time `json:"collectedAt"` // omitempty has no effect on time.Time
+}
+
+// HostCPUCore is one logical CPU's utilisation for the page's per-core strip.
+type HostCPUCore struct {
+	ID      int     `json:"id"`
+	Percent float64 `json:"percent"`
+}
+
+// HostDisk is one filesystem ("/" for the root, "/boot", …) with its usage.
+type HostDisk struct {
+	Mount   string  `json:"mount"`
+	Device  string  `json:"device,omitempty"`
+	FSType  string  `json:"fstype,omitempty"`
+	Total   uint64  `json:"total"`
+	Used    uint64  `json:"used"`
+	Percent float64 `json:"percent"`
+}
+
+// HostDiskIO is the root disk's activity between the last two samples.
+type HostDiskIO struct {
+	Device    string  `json:"device"`
+	ReadRate  float64 `json:"readRate"`  // bytes/s
+	WriteRate float64 `json:"writeRate"` // bytes/s
+	Util      float64 `json:"util"`      // % of wall time with requests in flight
+	AwaitMs   float64 `json:"awaitMs"`   // ms per completed request
 }
 
 // HostDiskTemp is one physical disk's temperature reading for the machine page.
@@ -110,12 +191,14 @@ func fanSpeedPercent(rpm, minRPM, maxRPM float64) float64 {
 	return 0
 }
 
-// netCounters is a cumulative byte snapshot used to derive per-second rates.
+// netCounters is a cumulative counter snapshot used to derive per-second rates.
 type netCounters struct {
-	rx, tx     uint64
-	interfaces int
-	at         time.Time
-	ok         bool
+	rx, tx                    uint64
+	rxPkts, txPkts            uint64
+	rxErrors, txErrors, drops uint64
+	interfaces                int
+	at                        time.Time
+	ok                        bool
 }
 
 // netRates converts two cumulative snapshots into bytes/s. Counter resets
@@ -134,6 +217,21 @@ func netRates(prev, cur netCounters) (rxRate, txRate float64, ok bool) {
 	return float64(cur.rx-prev.rx) / elapsed, float64(cur.tx-prev.tx) / elapsed, true
 }
 
+// packetRates is netRates for packets; a counter reset just hides the rate.
+func packetRates(prev, cur netCounters) (rx, tx float64, ok bool) {
+	if !prev.ok || !cur.ok || prev.at.IsZero() {
+		return 0, 0, false
+	}
+	elapsed := cur.at.Sub(prev.at).Seconds()
+	if elapsed <= 0 || elapsed > 600 {
+		return 0, 0, false
+	}
+	if cur.rxPkts < prev.rxPkts || cur.txPkts < prev.txPkts {
+		return 0, 0, false
+	}
+	return float64(cur.rxPkts-prev.rxPkts) / elapsed, float64(cur.txPkts-prev.txPkts) / elapsed, true
+}
+
 // applyNet fills the network fields from two snapshots.
 func (m *HostMetrics) applyNet(prev, cur netCounters) {
 	if !cur.ok {
@@ -143,10 +241,14 @@ func (m *HostMetrics) applyNet(prev, cur netCounters) {
 	m.NetRxBytes = cur.rx
 	m.NetTxBytes = cur.tx
 	m.NetInterfaces = cur.interfaces
+	m.NetRxErrors = cur.rxErrors
+	m.NetTxErrors = cur.txErrors
+	m.NetDrops = cur.drops
 	if rx, tx, ok := netRates(prev, cur); ok {
-		m.NetRxRate = rx
-		m.NetTxRate = tx
-		m.NetRateReady = true
+		m.NetRxRate, m.NetTxRate, m.NetRateReady = rx, tx, true
+	}
+	if rx, tx, ok := packetRates(prev, cur); ok {
+		m.NetRxPacketsRate, m.NetTxPacketsRate = rx, tx
 	}
 }
 
@@ -164,32 +266,7 @@ func (m *HostMetrics) applyMem(total, used uint64) {
 	m.MemAvailable = true
 }
 
-// applyProcess adds hostname / platform / runtime context shared by all OSes.
-func (m *HostMetrics) applyProcess() {
-	if name, err := os.Hostname(); err == nil {
-		m.Hostname = name
-	}
-	m.Platform = runtime.GOOS + "/" + runtime.GOARCH
-	m.Goroutines = runtime.NumGoroutine()
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	m.ProcessHeapMiB = float64(ms.HeapAlloc) / (1024 * 1024)
-	m.ProcessUptime = time.Since(processStartedAt).Seconds()
-}
-
 var processStartedAt = time.Now()
-
-// diskUsageRoot reports total/used bytes of the filesystem holding "/".
-func (m *HostMetrics) applyDiskRoot() {
-	total, used, ok := statfsRoot()
-	if !ok || total == 0 {
-		return
-	}
-	m.DiskTotal = total
-	m.DiskUsed = used
-	m.DiskPercent = clampFloat(float64(used)/float64(total)*100, 0, 100)
-	m.DiskAvailable = true
-}
 
 type hostMetricsSampler struct {
 	mu          sync.Mutex
@@ -208,7 +285,7 @@ func newHostMetricsSampler() *hostMetricsSampler {
 }
 
 // Snapshot returns the latest sample and records that a client is watching.
-// The first call (or a call after idle stop) starts a 3s refresh loop that
+// The first call (or a call after idle stop) starts the refresh loop that
 // exits once clients stop requesting.
 func (h *hostMetricsSampler) Snapshot() HostMetrics {
 	h.mu.Lock()
@@ -222,7 +299,7 @@ func (h *hostMetricsSampler) Snapshot() HostMetrics {
 	h.mu.Unlock()
 
 	if needStart {
-		// Synchronous first sample so the UI is not empty for 3s.
+		// Synchronous first sample so the first paint is not empty.
 		h.refresh()
 		go h.loop()
 		h.mu.Lock()
@@ -257,7 +334,9 @@ func (h *hostMetricsSampler) loop() {
 }
 
 func (h *hostMetricsSampler) refresh() {
+	started := time.Now()
 	next := collectHostMetrics(h.cpuPrev)
+	next.metrics.SampleCost = float64(time.Since(started).Microseconds()) / 1000
 	h.mu.Lock()
 	h.cpuPrev = next.prev
 	h.sample = next.metrics
@@ -359,16 +438,22 @@ func thermalPressureLabelZH(level string) string {
 	}
 }
 
-// interfaceCounter is one NIC's cumulative byte counters.
+// interfaceCounter is one NIC's cumulative counters.
 type interfaceCounter struct {
-	Name string
-	RX   uint64
-	TX   uint64
+	Name     string
+	RX, TX   uint64
+	RXPkts   uint64
+	TXPkts   uint64
+	RXErrors uint64
+	TXErrors uint64
+	RXDrops  uint64
 }
 
 // virtualIfacePrefixes are excluded from throughput: loopback and
-// software/tunnel devices would double-count real traffic.
-var virtualIfacePrefixes = []string{"lo", "gif", "stf", "awdl", "llw", "utun", "ipsec", "ppp", "anpi", "ap", "bridge", "veth", "docker", "tailscale", "tun", "tap", "vmnet", "vnic"}
+// software/tunnel devices would double-count real traffic. "ifb" is the
+// traffic-shaping redirect device, which carries the mirrored copy of every
+// packet it redirects.
+var virtualIfacePrefixes = []string{"lo", "gif", "stf", "awdl", "llw", "utun", "ipsec", "ppp", "anpi", "ap", "ifb", "bridge", "veth", "docker", "tailscale", "tun", "tap", "vmnet", "vnic", "virbr", "lxc", "flannel", "cni", "kube"}
 
 func isVirtualInterface(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
@@ -390,11 +475,16 @@ func sumInterfaceCounters(list []interfaceCounter) netCounters {
 		if isVirtualInterface(c.Name) {
 			continue
 		}
-		if c.RX == 0 && c.TX == 0 {
+		if c.RX == 0 && c.TX == 0 && c.RXPkts == 0 && c.TXPkts == 0 {
 			continue
 		}
 		out.rx += c.RX
 		out.tx += c.TX
+		out.rxPkts += c.RXPkts
+		out.txPkts += c.TXPkts
+		out.rxErrors += c.RXErrors
+		out.txErrors += c.TXErrors
+		out.drops += c.RXDrops
 		out.interfaces++
 	}
 	out.ok = out.interfaces > 0

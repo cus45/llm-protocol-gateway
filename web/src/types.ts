@@ -93,7 +93,13 @@ export type HostMetrics = {
   load5: number;
   load15: number;
   cpuPercent: number;
+  cpuLoadPercent?: number;
   cpuCount: number;
+  cpuMhz?: number;
+  cpuPhysicalCores?: number;
+  cpuModel?: string;
+  cpuCores?: HostCPUCore[];
+  cpuCoresAvailable?: boolean;
   tempC?: number;
   tempAvailable: boolean;
   tempSource?: string;
@@ -104,6 +110,10 @@ export type HostMetrics = {
   memUsed?: number;
   memPercent?: number;
   memAvailable?: boolean;
+  memCached?: number;
+  memAnon?: number;
+  memSlab?: number;
+  hostMemHitRate?: number;
   swapTotal?: number;
   swapUsed?: number;
   swapAvailable?: boolean;
@@ -111,22 +121,80 @@ export type HostMetrics = {
   diskUsed?: number;
   diskPercent?: number;
   diskAvailable?: boolean;
+  diskDevice?: string;
+  volumes?: HostDisk[];
+  diskIO?: HostDiskIO;
+  diskReadRate?: number;
+  diskWriteRate?: number;
+  diskIOReady?: boolean;
   diskTemps?: HostDiskTemp[];
   fans?: HostFanSpeed[];
   netRxBytes?: number;
   netTxBytes?: number;
   netRxRate?: number;
   netTxRate?: number;
+  netRxPacketsRate?: number;
+  netTxPacketsRate?: number;
+  netRxErrors?: number;
+  netTxErrors?: number;
+  netDrops?: number;
   netRateReady?: boolean;
   netAvailable?: boolean;
   netInterfaces?: number;
+  pressureCpu?: number;
+  pressureCpuFull?: number;
+  pressureMem?: number;
+  pressureMemFull?: number;
+  pressureIo?: number;
+  pressureIoFull?: number;
+  pressureAvailable?: boolean;
   hostname?: string;
   platform?: string;
+  osName?: string;
+  kernel?: string;
+  bootTime?: string;
   uptimeSeconds?: number;
   processUptimeSeconds?: number;
+  processStartedAt?: string;
+  processRestarts?: number;
   goroutines?: number;
+  osThreads?: number;
   processHeapMiB?: number;
+  processSysMiB?: number;
+  processRssMiB?: number;
+  processRssFromRuntime?: boolean;
+  processPeakMiB?: number;
+  processThreads?: number;
+  processFds?: number;
+  processCpuPercent?: number;
+  dbFileBytes?: number;
+  dbFileUpdated?: string;
+  cgroupMemLimit?: number;
+  cgroupMemUsed?: number;
+  sampleCostMs?: number;
   collectedAt?: string;
+};
+
+export type HostCPUCore = {
+  id: number;
+  percent: number;
+};
+
+export type HostDisk = {
+  mount: string;
+  device?: string;
+  fstype?: string;
+  total: number;
+  used: number;
+  percent: number;
+};
+
+export type HostDiskIO = {
+  device: string;
+  readRate: number;
+  writeRate: number;
+  util: number;
+  awaitMs: number;
 };
 
 export type HostDiskTemp = {

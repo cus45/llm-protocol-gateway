@@ -1,36 +1,33 @@
 // @generated-from main.tsx — 由重构脚本拆分生成，请直接维护本文件。
 import React from 'react';
 import {
-  AdminAuthStatus,
-  APIKey,
-  APIKeyDayStats,
-  BadgeTone,
-  CloudflareZoneOption,
-  GatewayState,
-  HostDiskTemp,
-  HostFanSpeed,
-  HostMetrics,
-  LegacyRequestStatsSnapshot,
-  LogEntry,
-  Model,
-  NavItemID,
-  OutputEndpoint,
-  Protocol,
-  Provider,
-  ProviderAuthPreview,
-  ProviderCacheTestResult,
-  ProviderChatTestOptions,
-  ProviderConnectKind,
-  ProviderPreset,
-  ProviderThinkingTestResult,
-  PublicAccessSettings,
-  RequestAdapter,
-  RequestStatsSnapshot,
-  Route,
-  RouteTestResult,
-  SubscriptionCheckin,
-  SubscriptionConnectKind,
-  TimeHint
+    AdminAuthStatus,
+    APIKey,
+    APIKeyDayStats,
+    BadgeTone,
+    CloudflareZoneOption,
+    GatewayState,
+    LegacyRequestStatsSnapshot,
+    LogEntry,
+    Model,
+    NavItemID,
+    OutputEndpoint,
+    Protocol,
+    Provider,
+    ProviderAuthPreview,
+    ProviderCacheTestResult,
+    ProviderChatTestOptions,
+    ProviderConnectKind,
+    ProviderPreset,
+    ProviderThinkingTestResult,
+    PublicAccessSettings,
+    RequestAdapter,
+    RequestStatsSnapshot,
+    Route,
+    RouteTestResult,
+    SubscriptionCheckin,
+    SubscriptionConnectKind,
+    TimeHint
 } from './types';
 
 export const REQUEST_ADAPTER_PRESETS: Array<{ id: string; label: string; hint: string; json: string }> = [
@@ -3099,6 +3096,8 @@ export const TEMP_SOURCE_LABELS: Record<string, string> = {
   'iokit/soc-die': 'SoC 芯片传感器',
   'iokit/soc': 'SoC 封装传感器',
   'powermetrics/smc': 'powermetrics SMC',
+  'thermal_zone': 'sysfs 温控区',
+  'hwmon': 'hwmon 传感器',
 };
 
 export function tempSourceLabel(source?: string) {
@@ -3123,66 +3122,21 @@ export function formatRate(bytesPerSecond?: number): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
-export function formatDuration(seconds?: number): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '—';
-  const total = Math.floor(seconds);
-  const d = Math.floor(total / 86400);
-  const h = Math.floor((total % 86400) / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  if (d > 0) return `${d} 天 ${h} 小时`;
-  if (h > 0) return `${h} 小时 ${m} 分`;
-  if (m > 0) return `${m} 分 ${total % 60} 秒`;
-  return `${total} 秒`;
+export function formatMiBps(bytesPerSecond: number | undefined): string {
+  if (bytesPerSecond == null || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) return '—';
+  const mib = bytesPerSecond / (1024 * 1024);
+  if (mib >= 100) return `${mib.toFixed(0)} MB/s`;
+  return `${mib.toFixed(1)} MB/s`;
 }
 
-export function hostTempMetric(hostMetrics: HostMetrics | null): { value: string; note: string } {
-  if (!hostMetrics) {
-    return { value: '—', note: '主页可见时每 10 秒刷新' };
-  }
-  if (hostMetrics.tempAvailable && hostMetrics.tempC != null) {
-    return {
-      value: `${hostMetrics.tempC.toFixed(1)}°C`,
-      note: tempSourceLabel(hostMetrics.tempSource),
-    };
-  }
-  if (hostMetrics.thermalPressureAvailable && hostMetrics.thermalPressure) {
-    return {
-      value: thermalPressureLabel(hostMetrics.thermalPressure),
-      note: `热力等级 ${hostMetrics.thermalPressure}（本机无 ℃ 接口）`,
-    };
-  }
-  return { value: '—', note: '本机未暴露温度传感器' };
+export function formatLoad(load: number | undefined): string {
+  if (load == null || !Number.isFinite(load)) return '—';
+  return load.toFixed(2);
 }
 
-export function diskTempLabel(disk: HostDiskTemp, index: number, total: number): string {
-  if (disk.internal === true) return '内置硬盘温度';
-  if (disk.internal === false) return '外置硬盘温度';
-  if (total > 1) return `硬盘温度 ${index + 1}`;
-  return '硬盘温度';
-}
-
-export function diskTempNote(disk: HostDiskTemp): string {
-  const parts: string[] = [];
-  if (disk.model) parts.push(disk.model);
-  if (disk.device) parts.push(disk.device);
-  return parts.join(' · ') || (disk.source ? `来源 ${disk.source}` : 'SMART');
-}
-
-export function fanSpeedLabel(fan: HostFanSpeed, index: number, total: number): string {
-  if (fan.name) return fan.name;
-  if (total > 1) return `风扇 ${index + 1}`;
-  return '风扇转速';
-}
-
-export function fanSpeedNote(fan: HostFanSpeed): string {
-  const parts: string[] = [];
-  if (fan.minRpm != null && fan.maxRpm != null && fan.maxRpm > 0) {
-    parts.push(`${Math.round(fan.minRpm)}–${Math.round(fan.maxRpm)} RPM`);
-  }
-  if (Number.isFinite(fan.percent)) {
-    parts.push(`${fan.percent.toFixed(0)}%`);
-  }
-  return parts.join(' · ') || (fan.source ? `来源 ${fan.source}` : 'SMC');
+/** 进程的 RSS 来自 /proc 还是 Go runtime（后者偏小，界面要说明来源）。 */
+export function hostMetricsPollMs(): number {
+  return isRemoteOrigin() ? 5000 : 3000;
 }
 
 export function formatLocalISODate(date: Date) {

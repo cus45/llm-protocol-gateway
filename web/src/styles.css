@@ -4335,22 +4335,177 @@ details:not([open]) > *:not(summary) { display: none !important; }
 /* ----------------------------------------------------------------
    23. 机器状态
    ---------------------------------------------------------------- */
-.machine-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.machine-grid .metric { min-height: 122px; padding: 16px 18px; }
-@media (max-width: 960px) { .machine-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .machine-grid { grid-template-columns: 1fr; } }
-.machine-metric { display: grid; gap: 6px; }
-.usage-bar {
-  position: relative; margin-top: 10px; height: 6px;
-  border-radius: 999px; background: var(--slate-soft); overflow: hidden;
+/* 顶部一行：标题 + 连接状态 + 操作按钮。 */
+.machine-page { gap: 12px; }
+.machine-top {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
 }
-.usage-bar > span {
-  display: block; height: 100%; border-radius: 999px;
-  background: var(--accent);
-  transition: width 0.4s ease;
+.machine-top-main { min-width: 0; flex: 1 1 320px; }
+.machine-top-main .panel-title { font-size: 18px; }
+.machine-top-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.machine-top-side { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.machine-top-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* 指标条：桌面 6 列一行，窄屏折成 3 / 2 列。 */
+.machine-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1400px) { .machine-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .machine-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.machine-kpi {
+  display: grid; gap: 6px; align-content: start;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  min-width: 0;
 }
-.usage-bar.warn > span { background: var(--amber); }
-.usage-bar.danger > span { background: var(--red); }
+.machine-kpi-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.machine-kpi-value {
+  font-family: var(--mono); font-size: 24px; font-weight: 650; letter-spacing: -0.02em;
+  color: var(--text-strong); font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.machine-kpi-value > span { margin-left: 2px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.machine-kpi-note {
+  color: var(--muted); font-size: 11.5px; line-height: 1.45;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.machine-kpi-bar { position: relative; height: 5px; border-radius: 999px; background: var(--slate-soft); overflow: hidden; }
+.machine-kpi-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.4s ease; }
+.machine-kpi-bar.green > span { background: var(--green); }
+.machine-kpi-bar.blue > span { background: var(--blue); }
+.machine-kpi-bar.amber > span { background: var(--amber); }
+.machine-kpi-bar.red > span { background: var(--red); }
+.machine-kpi-bar.slate > span { background: var(--slate); }
+
+/* 逻辑核条带 */
+.machine-cores {
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  display: grid; gap: 10px;
+}
+.machine-cores-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.machine-cores-title { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+.machine-cores-detail { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+.machine-cores-gateway { margin-left: auto; color: var(--blue); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.machine-core-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 16px; }
+@media (max-width: 720px) { .machine-core-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; } }
+.machine-core { display: grid; grid-template-columns: 30px minmax(0, 1fr) 38px; align-items: center; gap: 8px; }
+.machine-core-label { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+.machine-core-track { height: 6px; border-radius: 999px; background: var(--slate-soft); overflow: hidden; }
+.machine-core-track > span { display: block; height: 100%; border-radius: 999px; background: var(--green); transition: width 0.4s ease; }
+.machine-core-track > span.amber { background: var(--amber); }
+.machine-core-track > span.red { background: var(--red); }
+.machine-core-value { text-align: right; font-size: 11.5px; font-family: var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* 诊断 */
+.machine-diagnosis {
+  padding: 14px 16px 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  box-shadow: var(--shadow-soft);
+  display: grid; gap: 8px;
+}
+.machine-diagnosis.ok { border-left-color: var(--green); }
+.machine-diagnosis.info { border-left-color: var(--blue); }
+.machine-diagnosis.warn { border-left-color: var(--amber); }
+.machine-diagnosis.critical { border-left-color: var(--red); }
+.machine-diagnosis.empty { background: var(--surface-soft); }
+.machine-diagnosis-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.machine-diagnosis-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-strong); }
+.machine-diagnosis-verdict { margin-top: 4px; font-size: 15px; font-weight: 600; color: var(--text-strong); }
+.machine-diagnosis.empty .machine-diagnosis-verdict { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.machine-diagnosis-meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.machine-findings { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 8px; }
+.machine-findings > li { display: flex; align-items: flex-start; gap: 10px; }
+.machine-findings > li > div { min-width: 0; }
+.machine-findings b { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+.machine-findings p { margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.machine-findings .machine-finding-action { color: var(--text); }
+.machine-findings > li.warn b { color: var(--amber); }
+.machine-findings > li.critical b { color: var(--red); }
+
+/* 侧栏三卡：磁盘 / 环境 / 进程 */
+.machine-side-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1400px) { .machine-side-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 860px) { .machine-side-grid { grid-template-columns: 1fr; } }
+.machine-side-card {
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  display: grid; gap: 10px; align-content: start; min-width: 0;
+}
+.machine-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.machine-side-title { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+.machine-side-badge { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.machine-side-detail { color: var(--muted); font-size: 12px; }
+.machine-usage-row { display: grid; gap: 5px; }
+.machine-usage-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.machine-usage-name { font-family: var(--mono); font-size: 12px; color: var(--text-strong); flex-shrink: 0; }
+.machine-usage-detail { color: var(--muted); font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-usage-value { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
+.machine-usage-note { color: var(--muted); font-size: 11px; }
+.machine-io-line { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 11.5px; }
+.machine-io-line b { color: var(--text-strong); font-family: var(--mono); font-weight: 600; }
+.machine-env-grid { display: grid; gap: 6px; }
+.machine-env-item { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
+/* 进程卡的左列是「进程启动 / 文件句柄」这类短标签，标签列收窄一点，值多一行空间 */
+.machine-env-grid-wide .machine-env-item > span { min-width: 62px; }
+.machine-env-item > span { color: var(--muted); flex-shrink: 0; }
+.machine-env-item > b { color: var(--text-strong); font-weight: 500; text-align: right; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11.5px; }
+
+/* 趋势 */
+.machine-trend {
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  display: grid; gap: 12px;
+}
+.machine-trend-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.machine-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 900px) { .machine-chart-grid { grid-template-columns: 1fr; } }
+/* 手机上两列图的右半边会被折行，单列并压缩纵轴标签宽度，否则指标条比图还高。 */
+@media (max-width: 720px) {
+  .machine-chart { padding: 10px 10px 6px; }
+  .machine-chart-head { gap: 6px; }
+}
+.machine-chart { padding: 12px 14px 8px; border-radius: var(--r-md); background: var(--surface-soft); border: 1px solid var(--border); min-width: 0; }
+.machine-chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.machine-chart-title { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+.machine-chart-hint { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.machine-chart-legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.machine-legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11.5px; }
+.machine-legend-item i { width: 8px; height: 8px; border-radius: 2px; }
+.machine-legend-item b { color: var(--text-strong); font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+.machine-chart-body { position: relative; margin-top: 6px; }
+.machine-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.machine-grid-line { stroke: var(--border); stroke-width: 1; }
+.machine-axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.machine-hover-line { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+.machine-empty-label { fill: var(--muted); font-size: 12px; }
+.machine-tooltip {
+  position: absolute; top: 4px; z-index: 2;
+  min-width: 120px; padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
+}
+.machine-tooltip-time { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-bottom: 4px; }
+.machine-tooltip-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.machine-tooltip-row i { width: 8px; height: 8px; border-radius: 2px; }
+.machine-tooltip-row b { margin-left: auto; color: var(--text-strong); font-family: var(--mono); font-weight: 600; }
+
 /* 按「标签 + 值」的最小宽度自动排 3/2/1 列：固定 3 列时 640px 宽的弹窗里每格只有
    201px，<b> 值只剩 69–137px，12px 的标签被挤成逐字竖排。 */
 .machine-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 12px 18px; }

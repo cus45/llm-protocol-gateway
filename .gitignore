@@ -74,3 +74,6 @@ docs/superpowers/
 # 构建产物
 *.exe
 bin/
+
+# 发版产物
+/dist/

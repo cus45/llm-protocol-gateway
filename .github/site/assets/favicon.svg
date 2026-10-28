@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="LLM Protocol Gateway">
+  <title>LLM Protocol Gateway</title>
+  <defs>
+    <linearGradient id="fvg-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141a2e"/>
+      <stop offset="55%" stop-color="#0a0f1d"/>
+      <stop offset="100%" stop-color="#04060d"/>
+    </linearGradient>
+    <linearGradient id="fvg-rim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.85"/>
+      <stop offset="35%" stop-color="#818cf8" stop-opacity="0.45"/>
+      <stop offset="72%" stop-color="#f43f5e" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.8"/>
+    </linearGradient>
+  </defs>
+  <rect x="20" y="20" width="472" height="472" rx="108" fill="url(#fvg-bg)" stroke="url(#fvg-rim)" stroke-width="4"/>
+  <g fill="none" stroke-linecap="round">
+    <g transform="rotate(34 256 256)">
+      <ellipse cx="256" cy="256" rx="150" ry="78" stroke="#0a0f1d" stroke-width="62"/>
+      <ellipse cx="256" cy="256" rx="150" ry="78" stroke="#ffffff" stroke-width="40"/>
+    </g>
+    <g transform="rotate(-34 256 256)">
+      <ellipse cx="256" cy="256" rx="150" ry="78" stroke="#0a0f1d" stroke-width="58"/>
+      <ellipse cx="256" cy="256" rx="150" ry="78" stroke="#ffffff" stroke-width="36"/>
+    </g>
+  </g>
+</svg>

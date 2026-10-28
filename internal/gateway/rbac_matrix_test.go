@@ -249,6 +249,8 @@ func TestRoutePermissionMatrix(t *testing.T) {
 		{"role options allowed", http.MethodGet, "/__roles/options", "", http.StatusOK},
 		{"settings write denied", http.MethodPatch, "/__settings", `{}`, http.StatusForbidden},
 		{"machine denied", http.MethodGet, "/__host-metrics", "", http.StatusForbidden},
+		{"machine snapshot denied", http.MethodGet, "/__host-metrics/snapshot", "", http.StatusForbidden},
+		{"machine diagnostics denied", http.MethodGet, "/__host-diagnostics", "", http.StatusForbidden},
 		{"prices denied", http.MethodGet, "/__prices", "", http.StatusForbidden},
 		{"monitor denied", http.MethodGet, "/__monitor/stream", "", http.StatusForbidden},
 		{"user cannot create routes to unowned providers", http.MethodPost, "/__routes", `{"name":"x","providerId":"shared"}`, http.StatusForbidden},

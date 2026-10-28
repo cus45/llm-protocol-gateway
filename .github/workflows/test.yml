@@ -1,0 +1,140 @@
+name: CI
+
+# 每个 push / PR 都要过的门禁。发布工作流（release.yml）在打 tag 时同样会跑
+# 这些检查的最小集，所以这里的平台矩阵只要覆盖“代码是否能在各系统上编译并测试通过”，
+# 不必在 PR 上重复构建安装包。
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['**'] # tag 推送交给 release.yml，避免同一提交跑两遍
+  pull_request:
+  workflow_dispatch:
+
+# main 上的运行要跑完：发版前能有个绿色结果可参照。PR 的下一次 push 取消上一次。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.1'
+  # 桌面壳是独立 module，必须单独下载依赖；缓存两个 go.sum 才能都命中。
+  GOFLAGS: -mod=mod
+
+jobs:
+  go:
+    name: go test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+
+      # Windows 上 checkout 换行符若不一致，gofmt -l 会全是假阳性，所以在 Linux 上做格式门禁。
+      - name: gofmt
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bad=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$bad" ]; then echo "以下文件没有 gofmt："; echo "$bad"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      # 全量测试在三个系统上都跑；race 只跑 Linux，省 macOS 与 Windows 的机时。
+      - name: go test -race
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./internal/gateway/... ./internal/store/... ./internal/cursor/...
+
+      - name: desktop vet (Wails shell)
+        working-directory: desktop
+        run: |
+          node frontend/sync-dist.mjs
+          go vet ./...
+
+  web:
+    name: web build & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+
+      - run: npm run build
+        working-directory: web
+
+      - run: node --test src/lib.test.mjs
+        working-directory: web
+
+      - name: PWA manifest & service worker emitted
+        working-directory: web
+        run: |
+          test -f dist/sw.js
+          grep -q '"display":"standalone"' dist/manifest.webmanifest
+
+      # 截图放在 docs/images，介绍站直接引用它，别让链接悄悄失效。
+      - name: README image links resolve
+        run: |
+          missing=0
+          for f in $(grep -o 'docs/images/[A-Za-z0-9._-]*\.png' README.md | sort -u); do
+            [ -f "$f" ] || { echo "README 引用了不存在的图片：$f"; missing=1; }
+          done
+          exit $missing
+
+      # 介绍站是纯静态文件，没有构建步骤，本地引用/锚点/alt 全靠这个脚本兜底。
+      - name: Landing site check
+        run: node scripts/check-site.mjs
+
+  cross-compile:
+    name: cross-compile (nocgo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      # 网关是纯 Go（SQLite 走 modernc，不依赖 cgo），所有目标平台都能在 Linux 上编译。
+      # 这里只验证“编得过”，真正的产物由 release.yml 在发版时生成。
+      - name: Build every release target
+        run: |
+          set -e
+          for t in linux/amd64 linux/arm64 linux/arm linux/arm/v7 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos=${t%%/*}; rest=${t#*/}; goarch=${rest%%/*}
+            env_args=(CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch")
+            case "$rest" in
+              arm/v7) env_args+=(GOARM=7) ;;
+              arm/v6) env_args+=(GOARM=6) ;;
+            esac
+            echo "==> $t"
+            env "${env_args[@]}" go build -trimpath -o /dev/null ./cmd/gateway
+          done
+
+      # 发版脚本本身也要在 PR 阶段就验证一遍（只构建不打包），
+      # 否则坏掉的 packaging 只会在打 tag 时才暴露。
+      - name: release.sh build (linux/amd64)
+        run: |
+          npm --prefix web ci --no-audit --no-fund
+          GATEWAY_APP_VERSION=0.0.0-ci npm --prefix web run build
+          SKIP_WEB=1 bash scripts/release.sh build v0.0.0-ci linux/amd64

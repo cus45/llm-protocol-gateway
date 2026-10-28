@@ -262,6 +262,12 @@ func claudeRequestToOpenAIChat(claudeReq map[string]any, model string) (map[stri
 	if format := outputConfigFormatToChatResponseFormat(claudeReq["output_config"]); format != nil {
 		openAIReq["response_format"] = format
 	}
+	// Claude Code 的「思考深度」只写在 thinking / output_config 里；丢掉它，上游
+	// 就按自己的默认档跑（实测选 max 时与 medium 的思考量相当）。按目标模型的
+	// 已知档位对齐，档位未知的模型原样透传。
+	if effort := fitModelEffort(claudePayloadEffort(claudeReq), model); effort != "" {
+		openAIReq["reasoning_effort"] = effort
+	}
 	normalizeOpenAIChatMaxTokensField(openAIReq, model)
 	copyToolsField(claudeReq, openAIReq, false)
 	copyToolChoiceField(claudeReq, openAIReq, false)

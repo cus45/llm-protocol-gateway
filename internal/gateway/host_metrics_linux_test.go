@@ -39,7 +39,7 @@ func TestParseProcNetDevAndLoadavg(t *testing.T) {
 	if !sum.ok || sum.rx != 2000 || sum.tx != 1000 || sum.interfaces != 1 {
 		t.Fatalf("sum=%+v", sum)
 	}
-	l1, l5, l15 := parseProcLoadavg("0.52 0.31 0.24 1/512 4242\n")
+	l1, l5, l15 := parseUnixLoadavg("0.52 0.31 0.24 1/512 4242\n")
 	if l1 != 0.52 || l5 != 0.31 || l15 != 0.24 {
 		t.Fatalf("load=%v %v %v", l1, l5, l15)
 	}

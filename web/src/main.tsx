@@ -4,7 +4,7 @@ import {createRoot} from 'react-dom/client';
 import './styles.css';
 import './rbac.css';
 import {ApiKeyEditableField, ApiKeyFixedModelField, ApiKeyModelMappingControl} from './components/apikeys';
-import {LogTimingWaterfall, MachineMetric, UsageRangeCalendar} from './components/charts';
+import {LogTimingWaterfall, UsageRangeCalendar} from './components/charts';
 import {
     ApiKeyBatchBar,
     ApiKeyDetailWorkspace,
@@ -17,6 +17,7 @@ import {
     buildApiKeyUsageMap
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
+import {MachineStatusPage} from './components/machine_status';
 import {runCloudflareAuthPoll} from './pollers';
 import {PwaInstallButton, PwaInstallPrompt} from './components/pwa_install';
 import {registerPwaServiceWorker, startPwaInstallCapture} from './pwa_install_store';
@@ -28,8 +29,6 @@ import {
     aggregateScheduleAttempts,
     antiAutofillProps,
     API_BASE,
-    browserAccessOrigin,
-    clientGatewayRoot,
     API_KEY_VIEW_STORAGE_KEY,
     API_KEYS_PAGE_SIZE,
     apiKeyReferencesProvider,
@@ -37,6 +36,7 @@ import {
     BACKEND_FAIL_STREAK_LIMIT,
     BACKEND_POLL_MS_LOCAL,
     BACKEND_POLL_MS_REMOTE,
+    browserAccessOrigin,
     buildApiKeyPatchBody,
     buildCurlCommand,
     buildProviderChatCurl,
@@ -47,6 +47,7 @@ import {
     chatTestToastText,
     chatTestVerdictFromBody,
     clearUICache,
+    clientGatewayRoot,
     compactRequestAdapterJSON,
     composeCustomDomain,
     copyToClipboard,
@@ -54,27 +55,20 @@ import {
     defaultPublicAccess,
     defaultThinkingValueForField,
     deriveUIDomainFromAPI,
-    diskTempLabel,
-    diskTempNote,
     endpointURL,
     explainHttpStatus,
     fallbackState,
-    fanSpeedLabel,
-    fanSpeedNote,
     fetchWithTimeout,
     findRouteForBinding,
     fixedOutputLabels,
     formatBytes,
     formatCostMicros,
     formatDateInZone,
-    formatDuration,
     formatJsonDisplay,
     formatLocalISODate,
-    formatRate,
     formatTrafficLogDetail,
     formatTrafficLogJSON,
     getApiKeyBinding,
-    hostTempMetric,
     httpStatusLabel,
     isFollowingTodayRange,
     isFreeModel,
@@ -137,7 +131,6 @@ import {
     shortenAccountLabel,
     splitCustomDomain,
     statusTone,
-    thermalPressureLabel,
     thinkingDepthSelectOptions,
     thinkingPresetsForProtocol,
     trafficLogKeyLabel,
@@ -146,9 +139,9 @@ import {
     trafficRanksEqual,
     trafficRanksFromMap,
     uiCacheScope,
+    writeStoredDecisionPanelOpen,
     writeStoredNavCollapsed,
     writeStoredProviderDensity,
-    writeStoredDecisionPanelOpen,
     writeStoredSidebarCollapsed,
     writeUICache
 } from './lib';
@@ -181,7 +174,6 @@ import {
     CloudflareZoneOption,
     ConsoleUser,
     GatewayState,
-    HostMetrics,
     KeyProfile,
     LegacyRequestStatsSnapshot,
     LogEntry,
@@ -504,7 +496,6 @@ function App() {
   // 「仅运行时变化」的同步，避免正在编辑的子域名前缀被已保存域名盖回去。
   const publicAccessFormSyncRef = useRef('');
   const [tunnelBusy, setTunnelBusy] = useState(false);
-  const [hostMetrics, setHostMetrics] = useState<HostMetrics | null>(null);
   // null = 尚未探测，避免刷新瞬间误闪「后端未连接」
   const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
   // 后端当前版本：与本页构建版本不同即说明发布了新版本，提示升级（见 app_version.ts）。
@@ -1429,41 +1420,6 @@ function App() {
     if (activeNav === 'public-access') {
       void refreshPublicControlTokenStatus();
     }
-  }, [activeNav]);
-
-  // 机器状态：仅该页可见时每 5s 拉一次；离开/后台则停，服务端无请求会自停采样。
-  useEffect(() => {
-    if (activeNav !== 'machine') {
-      setHostMetrics(null);
-      return;
-    }
-    let cancelled = false;
-    let timer: number | null = null;
-    const tick = () => {
-      if (cancelled) return;
-      if (!isDocumentActive()) return;
-      void (async () => {
-        try {
-          const response = await fetchWithTimeout(`${API_BASE}/__host-metrics`, { credentials: 'include' });
-          if (!response.ok || cancelled) return;
-          const data = await response.json() as HostMetrics;
-          if (!cancelled) setHostMetrics(data);
-        } catch {
-          // ignore transient errors; next tick retries
-        }
-      })();
-    };
-    tick();
-    timer = window.setInterval(tick, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
-    const onResume = () => { if (isDocumentActive()) tick(); };
-    window.addEventListener('focus', onResume);
-    document.addEventListener('visibilitychange', onResume);
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearInterval(timer);
-      window.removeEventListener('focus', onResume);
-      document.removeEventListener('visibilitychange', onResume);
-    };
   }, [activeNav]);
 
   useEffect(() => {
@@ -4602,7 +4558,6 @@ function App() {
   const localURL = endpointURL(selectedEndpoint);
   const publicAccess = state.publicAccess || defaultPublicAccess;
   const tunnel = publicAccess.tunnel;
-  const hostTemp = hostTempMetric(hostMetrics);
   const tunnelRunning = tunnel?.status === 'running';
   const livePublicURL = activePublicBaseURL(publicAccess, tunnelRunning);
   const liveUIPublicURL = activeUIPublicBaseURL(publicAccess, tunnelRunning);
@@ -6546,117 +6501,7 @@ function App() {
           )}
 
           {activeNav === 'machine' && navVisibleFor(permissions, 'machine', legacyUser) && (
-          <section className="section-full">
-            <div className="panel-header" style={{ marginBottom: 0 }}>
-              <div>
-                <h2 className="panel-title">机器状态</h2>
-                <p className="panel-desc">
-                  网关所在主机的实时运行指标（仅管理员可见）；页面打开时每 5 秒拉取一次，离开后自动停止采样。
-                </p>
-              </div>
-              <div className="panel-header-actions">
-                <div className="hint-text">{hostMetrics?.collectedAt
-                    ? `采样于 ${new Date(hostMetrics.collectedAt).toLocaleTimeString()}`
-                    : '正在读取…'}</div>
-              </div>
-            </div>
-
-            <div className="machine-grid">
-              <MachineMetric
-                label="CPU 负载"
-                value={hostMetrics ? `${hostMetrics.cpuPercent.toFixed(0)}%` : '—'}
-                percent={hostMetrics?.cpuPercent}
-                note={hostMetrics
-                  ? `load ${hostMetrics.load1.toFixed(2)} / ${hostMetrics.load5.toFixed(2)} / ${hostMetrics.load15.toFixed(2)} · ${hostMetrics.cpuCount} 核`
-                  : '读取中…'}
-              />
-              {hostTemp.value !== '—' ? <MachineMetric label="CPU 温度" value={hostTemp.value} note={hostTemp.note} /> : null}
-              {hostMetrics?.fans && hostMetrics.fans.length > 0 ? (
-                hostMetrics.fans.map((fan, index, list) => (
-                  <MachineMetric
-                    key={`fan-${fan.id}-${index}`}
-                    label={fanSpeedLabel(fan, index, list.length)}
-                    value={`${Math.round(fan.rpm).toLocaleString()} RPM`}
-                    percent={fan.percent}
-                    note={fanSpeedNote(fan)}
-                  />
-                ))
-              ) : null}
-              {hostMetrics?.memAvailable ? (
-                <MachineMetric
-                  label="内存占用"
-                  value={`${(hostMetrics.memPercent ?? 0).toFixed(0)}%`}
-                  percent={hostMetrics.memPercent}
-                  note={`${formatBytes(hostMetrics.memUsed)} / ${formatBytes(hostMetrics.memTotal)}${hostMetrics.swapUsed ? ` · 交换 ${formatBytes(hostMetrics.swapUsed)}` : ''}`}
-                />
-              ) : null}
-              {hostMetrics?.diskAvailable ? (
-                <MachineMetric
-                  label="磁盘占用"
-                  value={`${(hostMetrics.diskPercent ?? 0).toFixed(0)}%`}
-                  percent={hostMetrics.diskPercent}
-                  note={`${formatBytes(hostMetrics.diskUsed)} / ${formatBytes(hostMetrics.diskTotal)} · 根分区`}
-                />
-              ) : null}
-              {hostMetrics?.diskTemps && hostMetrics.diskTemps.length > 0 ? (
-                hostMetrics.diskTemps.map((disk, index, list) => (
-                  <MachineMetric
-                    key={disk.device || `disk-temp-${index}`}
-                    label={diskTempLabel(disk, index, list.length)}
-                    value={`${disk.tempC.toFixed(0)}°C`}
-                    note={diskTempNote(disk)}
-                  />
-                ))
-              ) : null}
-              {hostMetrics?.netAvailable ? (
-                <MachineMetric
-                  label="网络下行"
-                  value={hostMetrics.netRateReady ? formatRate(hostMetrics.netRxRate) : '—'}
-                  note={`累计接收 ${formatBytes(hostMetrics.netRxBytes)} · ${hostMetrics.netInterfaces ?? 0} 个物理网卡`}
-                />
-              ) : null}
-              {hostMetrics?.netAvailable ? (
-                <MachineMetric
-                  label="网络上行"
-                  value={hostMetrics.netRateReady ? formatRate(hostMetrics.netTxRate) : '—'}
-                  note={`累计发送 ${formatBytes(hostMetrics.netTxBytes)}${hostMetrics.netRateReady ? '' : ' · 速率需两次采样'}`}
-                />
-              ) : null}
-            </div>
-            {hostMetrics ? (() => {
-              const missing = [
-                hostTemp.value === '—' ? 'CPU 温度' : null,
-                !(hostMetrics.fans && hostMetrics.fans.length > 0) ? '风扇转速' : null,
-                !hostMetrics.memAvailable ? '内存占用' : null,
-                !hostMetrics.diskAvailable ? '磁盘占用' : null,
-                !(hostMetrics.diskTemps && hostMetrics.diskTemps.length > 0) ? '硬盘温度' : null,
-                !hostMetrics.netAvailable ? '网络速率' : null,
-              ].filter(Boolean);
-              return missing.length > 0 ? (
-                <div className="hint-text">{`本机未提供的指标已隐藏：${missing.join(' / ')}`}</div>
-              ) : null;
-            })() : null}
-
-            <div className="card panel">
-              <div className="panel-header">
-                <div>
-                  <h2 className="panel-title">主机与进程</h2>
-                  <p className="panel-desc">用于排查「网关卡顿 / 掉线」时快速判断是机器压力还是进程本身的问题。</p>
-                </div>
-              </div>
-              <div className="machine-facts">
-                <div className="machine-fact"><span>主机名</span><b>{hostMetrics?.hostname || '—'}</b></div>
-                <div className="machine-fact"><span>平台</span><b>{hostMetrics?.platform || '—'}</b></div>
-                <div className="machine-fact"><span>CPU 核心</span><b>{hostMetrics ? `${hostMetrics.cpuCount} 核` : '—'}</b></div>
-                <div className="machine-fact"><span>开机时长</span><b>{formatDuration(hostMetrics?.uptimeSeconds)}</b></div>
-                <div className="machine-fact"><span>网关运行时长</span><b>{formatDuration(hostMetrics?.processUptimeSeconds)}</b></div>
-                <div className="machine-fact"><span>热力等级</span><b>{hostMetrics?.thermalPressureAvailable ? thermalPressureLabel(hostMetrics.thermalPressure) : '—'}</b></div>
-                <div className="machine-fact"><span>Goroutine</span><b>{hostMetrics?.goroutines ?? '—'}</b></div>
-                <div className="machine-fact"><span>网关堆内存</span><b>{hostMetrics?.processHeapMiB != null ? `${hostMetrics.processHeapMiB.toFixed(1)} MiB` : '—'}</b></div>
-                <div className="machine-fact"><span>交换分区</span><b>{hostMetrics?.swapAvailable ? `${formatBytes(hostMetrics.swapUsed ?? 0)} / ${formatBytes(hostMetrics.swapTotal ?? 0)}` : '未启用'}</b></div>
-              </div>
-            </div>
-          </section>
+            <MachineStatusPage onToast={showToast} />
           )}
 
           {activeNav === 'settings' && navVisibleFor(permissions, 'settings', legacyUser) && (

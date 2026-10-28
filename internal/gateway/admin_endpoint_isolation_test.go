@@ -27,6 +27,8 @@ func TestNormalUserIsRefusedOnAdminEndpoints(t *testing.T) {
 		{http.MethodGet, "/__public"},
 		{http.MethodGet, "/__public/control-token"},
 		{http.MethodGet, "/__host-metrics"},
+		{http.MethodGet, "/__host-metrics/snapshot"},
+		{http.MethodGet, "/__host-diagnostics"},
 		{http.MethodGet, "/__rtk/stats"},
 		{http.MethodPatch, "/__app/log-level"},
 		{http.MethodPatch, "/__settings/web-exposed"},

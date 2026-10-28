@@ -1,45 +1,213 @@
-name: Publish Docker image
+name: Docker
+
+# 镜像推到两处：Docker Hub（README 里给用户的那条 docker run 命令）
+# 与 GitHub Container Registry（免 Docker Hub 限流，也方便按 digest 固定版本）。
+#
+#   main 分支 → edge
+#   v* tag    → 1.2.3 / 1.2 / 1 + latest（带 - 的预发布 tag 只打全版本号）
+#
+# 每个架构在原生 runner 上构建（arm64 用 ubuntu-24.04-arm），不用 QEMU 跑 go build。
+# PR 只构建 + 起容器做健康检查，不推送：fork 拿不到镜像仓库凭据。
 
 on:
   push:
-    tags: ["v*"]          # 打 tag（如 v0.2.1）时构建并发布
-  workflow_dispatch: {}    # 也可手动触发
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker-publish.yml
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
-  IMAGE: docker.io/yangyongyong/llm-protocol-gateway
+  DOCKERHUB_IMAGE: docker.io/yangyongyong/llm-protocol-gateway
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  build:
+    name: build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    runs-on: ${{ startsWith(matrix.platform, 'linux/arm') && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in (Docker Hub)
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Log in (GHCR)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
-      - name: Build and push (amd64 + arm64)
+      - name: Build (loaded locally for the smoke test)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: lpg-smoke:${{ strategy.job-index }}
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.platform }}
+          cache-to: type=gha,scope=docker-${{ matrix.platform }},mode=max
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 18093:18093 \
+            -v smoke-data:/data lpg-smoke:${{ strategy.job-index }}
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18093/__health | grep -q '"status":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            docker logs smoke
+            exit 1
+          fi
+
+          # 管理页必须真的在镜像里：用户浏览器打开的就是这个 HTML
+          curl -sf http://127.0.0.1:18093/ | grep -qi '<title>'
+          # 模型列表接口要对未鉴权请求给出结构化 JSON，而不是崩溃
+          code=$(curl -s -o /tmp/models.json -w '%{http_code}' http://127.0.0.1:18093/v1/models)
+          echo "GET /v1/models → $code"
+          cat /tmp/models.json; echo
+          python3 -c 'import json; json.load(open("/tmp/models.json"))'
+          # 镜像以非 root 运行
+          test "$(docker exec smoke id -u)" = "10001"
+          docker logs smoke | tail -20
+
+      # 多架构 manifest 只能靠 push-by-digest 一步完成；tag 由 merge job 统一打。
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: |
+            type=image,name=${{ env.DOCKERHUB_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+            type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.platform }}
+          cache-to: type=gha,scope=docker-${{ matrix.platform }},mode=max
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: manifest (amd64 + arm64)
+    if: github.event_name != 'pull_request'
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+
+      - name: Create multi-arch manifests
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          DIGESTS=()
+          for f in *; do DIGESTS+=("sha256:$f"); done
+          echo "digest 个数：${#DIGESTS[@]}"
+          test "${#DIGESTS[@]}" -eq 2
+
+          mapfile -t TAGS <<<"${{ steps.meta.outputs.tags }}"
+          for IMAGE in "$DOCKERHUB_IMAGE" "$GHCR_IMAGE"; do
+            ARGS=()
+            for tag in "${TAGS[@]}"; do
+              # metadata-action 会给每个 registry 各生成一组 tag，这里只取当前 registry 的
+              [[ "$tag" == ${IMAGE%/*}* ]] || continue
+              ARGS+=(-t "$tag")
+            done
+            echo "==> $IMAGE"
+            printf '    %s\n' "${ARGS[@]}"
+            for d in "${DIGESTS[@]}"; do
+              ARGS+=("$IMAGE@$d")
+            done
+            docker buildx imagetools create "${ARGS[@]}"
+          done
+
+      - name: Inspect
+        run: |
+          set -euo pipefail
+          mapfile -t TAGS <<<"${{ steps.meta.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker buildx imagetools inspect "$tag" | head -20
+          done
