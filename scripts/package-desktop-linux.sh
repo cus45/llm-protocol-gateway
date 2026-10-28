@@ -41,9 +41,9 @@ StartupWMClass=LLM Protocol Gateway
 DESKTOP
 cp "$APPDIR/llm-protocol-gateway.desktop" "$APPDIR/usr/share/applications/"
 
-# AppImage 规范要求的入口
+# AppImage 规范要求的入口：根目录直接放 .desktop 与图标（上面已经写好，
+# 不要再 cp 一次 —— 源和目标同一个文件，cp 会报 "same file" 并中止打包）。
 ln -s usr/bin/llm-protocol-gateway "$APPDIR/AppRun"
-cp "$APPDIR/llm-protocol-gateway.desktop" "$APPDIR/"
 cp "$APPDIR/usr/share/icons/hicolor/scalable/apps/llm-protocol-gateway.svg" "$APPDIR/"
 
 desktop-file-validate "$APPDIR/llm-protocol-gateway.desktop"
