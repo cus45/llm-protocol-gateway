@@ -148,6 +148,19 @@ export function UsersPage({ canManage, canView, onToast, onChanged, roleOptions,
     }
   }
 
+  function editUser(user: ConsoleUser) {
+    setDraft({
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName || '',
+      password: '',
+      roleId: roleKey(user),
+      enabled: user.enabled,
+      avatarUrl: user.avatarUrl || '',
+      grantedProviderIds: [...(user.grantedProviderIds || [])],
+    });
+  }
+
   const defaultRoleId = roleOptions.find((role) => !role.builtin)?.id || roleOptions.find((role) => role.id === 'user')?.id || roleOptions[0]?.id || '';
   const hasFilter = Boolean(keyword.trim() || roleFilter || enabledFilter !== 'all');
 
@@ -158,7 +171,7 @@ export function UsersPage({ canManage, canView, onToast, onChanged, roleOptions,
           <div>
             <h2 className="panel-title">用户管理</h2>
             <p className="panel-desc">
-              控制台账号与角色分配。角色决定成员可进入的页面与可操作的资源；「受限用户」类角色还需勾选可用的输入 Provider。角色变更、禁用、删除都立即生效。
+              控制台账号与角色分配。角色决定成员可进入的页面与可操作的资源；点用户卡上的「分配 Provider」可以额外开放输入 Provider，叠加在自己的资源之上。角色变更、禁用、删除都立即生效。
             </p>
           </div>
           <div className="panel-header-actions">
@@ -253,8 +266,16 @@ export function UsersPage({ canManage, canView, onToast, onChanged, roleOptions,
                       {user.roleName || user.role}
                     </Badge>
                     <Badge tone={scopeTone(user.roleScope)}>{scopeLabel(user.roleScope)}</Badge>
-                    {user.roleScope === 'granted' ? (
-                      <Badge tone={grantedCount > 0 ? 'cyan' : 'amber'}>{grantedCount} 个授权 Provider</Badge>
+                    {user.role !== 'admin' && user.roleScope !== 'all' ? (
+                      <button
+                        type="button"
+                        className={`rbac-grant-chip${grantedCount > 0 ? '' : ' empty'}`}
+                        disabled={!canManage}
+                        title="点击分配该用户可用的输入 Provider（叠加在自己的 Provider 之上）"
+                        onClick={() => editUser(user)}
+                      >
+                        {grantedCount > 0 ? `可用 Provider ${grantedCount}` : '分配 Provider'}
+                      </button>
                     ) : null}
                   </div>
 
@@ -278,16 +299,7 @@ export function UsersPage({ canManage, canView, onToast, onChanged, roleOptions,
                       type="button"
                       className="mini-btn"
                       disabled={!canManage || busyId === user.id}
-                      onClick={() => setDraft({
-                        id: user.id,
-                        username: user.username,
-                        displayName: user.displayName || '',
-                        password: '',
-                        roleId: roleKey(user),
-                        enabled: user.enabled,
-                        avatarUrl: user.avatarUrl || '',
-                        grantedProviderIds: [...(user.grantedProviderIds || [])],
-                      })}
+                      onClick={() => editUser(user)}
                     >
                       编辑
                     </button>
@@ -368,11 +380,12 @@ export function UserEditorModal({ user, roleOptions, onClose, onSaved, onToast }
 
   const creating = !user.id;
   const role = roleOptions.find((item) => item.id === roleId);
-  const needsGrant = role?.scope === 'granted';
+  // 管理员本身看得见全部资源，不需要再分配；其余角色都可以额外分配 Provider，
+  // 分配只扩大可用范围，不会改角色也不会收回自己已有的资源。
+  const canAssignProviders = Boolean(role) && role?.scope !== 'all';
 
-  // 只有「被授权资源」范围的角色才需要挑 Provider；其它角色不拉取也不提交。
   useEffect(() => {
-    if (!needsGrant) return;
+    if (!canAssignProviders) return;
     let cancelled = false;
     setGrantLoading(true);
     setGrantError('');
@@ -381,7 +394,7 @@ export function UserEditorModal({ user, roleOptions, onClose, onSaved, onToast }
       .catch((err) => { if (!cancelled) setGrantError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!cancelled) setGrantLoading(false); });
     return () => { cancelled = true; };
-  }, [needsGrant]);
+  }, [canAssignProviders]);
 
   const grantedSet = useMemo(() => new Set(granted), [granted]);
 
@@ -414,7 +427,7 @@ export function UserEditorModal({ user, roleOptions, onClose, onSaved, onToast }
           password,
           roleId,
           enabled,
-          grantedProviderIds: needsGrant ? granted : [],
+          grantedProviderIds: canAssignProviders ? granted : [],
         };
         if (displayName.trim()) body.displayName = displayName.trim();
         if (avatarUrl) body.avatarUrl = avatarUrl;
@@ -424,19 +437,17 @@ export function UserEditorModal({ user, roleOptions, onClose, onSaved, onToast }
           body: JSON.stringify(body),
         });
       } else {
-        // 只提交发生变化的字段；grantedProviderIds 在退出「被授权」范围时清空。
+        // 只提交发生变化的字段；管理员范围不收不发，避免把已有分配静默清空。
         const patch: Record<string, unknown> = {};
         if (name !== user.username) patch.username = name;
         if (displayName.trim() !== user.displayName) patch.displayName = displayName.trim();
         if (avatarUrl !== user.avatarUrl) patch.avatarUrl = avatarUrl;
         if (roleId !== user.roleId) patch.roleId = roleId;
         if (enabled !== user.enabled) patch.enabled = enabled;
-        if (needsGrant) {
+        if (canAssignProviders) {
           const before = [...user.grantedProviderIds].sort().join('\n');
           const after = [...granted].sort().join('\n');
           if (before !== after) patch.grantedProviderIds = granted;
-        } else if (user.grantedProviderIds.length > 0) {
-          patch.grantedProviderIds = [];
         }
         if (Object.keys(patch).length === 0) {
           await onSaved('没有需要保存的修改');
@@ -525,13 +536,15 @@ export function UserEditorModal({ user, roleOptions, onClose, onSaved, onToast }
 
         {formError ? <div className="rbac-form-error">保存失败：{formError}</div> : null}
 
-        {needsGrant ? (
+        {canAssignProviders ? (
           <div className="rbac-grant-block">
             <div className="rbac-grant-head">
-              <b>可用的输入 Provider</b>
+              <b>额外可用的输入 Provider</b>
               <span>已选 {granted.length} / 共 {grantTargets.length}</span>
             </div>
-            <p className="hint-text">该角色只能使用下方勾选的 Provider 及其 Key。用户名旁会显示 Provider 归属人，便于区分同名账号。</p>
+            <p className="hint-text">
+              勾选后，该用户除了自己的 Provider，还能使用下面这些；取消勾选立即收回。角色与权限不变。
+            </p>
             {grantLoading ? <div className="empty-state compact">加载中…</div> : null}
             {grantError ? <div className="rbac-form-error">{grantError}</div> : null}
             {!grantLoading && !grantError && grantTargets.length === 0 ? (

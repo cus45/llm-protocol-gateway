@@ -811,7 +811,7 @@ export function ChatGPTOAuthUsagePanel({ providerId, accountKey, connected, comp
   );
 }
 
-export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, authorizedUserCount, onShowUsers, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete, layout = 'card' }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; authorizedUserCount?: number; onShowUsers?: () => void; onToggleSelect: () => void; onClick: () => void; onTest?: () => void; onChatTest?: () => void; onConformance?: () => void; onEdit?: () => void; onClone?: () => void; onDelete?: () => void; layout?: 'card' | 'list' }) {
+export function ProviderCard({ active, selected, name, providerId, protocol, tone, url, defaultModel, modelCount, usedCount, healthStatus, nextRetryAt, testing, chatTesting, readOnly, selectable, providerDisabled, onToggleEnabled, onToggleRTK, subtitle, icon, provider, isClaudeOAuth, claudeOAuthConnected, isCursorOAuth, cursorOAuthConnected, isChatGPTOAuth, chatgptOAuthConnected, isQoderPAT, qoderPATConnected, isWorkBuddy, workBuddyConnected, cursorBridge, ownerName, onToggleSelect, onClick, onTest, onChatTest, onConformance, onEdit, onClone, onDelete, layout = 'card' }: { active?: boolean; selected?: boolean; name: string; providerId: string; protocol: string; tone: BadgeTone; url: string; defaultModel?: string; modelCount?: number; usedCount: number; healthStatus: string; nextRetryAt?: string; testing: boolean; chatTesting?: boolean; readOnly?: boolean; selectable?: boolean; providerDisabled?: boolean; onToggleEnabled?: () => void; onToggleRTK?: () => void; subtitle?: string; icon?: string; provider?: Provider; isClaudeOAuth?: boolean; claudeOAuthConnected?: boolean; isCursorOAuth?: boolean; cursorOAuthConnected?: boolean; isChatGPTOAuth?: boolean; chatgptOAuthConnected?: boolean; isQoderPAT?: boolean; qoderPATConnected?: boolean; isWorkBuddy?: boolean; workBuddyConnected?: boolean; cursorBridge?: CursorBridgeRuntime; ownerName?: string; onToggleSelect: () => void; onClick: () => void; onTest?: () => void; onChatTest?: () => void; onConformance?: () => void; onEdit?: () => void; onClone?: () => void; onDelete?: () => void; layout?: 'card' | 'list' }) {
   // 订阅类（ZCode / Trae）由后端返回的凭证对象决定卡片显示什么：整张 Provider 传进来
   // 比再加六个布尔参数更省事，也不会漏掉以后新增的连接方式。
   const connectKind = provider ? providerConnectKind(provider) : 'api_key';
@@ -972,16 +972,6 @@ export function ProviderCard({ active, selected, name, providerId, protocol, ton
         <div className="provider-foot-meta">
           <span><b>{usedCount}</b> 个 API Key</span>
           {ownerName ? <span>创建者 <b>{ownerName}</b></span> : null}
-          {onShowUsers && authorizedUserCount != null ? (
-            <button
-              type="button"
-              className="provider-foot-link"
-              title="查看/管理可使用该 Provider 的普通用户（管理员始终可用全部 Provider）"
-              onClick={() => onShowUsers()}
-            >
-              {authorizedUserCount > 0 ? <><b>{authorizedUserCount}</b> 个授权用户</> : '仅管理员可用'}
-            </button>
-          ) : null}
         </div>
         {/* 只读（管理员授权给普通用户的 Provider）也允许获取模型与对话测试；
             编辑/删除等管理操作保持隐藏。后端 requireProviderOwnerForUser 会对

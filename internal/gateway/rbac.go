@@ -79,14 +79,13 @@ func (s *Server) principalFor(identity sessionIdentity) principal {
 	for _, perm := range role.Permissions {
 		p.perms[perm] = true
 	}
-	if p.scope == domain.ScopeGranted {
-		// Grants are stored in user_resource_grants, not on the users row (the
-		// store never fills AllowedResourceIDs), so they must be read here.
-		p.Grants = s.resourceGrants()[identity.UserID]
-		if s.userStore != nil {
-			if user, err := s.userStore.UserByID(identity.UserID); err == nil {
-				p.Grants = append(append([]string{}, p.Grants...), user.AllowedResourceIDs...)
-			}
+	// Grants are additive to whatever the role already allows, so every
+	// non-admin principal needs them regardless of scope. They live in
+	// user_resource_grants (the store never fills AllowedResourceIDs).
+	p.Grants = s.resourceGrants()[identity.UserID]
+	if s.userStore != nil {
+		if user, err := s.userStore.UserByID(identity.UserID); err == nil {
+			p.Grants = append(append([]string{}, p.Grants...), user.AllowedResourceIDs...)
 		}
 	}
 	return p
@@ -168,6 +167,7 @@ func (s *Server) listRoles() ([]domain.Role, error) {
 		}
 		for _, role := range custom {
 			role.Builtin = false
+			role.Scope = role.EffectiveScope()
 			roles = append(roles, role)
 		}
 	}

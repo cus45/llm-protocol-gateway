@@ -345,7 +345,7 @@ func TestScopeAllReadOnlyRole(t *testing.T) {
 }
 
 // 被授权范围：管理员把 shared 授给 alice，alice 就能在自己的密钥里绑定它，
-// 但仍看不见、也改不了别人的行。
+// 但仍看不见、也改不了别人的行。旧角色里的 "granted" 范围按 own 读回。
 func TestGrantedScopeControlsKeyBinding(t *testing.T) {
 	f := newRBACFixture(t)
 	if err := f.roles.SaveRole(domain.Role{
@@ -375,6 +375,53 @@ func TestGrantedScopeControlsKeyBinding(t *testing.T) {
 	own := f.call(t, "alice", http.MethodPost, "/__apikeys", `{"name":"own route key","routeId":"route-alice"}`)
 	if own.Code != http.StatusCreated {
 		t.Fatalf("own route status=%d body=%s", own.Code, own.Body.String())
+	}
+}
+
+// 用户管理里分配的 Provider 是叠加的：普通用户的角色和权限都不变，自己的
+// 资源照旧可用，被分配的 Provider 也能绑进自己的密钥。
+func TestUserGrantsAddToOwnScope(t *testing.T) {
+	f := newRBACFixture(t)
+
+	before := f.call(t, "alice", http.MethodPost, "/__apikeys", `{"name":"before","routeId":"route-admin"}`)
+	if before.Code != http.StatusForbidden {
+		t.Fatalf("ungranted bind status=%d, want 403 body=%s", before.Code, before.Body.String())
+	}
+
+	f.roles.grants["alice"] = []string{"shared"}
+
+	granted := f.call(t, "alice", http.MethodPost, "/__apikeys", `{"name":"granted key","routeId":"route-admin"}`)
+	if granted.Code != http.StatusCreated {
+		t.Fatalf("granted bind status=%d body=%s", granted.Code, granted.Body.String())
+	}
+	own := f.call(t, "alice", http.MethodPost, "/__apikeys", `{"name":"own key","routeId":"route-alice"}`)
+	if own.Code != http.StatusCreated {
+		t.Fatalf("own bind status=%d body=%s", own.Code, own.Body.String())
+	}
+	if alice := f.users.users["alice"]; alice.RoleID != domain.RoleIDUser {
+		t.Fatalf("grant changed alice role to %q, want user", alice.RoleID)
+	}
+
+	// 授权只扩大「可用」，不扩大「可改」：改别人的 Provider 仍然 403。
+	hijack := f.call(t, "alice", http.MethodPatch, "/__providers/shared", `{"name":"hijack"}`)
+	if hijack.Code != http.StatusForbidden {
+		t.Fatalf("granted user edit status=%d, want 403 body=%s", hijack.Code, hijack.Body.String())
+	}
+
+	state := f.call(t, "alice", http.MethodGet, "/__state", "")
+	if state.Code != http.StatusOK {
+		t.Fatalf("state status=%d body=%s", state.Code, state.Body.String())
+	}
+	var snapshot domain.GatewayState
+	if err := json.Unmarshal(state.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, provider := range snapshot.Providers {
+		seen[provider.ID] = true
+	}
+	if !seen["shared"] || !seen["alice-private"] || len(snapshot.Providers) != 2 {
+		t.Fatalf("alice providers=%v, want own + granted", seen)
 	}
 }
 

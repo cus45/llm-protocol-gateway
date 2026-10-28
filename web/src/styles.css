@@ -1080,14 +1080,6 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
   color: var(--muted); font-size: 11.5px; font-weight: 500;
 }
 .provider-foot-meta b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
-.provider-foot-link {
-  border: 0; background: transparent; padding: 0;
-  color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 500;
-  cursor: pointer;
-  transition: color 0.13s ease;
-}
-.provider-foot-link:hover { color: var(--accent-strong); }
-.provider-foot-link b { color: inherit; font-weight: 700; }
 .provider-foot .provider-actions { margin-top: 0; }
 /* foot 贴底时保证与前一个兄弟至少 14px 间距 */
 /* 页脚前的最小间距由 .provider-foot 的 margin-top 保证（space-between 下 auto margin 已移除） */

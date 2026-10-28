@@ -190,18 +190,23 @@ func IsKnownPermission(key Permission) bool {
 type ResourceScope string
 
 const (
-	// ScopeOwn: only providers the user owns and keys the user owns.
+	// ScopeOwn: keys the user owns plus providers the user owns or an admin
+	// assigned on the users page. Grants are additive, so a normal user keeps
+	// whatever it created while also reaching the shared providers.
 	ScopeOwn ResourceScope = "own"
 	// ScopeAll: every resource on the instance.
 	ScopeAll ResourceScope = "all"
-	// ScopeGranted: only resources the admin explicitly granted the user.
+	// ScopeGranted is the legacy "granted only" scope. Grants are additive now,
+	// so it is read back as ScopeOwn to keep old rows working.
 	ScopeGranted ResourceScope = "granted"
 )
 
 func ParseResourceScope(raw string) (ResourceScope, bool) {
 	switch ResourceScope(raw) {
-	case ScopeOwn, ScopeAll, ScopeGranted:
-		return ResourceScope(raw), true
+	case ScopeOwn, ScopeGranted:
+		return ScopeOwn, true
+	case ScopeAll:
+		return ScopeAll, true
 	}
 	return "", false
 }
@@ -213,7 +218,7 @@ const (
 	RoleIDAdmin   = "admin"
 	RoleIDUser    = "user"
 	RoleIDViewer  = "viewer"
-	RoleIDGrantee = "grantee" // 旧版普通用户：只看被分配的 Provider
+	RoleIDGrantee = "grantee" // 只能用被分配 Provider 的普通用户（不能自建）
 )
 
 // BuiltinRoleIDs are roles that may not be deleted.
@@ -264,8 +269,8 @@ func BuiltinRole(id string) (Role, bool) {
 		}, true
 	case RoleIDGrantee:
 		return Role{
-			ID: RoleIDGrantee, Name: "受限用户", Description: "只能在管理员分配的 Provider 上建密钥",
-			Builtin: true, Scope: ScopeGranted, Permissions: []Permission{
+			ID: RoleIDGrantee, Name: "受限用户", Description: "只能使用管理员分配的 Provider，不能自建",
+			Builtin: true, Scope: ScopeOwn, Permissions: []Permission{
 				PermDashboardView,
 				PermProvidersView, PermProvidersTest, PermModelsView,
 				PermKeysView, PermKeysCreate, PermKeysEdit, PermKeysDelete,
@@ -315,13 +320,11 @@ func (r Role) Has(perm Permission) bool {
 	return false
 }
 
-// EffectiveScope normalises an empty scope to the built-in default.
+// EffectiveScope normalises an empty scope to the built-in default and maps the
+// legacy "granted" scope onto "own" (grants are additive).
 func (r Role) EffectiveScope() ResourceScope {
-	if r.Scope == "" {
-		if r.ID == RoleIDAdmin {
-			return ScopeAll
-		}
-		return ScopeOwn
+	if r.Scope == ScopeAll || (r.Scope == "" && r.ID == RoleIDAdmin) {
+		return ScopeAll
 	}
-	return r.Scope
+	return ScopeOwn
 }

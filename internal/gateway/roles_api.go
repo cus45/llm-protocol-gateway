@@ -48,15 +48,14 @@ func (s *Server) handleRoleCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"modules": domain.PermissionCatalog(),
 		"scopes": []map[string]string{
-			{"id": string(domain.ScopeOwn), "label": "仅自己的资源", "description": "只能看到并管理自己创建的 Provider 与密钥"},
-			{"id": string(domain.ScopeGranted), "label": "自己的 + 管理员分配", "description": "在自己创建的资源之外，还能使用管理员明确分配的 Provider"},
+			{"id": string(domain.ScopeOwn), "label": "自己的 + 管理员分配", "description": "自己创建的 Provider 与密钥，外加管理员在用户管理里分配的 Provider"},
 			{"id": string(domain.ScopeAll), "label": "全部资源", "description": "与管理员一样看到实例上的所有资源（慎用）"},
 		},
 	})
 }
 
-// handleGrantTargets lists the providers an administrator can assign to a
-// user when the role scope is "granted".
+// handleGrantTargets lists the providers an administrator can assign to a user
+// from the users page.
 func (s *Server) handleGrantTargets(w http.ResponseWriter, r *http.Request) {
 	type target struct {
 		ID        string `json:"id"`

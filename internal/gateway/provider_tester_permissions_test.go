@@ -58,4 +58,18 @@ func TestRequireProviderTesterForUser(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("owner-only check status = %d, want 403", rec.Code)
 	}
+
+	// 授权是叠加给「普通用户」的：他能看见、能测试，但仍然不能改别人的 Provider。
+	grantedUser := NewServer(router, monitor.NewStore())
+	grantedUser.userStore = newMemoryUserStore(domain.User{
+		ID: "u1", Username: "u1", Role: domain.UserRoleUser,
+		RoleID: domain.RoleIDUser, AllowedResourceIDs: []string{"granted"},
+	})
+	rec = httptest.NewRecorder()
+	if grantedUser.requireProviderOwnerForUser(rec, withUser("granted"), "granted") {
+		t.Fatal("a granted normal user must not pass the owner-only write check")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("granted normal user write status = %d, want 403", rec.Code)
+	}
 }

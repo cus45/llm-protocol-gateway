@@ -172,7 +172,22 @@
 .rbac-user-identity { flex: 1; min-width: 0; display: grid; gap: 1px; }
 .rbac-user-identity b { color: var(--text-strong); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rbac-user-identity span { color: var(--muted); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rbac-user-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.rbac-user-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* 用户卡上的 Provider 分配入口：看起来像标签，但确实可点。 */
+.rbac-grant-chip {
+  display: inline-flex; align-items: center;
+  height: 22px; padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11.5px; font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.13s ease, background 0.13s ease;
+}
+.rbac-grant-chip:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--hover); }
+.rbac-grant-chip.empty { border-color: var(--border); background: var(--surface-sunken); color: var(--muted); }
+.rbac-grant-chip:disabled { cursor: not-allowed; opacity: 0.55; }
 .rbac-user-meta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

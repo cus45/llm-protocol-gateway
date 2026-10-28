@@ -565,9 +565,6 @@ function App() {
   // 没有 users.manage 的账号既进不了这两处，也不该去拉 /__roles 吃 403。
   const rolesModel = useRoles(Boolean(permissions && (permissions.includes('*') || permissions.includes('users.manage'))));
   const [profileModalOpen, setProfileModalOpen] = useState(false);
-  // Provider 用户权限弹窗（仅管理员）：查看/新增/移除哪些普通用户可用某个输入 Provider。
-  const [providerUsersModalID, setProviderUsersModalID] = useState<string | null>(null);
-  const [providerUsersBusyID, setProviderUsersBusyID] = useState('');
   const [adminCurrentPassword, setAdminCurrentPassword] = useState('');
   const [adminNewPassword, setAdminNewPassword] = useState('');
   const [adminNewPasswordConfirm, setAdminNewPasswordConfirm] = useState('');
@@ -1739,35 +1736,6 @@ function App() {
       setConsoleUsers(await response.json() as ConsoleUser[]);
     } catch {
       // 无 users.view 权限或后端异常时静默：owner 名字退回 id 显示
-    }
-  }
-
-  // 授予/移除某个用户对指定输入 Provider 的使用权限（管理员专用）。
-  // 走 RBAC 的资源授权表：写入该用户的 grantedProviderIds；角色范围不是「被授权资源」时
-  // 顺带把角色切成内置的「受限用户」，否则范围是 own/all 时授权不会生效。
-  async function updateUserProviderPermission(user: ConsoleUser, providerId: string, grant: boolean) {
-    setProviderUsersBusyID(user.id);
-    try {
-      const current = user.grantedProviderIds || [];
-      const next = grant
-        ? Array.from(new Set([...current, providerId]))
-        : current.filter((id) => id !== providerId);
-      const body = user.roleScope === 'granted'
-        ? { grantedProviderIds: next }
-        : { roleId: 'grantee', grantedProviderIds: next };
-      const response = await fetch(`${API_BASE}/__users/${encodeURIComponent(user.id)}`, {
-        method: 'PATCH',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) throw new Error(await response.text());
-      await refreshConsoleUsers();
-      showToast(grant ? `已为 ${user.username} 开通权限` : `已移除 ${user.username} 的权限`);
-    } catch (error) {
-      showToast(`更新用户权限失败：${String(error)}`);
-    } finally {
-      setProviderUsersBusyID('');
     }
   }
 
@@ -5243,12 +5211,6 @@ function App() {
                         provider={provider}
                         cursorBridge={provider.authType === 'cursor_oauth' ? state.cursorBridge : undefined}
                         ownerName={authStatus?.scope === 'all' || canDo('usage.all') ? providerOwnerName(provider) : undefined}
-                        authorizedUserCount={canDo('users.manage')
-                          ? consoleUsers.filter((user) => user.role !== 'admin' && (user.id === provider.ownerUserId || (user.grantedProviderIds || []).includes(provider.id))).length
-                          : undefined}
-                        onShowUsers={canDo('users.manage')
-                          ? () => { setProviderUsersModalID(provider.id); void refreshConsoleUsers(); }
-                          : undefined}
                         onToggleSelect={() => toggleExportProviderSelection(provider.id)}
                         onClick={() => {
                           setSelectedProviderID(provider.id);
@@ -7974,70 +7936,6 @@ function App() {
           <div className="actions modal-actions"><button className="btn" onClick={() => setApiKeyModalOpen(false)}>取消</button><button className="btn primary" disabled={saving || state.providers.length === 0 || !apiKeyDraft.providerId} onClick={() => void createApiKey()}>{saving ? '保存中…' : '创建 API 密钥'}</button></div>
         </Modal>
       )}
-
-      {providerUsersModalID && canDo('users.manage') && (() => {
-        const modalProvider = state.providers.find((item) => item.id === providerUsersModalID);
-        if (!modalProvider) return null;
-        const normalUsers = consoleUsers.filter((user) => user.role !== 'admin');
-        const authorizedUsers = normalUsers.filter((user) => (user.grantedProviderIds || []).includes(modalProvider.id));
-        const candidateUsers = normalUsers.filter((user) => !(user.grantedProviderIds || []).includes(modalProvider.id));
-        return (
-          <Modal
-            title={`用户权限 · ${modalProvider.name}`}
-            description="管理哪些用户被授权使用该输入 Provider。授权会自动把这些账号的角色切到内置「受限用户」（只能使用被授权的 Provider），管理员角色不受此限制。"
-            onClose={() => setProviderUsersModalID(null)}
-          >
-            <div className="field field-full">
-              <label>已授权用户（{authorizedUsers.length}）</label>
-              {authorizedUsers.length === 0 ? <div className="hint-text">暂无用户被授权使用该 Provider。</div> : null}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {authorizedUsers.map((user) => (
-                  <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span>
-                      <span style={{ fontWeight: 700 }}>{user.username}</span>
-                      <span className={user.enabled ? 'ok' : 'err'} style={{ marginLeft: 8 }}>{user.enabled ? '启用' : '禁用'}</span>
-                    </span>
-                    <button
-                      className="mini-btn danger"
-                      type="button"
-                      disabled={providerUsersBusyID === user.id}
-                      onClick={() => void updateUserProviderPermission(user, modalProvider.id, false)}
-                    >
-                      {providerUsersBusyID === user.id ? '处理中…' : '移除权限'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="field field-full" style={{ marginTop: 12 }}>
-              <label>新增授权</label>
-              {normalUsers.length === 0 ? <div className="hint-text">暂无普通用户账号，可先到「用户管理」页新建。</div> : null}
-              {normalUsers.length > 0 && candidateUsers.length === 0 ? <div className="hint-text">所有普通用户均已授权。</div> : null}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {candidateUsers.map((user) => (
-                  <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span>
-                      <span style={{ fontWeight: 700 }}>{user.username}</span>
-                      <span className={user.enabled ? 'ok' : 'err'} style={{ marginLeft: 8 }}>{user.enabled ? '启用' : '禁用'}</span>
-                    </span>
-                    <button
-                      className="mini-btn"
-                      type="button"
-                      disabled={providerUsersBusyID === user.id}
-                      onClick={() => void updateUserProviderPermission(user, modalProvider.id, true)}
-                    >
-                      {providerUsersBusyID === user.id ? '处理中…' : '新增权限'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="actions modal-actions">
-              <button className="btn" onClick={() => setProviderUsersModalID(null)}>关闭</button>
-            </div>
-          </Modal>
-        );
-      })()}
 
 
       {profileModalOpen && authStatus?.authenticated ? (

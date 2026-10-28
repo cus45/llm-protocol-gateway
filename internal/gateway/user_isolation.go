@@ -19,11 +19,10 @@ func (s *Server) requestIdentity(r *http.Request) sessionIdentity {
 	return adminIdentity()
 }
 
-// allowedProviderIDsForUser returns the providers a non-admin user may access,
-// according to its role's resource scope:
-//   - all:     every enabled provider (a custom role granted resources:all)
-//   - granted: the admin-assigned grants plus providers the user created
-//   - own:     only providers the user created
+// allowedProviderIDsForUser returns the providers a non-admin user may access:
+// the ones it created plus the ones an admin assigned on the users page. Roles
+// with the "all" scope see every enabled provider. Grants are additive, so
+// assigning a shared provider never takes away what the user already had.
 //
 // Providers disabled by the admin are excluded entirely — normal users cannot
 // see, bind, or use them until re-enabled.
@@ -77,14 +76,14 @@ func (s *Server) allowedProviderIDsForPrincipal(p principal) map[string]bool {
 	}
 	granted := map[string]bool{}
 	for _, id := range p.Grants {
-		granted[id] = true
+		granted[strings.TrimSpace(id)] = true
 	}
 	for _, provider := range s.router.State().Providers {
 		if provider.Disabled || provider.Deleted {
 			continue
 		}
 		owns := strings.TrimSpace(provider.OwnerUserID) == p.UserID
-		if owns || (scope == domain.ScopeGranted && granted[provider.ID]) {
+		if owns || granted[provider.ID] {
 			out[provider.ID] = true
 		}
 	}
@@ -96,10 +95,11 @@ func (s *Server) providerVisibleTo(p principal, providerID string) bool {
 	return s.allowedProviderIDsForPrincipal(p)[strings.TrimSpace(providerID)]
 }
 
-// requireProviderOwnerForUser rejects users acting on providers outside their
-// own resources: under the "own" scope that means providers they did not
-// create; under "granted" it means anything not granted; "all" passes. Admins
-// always pass. Returns false after writing the error response.
+// requireProviderOwnerForUser rejects users mutating providers they do not own.
+// Grants only widen what a user may *use* (see providerVisibleTo); renaming,
+// re-keying or deleting someone else's provider stays owner-only even after an
+// admin assigns it to them. "all" passes, and so do admins. Returns false after
+// writing the error response.
 func (s *Server) requireProviderOwnerForUser(w http.ResponseWriter, r *http.Request, providerID string) bool {
 	p := s.requestPrincipal(r)
 	provider, err := s.router.ProviderByID(providerID)
@@ -110,9 +110,7 @@ func (s *Server) requireProviderOwnerForUser(w http.ResponseWriter, r *http.Requ
 	if p.scopeOf() == domain.ScopeAll {
 		return true
 	}
-	owns := strings.TrimSpace(provider.OwnerUserID) == p.UserID
-	allowed := owns || (p.scopeOf() == domain.ScopeGranted && s.providerVisibleTo(p, provider.ID))
-	if !allowed {
+	if strings.TrimSpace(provider.OwnerUserID) != p.UserID {
 		writeOpenAIError(w, http.StatusForbidden, "permission denied: only the provider owner or an admin can do this")
 		return false
 	}
