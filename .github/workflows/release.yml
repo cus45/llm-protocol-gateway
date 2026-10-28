@@ -136,17 +136,12 @@ jobs:
   # .app 里要放 web/dist、cloudflared、bun、cursor-bridge，全部在本 job 下载/安装后再打进包里，
   # 用户首次打开即可用，不需要自己装 Go/Node/brew。
   desktop-macos:
-    name: desktop macos/${{ matrix.arch }}
+    name: desktop macos (arm64 + amd64)
     needs: gate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-14
-          - arch: amd64
-            runner: macos-14 # Apple 芯片 + Rosetta 编译 Intel 版
-    runs-on: ${{ matrix.runner }}
+    # 两个架构合在一个 job 里顺序构建：分成两个 matrix job 会同时抢同一池
+    # macos-14，第二个经常排不到 runner 而在启动阶段被取消（steps=0）。
+    # 串行只多花几分钟，但只占一个并发额度。
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,54 +166,53 @@ jobs:
 
       # 先确认 Intel 运行时确实装了：Rosetta 缺失时 `arch -x86_64` 会在后面才炸。
       - name: Rosetta (Intel builds)
-        if: matrix.arch == 'amd64'
         run: |
           if ! /usr/bin/pgrep oahd >/dev/null 2>&1; then
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
           arch -x86_64 /usr/bin/true
 
-      - name: Build app
+      - name: build, sign, zip (两种架构)
         env:
           GATEWAY_APP_VERSION: ${{ needs.gate.outputs.version }}
-          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.gate.outputs.version }}
         run: |
+          set -euo pipefail
           npm ci --no-audit --no-fund --prefix web
-          bash scripts/build-macos-app.sh
-
-      - name: Ad-hoc sign & verify bundle
-        run: |
-          APP="desktop/build/bin/LLM Protocol Gateway.app"
-          test -x "$APP/Contents/MacOS/LLM Protocol Gateway"
-          test -d "$APP/Contents/Resources/web-dist"
-          test -x "$APP/Contents/Resources/bin/cloudflared"
-          test -x "$APP/Contents/Resources/bin/bun"
-          test -f "$APP/Contents/Resources/cursor-bridge/standalone.ts"
-          codesign --verify --deep --strict "$APP" || codesign --force --deep --sign - "$APP"
-          # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位
-          strings "$APP/Contents/MacOS/LLM Protocol Gateway" | grep -q "${{ needs.gate.outputs.version }}"
-          plutil -lint "$APP/Contents/Info.plist"
-
-      - name: Zip (preserve symlinks & executable bits)
-        run: |
-          VERSION="${{ needs.gate.outputs.version }}"
-          STAGE="$(mktemp -d)/llm-protocol-gateway-$VERSION"
-          mkdir -p "$STAGE"
-          ditto "desktop/build/bin/LLM Protocol Gateway.app" "$STAGE/LLM Protocol Gateway.app"
-          cp docs/macos-app.md "$STAGE/README.md"
-          # 安装脚本只下载 macOS 包，相对本文件生成，免去维护第二份副本
-          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/scripts/install-macos.sh" \
-            -o "$STAGE/install.sh"
-          test -s "$STAGE/install.sh"
-          chmod +x "$STAGE/install.sh"
-
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
-            "dist/llm-protocol-gateway-desktop-darwin-${{ matrix.arch }}.zip"
+          for ARCH in arm64 amd64; do
+            echo "===== $ARCH ====="
+            ARCH="$ARCH" bash scripts/build-macos-app.sh
+
+            APP="desktop/build/bin/LLM Protocol Gateway.app"
+            test -x "$APP/Contents/MacOS/LLM Protocol Gateway"
+            test -d "$APP/Contents/Resources/web-dist"
+            test -x "$APP/Contents/Resources/bin/cloudflared"
+            test -x "$APP/Contents/Resources/bin/bun"
+            test -f "$APP/Contents/Resources/cursor-bridge/standalone.ts"
+            codesign --verify --deep --strict "$APP" || codesign --force --deep --sign - "$APP"
+            # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位
+            strings "$APP/Contents/MacOS/LLM Protocol Gateway" | grep -q "$VERSION"
+            plutil -lint "$APP/Contents/Info.plist"
+
+            STAGE="$(mktemp -d)/llm-protocol-gateway-$VERSION"
+            mkdir -p "$STAGE"
+            ditto "$APP" "$STAGE/LLM Protocol Gateway.app"
+            cp docs/macos-app.md "$STAGE/README.md"
+            # 安装脚本只下载 macOS 包，相对本文件生成，免去维护第二份副本
+            curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/scripts/install-macos.sh" \
+              -o "$STAGE/install.sh"
+            test -s "$STAGE/install.sh"
+            chmod +x "$STAGE/install.sh"
+
+            ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
+              "dist/llm-protocol-gateway-desktop-darwin-$ARCH.zip"
+            ls -lh "dist/llm-protocol-gateway-desktop-darwin-$ARCH.zip"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-macos-${{ matrix.arch }}
+          name: desktop-macos
           path: dist/*.zip
           if-no-files-found: error
           retention-days: 7
