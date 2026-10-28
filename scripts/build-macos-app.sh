@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 ARCH="${ARCH:-arm64}"
+# 版本号：CI 从 tag 传进来，本地构建时取 CURRENT_APP_VERSION 或退回 0.0.0-dev。
+# 前端与二进制都要带同一个值，否则控制台的升级判断会错位（release.yml 会校验）。
+APP_VERSION="${GATEWAY_APP_VERSION:-${CURRENT_APP_VERSION:-0.0.0-dev}}"
+export GATEWAY_APP_VERSION="$APP_VERSION"
 # Wails packaging needs sysctl (in /usr/sbin); keep a sane PATH for non-interactive shells.
 export PATH="/usr/sbin:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:${HOME}/go/bin:${PATH}"
 
@@ -38,10 +42,13 @@ echo "==> go mod tidy (desktop)"
 )
 
 PLATFORM="darwin/$ARCH"
-echo "==> wails build ($PLATFORM)"
+echo "==> wails build ($PLATFORM, version $APP_VERSION)"
 (
   cd "$ROOT/desktop"
-  "$WAILS_BIN" build -platform "$PLATFORM" -clean
+  # 后端 BuildVersion 与控制台版本必须一致：release.yml 会用 strings 校验产物里
+  # 确实带着本次 tag 的版本号，缺了这一步 macOS 包会全部判失败。
+  "$WAILS_BIN" build -platform "$PLATFORM" -clean \
+    -ldflags "-X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$APP_VERSION"
 )
 
 APP_PATH="$ROOT/desktop/build/bin/LLM Protocol Gateway.app"

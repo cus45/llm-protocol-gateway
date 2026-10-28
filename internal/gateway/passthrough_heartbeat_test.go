@@ -15,15 +15,6 @@ import (
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
 )
 
-// flushCountingRecorder counts flushes of the real response writer — what the
-// client actually receives as "now", as opposed to bytes sitting in a buffer.
-type flushCountingRecorder struct {
-	*httptest.ResponseRecorder
-	flushes int
-}
-
-func (r *flushCountingRecorder) Flush() { r.flushes++ }
-
 // 转发的 SSE 流在「上游静默」期间必须把心跳真的送到客户端。passThroughOpeningWriter
 // 是 passThroughOpeningWriter → sseHeartbeatResponseWriter → 客户端 这条链上的底层
 // 包装，却唯独它没有 Flush：心跳被写进了它的缓冲就再没出去，静默的思考阶段客户端
@@ -38,7 +29,7 @@ func TestPassthroughHeartbeatReachesTheClient(t *testing.T) {
 		Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:          &silentUntilReleased{opening: []byte(opening), release: release},
 	}
-	recorder := &flushCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	recorder := newSyncRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -48,14 +39,15 @@ func TestPassthroughHeartbeatReachesTheClient(t *testing.T) {
 	// 等到超过一个心跳间隔：上游一直不出声，客户端这段时间只可能收到心跳。
 	deadline := time.Now().Add(sseHeartbeatInterval + 2*time.Second)
 	for time.Now().Before(deadline) {
-		recorder.ResponseRecorder.Flushed = false
-		if recorder.flushes > 0 && strings.Contains(recorder.Body.String(), ": ping") {
+		flushes, body := recorder.snapshot()
+		if flushes > 0 && strings.Contains(body, ": ping") {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	flushes, body := recorder.snapshot()
 	t.Fatalf("during %s of upstream silence the client received no keep-alive: flushes=%d body=%q",
-		sseHeartbeatInterval, recorder.flushes, recorder.Body.String())
+		sseHeartbeatInterval, flushes, body)
 }
 
 // silentUntilReleased hands out its opening bytes and then blocks until release

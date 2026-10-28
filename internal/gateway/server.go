@@ -689,10 +689,28 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 // container on TZ=UTC reports "UTC"; an unnamed fixed zone (a bare numeric
 // offset) falls back to its formatted offset so the console can still build the
 // right day bounds.
+//
+// TZ 优先于 time.Local：两者在进程启动时通常一致，但测试只能通过 TZ 注入时区
+// （直接写 time.Local 会与其它 goroutine 的 time.Now 构成 data race），
+// 且与 serverTimeZoneLabel 保持同一口径。
 func serverTimeZoneName() string {
-	name := time.Local.String()
-	if name == "" || name == "Local" {
+	if name := strings.TrimSpace(os.Getenv("TZ")); name != "" {
+		if _, err := time.LoadLocation(name); err == nil {
+			return name
+		}
+	}
+	return timeZoneNameFor(time.Local)
+}
+
+// timeZoneNameFor 是 serverTimeZoneName 的纯函数部分：只依赖传入的时区，
+// 不碰全局状态，测试可以直接喂一个 FixedZone 验证回退分支。
+func timeZoneNameFor(loc *time.Location) string {
+	if loc == nil {
 		return time.Now().Format("Z07:00")
+	}
+	name := loc.String()
+	if name == "" || name == "Local" {
+		return time.Now().In(loc).Format("Z07:00")
 	}
 	return name
 }

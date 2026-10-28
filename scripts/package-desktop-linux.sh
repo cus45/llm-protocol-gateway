@@ -53,9 +53,16 @@ APPIMAGETOOL="$WORK/appimagetool"
 curl -fsSL -o "$APPIMAGETOOL" \
   "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 chmod +x "$APPIMAGETOOL"
-# GitHub runner 上没有 FUSE，用 --appimage-extract-and-run 直接解包执行
+# AppImage 的架构名是 x86_64，不是 Go 的 amd64；传错会被 appimagetool 拒掉。
+case "$ARCH" in
+  amd64|x86_64) APPIMAGE_ARCH=x86_64 ;;
+  arm64|aarch64) APPIMAGE_ARCH=aarch64 ;;
+  *) echo "unsupported AppImage arch: $ARCH" >&2; exit 1 ;;
+esac
 APPIMAGE_OUT="$DIST/llm-protocol-gateway-desktop-linux-$ARCH.AppImage"
-ARCH="$ARCH" "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$APPIMAGE_OUT"
+# GitHub runner 上没有 FUSE：既传 --appimage-extract-and-run，也设环境变量兜底。
+ARCH="$APPIMAGE_ARCH" APPIMAGE_EXTRACT_AND_RUN=1 \
+  "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$APPIMAGE_OUT"
 chmod +x "$APPIMAGE_OUT"
 
 # ---------------------------------------------------------------- deb

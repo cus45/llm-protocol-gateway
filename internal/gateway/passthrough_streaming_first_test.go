@@ -3,7 +3,6 @@ package gateway
 import (
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -12,8 +11,9 @@ import (
 
 // timedRecorder records when each write reached the client, so a test can tell
 // a stream from a reply that only arrived at the end.
+// 底层用 syncRecorder：心跳 goroutine 与流拷贝会并发写，httptest 的 buffer 没锁。
 type timedRecorder struct {
-	*httptest.ResponseRecorder
+	*syncRecorder
 	mu     sync.Mutex
 	first  time.Time
 	writes int
@@ -21,7 +21,7 @@ type timedRecorder struct {
 }
 
 func newTimedRecorder() *timedRecorder {
-	return &timedRecorder{ResponseRecorder: httptest.NewRecorder()}
+	return &timedRecorder{syncRecorder: newSyncRecorder()}
 }
 
 func (r *timedRecorder) Write(p []byte) (int, error) {
@@ -32,10 +32,10 @@ func (r *timedRecorder) Write(p []byte) (int, error) {
 	r.writes++
 	r.bytes += len(p)
 	r.mu.Unlock()
-	return r.ResponseRecorder.Write(p)
+	return r.syncRecorder.Write(p)
 }
 
-func (r *timedRecorder) Flush() { r.ResponseRecorder.Flush() }
+func (r *timedRecorder) Flush() { r.syncRecorder.Flush() }
 
 // pacedBody sends each chunk after a pause, the way an upstream model does:
 // finish is called when the last chunk has been handed out.
@@ -114,8 +114,8 @@ func TestPassThroughStreamsThroughFailoverAsItComes(t *testing.T) {
 			if writes < chunks {
 				t.Fatalf("client saw %d writes for %d chunks apart: the chunks were coalesced", writes, chunks+1)
 			}
-			if !strings.Contains(rec.Body.String(), "data: [DONE]") {
-				t.Fatalf("the stream was cut short: %q", rec.Body.String())
+			if !strings.Contains(rec.String(), "data: [DONE]") {
+				t.Fatalf("the stream was cut short: %q", rec.String())
 			}
 		})
 	}
@@ -177,8 +177,8 @@ func TestPassThroughHeartbeatReachesClient(t *testing.T) {
 		t.Fatalf("complete stream reported %v", err)
 	}
 	fw.FlushError()
-	if got := rec.Body.Len(); !strings.Contains(rec.Body.String(), ": ping") {
-		t.Fatalf("the keep-alive never reached the client (%d bytes: %q)", got, rec.Body.String())
+	if got := len(rec.String()); !strings.Contains(rec.String(), ": ping") {
+		t.Fatalf("the keep-alive never reached the client (%d bytes: %q)", got, rec.String())
 	}
 }
 
@@ -215,11 +215,11 @@ func TestPassThroughHeartbeatBeforeFirstDeltaReachesClient(t *testing.T) {
 		if first := rec.first.Sub(start); first > silence/2 {
 			t.Fatalf("canDefer=%v: the opening only reached the client after %v of a %v stream", canDefer, first, total)
 		}
-		if got := strings.Count(rec.Body.String(), ": ping"); got < 3 {
-			t.Fatalf("canDefer=%v: the silence was not filled with keep-alives (%d): %q", canDefer, got, rec.Body.String())
+		if got := strings.Count(rec.String(), ": ping"); got < 3 {
+			t.Fatalf("canDefer=%v: the silence was not filled with keep-alives (%d): %q", canDefer, got, rec.String())
 		}
-		if !strings.Contains(rec.Body.String(), `"text":"hi"`) {
-			t.Fatalf("canDefer=%v: the answer never reached the client: %q", canDefer, rec.Body.String())
+		if !strings.Contains(rec.String(), `"text":"hi"`) {
+			t.Fatalf("canDefer=%v: the answer never reached the client: %q", canDefer, rec.String())
 		}
 	}
 }

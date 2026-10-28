@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,11 +22,23 @@ import (
 // the monitoringStore assertion in NewServer succeed.
 func monitorTestServer(t *testing.T, providers ...domain.Provider) (*Server, *store.Store) {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "gateway.db"))
+	// 不用 t.TempDir：它的清理注册得最早，按 LIFO 会排在 db.Close 之前执行，
+	// 那时 SQLite 的 -wal/-shm 还在、监控 goroutine 可能仍在写，macOS 上直接
+	// 报 "TempDir RemoveAll cleanup: directory not empty"。这里自己管目录，
+	// 先关库再删，删不掉也只是留下临时文件，不该让测试失败。
+	dir, err := os.MkdirTemp("", "gateway-monitor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	db, err := store.Open(filepath.Join(dir, "gateway.db"))
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+		_ = os.RemoveAll(dir)
+	})
 	server := NewServer(NewRouter(domain.GatewayState{Providers: providers}), monitor.NewStore(), db)
 	if server.monitoringStore == nil {
 		t.Fatal("store does not satisfy monitoringStore; the console would never start")

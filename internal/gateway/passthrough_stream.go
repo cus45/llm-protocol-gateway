@@ -193,13 +193,19 @@ func trimToEventEnd(stream []byte) []byte {
 // limitedBuffer keeps up to max bytes for logging/usage parsing while the
 // remainder of a stream is still forwarded to the client. It also counts every
 // byte written so callers can report true forwarded size despite the cap.
+//
+// 写方是流拷贝与心跳两个 goroutine，读方是收尾时的日志/用量解析，所以要加锁；
+// Bytes 返回副本，否则调用方读到的底层数组会被后续 append 改写。
 type limitedBuffer struct {
+	mu    sync.Mutex
 	buf   []byte
 	max   int
 	total int64
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.total += int64(len(p))
 	if b.max <= 0 {
 		return len(p), nil
@@ -216,12 +222,25 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *limitedBuffer) Bytes() []byte {
-	return b.buf
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]byte, len(b.buf))
+	copy(out, b.buf)
+	return out
 }
 
 // Total is the full number of bytes streamed, including any beyond the cap.
 func (b *limitedBuffer) Total() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.total
+}
+
+// release drops the capped copy once the end reader has what it needs.
+func (b *limitedBuffer) release() {
+	b.mu.Lock()
+	b.buf = nil
+	b.mu.Unlock()
 }
 
 // streamLogWriter forwards an SSE stream and keeps a capped copy for the
@@ -356,7 +375,7 @@ func newStreamTee(_ *http.Response) *streamTee {
 // releaseLogCopy lets the log copy go. Called once the stream is read and the
 // end reader has kept what it needs of the stream's end.
 func (t *streamTee) releaseLogCopy() {
-	t.buf = nil
+	t.release()
 }
 
 // converterStreamWriter is the writer a converter streams through when the

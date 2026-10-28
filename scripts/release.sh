@@ -67,12 +67,6 @@ ldflags="-s -w -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVer
 
 log() { printf '==> %s\n' "$*" >&2; }
 
-# -overlay 的 JSON 里路径要转义反斜杠（Windows 路径），否则解析不了。
-json_path() {
-  local p="$1"
-  printf '%s' "${p//\\/\\\\}"
-}
-
 # ---------------------------------------------------------------- 平台拆分
 # linux/arm/v7 → GOOS=linux GOARCH=arm GOARM=7
 split_target() {
@@ -166,13 +160,15 @@ build_target() {
     echo "BUILD_DATE=$build_date"
   } >"$work/VERSION"
 
-  # 产物自检：用 -buildvcs 内嵌的修订号与本次构建对应，前端也必须带着版本号。
-  # 从 git archive 导出（没有 .git）时 commit 为 unknown，-buildvcs 也会静默跳过，此时只查前端。
-  if [[ "$commit" != "unknown" ]]; then
-    local info
-    info="$(env "${env[@]}" go version -m "$work/gateway$ext")"
+  # 产物自检：-buildvcs 在本仓库能拿到 .git 时会把修订号嵌进去，此时要求它
+  # 与本次构建一致；从 git archive 导出、浅克隆、或在 worktree/CI 缓存目录里
+  # 构建时 buildvcs 会静默跳过，产物里就没有 vcs.revision —— 那种情况下只查
+  # 前端版本号，不能因为「没嵌进去」就判定失败。
+  local info
+  info="$(env "${env[@]}" go version -m "$work/gateway$ext")"
+  if grep -qF "vcs.revision=" <<<"$info" && [[ "$commit" != "unknown" ]]; then
     grep -qF "vcs.revision=$(git rev-parse HEAD)" <<<"$info" \
-      || { echo "产物无法对应到 commit $(git rev-parse HEAD)" >&2; return 1; }
+      || { echo "产物内嵌的 commit 与当前 HEAD 不一致（HEAD=$(git rev-parse HEAD)）" >&2; return 1; }
   fi
 
   if [[ "$MODE" == "package" ]]; then
@@ -229,13 +225,17 @@ build_desktop() {
     GOFLAGS=-mod=mod go run github.com/tc-hib/go-winres@v0.3.3 make \
       --in "$rsrc/winres.json" --arch "$GOARCH" --out "$rsrc/rsrc" \
       --product-version "$version4" --file-version "$version4" >/dev/null
-    # go 只认包目录里的 *.syso，而发版不该往工作区写文件：
-    # -overlay 把生成的资源挂到 desktop/ 下一个「本来不存在」的文件名上，包就多了这个源。
-    printf '{"Replace":{"overlay_winres_%s.syso":"%s"}}\n' "$GOARCH" "$(json_path "$rsrc/rsrc_windows_$GOARCH.syso")" \
-      >"$rsrc/overlay.json"
+    # go 只认包目录里的 *.syso。直接把生成的资源放进 desktop/ 再构建，
+    # 构建完立刻删掉：-overlay 的 Replace key 必须是被覆盖文件的真实路径，
+    # 挂一个「本来不存在的文件名」会让 go 直接报 no such file。
+    syso="overlay_winres_$GOARCH.syso"
+    cp "$rsrc/rsrc_windows_$GOARCH.syso" "$syso"
+    trap 'rm -f "$syso"' RETURN
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOFLAGS=-mod=mod \
       go build -trimpath -buildvcs=true -ldflags "-s -w -H windowsgui" \
-      -overlay "$rsrc/overlay.json" -o "$out" .
+      -o "$out" .
+    rm -f "$syso"
+    trap - RETURN
     rm -rf "$rsrc"
   )
   log "打包 $(basename "$out")"
@@ -250,7 +250,21 @@ for target in "${TARGETS[@]}"; do
 done
 
 if [[ "$MODE" == "package" ]]; then
-  (cd "$DIST" && sha256sum ./*.tar.gz ./*.zip >SHA256SUMS 2>/dev/null || shasum -a 256 ./*.tar.gz ./*.zip >SHA256SUMS)
+  # 按实际产出的文件收集，不要写死通配符：只打包一个平台时 ./*.zip 不存在，
+  # sha256sum/shasum 会直接报错退出。
+  (
+    cd "$DIST" || exit 1
+    files=()
+    for f in *.tar.gz *.zip; do
+      [ -f "$f" ] && files+=("$f")
+    done
+    [ ${#files[@]} -gt 0 ] || { echo "dist 里没有任何产物" >&2; exit 1; }
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${files[@]}" >SHA256SUMS
+    else
+      shasum -a 256 "${files[@]}" >SHA256SUMS
+    fi
+  )
   log "完成：$DIST/SHA256SUMS"
   sed 's/^/    /' "$DIST/SHA256SUMS" >&2
 fi
