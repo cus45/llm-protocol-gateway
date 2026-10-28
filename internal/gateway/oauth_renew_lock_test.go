@@ -46,8 +46,9 @@ func workBuddyExpiredProvider(id string) domain.Provider {
 }
 
 // workBuddyUnexpiredProvider 是一枚「没有过期，但手上这份早该续了」的凭证：
-// refresh 提前量是一小时（Windows 上 Go 1.26 对相邻时刻的比较不可靠，见 memory
-// go126-windows-slice-compare-miscompile，窗口给足），距真正过期还差两天。
+// 距真正过期还差两天，但已进入续期提前量，续期者一定会去刷新。
+// 过期时刻直接由 workBuddyTokenExpirySkew 推出，不要写死数字，否则提前量一调整
+// 这个用例就会悄悄变成「根本不需要续期」，断言 calls==1 恒失败。
 func workBuddyUnexpiredProvider(id string) domain.Provider {
 	return domain.Provider{
 		ID:       id,
@@ -56,7 +57,7 @@ func workBuddyUnexpiredProvider(id string) domain.Provider {
 		WorkBuddy: &domain.WorkBuddyCredential{
 			AccessToken:  "old-access",
 			RefreshToken: "old-refresh",
-			ExpiresAt:    time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339),
+			ExpiresAt:    time.Now().Add(workBuddyTokenExpirySkew / 2).UTC().Format(time.RFC3339),
 		},
 	}
 }
