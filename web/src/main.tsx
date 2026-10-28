@@ -1930,7 +1930,9 @@ function App() {
       // Keep UI usable when backend is down.
       if (fetchGen === logsFetchGenRef.current) setLogsFetchedOnce(true);
     } finally {
-      if (!opts?.silent && fetchGen === logsFetchGenRef.current) setLogsLoading(false);
+      // 被判过期的请求也要收掉 loading：并发请求互相作废时若都跳过这里，
+      // 页面就永远停在「加载流量日志中」。
+      if (!opts?.silent) setLogsLoading(false);
     }
   }
 
@@ -6212,7 +6214,7 @@ function App() {
                       value={logsApiKeyName}
                       aria-label="按 API 密钥筛选"
                       title="按 API 密钥筛选"
-                      onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); void refreshLogs(1, undefined, undefined, { apiKeyName: e.target.value }); }}
+                      onChange={(e) => { setLogsPage(1); setLogsApiKeyName(e.target.value); }}
                     >
                       <option value="">全部密钥</option>
                       {(state.apiKeys || []).map((key) => (
@@ -6227,7 +6229,7 @@ function App() {
                       searchable={false}
                       renderPortal={false}
                       options={trafficProviderFilterOptions}
-                      onChange={(next) => { setLogsPage(1); setLogsProviderFilter(next === ALL_PROVIDERS_VALUE ? '' : next); void refreshLogs(1); }}
+                      onChange={(next) => { setLogsPage(1); setLogsProviderFilter(next === ALL_PROVIDERS_VALUE ? '' : next); }}
                     />
                   </div>
                   {!isNormalUser ? (
@@ -6236,7 +6238,7 @@ function App() {
                         value={logsOwnerFilter}
                         aria-label="按所属用户筛选"
                         title="按所属用户筛选"
-                        onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); void refreshLogs(1); }}
+                        onChange={(e) => { setLogsPage(1); setLogsOwnerFilter(e.target.value); }}
                       >
                         <option value="">全部用户</option>
                         <option value={LOG_OWNER_FILTER_ADMIN}>内置 admin</option>
@@ -6280,22 +6282,22 @@ function App() {
                       主条上仍看得见「现在按什么在看」。点一下就撤掉那一条。 */}
                   <span className="traffic-active-filters">
                     {logsProviderFilter ? (
-                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsProviderFilter(''); void refreshLogs(1); }}>
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsProviderFilter(''); }}>
                         Provider：{providerDisplayLabel((state.providers || []).find((item) => item.id === logsProviderFilter), logsProviderFilter)} ×
                       </button>
                     ) : null}
                     {logsApiKeyName ? (
-                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsApiKeyName(''); void refreshLogs(1, logsFrom, logsTo, { apiKeyName: '' }); }}>
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsApiKeyName(''); }}>
                         密钥：{logsApiKeyName} ×
                       </button>
                     ) : null}
                     {logsOwnerFilter ? (
-                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsOwnerFilter(''); void refreshLogs(1); }}>
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsPage(1); setLogsOwnerFilter(''); }}>
                         用户：{logsOwnerFilter === LOG_OWNER_FILTER_ADMIN ? '内置 admin' : (consoleUsers.find((u) => u.id === logsOwnerFilter)?.username || logsOwnerFilter)} ×
                       </button>
                     ) : null}
                     {logsUsageTarget ? (
-                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsUsageTarget(null); setLogsPage(1); void refreshLogs(1); }}>
+                      <button type="button" className="traffic-filter-tag" onClick={() => { setLogsUsageTarget(null); setLogsPage(1); }}>
                         {logsUsageTarget.type === 'model' ? '模型' : '密钥'}：{logsUsageTarget.label} ×
                       </button>
                     ) : null}
