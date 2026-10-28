@@ -41,7 +41,6 @@ jobs:
     runs-on: ${{ startsWith(matrix.platform, 'linux/arm') && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -53,14 +52,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in (GHCR)
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
 
       - name: Build (loaded locally for the smoke test)
         uses: docker/build-push-action@v6
@@ -105,15 +96,15 @@ jobs:
           docker logs smoke | tail -20
 
       # 多架构 manifest 只能靠 push-by-digest 一步完成；tag 由 merge job 统一打。
+      # 只推 Docker Hub 一个目标：同一次构建里挂两个 type=image 时，取回的 digest
+      # 只对应其中一个仓库，merge 阶段会报 "not found"。GHCR 那份在 merge 里复制过去。
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          outputs: |
-            type=image,name=${{ env.DOCKERHUB_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-            type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ env.DOCKERHUB_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           provenance: mode=max
           sbom: true
           build-args: |
@@ -184,24 +175,32 @@ jobs:
         run: |
           set -euo pipefail
           DIGESTS=()
-          for f in *; do DIGESTS+=("sha256:$f"); done
+          for f in *; do DIGESTS+=("$DOCKERHUB_IMAGE@sha256:$f"); done
           echo "digest 个数：${#DIGESTS[@]}"
           test "${#DIGESTS[@]}" -eq 2
 
           mapfile -t TAGS <<<"${{ steps.meta.outputs.tags }}"
-          for IMAGE in "$DOCKERHUB_IMAGE" "$GHCR_IMAGE"; do
-            ARGS=()
-            for tag in "${TAGS[@]}"; do
-              # metadata-action 会给每个 registry 各生成一组 tag，这里只取当前 registry 的
-              [[ "$tag" == ${IMAGE%/*}* ]] || continue
-              ARGS+=(-t "$tag")
-            done
-            echo "==> $IMAGE"
-            printf '    %s\n' "${ARGS[@]}"
-            for d in "${DIGESTS[@]}"; do
-              ARGS+=("$IMAGE@$d")
-            done
-            docker buildx imagetools create "${ARGS[@]}"
+          hub_tags=()
+          ghcr_tags=()
+          for tag in "${TAGS[@]}"; do
+            case "$tag" in
+              "$DOCKERHUB_IMAGE"*) hub_tags+=("$tag") ;;
+              "$GHCR_IMAGE"*) ghcr_tags+=("$tag") ;;
+            esac
+          done
+          echo "==> $DOCKERHUB_IMAGE"
+          test "${#hub_tags[@]}" -gt 0
+          test "${#hub_tags[@]}" -eq "${#ghcr_tags[@]}"
+          printf '    %s\n' "${hub_tags[@]}"
+          hub_args=()
+          for t in "${hub_tags[@]}"; do hub_args+=(-t "$t"); done
+          docker buildx imagetools create "${hub_args[@]}" "${DIGESTS[@]}"
+
+          # GHCR 不重复构建，直接把刚合成好的索引复制过去，两者 digest 一致。
+          echo "==> $GHCR_IMAGE"
+          printf '    %s\n' "${ghcr_tags[@]}"
+          for i in "${!hub_tags[@]}"; do
+            docker buildx imagetools create -t "${ghcr_tags[$i]}" "${hub_tags[$i]}"
           done
 
       - name: Inspect

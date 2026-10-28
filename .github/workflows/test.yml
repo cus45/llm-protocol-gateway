@@ -52,16 +52,8 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # Go 1.26.1 的 Windows 工具链会把这个用例里的时刻比较判错（见测试文件里的注释），
-      # 它在 Windows 上是既有基线失败、与代码无关，先跳过；其余用例三个系统都跑全量。
       - name: go test
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            go test -count=1 -skip '^TestWorkBuddyJitterServesEveryWaiterOnAnUnexpiredToken$' ./...
-          else
-            go test -count=1 ./...
-          fi
+        run: go test -count=1 ./...
 
       # 全量测试在三个系统上都跑；race 只跑 Linux，省 macOS 与 Windows 的机时。
       - name: go test -race
