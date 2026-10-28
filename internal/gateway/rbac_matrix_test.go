@@ -184,6 +184,29 @@ func TestNormalUserCanCreateOwnProviderAndKey(t *testing.T) {
 	}
 }
 
+// 痛点的原话是「自己生成的 Key 加不了 Provider」：普通用户编辑自己的 Key，
+// 把自己的 Provider 加进备选链要放行，把别人的加进来要拒绝。
+func TestOwnKeyAcceptsOwnProviderInFallbackChain(t *testing.T) {
+	f := newRBACFixture(t)
+	f.state.Routes = append(f.state.Routes, domain.Route{ID: "route-alice-2", Name: "alice second", ProviderID: "alice-private"})
+
+	own := f.call(t, "alice", http.MethodPatch, "/__apikeys/k-alice", `{"name":"alice key","fallbackProviderIds":["alice-private"]}`)
+	if own.Code != http.StatusOK {
+		t.Fatalf("attach own provider status=%d body=%s", own.Code, own.Body.String())
+	}
+
+	foreign := f.call(t, "alice", http.MethodPatch, "/__apikeys/k-alice", `{"name":"alice key","fallbackProviderIds":["alice-private","shared"]}`)
+	if foreign.Code != http.StatusForbidden {
+		t.Fatalf("attach admin provider status=%d, want 403 body=%s", foreign.Code, foreign.Body.String())
+	}
+
+	// 别人的 Key 连编辑入口都进不去。
+	other := f.call(t, "alice", http.MethodPatch, "/__apikeys/k-admin", `{"name":"hijack"}`)
+	if other.Code != http.StatusForbidden {
+		t.Fatalf("edit admin key status=%d, want 403", other.Code)
+	}
+}
+
 // 管理员建的 Provider / Key 不能再落成「无主」，否则控制台一律显示「管理员」。
 // 账号名 admin 存在时归属真实账号 id；只有隐式管理密码时才是 legacy admin。
 func TestAdminCreatedRowsCarryAdminAccount(t *testing.T) {
