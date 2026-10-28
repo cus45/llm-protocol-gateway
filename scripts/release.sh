@@ -67,12 +67,6 @@ ldflags="-s -w -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVer
 
 log() { printf '==> %s\n' "$*" >&2; }
 
-# -overlay 的 JSON 里路径要转义反斜杠（Windows 路径），否则解析不了。
-json_path() {
-  local p="$1"
-  printf '%s' "${p//\\/\\\\}"
-}
-
 # ---------------------------------------------------------------- 平台拆分
 # linux/arm/v7 → GOOS=linux GOARCH=arm GOARM=7
 split_target() {
@@ -231,13 +225,17 @@ build_desktop() {
     GOFLAGS=-mod=mod go run github.com/tc-hib/go-winres@v0.3.3 make \
       --in "$rsrc/winres.json" --arch "$GOARCH" --out "$rsrc/rsrc" \
       --product-version "$version4" --file-version "$version4" >/dev/null
-    # go 只认包目录里的 *.syso，而发版不该往工作区写文件：
-    # -overlay 把生成的资源挂到 desktop/ 下一个「本来不存在」的文件名上，包就多了这个源。
-    printf '{"Replace":{"overlay_winres_%s.syso":"%s"}}\n' "$GOARCH" "$(json_path "$rsrc/rsrc_windows_$GOARCH.syso")" \
-      >"$rsrc/overlay.json"
+    # go 只认包目录里的 *.syso。直接把生成的资源放进 desktop/ 再构建，
+    # 构建完立刻删掉：-overlay 的 Replace key 必须是被覆盖文件的真实路径，
+    # 挂一个「本来不存在的文件名」会让 go 直接报 no such file。
+    syso="overlay_winres_$GOARCH.syso"
+    cp "$rsrc/rsrc_windows_$GOARCH.syso" "$syso"
+    trap 'rm -f "$syso"' RETURN
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOFLAGS=-mod=mod \
       go build -trimpath -buildvcs=true -ldflags "-s -w -H windowsgui" \
-      -overlay "$rsrc/overlay.json" -o "$out" .
+      -o "$out" .
+    rm -f "$syso"
+    trap - RETURN
     rm -rf "$rsrc"
   )
   log "打包 $(basename "$out")"
