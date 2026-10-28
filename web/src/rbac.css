@@ -52,10 +52,19 @@
 .rbac-stat span { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .rbac-stat b { color: var(--text); font-size: 13px; font-family: var(--mono); }
 .rbac-role-card-actions {
-  display: flex; justify-content: flex-end; gap: 4px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
   margin-top: auto;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+/* 不可删除时的静态说明，避免用禁用态红色按钮误导成可点 */
+.rbac-role-lock {
+  display: inline-flex; align-items: center;
+  height: 28px; padding: 0 10px;
+  color: var(--subtle);
+  font-size: 12px; font-weight: 500;
+  cursor: default;
+  user-select: none;
 }
 
 /* 角色编辑弹窗的权限模块 */

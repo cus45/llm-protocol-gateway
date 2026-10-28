@@ -156,7 +156,15 @@ export function RolesPage({ model, canManage, onToast }: {
           <div className="rbac-role-grid">
             {roles.map((role) => {
               const count = countPermissions(role);
-              const deleteDisabled = !canManage || role.builtin || role.userCount > 0 || busyId === role.id;
+              // 删不掉时不再渲染成灰色的红色按钮：改成一段不可点的说明，原因直接写在卡片里。
+              const deleteBlocked = !canManage || role.builtin || role.userCount > 0;
+              const deleteReason = !canManage
+                ? '没有角色管理权限'
+                : role.builtin
+                  ? '内置角色不可删除'
+                  : role.userCount > 0
+                    ? `仍有 ${role.userCount} 个用户持有该角色`
+                    : '';
               return (
                 <div className={`card rbac-role-card${role.builtin ? ' builtin' : ''}`} key={role.id}>
                   <div className="rbac-role-card-head">
@@ -201,19 +209,20 @@ export function RolesPage({ model, canManage, onToast }: {
                     >
                       复制
                     </button>
-                    <button
-                      type="button"
-                      className="mini-btn danger"
-                      disabled={deleteDisabled}
-                      title={role.builtin
-                        ? '内置角色不可删除'
-                        : role.userCount > 0
-                          ? `仍有 ${role.userCount} 个用户持有该角色`
-                          : '删除角色'}
-                      onClick={() => void deleteRole(role)}
-                    >
-                      删除
-                    </button>
+                    {deleteBlocked ? (
+                      <span className="rbac-role-lock" title={deleteReason}>
+                        {role.builtin ? '内置不可删除' : role.userCount > 0 ? `在用 ${role.userCount} 人` : '不可删除'}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="mini-btn danger"
+                        disabled={busyId === role.id}
+                        onClick={() => void deleteRole(role)}
+                      >
+                        删除
+                      </button>
+                    )}
                   </div>
                 </div>
               );
