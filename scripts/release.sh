@@ -166,13 +166,15 @@ build_target() {
     echo "BUILD_DATE=$build_date"
   } >"$work/VERSION"
 
-  # 产物自检：用 -buildvcs 内嵌的修订号与本次构建对应，前端也必须带着版本号。
-  # 从 git archive 导出（没有 .git）时 commit 为 unknown，-buildvcs 也会静默跳过，此时只查前端。
-  if [[ "$commit" != "unknown" ]]; then
-    local info
-    info="$(env "${env[@]}" go version -m "$work/gateway$ext")"
+  # 产物自检：-buildvcs 在本仓库能拿到 .git 时会把修订号嵌进去，此时要求它
+  # 与本次构建一致；从 git archive 导出、浅克隆、或在 worktree/CI 缓存目录里
+  # 构建时 buildvcs 会静默跳过，产物里就没有 vcs.revision —— 那种情况下只查
+  # 前端版本号，不能因为「没嵌进去」就判定失败。
+  local info
+  info="$(env "${env[@]}" go version -m "$work/gateway$ext")"
+  if grep -qF "vcs.revision=" <<<"$info" && [[ "$commit" != "unknown" ]]; then
     grep -qF "vcs.revision=$(git rev-parse HEAD)" <<<"$info" \
-      || { echo "产物无法对应到 commit $(git rev-parse HEAD)" >&2; return 1; }
+      || { echo "产物内嵌的 commit 与当前 HEAD 不一致（HEAD=$(git rev-parse HEAD)）" >&2; return 1; }
   fi
 
   if [[ "$MODE" == "package" ]]; then
@@ -250,7 +252,21 @@ for target in "${TARGETS[@]}"; do
 done
 
 if [[ "$MODE" == "package" ]]; then
-  (cd "$DIST" && sha256sum ./*.tar.gz ./*.zip >SHA256SUMS 2>/dev/null || shasum -a 256 ./*.tar.gz ./*.zip >SHA256SUMS)
+  # 按实际产出的文件收集，不要写死通配符：只打包一个平台时 ./*.zip 不存在，
+  # sha256sum/shasum 会直接报错退出。
+  (
+    cd "$DIST" || exit 1
+    files=()
+    for f in *.tar.gz *.zip; do
+      [ -f "$f" ] && files+=("$f")
+    done
+    [ ${#files[@]} -gt 0 ] || { echo "dist 里没有任何产物" >&2; exit 1; }
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${files[@]}" >SHA256SUMS
+    else
+      shasum -a 256 "${files[@]}" >SHA256SUMS
+    fi
+  )
   log "完成：$DIST/SHA256SUMS"
   sed 's/^/    /' "$DIST/SHA256SUMS" >&2
 fi
