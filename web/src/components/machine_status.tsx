@@ -126,12 +126,27 @@ function pushHistory(points: HostPoint[], latest: HostMetrics | null) {
     return stream.history;
 }
 
+/**
+ * 快照是服务端整窗历史的权威副本，直接替换本地点，不做合并。
+ *
+ * 合并会把本机缓存里更早那一版的采样拼进来——旧页面只在打开时轮询，
+ * 缓存里正好是一簇簇孤点；换上新版本后这些点还挂在图上，看起来仍是断的。
+ * 服务端重启丢掉的那一分钟宁可留断口，也不要拿本地残留去补。
+ */
+function replaceHistory(points: HostPoint[], latest: HostMetrics | null) {
+    const lastAt = points.length > 0 ? points[points.length - 1].t : 0;
+    stream.history = {points, last: latest, lastAt};
+    saveHistory(stream.history);
+    return stream.history;
+}
+
 function startStream() {
     if (stream.running) return;
     stream.running = true;
     stream.history = loadHistory();
     stream.stop = openHostStream({
-        onSnapshot: ({points, latest}) => notify(pushHistory(points, latest)),
+        onSnapshot: ({points, latest}) =>
+            notify(points.length > 0 ? replaceHistory(points, latest) : pushHistory([], latest)),
         onSample: (point, latest) => notify(pushHistory([point], latest)),
         onStatus: (status) => notify(stream.history ?? loadHistory(), status),
     });
