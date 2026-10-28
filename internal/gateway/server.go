@@ -691,9 +691,18 @@ func serverTimeZoneName() string {
 			return name
 		}
 	}
-	name := time.Local.String()
-	if name == "" || name == "Local" {
+	return timeZoneNameFor(time.Local)
+}
+
+// timeZoneNameFor 是 serverTimeZoneName 的纯函数部分：只依赖传入的时区，
+// 不碰全局状态，测试可以直接喂一个 FixedZone 验证回退分支。
+func timeZoneNameFor(loc *time.Location) string {
+	if loc == nil {
 		return time.Now().Format("Z07:00")
+	}
+	name := loc.String()
+	if name == "" || name == "Local" {
+		return time.Now().In(loc).Format("Z07:00")
 	}
 	return name
 }
