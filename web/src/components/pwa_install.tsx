@@ -43,7 +43,7 @@ export function PwaInstallButton() {
     );
 }
 
-export function PwaInstallPrompt() {
+export function PwaInstallPrompt({dark = false}: {dark?: boolean}) {
     const {canInstall, installed} = usePwaInstall();
     const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && isPwaInstallDismissed());
     const [note, setNote] = useState('');
@@ -69,7 +69,7 @@ export function PwaInstallPrompt() {
     };
 
     return (
-        <div className="pwa-install-prompt" role="dialog" aria-label="安装协议网关到桌面">
+        <div className={dark ? 'pwa-install-prompt is-dark' : 'pwa-install-prompt'} role="dialog" aria-label="安装协议网关到桌面">
             <span className="pwa-install-icon"><PwaGlyph/></span>
             <div className="pwa-install-content">
                 <div className="pwa-install-copy">

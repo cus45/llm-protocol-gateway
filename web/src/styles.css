@@ -8008,6 +8008,21 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 }
 .pwa-install-close:hover { background: var(--surface-sunken); color: var(--text); }
 
+/* 登录页是写死深色的终端壳（.auth-terminal-shell，不跟主题走），卡片得单独配一套深色，
+   否则白卡压在深底上比安装按钮本身还抢眼。取色对齐终端窗口 #0c1017 / #e6edf3。 */
+.pwa-install-prompt.is-dark {
+  background: #0c1017;
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 22px 50px -20px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  color: #e6edf3;
+}
+.pwa-install-prompt.is-dark .pwa-install-copy strong { color: #eef2f8; }
+.pwa-install-prompt.is-dark .pwa-install-copy span { color: rgba(230, 237, 243, 0.62); }
+.pwa-install-prompt.is-dark .pwa-install-close { color: rgba(230, 237, 243, 0.55); }
+.pwa-install-prompt.is-dark .pwa-install-close:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.pwa-install-prompt.is-dark .btn.text { color: rgba(230, 237, 243, 0.78); }
+.pwa-install-prompt.is-dark .btn.text:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+
 @media (max-width: 640px) {
   .pwa-install-prompt { right: 12px; bottom: 12px; left: 12px; width: auto; }
 }

@@ -4728,8 +4728,9 @@ function App() {
           setTrustDevice={setAuthTrustDevice}
           onSubmit={submitAdminAuth}
         />
-        {/* 安装提示不依赖登录：先在登录页装到桌面，比登进来再找入口更自然。 */}
-        <PwaInstallPrompt/>
+        {/* 安装提示不依赖登录：先在登录页装到桌面，比登进来再找入口更自然。
+            登录页是固定的深色终端壳，卡片跟它同色系，别让白卡浮在深底上。 */}
+        <PwaInstallPrompt dark/>
       </>
     );
   }
