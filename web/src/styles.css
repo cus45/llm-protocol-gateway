@@ -7435,6 +7435,38 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
 .tlog-row.error { background: rgba(220, 38, 38, 0.05); }
 .tlog-row.error:hover { background: rgba(220, 38, 38, 0.09); }
 
+/* 新日志进场：行高从 0 撑开（下方的行跟着平滑下滑，不是瞬间顶一格），
+   同时淡入 + 轻微下滑，再用强调色从左侧铺一遍渐隐。
+   高度和淡入必须拆成两条动画、高度用 linear：一条 ease-out 的 max-height
+   会在 1/4 时长里就冲过真实行高（34px 左右），看起来还是"突然顶出来"。
+   目标值取 44px 略大于行高，保证不被裁切的同时整段时长都看得见位移。 */
+@keyframes tlog-row-expand {
+  from { max-height: 0; }
+  to { max-height: 44px; }
+}
+@keyframes tlog-row-enter {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tlog-row-flash {
+  0% { box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 100vmax var(--accent-soft); }
+  35% { box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 100vmax var(--accent-soft); }
+  100% { box-shadow: inset 3px 0 0 transparent, inset 0 0 0 100vmax transparent; }
+}
+.tlog-row.is-new {
+  /* min-height 的优先级高于 max-height，不清零的话行会先在 30px 卡住，
+     等 max-height 涨过 30px 才突然蹿到真实高度。
+     border-box 是为了让 padding 也进 max-height 的计算里，否则从 0 撑起时
+     还会先露出 11px 的 padding 空条。 */
+  overflow: hidden; min-height: 0; box-sizing: border-box;
+  animation: tlog-row-expand 0.46s linear both,
+             tlog-row-enter 0.4s cubic-bezier(0.25, 0.7, 0.35, 1) both,
+             tlog-row-flash 1.6s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tlog-row.is-new { overflow: visible; min-height: 30px; animation: none; }
+}
+
 /* 单元格数字样式只作用于数据行：写成 `.tlog .num` 会连带命中表头，
    于是数字列的表头变成等宽 + 亮色，和旁边的文字表头两种样子。 */
 .tlog-row .num {

@@ -245,11 +245,13 @@ export function trafficLogRowKey(log: LogEntry): string {
   return `${log.id ?? log.time}-${log.model}-${log.latencyMs}`;
 }
 
-export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
+export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen, freshKeys }: {
   logs: LogEntry[];
   providers: Provider[];
   routes?: Route[];
   apiKeys?: APIKey[];
+  /** 刚刚由增量轮询插进来的行：挂进场动画，按顺序轻微错开。 */
+  freshKeys?: Set<string>;
   onOpen: (log: LogEntry) => void;
 }) {
   return (
@@ -272,7 +274,7 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
           <span className="num" title="按价格行折算的成本；未计价的请求显示「未计价」而不是 $0">成本</span>
           <span>状态</span>
         </div>
-        {logs.map((log) => {
+        {logs.map((log, index) => {
           const error = isTrafficLogError(log);
           const ok = log.status >= 200 && log.status < 300;
           const latency = latencyCell(log.latencyMs);
@@ -284,11 +286,15 @@ export function TrafficLogTable({ logs, providers, routes, apiKeys, onOpen }: {
           const failoverTitle = serving
             ? `首选「${providerDisplayLabel(serving.primary, '未绑定')}」未承接，本条由${serving.rank ? `备选 ${serving.rank}` : '其他 Provider'}「${providerDisplayLabel(provider, log.providerId || '未知')}」服务`
             : undefined;
+          const rowKey = trafficLogRowKey(log);
+          const isFresh = freshKeys?.has(rowKey) ?? false;
           return (
             <div
-              className={`tlog-grid tlog-row${error ? ' error' : ''}`}
-              key={trafficLogRowKey(log)}
-              data-log-key={trafficLogRowKey(log)}
+              className={`tlog-grid tlog-row${error ? ' error' : ''}${isFresh ? ' is-new' : ''}`}
+              key={rowKey}
+              data-log-key={rowKey}
+              // 一次来几条时逐条错开，别糊成一片。
+              style={isFresh ? { animationDelay: `${Math.min(index * 45, 220)}ms` } : undefined}
               onClick={() => onOpen(log)}
               title="点击查看请求链路 APM 耗时分解与完整报文"
               role="button"

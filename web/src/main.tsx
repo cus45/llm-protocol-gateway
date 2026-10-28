@@ -361,6 +361,8 @@ function App() {
   const [logsPage, setLogsPage] = useState(1);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsFetchedOnce, setLogsFetchedOnce] = useState(false);
+  // 刚落表的新行：给它们挂进场动画，动画放完就清空，避免后续重渲染再演一遍。
+  const [logsFreshKeys, setLogsFreshKeys] = useState<Set<string>>(() => new Set());
   const [logsStatusFilter, setLogsStatusFilter] = useState<'all' | '2xx' | '4xx' | '5xx'>('all');
   const [logsApiKeyName, setLogsApiKeyName] = useState('');
   const [logsUsageTarget, setLogsUsageTarget] = useState<{ type: 'model' | 'apiKey'; value: string; label: string } | null>(null);
@@ -388,6 +390,7 @@ function App() {
   // 当前表里的行（增量轮询按它去重）与「往下翻时锚住的那一行」。
   const logsItemsRef = useRef<LogEntry[]>([]);
   const logsAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const logsFreshTimerRef = useRef(0);
   const logsTotalRef = useRef(0);
   // 「跟随今天」：默认/点「今天」/点选当日时为 true。跨午夜后侧边栏再进本页会滚到新的今天，
   // 不必整页刷新。用户选了历史单日、多日区间或清除日期后为 false，不再自动改日期。
@@ -2008,7 +2011,8 @@ function App() {
       }
       // 用户已经往下翻了：记住第一行可见行，插入后把滚动量补回去。
       const scroller = logsTableRef.current?.querySelector<HTMLElement>('.tlog-scroll');
-      if (scroller && scroller.scrollTop > 4) {
+      const scrolledAway = Boolean(scroller && scroller.scrollTop > 4);
+      if (scroller && scrolledAway) {
         const edge = scroller.getBoundingClientRect().top;
         const row = [...scroller.querySelectorAll<HTMLElement>('.tlog-row')]
           .find((el) => el.getBoundingClientRect().bottom > edge + 1);
@@ -2018,6 +2022,16 @@ function App() {
       }
       logsTotalRef.current = total;
       setLogsTotal(total);
+      // 新行挂上进场动画，跑完再清空，之后的重渲染不会再演一遍。
+      // 时长要对齐 CSS 里最长那条（错峰延迟 220ms + 强调色 1.6s），提前摘类会把尾巴切掉。
+      // 往下翻着看时不开动画：行高从 0 撑开会先让锚点行抖一下再归位。
+      if (!scrolledAway) {
+        setLogsFreshKeys(new Set(fresh.map(trafficLogRowKey)));
+        window.clearTimeout(logsFreshTimerRef.current);
+        logsFreshTimerRef.current = window.setTimeout(() => {
+          setLogsFreshKeys((current) => (current.size === 0 ? current : new Set()));
+        }, 2000);
+      }
       // 函数式更新兜住并发：两次轮询同时在途时，后到的那次不会把同一行插两遍。
       setLogs((prev) => {
         const seen = new Set(prev.map(trafficLogRowKey));
@@ -6424,6 +6438,7 @@ function App() {
                   <>
                     <TrafficLogTable
                       logs={displayedLogs}
+                      freshKeys={logsFreshKeys}
                       providers={state.providers || []}
                       routes={state.routes || []}
                       apiKeys={state.apiKeys || []}
