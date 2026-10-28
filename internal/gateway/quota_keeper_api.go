@@ -35,15 +35,15 @@ func requireQuotaUser(w http.ResponseWriter, r *http.Request) (sessionIdentity, 
 	return identity, true
 }
 
-// tasksVisibleTo filters tasks per role: admins see every task, a normal user
-// sees only the ones they created.
-func tasksVisibleTo(identity sessionIdentity, tasks []domain.ScheduledTask) []domain.ScheduledTask {
-	if identity.isAdmin() {
+// tasksVisibleTo filters tasks by resource scope: admins and "all"-scope roles
+// see every task, everyone else only the ones they created.
+func tasksVisibleTo(p principal, tasks []domain.ScheduledTask) []domain.ScheduledTask {
+	if p.scopeOf() == domain.ScopeAll {
 		return tasks
 	}
 	out := make([]domain.ScheduledTask, 0, len(tasks))
 	for _, task := range tasks {
-		if strings.TrimSpace(task.OwnerUserID) == identity.UserID {
+		if strings.TrimSpace(task.OwnerUserID) == p.UserID {
 			out = append(out, task)
 		}
 	}
@@ -51,30 +51,31 @@ func tasksVisibleTo(identity sessionIdentity, tasks []domain.ScheduledTask) []do
 }
 
 // scheduledTaskForCaller loads a task and refuses one owned by somebody else.
-// A foreign task answers 404, not 403: confirming it exists would leak which
-// schedules other users run.
+// "all"-scope roles and admins pass, matching how providers and routes treat the
+// same scope. A foreign task answers 404, not 403: confirming it exists would
+// leak which schedules other users run.
 func (s *Server) scheduledTaskForCaller(w http.ResponseWriter, r *http.Request, id string) (domain.ScheduledTask, bool) {
-	identity := s.requestIdentity(r)
+	p := s.requestPrincipal(r)
 	task, err := s.scheduledTaskStore.ScheduledTaskByID(id)
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, err.Error())
 		return domain.ScheduledTask{}, false
 	}
-	if !identity.isAdmin() && strings.TrimSpace(task.OwnerUserID) != identity.UserID {
+	if p.scopeOf() != domain.ScopeAll && strings.TrimSpace(task.OwnerUserID) != p.UserID {
 		writeOpenAIError(w, http.StatusNotFound, "scheduled task not found")
 		return domain.ScheduledTask{}, false
 	}
 	return task, true
 }
 
-// validateScheduledTaskProviders rejects providers the caller has not been
-// granted. Admins are unrestricted; a normal user may only schedule against the
-// same providers they can see and test on the Providers page.
-func (s *Server) validateScheduledTaskProviders(identity sessionIdentity, task domain.ScheduledTask) error {
-	if identity.isAdmin() {
+// validateScheduledTaskProviders rejects providers outside the caller's scope.
+// "all"-scope roles and admins are unrestricted; everyone else may only schedule
+// providers they own or were granted.
+func (s *Server) validateScheduledTaskProviders(p principal, task domain.ScheduledTask) error {
+	if p.scopeOf() == domain.ScopeAll {
 		return nil
 	}
-	allowed := s.allowedProviderIDsForUser(identity.UserID)
+	allowed := s.allowedProviderIDsForPrincipal(p)
 	for _, providerID := range task.ProviderIDs {
 		if !allowed[strings.TrimSpace(providerID)] {
 			return fmt.Errorf("provider %q 未授权给你的账号", providerID)
@@ -84,11 +85,10 @@ func (s *Server) validateScheduledTaskProviders(identity sessionIdentity, task d
 }
 
 // handleListScheduledTasks returns the caller's tasks plus the most recent
-// firings, so the page renders in one request. Admins additionally get the
-// owner-name table the card needs to show whose task it is.
+// firings, so the page renders in one request. "All"-scope callers additionally
+// get the owner-name table the card needs to show whose task it is.
 func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request) {
-	identity, ok := requireQuotaUser(w, r)
-	if !ok {
+	if _, ok := requireQuotaUser(w, r); !ok {
 		return
 	}
 	if !s.scheduledTaskStoreReady() {
@@ -100,7 +100,8 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	tasks := tasksVisibleTo(identity, all)
+	p := s.requestPrincipal(r)
+	tasks := tasksVisibleTo(p, all)
 	for i := range tasks {
 		// A task the keeper paused after every provider was deleted stores an
 		// empty list; the console maps providerIds directly, so keep the field
@@ -109,14 +110,14 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 			tasks[i].ProviderIDs = []string{}
 		}
 	}
-	runs, err := s.quotaVisibleRuns(identity, tasks)
+	runs, err := s.quotaVisibleRuns(p, tasks)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	response := map[string]any{"tasks": tasks, "recentRuns": runs, "serverTimeZone": serverTimeZoneLabel()}
-	response["providerQuota"] = s.quotaTaskProviderQuota(identity, tasks)
-	if identity.isAdmin() {
+	response["providerQuota"] = s.quotaTaskProviderQuota(p, tasks)
+	if p.scopeOf() == domain.ScopeAll {
 		response["ownerNames"] = s.quotaOwnerNames(tasks)
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -127,7 +128,7 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 // 5h, which is a schedule guess; Claude reports a real resets_at per window and
 // that is what the operator is looking at when they wonder why a fire did not
 // move the number.
-func (s *Server) quotaTaskProviderQuota(identity sessionIdentity, tasks []domain.ScheduledTask) map[string]monitoring.QuotaSnapshot {
+func (s *Server) quotaTaskProviderQuota(p principal, tasks []domain.ScheduledTask) map[string]monitoring.QuotaSnapshot {
 	out := map[string]monitoring.QuotaSnapshot{}
 	if s.monitoringStore == nil {
 		return out
@@ -136,12 +137,12 @@ func (s *Server) quotaTaskProviderQuota(identity sessionIdentity, tasks []domain
 	// that account's usage through a task they made before the revocation.
 	visible := map[string]bool{}
 	granted := map[string]bool{}
-	if !identity.isAdmin() {
-		granted = s.allowedProviderIDsForUser(identity.UserID)
+	if p.scopeOf() != domain.ScopeAll {
+		granted = s.allowedProviderIDsForPrincipal(p)
 	}
 	for _, task := range tasks {
 		for _, providerID := range task.ProviderIDs {
-			if identity.isAdmin() || granted[providerID] {
+			if p.scopeOf() == domain.ScopeAll || granted[providerID] {
 				visible[providerID] = true
 			}
 		}
@@ -172,11 +173,11 @@ func (s *Server) quotaTaskProviderQuota(identity sessionIdentity, tasks []domain
 }
 
 // quotaVisibleRuns returns recent firings for the tasks the caller may see.
-// Admins get the global page straight from the store; a normal user's rows are
-// gathered per task, so another tenant's traffic can neither be read nor
-// crowd out their own history by filling the shared page.
-func (s *Server) quotaVisibleRuns(identity sessionIdentity, tasks []domain.ScheduledTask) ([]domain.ScheduledTaskRun, error) {
-	if identity.isAdmin() {
+// Admins and "all"-scope roles get the global page straight from the store; a
+// normal user's rows are gathered per task, so another tenant's traffic can
+// neither be read nor crowd out their own history by filling the shared page.
+func (s *Server) quotaVisibleRuns(p principal, tasks []domain.ScheduledTask) ([]domain.ScheduledTaskRun, error) {
+	if p.scopeOf() == domain.ScopeAll {
 		return s.scheduledTaskStore.ListScheduledTaskRuns("", quotaRunHistoryLimit)
 	}
 	merged := []domain.ScheduledTaskRun{}
@@ -204,8 +205,9 @@ func (s *Server) quotaVisibleRuns(identity sessionIdentity, tasks []domain.Sched
 	return merged, nil
 }
 
-// quotaOwnerNames maps the distinct task owners to display names. Only admins
-// ever receive it, so a normal user's payload carries no other identities.
+// quotaOwnerNames maps the distinct task owners to display names. Only
+// "all"-scope callers ever receive it, so a normal user's payload carries no
+// other identities.
 func (s *Server) quotaOwnerNames(tasks []domain.ScheduledTask) map[string]string {
 	names := map[string]string{}
 	for _, task := range tasks {
@@ -272,7 +274,7 @@ func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.validateScheduledTaskProviders(identity, task); err != nil {
+	if err := s.validateScheduledTaskProviders(s.requestPrincipal(r), task); err != nil {
 		writeOpenAIError(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -303,8 +305,7 @@ func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Reques
 // created stamp are taken from the stored row, never from the body, so a stale
 // editor tab cannot rewrite identity fields.
 func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
-	identity, ok := requireQuotaUser(w, r)
-	if !ok {
+	if _, ok := requireQuotaUser(w, r); !ok {
 		return
 	}
 	if !s.scheduledTaskStoreReady() {
@@ -333,7 +334,7 @@ func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.validateScheduledTaskProviders(identity, task); err != nil {
+	if err := s.validateScheduledTaskProviders(s.requestPrincipal(r), task); err != nil {
 		writeOpenAIError(w, http.StatusForbidden, err.Error())
 		return
 	}

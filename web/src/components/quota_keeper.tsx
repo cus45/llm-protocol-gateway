@@ -189,7 +189,7 @@ async function readError(response: Response) {
   return nested || `HTTP ${response.status}`;
 }
 
-export function QuotaKeeperPanel({ providers, isAdmin, canManage }: { providers: Provider[]; isAdmin: boolean; canManage: boolean }) {
+export function QuotaKeeperPanel({ providers, showOwner, canManage }: { providers: Provider[]; showOwner: boolean; canManage: boolean }) {
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [recentRuns, setRecentRuns] = useState<ScheduledTaskRun[]>([]);
   const [providerQuota, setProviderQuota] = useState<Record<string, MonitorQuota>>({});
@@ -339,7 +339,7 @@ export function QuotaKeeperPanel({ providers, isAdmin, canManage }: { providers:
                 onEdit={() => setEditor({ draft: { ...emptyDraft(), ...task } })}
                 onDelete={() => void remove(task)}
                 now={now}
-                owner={isAdmin ? ownerNames[task.ownerUserId || ''] || '' : ''}
+                owner={showOwner ? ownerNames[task.ownerUserId || ''] || '' : ''}
                 serverZone={serverZone}
               />
             ))}

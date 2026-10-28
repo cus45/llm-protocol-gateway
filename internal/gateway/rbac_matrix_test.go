@@ -486,6 +486,64 @@ func TestQuotaViewOnlyRoleCanOpenPage(t *testing.T) {
 	}
 }
 
+// 「全部资源」范围对定时任务与 Provider/路由一致：只读能看到所有任务并拿到
+// 归属名，拿到维护权限后也能改别人建的任务、用别人的 Provider 建任务。
+func TestScopeAllQuotaRoleCoversEveryTask(t *testing.T) {
+	f := newRBACFixture(t)
+	f.server.scheduledTaskStore = newFakeScheduledTaskStore()
+	if err := f.server.scheduledTaskStore.SaveScheduledTask(domain.ScheduledTask{
+		ID: "q-alice", Name: "alice 的保活", OwnerUserID: "alice", Enabled: true,
+		Mode: domain.ScheduleEveryHours, Interval: 5, ProviderIDs: []string{"alice-private"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.scheduledTaskStore.SaveScheduledTask(domain.ScheduledTask{
+		ID: "q-admin", Name: "admin 的保活", OwnerUserID: "admin", Enabled: true,
+		Mode: domain.ScheduleEveryHours, Interval: 5, ProviderIDs: []string{"shared"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setAliceRole := func(id string, perms ...domain.Permission) {
+		t.Helper()
+		if err := f.roles.SaveRole(domain.Role{ID: id, Name: id, Scope: domain.ScopeAll, Permissions: perms}); err != nil {
+			t.Fatal(err)
+		}
+		alice := f.users.users["alice"]
+		alice.RoleID = id
+		f.users.users["alice"] = alice
+	}
+
+	setAliceRole("quota-all-view", domain.PermQuotaKeeperView)
+	list := f.call(t, "alice", http.MethodGet, "/__quota-tasks", "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("scope=all view list status=%d body=%s", list.Code, list.Body.String())
+	}
+	var payload struct {
+		Tasks      []domain.ScheduledTask `json:"tasks"`
+		OwnerNames map[string]string      `json:"ownerNames"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Tasks) != 2 {
+		t.Fatalf("scope=all view sees %d tasks, want 2", len(payload.Tasks))
+	}
+	if len(payload.OwnerNames) != 2 {
+		t.Fatalf("scope=all ownerNames=%v, want both owners", payload.OwnerNames)
+	}
+	if recorder := f.call(t, "alice", http.MethodPatch, "/__quota-tasks/q-admin", `{"name":"x"}`); recorder.Code != http.StatusForbidden {
+		t.Fatalf("view-only patch status=%d, want 403", recorder.Code)
+	}
+
+	setAliceRole("quota-all-manage", domain.PermQuotaKeeperView, domain.PermQuotaKeeperManage)
+	if recorder := f.call(t, "alice", http.MethodPatch, "/__quota-tasks/q-admin", `{"name":"改过的","mode":"every_hours","interval":6,"providerIds":["shared"]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("scope=all manage patch status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := f.call(t, "alice", http.MethodPost, "/__quota-tasks", `{"name":"监管任务","mode":"every_hours","interval":5,"providerIds":["shared"]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("scope=all create on shared provider status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // 角色接口：内置不可改不可删、改角色名冲突由存储层兜底、权限点必须存在。
 func TestRoleAPIValidation(t *testing.T) {
 	f := newRBACFixture(t)
