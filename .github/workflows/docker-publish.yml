@@ -208,5 +208,9 @@ jobs:
           set -euo pipefail
           mapfile -t TAGS <<<"${{ steps.meta.outputs.tags }}"
           for tag in "${TAGS[@]}"; do
-            docker buildx imagetools inspect "$tag" | head -20
+            # 不能直接接 head：它提前关管道会让 imagetools 收到 SIGPIPE，
+            # pipefail 下这一步会莫名其妙地失败。先读完再用 sed 截取。
+            out=$(docker buildx imagetools inspect "$tag")
+            printf '%s\n' "$out" | sed -n '1,20p'
+            echo
           done
