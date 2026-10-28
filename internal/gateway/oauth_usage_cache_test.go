@@ -50,6 +50,9 @@ func TestUsageCacheFailureKeepsTheLastGoodValue(t *testing.T) {
 func TestUsageCacheFailureBackoffIsCapped(t *testing.T) {
 	cache := newOAuthUsageCache()
 	key := "cursor:p1"
+	// waitForRefresh 返回的是「距下次重试还剩多久」，每轮测量天然比上一轮少掉
+	// 一次调用的耗时（纳秒级），不能按严格单调比较；1 毫秒容差足够。
+	const backoffTolerance = time.Millisecond
 	var previous time.Duration
 	for i := 0; i < 12; i++ {
 		cache.setFailure(key, errors.New("boom"))
@@ -57,7 +60,7 @@ func TestUsageCacheFailureBackoffIsCapped(t *testing.T) {
 		if wait > oauthUsageFailureCap {
 			t.Fatalf("failure %d waited %v, above the cap %v", i+1, wait, oauthUsageFailureCap)
 		}
-		if i > 0 && wait < previous && wait != oauthUsageFailureCap {
+		if i > 0 && wait+backoffTolerance < previous {
 			t.Fatalf("failure %d waited less (%v) than the one before (%v)", i+1, wait, previous)
 		}
 		previous = wait
