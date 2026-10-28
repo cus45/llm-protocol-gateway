@@ -668,7 +668,9 @@ export function ApiKeyDetailWorkspace(props: ApiKeyWorkspaceProps) {
   const canDelete = props.canDelete !== false;
   const { route, primary, outputProtocol } = apiKeyRouteInfo(keyItem, routes, providers);
   const [tab, setTab] = React.useState<ApiKeyDetailTab>('routing');
-  const [publicPreview, setPublicPreview] = React.useState(false);
+  // 有公网地址（隧道或域名反代）时默认就按公网给配置：绑回环的部署里内网地址
+  // 对浏览器这边根本不通，默认给内网等于默认给一个连不上的 URL。
+  const [publicPreview, setPublicPreview] = React.useState(Boolean(props.publicBase));
   const [copied, flashCopied] = useCopiedToken();
   const [fallbackModalOpen, setFallbackModalOpen] = React.useState(false);
   const profiles = keyItem.profiles || [];
@@ -1486,7 +1488,7 @@ function ParamsTab({
             <Switch
               checked={publicPreview && publicAvailable}
               disabled={!publicAvailable}
-              label={publicAvailable ? (publicPreview ? '使用公网域名' : '使用内网地址') : '隧道未开启，只能使用内网地址'}
+              label={publicAvailable ? (publicPreview ? '使用公网域名' : '使用内网地址') : '没有公网地址，只能使用内网地址'}
               onChange={onPublicPreviewChange}
             />
           </div>
@@ -1723,7 +1725,7 @@ function ClientTab({
               type="button"
               className={publicPreview ? 'active' : ''}
               disabled={!publicAvailable}
-              title={publicAvailable ? livePublicURL : '未开启公网域名 / 隧道'}
+              title={publicAvailable ? livePublicURL : '未配置公网域名 / 隧道'}
               onClick={() => onPublicPreviewChange(true)}
             >
               公网域名
@@ -1732,7 +1734,7 @@ function ClientTab({
           <code className="akc-inline-code" title={clientURL}>{clientURL || gatewayURL}</code>
         </div>
         <span className="akc-bar-hint">
-          {tunnelRunning ? `隧道运行中${livePublicURL ? ` · ${livePublicURL}` : ''}` : '公网隧道未开启，仅内网可用'}
+          {livePublicURL ? `公网地址${tunnelRunning ? '（隧道）' : ''} · ${livePublicURL}` : '未配置公网地址，仅内网可用'}
         </span>
       </div>
 

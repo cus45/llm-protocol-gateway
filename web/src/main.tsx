@@ -28,6 +28,8 @@ import {
     aggregateScheduleAttempts,
     antiAutofillProps,
     API_BASE,
+    browserAccessOrigin,
+    clientGatewayRoot,
     API_KEY_VIEW_STORAGE_KEY,
     API_KEYS_PAGE_SIZE,
     apiKeyReferencesProvider,
@@ -4423,7 +4425,7 @@ function App() {
       showToast('找不到对应输出协议的接入端点，无法测试');
       return null;
     }
-    const base = `${localGatewayRoot(state.endpoints)}${endpoint.basePath}`;
+    const base = `${clientGatewayRoot(state.endpoints, '')}${endpoint.basePath}`;
     const model = key.modelOverride?.trim() || state.providers.find((item) => item.id === route.providerId)?.defaultModel || 'auto';
     const isClaude = route.outputProtocol === 'claude';
     const url = isClaude ? `${base}/v1/messages`
@@ -4600,6 +4602,10 @@ function App() {
   const tunnelRunning = tunnel?.status === 'running';
   const livePublicURL = activePublicBaseURL(publicAccess, tunnelRunning);
   const liveUIPublicURL = activeUIPublicBaseURL(publicAccess, tunnelRunning);
+  // 控制台挂在域名后面时，浏览器手里的 origin 就是客户端真正能用的公网入口，
+  // 比网关自报的网卡地址可信。隧道地址仍优先（可与管理台域名分开）。
+  const browserOrigin = browserAccessOrigin();
+  const clientPublicRoot = livePublicURL || browserOrigin;
   const activeTunnelMode = tunnelRunning ? tunnel?.mode : '';
   const quickTunnelActive = tunnelRunning && activeTunnelMode === 'quick';
   const customTunnelActive = tunnelRunning && activeTunnelMode === 'custom';
@@ -4615,6 +4621,8 @@ function App() {
   const lanAccessURL = webExposed
     ? `http://${lanHostHint || '<局域网IP>'}:${portHint}`
     : '已关闭（仅本机可访问）';
+  // 接入根地址的「本机」口径：绑回环时自报网卡 IP 已不可达，只能给 127.0.0.1。
+  const localClientRoot = webExposed ? localGatewayRoot(state.endpoints) : `http://127.0.0.1:${portHint}`;
   // 远程开关示例里的 base 地址：该接口拒绝公网调用，所以给的是局域网地址
   // （没探测到局域网 IP 时退回本机地址），不要给公网域名。
   const publicControlBaseURL = webExposed && lanHostHint
@@ -5016,12 +5024,12 @@ function App() {
                     canDelete={canDo('keys.delete')}
                     testingProviderID={testingProviderID}
                     tunnelRunning={tunnelRunning}
-                    livePublicURL={livePublicURL}
+                    livePublicURL={clientPublicRoot}
                     fixedOutputLabels={fixedOutputLabels}
                     panel={apiKeyPanelProps}
                     onToggleEnabled={toggleApiKeyEnabled}
                     onToast={showToast}
-                    publicBase={tunnelRunning ? livePublicURL : ''}
+                    publicBase={clientPublicRoot}
                     onTest={runApiKeySandboxTest}
                   />
                 ) : (
@@ -5079,12 +5087,12 @@ function App() {
                   canDelete={canDo('keys.delete')}
                   testingProviderID={testingProviderID}
                   tunnelRunning={tunnelRunning}
-                  livePublicURL={livePublicURL}
+                  livePublicURL={clientPublicRoot}
                   fixedOutputLabels={fixedOutputLabels}
                   panel={apiKeyPanelProps}
                   onToggleEnabled={toggleApiKeyEnabled}
                   onToast={showToast}
-                  publicBase={tunnelRunning ? livePublicURL : ''}
+                  publicBase={clientPublicRoot}
                   onTest={runApiKeySandboxTest}
                 />
               ) : null}
@@ -5395,20 +5403,24 @@ function App() {
                 <div className="output-hero-left">
                   <div className="output-hero-title">
                     <span>网关连通状态</span>
-                    <Badge tone={tunnelRunning ? 'green' : 'slate'}>{tunnelRunning ? '公网穿透运行中' : '仅局域网监听'}</Badge>
+                    <Badge tone={clientPublicRoot ? 'green' : 'slate'}>
+                      {tunnelRunning ? '公网穿透运行中' : browserOrigin ? '域名反代访问' : '仅局域网监听'}
+                    </Badge>
                   </div>
                   <div className="output-hero-desc">
                     {tunnelRunning
                       ? `当前已通过 Cloudflare 隧道穿透公网，外网客户端可通过 HTTPS 访问模型 API；Web 管理页具备独立安全鉴权。`
-                      : `网关当前仅在本地或局域网提供服务。如需外网访问，请在「公网访问」页一键开启免费隧道或绑定自有域名。`}
+                      : browserOrigin
+                        ? `当前通过 ${browserOrigin} 提供公网访问，外网客户端直接使用下面的公网地址即可；Web 管理页要求登录。`
+                        : `网关当前仅在本地或局域网提供服务。如需外网访问，请在「公网访问」页一键开启免费隧道或绑定自有域名。`}
                   </div>
                 </div>
                 <div className="output-hero-actions">
-                  <button className="btn" type="button" onClick={() => { copy(localGatewayRoot(state.endpoints)); showToast(`已复制局域网根地址：${localGatewayRoot(state.endpoints)}`); }}>
-                    复制局域网根地址
+                  <button className="btn" type="button" onClick={() => { copy(localClientRoot); showToast(`已复制${webExposed ? '局域网' : '本机'}根地址：${localClientRoot}`); }}>
+                    复制{webExposed ? '局域网' : '本机'}根地址
                   </button>
-                  {tunnelRunning && activePublicBaseURL(publicAccess, tunnelRunning) ? (
-                    <button className="btn primary" type="button" onClick={() => { const u = activePublicBaseURL(publicAccess, tunnelRunning); copy(u); showToast(`已复制公网根地址：${u}`); }}>
+                  {clientPublicRoot ? (
+                    <button className="btn primary" type="button" onClick={() => { copy(clientPublicRoot); showToast(`已复制公网根地址：${clientPublicRoot}`); }}>
                       复制公网根地址
                     </button>
                   ) : null}
@@ -5418,7 +5430,10 @@ function App() {
               <div className="output-showcase-grid">
                 {state.endpoints.map((endpoint) => {
                   const url = endpointURL(endpoint);
-                  const publicEndpointURL = publicAccessURL(endpoint, tunnelRunning);
+                  // 公网地址：隧道给的是每端点完整 URL（含 basePath）；只有域名时按当前
+                  // 浏览器 origin 拼，和「复制公网根地址」保持同一口径。
+                  const tunnelEndpointURL = tunnelRunning && endpoint.publicUrl ? publicAccessURL(endpoint, tunnelRunning) : '';
+                  const publicEndpointURL = tunnelEndpointURL || (clientPublicRoot ? `${clientPublicRoot}${endpoint.basePath}` : '');
                   const isClaude = endpoint.protocol === 'claude';
                   const isResponses = endpoint.protocol === 'openai_responses';
                   const title = isClaude ? 'Anthropic Claude Messages' : isResponses ? 'OpenAI Responses (Codex)' : 'OpenAI Chat Completions';
@@ -5428,7 +5443,12 @@ function App() {
                       ? '兼容 OpenAI Responses 格式与 Codex 命令行工具，支持流式交互与官方登录态保留。'
                       : '兼容标准 OpenAI SDK、LangChain、LobeChat、Cherry Studio、NextChat、Cursor 等绝大多数 AI 工具生态。';
 
-                  const activeTestUrl = tunnelRunning && endpoint.publicUrl ? publicEndpointURL : url;
+                  // 绑到回环时「局域网」这行其实是假的：自报网卡 IP 那个端口已经不对外，
+                  // 只有本机进程能用 127.0.0.1。
+                  const localEndpointURL = webExposed ? url : `http://127.0.0.1:${endpoint.listenPort}${endpoint.basePath}`;
+                  const localEndpointTag = webExposed ? '局域网' : '本机';
+                  // 示例优先公网地址；没有公网地址时给当前控制台真正能连通的那个。
+                  const activeTestUrl = publicEndpointURL || localEndpointURL;
                   const sampleCurl = isClaude
                     ? `curl -X POST "${activeTestUrl}" \\\n  -H "Content-Type: application/json" \\\n  -H "x-api-key: sk-gw-YOUR_KEY" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -d '{"model": "claude-3-7-sonnet-20250219", "max_tokens": 100, "messages": [{"role": "user", "content": "ping"}]}'`
                     : isResponses
@@ -5458,14 +5478,16 @@ function App() {
 
                       <div className="output-url-group">
                         <div className="output-url-item">
-                          <span className="output-url-tag">局域网</span>
-                          <span className="output-url-code" title={url}>{url}</span>
-                          <button className="mini-btn" type="button" onClick={() => { copy(url); showToast(`已复制局域网地址：${url}`); }}>复制</button>
+                          <span className="output-url-tag">{localEndpointTag}</span>
+                          <span className="output-url-code" title={localEndpointURL}>{localEndpointURL}</span>
+                          <button className="mini-btn" type="button" onClick={() => { copy(localEndpointURL); showToast(`已复制${localEndpointTag}地址：${localEndpointURL}`); }}>复制</button>
                         </div>
                         <div className="output-url-item">
                           <span className="output-url-tag">公网</span>
-                          <span className="output-url-code" title={publicEndpointURL}>{tunnelRunning && endpoint.publicUrl ? publicEndpointURL : '未开启公网穿透'}</span>
-                          {tunnelRunning && endpoint.publicUrl ? (
+                          <span className="output-url-code" title={publicEndpointURL || url}>
+                            {publicEndpointURL || '未配置公网地址'}
+                          </span>
+                          {publicEndpointURL ? (
                             <button className="mini-btn" type="button" onClick={() => { copy(publicEndpointURL); showToast(`已复制公网地址：${publicEndpointURL}`); }}>复制</button>
                           ) : (
                             <button className="mini-btn" type="button" onClick={() => goToPage('public-access')}>去开启</button>

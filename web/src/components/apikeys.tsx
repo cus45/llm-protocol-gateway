@@ -161,7 +161,8 @@ export function ApiKeyDetailPanel({
 }) {
   const { route, binding, routeProvider, bindingAction } = getApiKeyBinding(keyItem, routes, providers);
   const modelOptions = routeProvider ? models.filter((model) => model.providerId === routeProvider.id) : [];
-  const publicAvailable = Boolean(tunnelRunning && livePublicURL);
+  // 隧道域名或控制台自身的域名都算「公网可用」：反代部署时网关自己不知道外面叫什么。
+  const publicAvailable = Boolean(livePublicURL);
   const defaultPublicBase = publicAvailable ? livePublicURL : '';
   const apiKeyClientURL = route ? apiKeyClientBaseURL(route, endpoints, defaultPublicBase) : '';
   const [clientConfigModal, setClientConfigModal] = React.useState<'opencode' | 'codex' | 'claude' | null>(null);
@@ -319,7 +320,7 @@ export function ApiKeyDetailPanel({
           {route ? (
             <div className="api-key-call-example">
               <div className="field-label-row">
-                <label>{tunnelRunning ? '公网调用示例' : '局域网调用示例'}</label>
+                <label>{publicAvailable ? '公网调用示例' : '内网调用示例'}</label>
                 <CopyButton value={buildApiKeyPublicCurl(keyItem, route, endpoints, livePublicURL, routeProvider)} label="复制 curl" />
               </div>
               <div className="hint-text">{`协议：${protocolLabel(route.outputProtocol)} · 客户端 Base URL：${apiKeyClientURL}${route.outputProtocol === 'openai_chat' ? ' · 完整路径：/v1/chat/completions' : route.outputProtocol === 'claude' ? ' · 完整路径：/anthropic/v1/messages（Base URL 不要带 /v1）' : ' · 完整路径：/openai/v1/responses'}${keyItem.modelOverride ? ` · 固定模型：${keyItem.modelOverride}` : routeProvider?.defaultModel ? ` · 默认模型：${routeProvider.defaultModel}` : ''}`}</div>
@@ -926,7 +927,7 @@ export function ApiKeyClientConfigModal({
               公网域名
             </button>
           </div>
-          <div className="hint-text">{`当前根地址：${gatewayRoot}${!publicAvailable ? ' · 公网域名不可用（请先在「公网访问」开启隧道/域名）' : ''}`}</div>
+          <div className="hint-text">{`当前根地址：${gatewayRoot}${!publicAvailable ? ' · 公网域名不可用（通过域名打开控制台，或先在「公网访问」开启隧道）' : ''}`}</div>
         </div>
 
         {client === 'codex' ? (

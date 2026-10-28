@@ -2179,7 +2179,8 @@ export function buildRouteTestPayload(model: string, message: string) {
 export function routeGatewayTestURL(route: Route, endpoints: OutputEndpoint[]) {
   const endpoint = endpoints.find((item) => item.protocol === route.outputProtocol) || endpoints.find((item) => item.protocol === 'openai_chat');
   if (!endpoint) return `${API_BASE}/v1/chat/completions`;
-  const localRoot = `http://${endpoint.listenHost}:${endpoint.listenPort}`;
+  // 示例要能被复制到别处直接跑：优先用当前访问控制台的域名，别给自报网卡 IP。
+  const localRoot = browserAccessOrigin() || `http://${endpoint.listenHost}:${endpoint.listenPort}`;
   return routeGatewayURL(route, endpoints, localRoot);
 }
 
@@ -2792,6 +2793,25 @@ export function buildApiKeyCallPayload(route: Route, model: string) {
 export function localGatewayRoot(endpoints: OutputEndpoint[]) {
   const endpoint = endpoints[0];
   return endpoint ? `http://${endpoint.listenHost}:${endpoint.listenPort}` : 'http://127.0.0.1:18093';
+}
+
+/**
+ * 浏览器是从哪个地址打开控制台的，那也就是客户端真正能连通的地址：域名反代
+ * （Caddy/Nginx）后面，网关自报的网卡 IP 可能已经不对公网开放。loopback 打开
+ * （桌面端、服务器本机）没有可外发的地址，返回空串。
+ */
+export function browserAccessOrigin() {
+  if (typeof window === 'undefined') return '';
+  const {protocol, hostname, origin} = window.location;
+  if (protocol !== 'https:' && protocol !== 'http:') return '';
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host === '::1' || host.startsWith('127.')) return '';
+  return origin.replace(/\/$/, '');
+}
+
+/** 客户端接入根地址：隧道/自定义域名优先，其次当前浏览器 origin，最后退回网卡地址。 */
+export function clientGatewayRoot(endpoints: OutputEndpoint[], publicBase: string) {
+  return (publicBase || browserAccessOrigin() || localGatewayRoot(endpoints)).replace(/\/$/, '');
 }
 
 export function activePublicBaseURL(publicAccess: PublicAccessSettings, tunnelRunning: boolean) {
