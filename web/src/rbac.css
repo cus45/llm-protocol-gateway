@@ -242,6 +242,15 @@ img.rbac-avatar { background: var(--surface-sunken); box-shadow: none; }
 .rbac-grant-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .rbac-grant-head b { color: var(--text-strong); font-size: 13px; }
 .rbac-grant-head span { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.rbac-grant-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px;
+}
+/* 搜索框占满、全选按钮按内容宽；rbac-search 默认 min-width:200px 在这里太宽。 */
+.rbac-grant-toolbar .rbac-search { min-width: 0; }
+/* type="search" 自带一个 ×，会和自定义的清空按钮并排出现两个。 */
+.rbac-grant-toolbar input::-webkit-search-cancel-button { display: none; }
+.rbac-grant-toolbar .rbac-grant-all { flex: 0 0 auto; white-space: nowrap; height: var(--control-h-sm, 32px); }
 .rbac-grant-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
