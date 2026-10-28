@@ -38,7 +38,7 @@ func TestDeferredSSEWriterHeartbeatDoesNotSetWroteBody(t *testing.T) {
 }
 
 func TestStartSSEHeartbeatEmitsPing(t *testing.T) {
-	rec := httptest.NewRecorder()
+	rec := newSyncRecorder()
 	dw := newDeferredSSEWriter(rec)
 	dw.Header().Set("Content-Type", "text/event-stream")
 	dw.WriteHeader(http.StatusOK)
@@ -48,12 +48,12 @@ func TestStartSSEHeartbeatEmitsPing(t *testing.T) {
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if strings.Contains(rec.Body.String(), ": ping") {
+		if strings.Contains(rec.String(), ": ping") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected heartbeat comment, body=%q", rec.Body.String())
+	t.Fatalf("expected heartbeat comment, body=%q", rec.String())
 }
 
 func TestFinishConvertedProxyHeartbeatBlocksEmptyRetry(t *testing.T) {
@@ -92,7 +92,7 @@ func TestFinishConvertedProxyHeartbeatBlocksEmptyRetry(t *testing.T) {
 func TestSSEHeartbeatResponseWriterSerializesWithStreamFlush(t *testing.T) {
 	// Chat↔Claude converters call Write then Flush on the same writer; the
 	// heartbeat wrapper must not deadlock under that pattern.
-	rec := httptest.NewRecorder()
+	rec := newSyncRecorder()
 	hw := newSSEHeartbeatResponseWriter(rec)
 	hw.WriteHeader(http.StatusOK)
 	stop := startSSEHeartbeat(hw, 15*time.Millisecond)
@@ -106,12 +106,12 @@ func TestSSEHeartbeatResponseWriterSerializesWithStreamFlush(t *testing.T) {
 	}
 	deadline := time.Now().Add(400 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if strings.Contains(rec.Body.String(), ": ping") {
+		if strings.Contains(rec.String(), ": ping") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected heartbeat amid flushed chunks, body=%q", rec.Body.String())
+	t.Fatalf("expected heartbeat amid flushed chunks, body=%q", rec.String())
 }
 
 func TestTTFTIgnoresSSECommentHeartbeat(t *testing.T) {

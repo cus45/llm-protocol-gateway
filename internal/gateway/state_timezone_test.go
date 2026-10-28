@@ -11,13 +11,12 @@ import (
 // The console builds "today" for 用量统计 and the per-key badge from the
 // gateway's day, not the browser's: the zone must reach /__state.
 func TestStateCarriesServerTimeZone(t *testing.T) {
-	previous := time.Local
-	shanghai, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
+	if _, err := time.LoadLocation("Asia/Shanghai"); err != nil {
 		t.Skipf("no tz database: %v", err)
 	}
-	time.Local = shanghai
-	t.Cleanup(func() { time.Local = previous })
+	// 用 TZ 注入，不写 time.Local：后者是全局变量，与其它测试残留的计时器
+	// goroutine 里的 time.Now 会让 -race 直接报 data race。
+	t.Setenv("TZ", "Asia/Shanghai")
 
 	server, _ := newAuthTestServer(t)
 	handler := server.Handler()
