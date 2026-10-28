@@ -219,7 +219,7 @@ func routePermission(method, path string) *domain.Permission {
 		return nil
 	case "/__app/logs":
 		return perm(domain.PermAppLogsView)
-	case "/__host-metrics", "/__host-metrics/snapshot", "/__host-diagnostics", "/__settings/paths":
+	case "/__host-metrics", "/__host-metrics/snapshot", "/__host-metrics/stream", "/__host-diagnostics", "/__settings/paths":
 		return perm(domain.PermMachineView)
 	case "/__users":
 		if read {

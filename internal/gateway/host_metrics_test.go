@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
+	"github.com/luca/llm-protocol-gateway/internal/store"
 )
 
-func TestHostMetricsSamplerStartsAndStopsWithClients(t *testing.T) {
+// 采样器现在常驻：无人看时降频而不是退出，否则页面关着的时段在图上会是空白。
+func TestHostMetricsSamplerRunsAndSlowsWhenIdle(t *testing.T) {
 	h := newHostMetricsSampler()
 	snap := h.Snapshot()
 	if snap.CPUCount <= 0 {
@@ -21,29 +25,170 @@ func TestHostMetricsSamplerStartsAndStopsWithClients(t *testing.T) {
 		t.Fatal("expected collectedAt")
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if h.collecting.Load() {
-			break
-		}
+	for time.Now().Before(deadline) && !h.collecting.Load() {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !h.collecting.Load() {
 		t.Fatal("expected background sampler to be running after Snapshot")
 	}
+	if !h.active() {
+		t.Fatal("a fresh Snapshot must count as an active viewer")
+	}
 
-	// Simulate idle clients: backdate lastRequest and wait for auto-stop.
+	// A subscriber keeps it at full rate even after the request window expires.
+	unsubscribe := h.Subscribe()
 	h.mu.Lock()
-	h.lastRequest = time.Now().Add(-hostMetricsIdleStopAfter - time.Second)
+	h.lastRequest = time.Now().Add(-hostMetricsActiveWindow - time.Second)
+	h.mu.Unlock()
+	if !h.active() {
+		t.Fatal("a live subscriber must keep full-rate sampling")
+	}
+	unsubscribe()
+	// Unsubscribing itself counts as activity for the grace window, so age it
+	// out before asserting the idle cadence.
+	h.mu.Lock()
+	h.lastRequest = time.Now().Add(-hostMetricsActiveWindow - time.Second)
 	h.mu.Unlock()
 
-	deadline = time.Now().Add(hostMetricsPollInterval + 3*time.Second)
-	for time.Now().Before(deadline) {
-		if !h.collecting.Load() {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+	// Nobody watching: the loop stays alive but samples slower.
+	if h.active() {
+		t.Fatal("expected idle cadence once the window expired and nobody subscribed")
 	}
-	t.Fatal("expected sampler to stop after idle window")
+	if !h.collecting.Load() {
+		t.Fatal("the sampler must not stop when idle — the chart needs the history")
+	}
+}
+
+// 泵每拍都要读最新样本，但它不是"观众"：如果读一次就续一次活跃窗口，
+// 降频永远不会发生，无人看时也按满速采。
+func TestHostMetricsLatestDoesNotCountAsAViewer(t *testing.T) {
+	h := newHostMetricsSampler()
+	h.Start()
+	h.mu.Lock()
+	h.lastRequest = time.Now().Add(-hostMetricsActiveWindow - time.Second)
+	h.mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		_ = h.Latest()
+	}
+	if h.active() {
+		t.Fatal("reading the latest sample must not extend the active window")
+	}
+	// Snapshot does count: a page asking for data is a real viewer.
+	_ = h.Snapshot()
+	if !h.active() {
+		t.Fatal("Snapshot must mark an active viewer")
+	}
+}
+
+// 冷启动时两个控制台页签同时连上来：谁先跑 Start 都要等环形缓冲就绪，
+// 后到的那个不能拿到空历史（曾经会画出空白曲线）。
+func TestHostMetricsConcurrentStartWaitsForHistory(t *testing.T) {
+	backing := &fakeHostMetricStore{}
+	seeded := storePoint(time.Now().Add(-30*time.Second).UnixMilli(), 11)
+	backing.samples = append(backing.samples, seeded)
+
+	h := newHostMetricsSampler(backing)
+	var wg sync.WaitGroup
+	empty := make([]bool, 8)
+	for i := range empty {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			empty[index] = len(h.History()) == 0
+		}(i)
+	}
+	wg.Wait()
+	for i, wasEmpty := range empty {
+		if wasEmpty {
+			t.Fatalf("caller %d saw an empty history after Start", i)
+		}
+	}
+}
+
+func TestHostMetricsHistoryRingKeepsWindowAndDedupes(t *testing.T) {
+	h := newHostMetricsSampler()
+	now := time.Now()
+	h.mu.Lock()
+	// A point from outside the window is dropped; an in-window one is kept.
+	h.appendLocked(storePoint(now.Add(-hostMetricsHistoryWindow-time.Minute).UnixMilli(), 1))
+	h.appendLocked(storePoint(now.UnixMilli(), 2))
+	h.appendLocked(storePoint(now.UnixMilli(), 3)) // same ms: replaces, not duplicates
+	points := make([]store.HostMetricSample, len(h.samples))
+	copy(points, h.samples)
+	h.mu.Unlock()
+
+	if len(points) != 1 {
+		t.Fatalf("ring kept %d points: %+v", len(points), points)
+	}
+	if points[0].CPU != 3 {
+		t.Fatalf("same-millisecond sample must replace the old one, cpu=%v", points[0].CPU)
+	}
+	if got := len(h.History()); got != 1 {
+		t.Fatalf("History()=%d", got)
+	}
+}
+
+func TestHostMetricsSamplerFlushesAndRestoresPersistedHistory(t *testing.T) {
+	backing := &fakeHostMetricStore{}
+	first := newHostMetricsSampler(backing)
+	// Seed the buffers directly: appendLocked rejects points older than the
+	// live sample Start() just took, and this test is about flush + restore.
+	seeded := storePoint(time.Now().Add(-time.Minute).UnixMilli(), 42)
+	first.mu.Lock()
+	first.samples = []store.HostMetricSample{seeded}
+	first.pending = []store.HostMetricSample{seeded}
+	first.mu.Unlock()
+	first.Stop()
+
+	if len(backing.samples) == 0 {
+		t.Fatal("Stop must flush buffered samples")
+	}
+	if backing.prunedAt == 0 {
+		t.Fatal("the first flush of a run must prune rows past the retention window")
+	}
+
+	// A restart seeds the ring from the store, so the chart does not start empty.
+	second := newHostMetricsSampler(backing)
+	second.Start()
+	found := false
+	for _, point := range second.History() {
+		if point.CPU == 42 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restored history missing the persisted point: %+v", second.History())
+	}
+}
+
+// 流连上时先发一整窗快照；历史绝不能再逐条重发一遍，否则客户端要先吞掉
+// 上千个重复帧才看到 snapshot，而且后面的 sample 会和快照里的点重复。
+func TestHostStreamSendsSnapshotWithoutReplayingHistory(t *testing.T) {
+	server := &Server{hostMetrics: newHostMetricsSampler()}
+	recorder := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/__host-metrics/stream", nil).WithContext(ctx)
+	req = req.WithContext(context.WithValue(req.Context(), authContextKey{}, adminIdentity()))
+
+	done := make(chan struct{})
+	go func() {
+		server.handleHostMetricsStream(recorder, req)
+		close(done)
+	}()
+	<-done
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: snapshot") {
+		t.Fatalf("snapshot frame missing: %q", body)
+	}
+	if strings.Contains(body, "event: sample") {
+		t.Fatalf("connect must not replay every historical point as a sample frame: %q", body)
+	}
+	if !strings.Contains(body, `"points":[`) {
+		t.Fatalf("snapshot must carry the window: %q", body)
+	}
 }
 
 func TestHandleHostMetricsRequiresAdmin(t *testing.T) {
@@ -139,3 +284,41 @@ func TestApplyMemPercent(t *testing.T) {
 		t.Fatalf("got %+v", m)
 	}
 }
+
+// fakeHostMetricStore is an in-memory stand-in for *store.Store.
+type fakeHostMetricStore struct {
+	samples  []store.HostMetricSample
+	prunedAt int64
+}
+
+func (f *fakeHostMetricStore) AppendHostMetricSamples(samples []store.HostMetricSample) error {
+	f.samples = append(f.samples, samples...)
+	return nil
+}
+
+func (f *fakeHostMetricStore) HostMetricSamplesSince(fromMs int64) ([]store.HostMetricSample, error) {
+	var out []store.HostMetricSample
+	for _, sample := range f.samples {
+		if sample.AtMs >= fromMs {
+			out = append(out, sample)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeHostMetricStore) PruneHostMetricSamples(beforeMs int64) (int64, error) {
+	f.prunedAt = beforeMs
+	return 0, nil
+}
+
+func storePoint(atMs int64, cpu float64) store.HostMetricSample {
+	return store.HostMetricSample{AtMs: atMs, CPU: cpu}
+}
+
+// flushRecorder is an httptest.ResponseRecorder that also implements
+// http.Flusher, which the SSE handler requires.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (f *flushRecorder) Flush() {}

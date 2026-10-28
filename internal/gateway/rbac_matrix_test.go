@@ -250,6 +250,7 @@ func TestRoutePermissionMatrix(t *testing.T) {
 		{"settings write denied", http.MethodPatch, "/__settings", `{}`, http.StatusForbidden},
 		{"machine denied", http.MethodGet, "/__host-metrics", "", http.StatusForbidden},
 		{"machine snapshot denied", http.MethodGet, "/__host-metrics/snapshot", "", http.StatusForbidden},
+		{"machine stream denied", http.MethodGet, "/__host-metrics/stream", "", http.StatusForbidden},
 		{"machine diagnostics denied", http.MethodGet, "/__host-diagnostics", "", http.StatusForbidden},
 		{"prices denied", http.MethodGet, "/__prices", "", http.StatusForbidden},
 		{"monitor denied", http.MethodGet, "/__monitor/stream", "", http.StatusForbidden},

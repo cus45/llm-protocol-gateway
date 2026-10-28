@@ -215,12 +215,16 @@ type Server struct {
 	userActivityMu sync.Mutex
 	userActivity   map[string]*userActivityEntry
 
-	// hostMetrics samples CPU load/temp only while the admin homepage is
-	// polling /__host-metrics; the loop auto-stops when clients go idle.
-	// Created once under hostMetricsOnce: two concurrent first polls used to
-	// race and leave one sampler's goroutine running unobserved.
+	// hostMetrics is the process-wide host sampler: one ring of recent samples
+	// in memory, flushed to SQLite in batches and streamed to the machine page
+	// over SSE. Created once under hostMetricsOnce: two concurrent first polls
+	// used to race and leave one sampler's goroutine running unobserved.
 	hostMetrics     *hostMetricsSampler
 	hostMetricsOnce sync.Once
+	hostMetricStore hostMetricsStore
+	hostStreams     *hostMetricsStreamHub
+	hostStreamsOnce sync.Once
+	hostPumpOnce    sync.Once
 
 	// requestCounter increments once per completed model call (see the log
 	// middleware); the machine page's diagnosis turns it into a request rate.
@@ -317,6 +321,9 @@ func NewServer(router *Router, logs *monitor.Store, stateSaver ...StateSaver) *S
 		if pins, ok := stateSaver[0].(sessionPinSaver); ok {
 			server.sessionPins.setSaver(pins)
 		}
+		if hs, ok := stateSaver[0].(hostMetricsStore); ok {
+			server.hostMetricStore = hs
+		}
 	}
 	return server
 }
@@ -383,6 +390,7 @@ func (s *Server) Handler() http.Handler {
 	// release is live (see app_version.go).
 	mux.HandleFunc("GET /__app/version", s.handleAppVersion)
 	mux.HandleFunc("GET /__host-metrics", s.handleHostMetrics)
+	mux.HandleFunc("GET /__host-metrics/stream", s.handleHostMetricsStream)
 	// On-demand A/B snapshot + findings, and the downloadable diagnostics bundle
 	// (see host_metrics_snapshot.go). Separate from the sampler above so a
 	// manual diagnose never disturbs the chart's baseline.
@@ -1642,6 +1650,10 @@ func (s *Server) FlushDeferredWrites(ctx context.Context) error {
 	if err := s.apiKeyToucher.CloseContext(ctx); err != nil {
 		slog.Warn("deferred write did not land before the shutdown deadline", "writer", "api_key_last_used", "error", err)
 		return err
+	}
+	// Host metric samples buffered for the once-a-minute flush.
+	if s.hostMetrics != nil {
+		s.hostMetrics.Stop()
 	}
 	// last_active_at values skipped by the 5-min-per-user throttle. The flush
 	// goroutine's ctx is never cancelled, so force a flush directly here — in a

@@ -267,6 +267,9 @@ func (s *Store) migrate() error {
 	if err := ensureSessionPinsTable(tx); err != nil {
 		return fmt.Errorf("migrate session_pins: %w", err)
 	}
+	if err := ensureHostMetricsTable(tx); err != nil {
+		return fmt.Errorf("migrate host_metrics_samples: %w", err)
+	}
 	if err := addColumnIfMissing(tx, "api_keys", "model_aliases", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

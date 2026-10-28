@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -9,17 +10,34 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/luca/llm-protocol-gateway/internal/store"
 )
 
-// hostMetricsPollInterval is how often the sampler refreshes while at least one
-// console client is actively requesting /__host-metrics. The console charts one
-// point per poll, so this is also the chart's resolution.
+// hostMetricsPollInterval is the sampler's cadence while someone is watching:
+// either a console page is subscribed to the live stream or it polled within
+// hostMetricsActiveWindow. The console charts one point per sample, so this is
+// also the chart's resolution.
 const hostMetricsPollInterval = 3 * time.Second
 
-// hostMetricsIdleStopAfter stops the background sampler when no client has
-// polled for this long (≈3 missed polls). Keeps CPU near zero when the
-// homepage is closed or the tab is backgrounded.
-const hostMetricsIdleStopAfter = 30 * time.Second
+// hostMetricsIdleInterval is the cadence when nobody is watching. The sampler
+// never stops: a gap in the chart is exactly what an operator cannot explain
+// later, so idle means "slower", not "off". Sampling costs 15–50 ms per turn,
+// i.e. well under a tenth of one core at this rate.
+const hostMetricsIdleInterval = 15 * time.Second
+
+// hostMetricsActiveWindow is how recently a client must have polled for the
+// full-rate cadence to apply.
+const hostMetricsActiveWindow = 30 * time.Second
+
+// hostMetricsHistoryWindow is how much history the in-memory ring keeps. It
+// matches the console's chart window; the database keeps the same span so a
+// restart restores exactly what the page would have drawn.
+const hostMetricsHistoryWindow = 60 * time.Minute
+
+// hostMetricsRetention is how long samples stay in SQLite. 24 h covers "what
+// happened last night" without letting a 3 s cadence grow unbounded (~3 MB/day).
+const hostMetricsRetention = 24 * time.Hour
 
 // HostMetrics is one snapshot of the host the gateway runs on. It is only
 // collected while an admin console page is polling it (see the sampler below).
@@ -268,79 +286,294 @@ func (m *HostMetrics) applyMem(total, used uint64) {
 
 var processStartedAt = time.Now()
 
+// hostMetricsPersistBatch caps how many rows one flush writes; a long-idle
+// ring catch-up writes everything in one transaction, so the cap only exists
+// to bound the statement size.
+const hostMetricsPersistBatch = 400
+
+// hostMetricsPersistEvery is how often buffered samples reach SQLite. Writing
+// every sample would mean a commit per poll; batching a minute's worth in one
+// transaction keeps WAL growth and fsync count negligible.
+const hostMetricsPersistEvery = time.Minute
+
+// hostMetricsStore is the persistence contract the sampler needs. *store.Store
+// implements it; a Server wired without a store simply keeps history in memory.
+type hostMetricsStore interface {
+	AppendHostMetricSamples(samples []store.HostMetricSample) error
+	HostMetricSamplesSince(fromMs int64) ([]store.HostMetricSample, error)
+	PruneHostMetricSamples(beforeMs int64) (int64, error)
+}
+
+// hostMetricsSampler runs for the life of the process. It keeps a one-hour
+// ring in memory (so a freshly opened page draws the whole chart immediately)
+// and flushes new points to SQLite in batches (so a restart does not erase the
+// curve).
 type hostMetricsSampler struct {
 	mu          sync.Mutex
 	sample      HostMetrics
+	samples     []store.HostMetricSample // ring, oldest first
 	lastRequest time.Time
-	loopRunning bool
+	// ready is closed once restore + the first sample finished. A second
+	// caller waits for it instead of reading an empty ring: two console tabs
+	// opening at boot used to race, and the loser got a blank chart.
+	ready chan struct{}
 
 	// CPU tick baseline for percent (platform-specific payload).
 	cpuPrev any
 
-	collecting atomic.Bool // true while background loop is alive (tests / debug)
+	// persistence
+	store       hostMetricsStore
+	pending     []store.HostMetricSample // not yet flushed
+	persistedAt time.Time
+	lastPrune   time.Time
+
+	startOnce sync.Once
+
+	// subscribers are the live SSE clients; their count decides the cadence.
+	subscribers atomic.Int64
+
+	collecting atomic.Bool // true while the sampler loop is alive (tests / debug)
 }
 
-func newHostMetricsSampler() *hostMetricsSampler {
-	return &hostMetricsSampler{}
+func newHostMetricsSampler(stores ...hostMetricsStore) *hostMetricsSampler {
+	h := &hostMetricsSampler{ready: make(chan struct{})}
+	if len(stores) > 0 {
+		h.store = stores[0]
+	}
+	return h
 }
 
-// Snapshot returns the latest sample and records that a client is watching.
-// The first call (or a call after idle stop) starts the refresh loop that
-// exits once clients stop requesting.
+// Start loads the persisted history and launches the sampling loop. It is
+// idempotent and safe to call from more than one place; callers block until
+// the ring is usable, so nobody ever reads an empty history on a cold start.
+func (h *hostMetricsSampler) Start() {
+	h.startOnce.Do(func() {
+		h.restore()
+		// Synchronous first sample so the first paint is never empty.
+		h.refresh()
+		close(h.ready)
+		go h.loop()
+	})
+	<-h.ready
+}
+
+// restore seeds the ring from SQLite. A fresh install simply finds nothing.
+func (h *hostMetricsSampler) restore() {
+	if h.store == nil {
+		return
+	}
+	since := time.Now().Add(-hostMetricsHistoryWindow).UnixMilli()
+	samples, err := h.store.HostMetricSamplesSince(since)
+	if err != nil || len(samples) == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.samples = samples
+	h.mu.Unlock()
+}
+
+// Snapshot returns the latest sample and marks a console page as watching (so
+// the loop samples at full rate for the next hostMetricsActiveWindow).
 func (h *hostMetricsSampler) Snapshot() HostMetrics {
+	h.Start()
 	h.mu.Lock()
 	h.lastRequest = time.Now()
-	needStart := !h.loopRunning
-	empty := h.sample.CollectedAt.IsZero()
-	if needStart {
-		h.loopRunning = true
-	}
 	out := h.sample
 	h.mu.Unlock()
-
-	if needStart {
-		// Synchronous first sample so the first paint is not empty.
-		h.refresh()
-		go h.loop()
-		h.mu.Lock()
-		out = h.sample
-		h.mu.Unlock()
-	} else if empty {
-		h.refresh()
-		h.mu.Lock()
-		out = h.sample
-		h.mu.Unlock()
-	}
 	return out
+}
+
+// Latest returns the newest sample without marking a viewer. The stream pump
+// reads it on every tick, and touching here would restart the active window
+// forever — the idle cadence would never kick in.
+func (h *hostMetricsSampler) Latest() HostMetrics {
+	h.Start()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sample
+}
+
+// History returns the samples inside the chart window, oldest first.
+func (h *hostMetricsSampler) History() []store.HostMetricSample {
+	h.Start()
+	h.mu.Lock()
+	out := make([]store.HostMetricSample, len(h.samples))
+	copy(out, h.samples)
+	h.mu.Unlock()
+	return out
+}
+
+// Subscribe registers a live viewer; the returned function unregisters it.
+func (h *hostMetricsSampler) Subscribe() (unsubscribe func()) {
+	h.Start()
+	h.subscribers.Add(1)
+	h.touch()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.subscribers.Add(-1)
+			h.touch()
+		})
+	}
+}
+
+func (h *hostMetricsSampler) touch() {
+	h.mu.Lock()
+	h.lastRequest = time.Now()
+	h.mu.Unlock()
+}
+
+// active reports whether full-rate sampling applies right now.
+func (h *hostMetricsSampler) active() bool {
+	if h.subscribers.Load() > 0 {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return time.Since(h.lastRequest) < hostMetricsActiveWindow
 }
 
 func (h *hostMetricsSampler) loop() {
 	h.collecting.Store(true)
 	defer h.collecting.Store(false)
 
-	ticker := time.NewTicker(hostMetricsPollInterval)
+	// A short tick lets the loop switch between the active and idle cadence
+	// without waiting out a full idle interval after someone opens the page.
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		h.mu.Lock()
-		idle := time.Since(h.lastRequest) >= hostMetricsIdleStopAfter
-		if idle {
-			h.loopRunning = false
-			h.mu.Unlock()
-			return
+	lastSample := time.Now()
+	for tick := range ticker.C {
+		interval := hostMetricsIdleInterval
+		if h.active() {
+			interval = hostMetricsPollInterval
 		}
-		h.mu.Unlock()
-		h.refresh()
+		// Measure against the tick's own timestamp, not time.Now() after the
+		// work: anchoring to "now after refresh" adds the collection cost to
+		// every period and, with a 1 s tick, silently turns 3 s into 4 s.
+		if tick.Sub(lastSample) >= interval {
+			h.refresh()
+			lastSample = tick
+		}
+		h.flush(false)
 	}
 }
 
 func (h *hostMetricsSampler) refresh() {
+	// cpuPrev 是上一次采集的 CPU tick 基线：并发 refresh 时必须在锁内取出，
+	// 否则与另一路写入构成 data race（-race 在 Linux 上直接报错）。
+	h.mu.Lock()
+	prev := h.cpuPrev
+	h.mu.Unlock()
+
 	started := time.Now()
-	next := collectHostMetrics(h.cpuPrev)
+	next := collectHostMetrics(prev)
 	next.metrics.SampleCost = float64(time.Since(started).Microseconds()) / 1000
+	point := hostMetricSampleFrom(next.metrics)
 	h.mu.Lock()
 	h.cpuPrev = next.prev
 	h.sample = next.metrics
+	h.appendLocked(point)
 	h.mu.Unlock()
+}
+
+// appendLocked adds one point to the ring, dropping anything that fell out of
+// the window. Called with h.mu held.
+func (h *hostMetricsSampler) appendLocked(point store.HostMetricSample) {
+	if point.AtMs <= 0 {
+		return
+	}
+	if n := len(h.samples); n > 0 && h.samples[n-1].AtMs >= point.AtMs {
+		// Clock went backwards or two samples landed in the same millisecond:
+		// replace rather than emit an out-of-order point.
+		if h.samples[n-1].AtMs == point.AtMs {
+			h.samples[n-1] = point
+			h.pending = append(h.pending, point)
+		}
+		return
+	}
+	h.samples = append(h.samples, point)
+	cutoff := point.AtMs - hostMetricsHistoryWindow.Milliseconds()
+	drop := 0
+	for drop < len(h.samples) && h.samples[drop].AtMs < cutoff {
+		drop++
+	}
+	if drop > 0 {
+		kept := make([]store.HostMetricSample, len(h.samples)-drop)
+		copy(kept, h.samples[drop:])
+		h.samples = kept
+	}
+	h.pending = append(h.pending, point)
+}
+
+// flush writes buffered samples to SQLite. force ignores the batching interval
+// (used on shutdown and by tests).
+func (h *hostMetricsSampler) flush(force bool) {
+	if h.store == nil {
+		return
+	}
+	h.mu.Lock()
+	if len(h.pending) == 0 {
+		h.mu.Unlock()
+		return
+	}
+	if !force && time.Since(h.persistedAt) < hostMetricsPersistEvery {
+		h.mu.Unlock()
+		return
+	}
+	batch := make([]store.HostMetricSample, len(h.pending))
+	copy(batch, h.pending)
+	h.pending = h.pending[:0]
+	h.persistedAt = time.Now()
+	pruneDue := time.Since(h.lastPrune) >= time.Hour
+	if pruneDue {
+		h.lastPrune = time.Now()
+	}
+	h.mu.Unlock()
+
+	for start := 0; start < len(batch); start += hostMetricsPersistBatch {
+		end := start + hostMetricsPersistBatch
+		if end > len(batch) {
+			end = len(batch)
+		}
+		if err := h.store.AppendHostMetricSamples(batch[start:end]); err != nil {
+			slog.Warn("host metrics: persist samples failed", "error", err)
+			break
+		}
+	}
+	if pruneDue {
+		if _, err := h.store.PruneHostMetricSamples(time.Now().Add(-hostMetricsRetention).UnixMilli()); err != nil {
+			slog.Warn("host metrics: prune samples failed", "error", err)
+		}
+	}
+}
+
+// Stop flushes whatever is buffered. The loop itself exits with the process.
+func (h *hostMetricsSampler) Stop() {
+	h.flush(true)
+}
+
+// hostMetricSampleFrom projects one HostMetrics onto the persisted row.
+func hostMetricSampleFrom(m HostMetrics) store.HostMetricSample {
+	point := store.HostMetricSample{
+		AtMs:       m.CollectedAt.UnixMilli(),
+		CPU:        m.CPUPercent,
+		Load:       m.Load1,
+		MemUsed:    m.MemUsed,
+		MemTotal:   m.MemTotal,
+		MemPercent: m.MemPercent,
+		ProcessCPU: m.ProcessCPUPct,
+		NetRx:      m.NetRxRate,
+		NetTx:      m.NetTxRate,
+		Goroutines: m.Goroutines,
+		RSS:        m.ProcessRSSMiB,
+		FDs:        m.ProcessFDs,
+	}
+	if m.DiskIO != nil {
+		point.DiskRead, point.DiskWrite = m.DiskIO.ReadRate, m.DiskIO.WriteRate
+	} else {
+		point.DiskRead, point.DiskWrite = m.DiskReadRate, m.DiskWriteRate
+	}
+	return point
 }
 
 type hostMetricsCollectResult struct {
@@ -357,8 +590,18 @@ func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	s.hostMetricsOnce.Do(func() { s.hostMetrics = newHostMetricsSampler() })
-	writeJSON(w, http.StatusOK, s.hostMetrics.Snapshot())
+	writeJSON(w, http.StatusOK, s.hostSampler().Snapshot())
+}
+
+// hostSampler builds the process-wide sampler once (two concurrent first polls
+// used to create two, and the loser's goroutine was never read again).
+func (s *Server) hostSampler() *hostMetricsSampler {
+	s.hostMetricsOnce.Do(func() {
+		if s.hostMetrics == nil {
+			s.hostMetrics = newHostMetricsSampler(s.hostMetricStore)
+		}
+	})
+	return s.hostMetrics
 }
 
 func clampFloat(v, lo, hi float64) float64 {

@@ -1,28 +1,26 @@
 // 机器状态页：网关所在主机的实时观测。
 //
 // 卡片上的数字与趋势图的最后一个点来自同一份快照（见 host_metrics.ts），所以
-// 两处永远一致。采集只在页面可见时进行，服务端在没有请求 30 秒后自停采样器。
+// 两处永远一致。数据走 SSE 推送：连上先补一整窗历史，之后每个采样推一帧。
 import React, {useCallback, useEffect, useState} from 'react';
 import {formatBytes, formatLoad, formatMiBps, formatRate, hostMetricsPollMs, thermalPressureLabel,} from '../lib';
 import type {HostDisk, HostDiskIO, HostFanSpeed, HostMetrics} from '../types';
 import {
     appendPoint,
-    fetchHostMetrics,
     fetchHostSnapshot,
     HOST_WINDOW_MINUTES,
     type HostDiagnosis,
     hostDiagnosticsURL,
     type HostHistory,
     type HostPoint,
+    type HostStreamStatus,
     isGap,
     loadHistory,
-    pointFromMetrics,
+    openHostStream,
     saveHistory,
-    shouldSample,
 } from '../host_metrics';
 
 const TREND_WINDOW_MS = HOST_WINDOW_MINUTES * 60_000;
-const HISTORY_POINT_LIMIT = 1500;
 
 // ---------------------------------------------------------------- 格式化
 
@@ -95,92 +93,74 @@ function severityLabel(severity: string | undefined): string {
 
 // ---------------------------------------------------------------- 采样循环
 
-type SamplerStatus = 'live' | 'paused' | 'error' | 'forbidden';
-
 /**
- * 采样循环是模块级单例：开发模式下 StrictMode 会把 effect 跑两遍，写进组件里
- * 很容易叠出两条并行轮询；这里第一个订阅者负责启动，最后一个退订才停。
+ * 订阅循环是模块级单例：开发模式下 StrictMode 会把 effect 跑两遍，写进组件里
+ * 很容易叠出两条并行连接；这里第一个订阅者负责建流，最后一个退订才关掉。
  *
- * 直接 setInterval 而不是「可见性事件驱动」：有些页面永远拿不到 focus，靠事件
- * 会一直不采样；看不看得到页面由服务端兜底——没有请求 30 秒后它自己停采样器。
+ * 数据来自 /__host-metrics/stream：连上先拿一整窗历史，之后每个采样推一帧。
+ * 网关自己一直在采样（无人看时降频），所以曲线不依赖这个页面开没开过。
  */
-const sampler = {
+const stream = {
     running: false,
-    timer: 0,
-    inflight: false,
+    stop: null as (() => void) | null,
     history: null as HostHistory | null,
-    listeners: new Set<(history: HostHistory, status: SamplerStatus) => void>(),
+    // 徽标只反映「连接通道」，不能由数据帧反推：降级轮询时数据照样在来，
+    // 但推送确实已经不可用了，说成「实时推送中」就是假话。
+    status: 'connecting' as HostStreamStatus,
+    listeners: new Set<(history: HostHistory, status: HostStreamStatus) => void>(),
 };
 
-function notify(history: HostHistory, status: SamplerStatus) {
-    sampler.listeners.forEach((listener) => listener(history, status));
+function notify(history: HostHistory, status?: HostStreamStatus) {
+    if (status) stream.status = status;
+    stream.listeners.forEach((listener) => listener(history, stream.status));
 }
 
-function startSampler() {
-    if (sampler.running) return;
-    sampler.running = true;
-    sampler.history = loadHistory();
-    const pollMs = hostMetricsPollMs();
-    const tick = async () => {
-        if (!sampler.running || sampler.inflight) return;
-        if (!shouldSample()) {
-            notify(sampler.history ?? loadHistory(), 'paused');
-            return;
-        }
-        sampler.inflight = true;
-        try {
-            const result = await fetchHostMetrics();
-            if (result.status === 'ok') {
-                const now = Date.now();
-                const point = pointFromMetrics(result.metrics, now);
-                const history: HostHistory = {
-                    points: appendPoint(sampler.history?.points ?? [], point, now).slice(-HISTORY_POINT_LIMIT),
-                    last: result.metrics,
-                    lastAt: now,
-                };
-                sampler.history = history;
-                saveHistory(history);
-                notify(history, 'live');
-            } else if (result.status === 'unauthorized') {
-                // 403 说明这个角色没有 machine.view：继续轮询只会刷一屏失败。
-                const history = sampler.history ?? loadHistory();
-                stopSampler();
-                notify(history, 'forbidden');
-            } else {
-                notify(sampler.history ?? loadHistory(), 'error');
-            }
-        } finally {
-            sampler.inflight = false;
-        }
-    };
-    void tick();
-    sampler.timer = window.setInterval(() => void tick(), pollMs);
-    document.addEventListener('visibilitychange', () => void tick());
+function pushHistory(points: HostPoint[], latest: HostMetrics | null) {
+    const now = Date.now();
+    const previous = stream.history ?? {points: [], last: null, lastAt: 0};
+    let merged = previous.points;
+    for (const point of points) merged = appendPoint(merged, point, now);
+    const lastAt = points.length > 0 ? points[points.length - 1].t : previous.lastAt;
+    stream.history = {points: merged, last: latest ?? previous.last, lastAt};
+    saveHistory(stream.history);
+    return stream.history;
 }
 
-function stopSampler() {
-    if (!sampler.running) return;
-    sampler.running = false;
-    if (sampler.timer) window.clearInterval(sampler.timer);
-    sampler.timer = 0;
+function startStream() {
+    if (stream.running) return;
+    stream.running = true;
+    stream.history = loadHistory();
+    stream.stop = openHostStream({
+        onSnapshot: ({points, latest}) => notify(pushHistory(points, latest)),
+        onSample: (point, latest) => notify(pushHistory([point], latest)),
+        onStatus: (status) => notify(stream.history ?? loadHistory(), status),
+    });
 }
 
-function useHostHistory(): {history: HostHistory; status: SamplerStatus; pollMs: number} {
+function stopStream() {
+    if (!stream.running) return;
+    stream.running = false;
+    stream.stop?.();
+    stream.stop = null;
+}
+
+function useHostHistory(): {history: HostHistory; status: HostStreamStatus} {
     const [history, setHistory] = useState<HostHistory>(() => loadHistory());
-    const [status, setStatus] = useState<SamplerStatus>('live');
+    const [status, setStatus] = useState<HostStreamStatus>('connecting');
     useEffect(() => {
-        const listener = (next: HostHistory, nextStatus: SamplerStatus) => {
+        const listener = (next: HostHistory, nextStatus: HostStreamStatus) => {
             setHistory(next);
             setStatus(nextStatus);
         };
-        sampler.listeners.add(listener);
-        startSampler();
+        setStatus(stream.status);
+        stream.listeners.add(listener);
+        startStream();
         return () => {
-            sampler.listeners.delete(listener);
-            if (sampler.listeners.size === 0) stopSampler();
+            stream.listeners.delete(listener);
+            if (stream.listeners.size === 0) stopStream();
         };
     }, []);
-    return {history, status, pollMs: hostMetricsPollMs()};
+    return {history, status};
 }
 
 // ---------------------------------------------------------------- 趋势图
@@ -196,7 +176,7 @@ type ChartCardModel = {
 };
 
 const TREND_CARDS: ChartCardModel[] = [
-    {title: 'CPU 使用率', hint: '整机平均，折线断开处表示页面没在采样', series: [{key: 'cpu', label: 'CPU', color: 'var(--accent)'}], kind: 'percent', axis: 'left'},
+    {title: 'CPU 使用率', hint: '整机平均；断开处表示网关在该时段没有采样（重启或挂起）', series: [{key: 'cpu', label: 'CPU', color: 'var(--accent)'}], kind: 'percent', axis: 'left'},
     {title: '内存', hint: '已用内存（不含可回收页缓存）', series: [{key: 'mem', label: '已用', color: 'var(--purple)'}], kind: 'mib', axis: 'left'},
     {
         title: '磁盘吞吐',
@@ -756,7 +736,9 @@ function DiagnosisCard({diagnosis, loading, onRefresh}: {diagnosis: HostDiagnosi
 // ---------------------------------------------------------------- 页面
 
 export function MachineStatusPage({onToast}: {onToast: (message: string) => void}) {
-    const {history, status, pollMs} = useHostHistory();
+    const {history, status} = useHostHistory();
+    // 满速采样间隔由服务端下发；降级轮询时也按同一个节奏画断档判定。
+    const pollMs = hostMetricsPollMs();
     const metrics = history.last;
     const [diagnosis, setDiagnosis] = useState<HostDiagnosis | null>(null);
     const [diagnosing, setDiagnosing] = useState(false);
@@ -802,17 +784,20 @@ export function MachineStatusPage({onToast}: {onToast: (message: string) => void
     }, []);
 
     const lastAt = history.lastAt || (metrics?.collectedAt ? Date.parse(metrics.collectedAt) : 0);
-    const stale = status === 'live' && lastAt > 0 && now - lastAt > pollMs * 4;
+    // 网关在没人看时是 15 秒一档，30 秒没新点才算真的断（重启 / 挂起）。
+    const stale = lastAt > 0 && now - lastAt > 30_000;
 
     const statusBadge = status === 'forbidden'
         ? {tone: 'red' as Tone, text: '无权限'}
-        : status === 'paused'
-            ? {tone: 'slate' as Tone, text: '页面不可见，已暂停'}
-            : status === 'error'
-            ? {tone: 'amber' as Tone, text: '采集失败，重试中'}
-            : stale
-                ? {tone: 'amber' as Tone, text: '等待数据'}
-                : {tone: 'green' as Tone, text: '实时采样中'};
+        : status === 'connecting'
+            ? {tone: 'slate' as Tone, text: '连接中…'}
+            : status === 'reconnecting'
+                ? {tone: 'amber' as Tone, text: '连接断开，重连中'}
+                : status === 'polling'
+                    ? {tone: 'blue' as Tone, text: '轮询模式（推送不可用）'}
+                    : stale
+                        ? {tone: 'amber' as Tone, text: '等待数据'}
+                        : {tone: 'green' as Tone, text: '实时推送中'};
 
     const memTotal = metrics?.memTotal != null ? metrics.memTotal / (1024 * 1024) : undefined;
     const processPercent = metrics?.processRssMiB != null && metrics?.memTotal
@@ -840,7 +825,7 @@ export function MachineStatusPage({onToast}: {onToast: (message: string) => void
                         {metrics?.hostname || '网关主机'}
                         {metrics?.osName ? ` · ${metrics.osName}` : metrics?.platform ? ` · ${metrics.platform}` : ''}
                         {metrics?.uptimeSeconds ? ` · 已开机 ${formatDuration(metrics.uptimeSeconds)}` : ''}
-                        {` · 每 ${pollMs / 1000} 秒采样，仅本页可见时`}
+                        {` · 网关持续采样（${pollMs / 1000} 秒一档，无人查看时降频），离开页面也不中断`}
                     </p>
                 </div>
                 <div className="machine-top-side">
@@ -909,7 +894,7 @@ export function MachineStatusPage({onToast}: {onToast: (message: string) => void
                 <div className="machine-trend-head">
                     <div>
                         <h3 className="panel-title">近 {HOST_WINDOW_MINUTES} 分钟趋势</h3>
-                        <p className="machine-top-note">曲线末端即上方卡片的数值；间断处表示那段时间页面没有采样。</p>
+                        <p className="machine-top-note">曲线末端即上方卡片的数值；网关一直在采样，只有重启或挂起会留下断口。</p>
                     </div>
                     <span className="machine-top-time">
                         {history.points.length > 0

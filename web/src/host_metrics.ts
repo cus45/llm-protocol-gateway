@@ -1,11 +1,12 @@
-// 机器状态的实时采样与历史。
+// 机器状态的实时推送与历史。
 //
-// 数据只来自服务端的 /__host-metrics，前端不做任何推算：同一份快照既驱动顶部
-// 指标卡，也喂给趋势图，所以卡片上的数字与图的最后一个点永远一致。
+// 数据只来自服务端的 /__host-metrics/stream，前端不做任何推算：同一份快照既驱动
+// 顶部指标卡，也喂给趋势图，所以卡片上的数字与图的最后一个点永远一致。
 //
-// 历史保存在内存里并落 localStorage：刷新页面、切换页签回来都能接上前 60 分钟，
-// 不必等图重新画满。断线（页面隐藏、网络中断、服务端采样暂停）超过 gapFactor 倍
-// 采样间隔的点之间会留出缺口，不连成一条假直线。
+// 连接建起来时服务端先补一整窗历史（网关自己一直在采样、也落库），之后每出一个
+// 采样推一帧，所以曲线是连续的，不依赖这个浏览器有没有开着页面。EventSource 自带
+// 断线重连与 Last-Event-ID 续传；实在建不起流（反代缓冲、企业代理）才退回轮询。
+// localStorage 只作离线兜底：流还没连上时先画出上次看到的形状。
 import {API_BASE, fetchWithTimeout, hostMetricsPollMs} from './lib';
 import type {HostMetrics} from './types';
 
@@ -70,10 +71,16 @@ export function appendPoint(points: HostPoint[], next: HostPoint, now: number): 
   return kept;
 }
 
-/** 相邻两点间隔超过容差即视为断档——图上断开，而不是连一条直线。 */
+/**
+ * 相邻两点间隔超过容差即视为断档——图上断开，而不是连一条直线。
+ *
+ * 容差不能只按页面的轮询间隔算：网关在没人看的时候是降频采样（15 秒一档），
+ * 那段时间在图上本来就是稀疏的正常数据。真正值得断开的只有「网关自己停了」——
+ * 重启、进程卡住、机器挂起——所以底线放到 45 秒。
+ */
 export function isGap(prev: HostPoint | undefined, next: HostPoint, pollMs: number): boolean {
   if (!prev) return false;
-  return next.t - prev.t > pollMs * MAX_GAP_FACTOR;
+  return next.t - prev.t > Math.max(pollMs * MAX_GAP_FACTOR, 45_000);
 }
 
 export function loadHistory(): HostHistory {
@@ -159,17 +166,190 @@ export function hostDiagnosticsURL(): string {
   return `${API_BASE}/__host-diagnostics`;
 }
 
-/**
- * 切到别的页签就停采样，切回来立即补一帧。
- * 判定用 hasFocus() 而不是 visibilityState：只要页面所在窗口在前台就继续采，
- * 即使浏览器把页面标成 hidden（内嵌浏览器、最小化后恢复、部分桌面壳都会这样），
- * 否则界面会一直停在「读取中」。真正切走了，hasFocus() 会立刻变 false。
- */
-export function shouldSample(): boolean {
-  if (typeof document === 'undefined') return true;
-  return document.visibilityState !== 'hidden' || document.hasFocus();
+export const HOST_STREAM_PATH = '/__host-metrics/stream';
+
+/** 服务端下发的采样行（与 store.HostMetricSample 同名同义，单位见后端注释）。 */
+export type HostSamplePoint = {
+  at: number;
+  cpu: number;
+  load: number;
+  memUsed: number;
+  memTotal: number;
+  memPercent: number;
+  processCpu: number;
+  diskRead: number;
+  diskWrite: number;
+  netRx: number;
+  netTx: number;
+  goroutines: number;
+  rss: number;
+  fds: number;
+};
+
+export function pointFromSample(sample: HostSamplePoint): HostPoint {
+  return {
+    t: sample.at,
+    cpu: sample.cpu ?? 0,
+    load: sample.load ?? 0,
+    memUsed: sample.memUsed ?? 0,
+    memTotal: sample.memTotal ?? 0,
+    memPercent: sample.memPercent ?? 0,
+    processCpu: sample.processCpu ?? 0,
+    diskRead: sample.diskRead ?? 0,
+    diskWrite: sample.diskWrite ?? 0,
+    netRx: sample.netRx ?? 0,
+    netTx: sample.netTx ?? 0,
+    goroutines: sample.goroutines ?? 0,
+    rss: sample.rss ?? 0,
+    fds: sample.fds ?? 0,
+  };
 }
 
-export function hostPollMs(): number {
-  return hostMetricsPollMs();
+export type HostStreamStatus = 'connecting' | 'live' | 'reconnecting' | 'polling' | 'forbidden';
+
+export type HostStreamHandlers = {
+  onSnapshot: (stream: {points: HostPoint[]; latest: HostMetrics | null; intervalMs: number}) => void;
+  onSample: (point: HostPoint, latest: HostMetrics | null) => void;
+  onStatus: (status: HostStreamStatus) => void;
+};
+
+/**
+ * 订阅机器状态流。
+ *
+ * 返回的 stop 会关闭连接并停掉一切定时器。EventSource 出错时浏览器自己重连
+ * （带 Last-Event-ID），但有两种情况它永远好不了：403（这个角色没有
+ * machine.view）和反代把 text/event-stream 缓冲成一次性响应。前者直接停，
+ * 后者在连续失败后降级成轮询，保证页面至少还在动。
+ */
+export function openHostStream(handlers: HostStreamHandlers): () => void {
+  let source: EventSource | null = null;
+  let pollTimer = 0;
+  let retryTimer = 0;
+  let failures = 0;
+  let stopped = false;
+  let latest: HostMetrics | null = null;
+  let lastPointAt = 0;
+
+  const stopPolling = () => {
+    if (pollTimer) window.clearInterval(pollTimer);
+    pollTimer = 0;
+  };
+
+  const startPolling = () => {
+    if (stopped || pollTimer) return;
+    handlers.onStatus('polling');
+    const tick = async () => {
+      if (stopped) return;
+      const result = await fetchHostMetrics();
+      if (result.status === 'unauthorized') {
+        handlers.onStatus('forbidden');
+        cleanup();
+        return;
+      }
+      if (result.status !== 'ok') return;
+      latest = result.metrics;
+      const sample = pointFromMetrics(result.metrics, Date.now());
+      // 轮询拿到的是一次实时快照；只要比已有数据新就当一个采样点用。
+      if (sample.t > lastPointAt) {
+        lastPointAt = sample.t;
+        handlers.onSample(sample, latest);
+      }
+    };
+    void tick();
+    pollTimer = window.setInterval(() => void tick(), hostMetricsPollMs());
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    handlers.onStatus(source ? 'reconnecting' : 'connecting');
+    const url = `${API_BASE}${HOST_STREAM_PATH}`;
+    source = new EventSource(url, {withCredentials: true});
+
+    source.addEventListener('snapshot', (event) => {
+      failures = 0;
+      const payload = JSON.parse((event as MessageEvent<string>).data) as {
+        points?: HostSamplePoint[];
+        latest?: HostMetrics;
+        intervalMs?: number;
+      };
+      stopPolling();
+      latest = payload.latest ?? null;
+      const points = (payload.points ?? []).map(pointFromSample);
+      if (points.length > 0) lastPointAt = points[points.length - 1].t;
+      handlers.onStatus('live');
+      handlers.onSnapshot({points, latest, intervalMs: payload.intervalMs ?? 0});
+    });
+
+    source.addEventListener('sample', (event) => {
+      failures = 0;
+      const payload = JSON.parse((event as MessageEvent<string>).data) as {
+        point?: HostSamplePoint;
+        latest?: HostMetrics;
+      };
+      if (!payload.point) return;
+      if (payload.latest) latest = payload.latest;
+      const point = pointFromSample(payload.point);
+      if (point.t <= lastPointAt) return;
+      lastPointAt = point.t;
+      handlers.onStatus('live');
+      handlers.onSample(point, payload.latest ?? null);
+    });
+
+    source.addEventListener('resync', () => {
+      // 队列被挤掉了一段：关掉重连，snapshot 会把整窗补回来。
+      source?.close();
+      source = null;
+      retryTimer = window.setTimeout(connect, 800);
+    });
+
+    source.onerror = () => {
+      if (stopped) return;
+      failures += 1;
+      // EventSource 的 readyState=CLOSED 表示它放弃了（4xx / 代理返回非流）。
+      const dead = source?.readyState === EventSource.CLOSED;
+      source?.close();
+      source = null;
+      if (dead) {
+        if (failures >= 2) {
+          // 连续失败：先降级成轮询把页面养活，再定期试一次流。20 秒足够短，
+          // 代理抖动恢复后不用干等；成本也只是一个被拒的请求。
+          startPolling();
+          retryTimer = window.setTimeout(() => {
+            stopPolling();
+            connect();
+          }, 20_000);
+          return;
+        }
+        handlers.onStatus('reconnecting');
+        retryTimer = window.setTimeout(connect, 3000);
+        return;
+      }
+      handlers.onStatus('reconnecting');
+    };
+  };
+
+  const cleanup = () => {
+    stopped = true;
+    if (retryTimer) window.clearTimeout(retryTimer);
+    stopPolling();
+    source?.close();
+    source = null;
+  };
+
+  // 页面在后台时浏览器会把连接挂起，切回来时如果已经断了立刻重连一次。
+  const onVisible = () => {
+    if (stopped) return;
+    if (document.visibilityState === 'visible' && (!source || source.readyState === EventSource.CLOSED)) {
+      if (retryTimer) window.clearTimeout(retryTimer);
+      connect();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisible);
+
+  connect();
+  return () => {
+    document.removeEventListener('visibilitychange', onVisible);
+    cleanup();
+  };
 }
+
