@@ -257,7 +257,14 @@ func (h *hostMetricsSampler) loop() {
 }
 
 func (h *hostMetricsSampler) refresh() {
-	next := collectHostMetrics(h.cpuPrev)
+	// cpuPrev 是上一次采集的 CPU tick 基线：并发 refresh 时必须在锁内取出，
+	// 否则与另一路写入构成 data race（-race 在 Linux 上直接报错）。
+	h.mu.Lock()
+	prev := h.cpuPrev
+	h.mu.Unlock()
+
+	next := collectHostMetrics(prev)
+
 	h.mu.Lock()
 	h.cpuPrev = next.prev
 	h.sample = next.metrics
