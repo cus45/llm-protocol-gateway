@@ -29,6 +29,8 @@
 #   GOARCH_TARGET 目标架构                默认 amd64（arm64 服务器请改）
 #   INSTALL_RTK   rtk CLI 安装策略        默认 auto（缺失才装），可选 always/never
 #   RTK_VERSION   rtk 版本（如 v0.50.0）  默认空=安装最新版
+#   PUBLIC_URL    对外验证地址           默认 https://llm.lucadesign.uk（网关只监听回环，
+#                                         IP:18093 已不再对外，留空则跳过公网验证）
 #   ALLOW_UNVERIFIED_BUILD  1=允许溯源校验不通过继续部署（仅应急，务必记录原因）
 #
 # 示例：
@@ -52,6 +54,8 @@ KEEP_BACKUPS="${KEEP_BACKUPS:-5}"   # 服务器上保留的历史版本份数
 INSTALL_RTK="${INSTALL_RTK:-auto}"
 RTK_VERSION="${RTK_VERSION:-}"
 ALLOW_UNVERIFIED_BUILD="${ALLOW_UNVERIFIED_BUILD:-0}"
+# 网关由 Caddy 反代、只监听 127.0.0.1，公网验证必须走 HTTPS 域名。
+PUBLIC_URL="${PUBLIC_URL-https://llm.lucadesign.uk}"
 
 SKIP_WEB=0
 ALLOW_DIRTY=0
@@ -443,15 +447,17 @@ rsh "
 "
 
 # ── 6. 外部验证 ──
-step "6. 公网访问验证"
-sleep 1
-CODE="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://${SERVER_HOST}:18093/" || echo 000)"
-if [[ "$CODE" =~ ^(200|301|302|401)$ ]]; then
-  ok "公网访问正常（HTTP ${CODE}）"
-else
-  warn "公网返回 HTTP ${CODE}，请检查服务器安全组是否放行 18093"
+if [[ -n "$PUBLIC_URL" ]]; then
+  step "6. 公网访问验证"
+  sleep 1
+  CODE="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$PUBLIC_URL/" || echo 000)"
+  if [[ "$CODE" =~ ^(200|301|302|401)$ ]]; then
+    ok "公网访问正常（HTTP ${CODE}）"
+  else
+    warn "公网返回 HTTP ${CODE}，请检查 Caddy 站点与证书（PUBLIC_URL=${PUBLIC_URL}）"
+  fi
 fi
 
 printf '\n%s\n' "${c_green}════════════════════════════════════════${c_none}"
-ok "部署完成 → http://${SERVER_HOST}:18093/"
+ok "部署完成 → ${PUBLIC_URL:-${SERVER_HOST}}"
 printf '%s\n' "${c_green}════════════════════════════════════════${c_none}"
