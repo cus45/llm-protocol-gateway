@@ -1,0 +1,992 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      document.documentElement.classList.add("js");
+    </script>
+    <title>LLM Protocol Gateway · 四协议统一网关</title>
+    <meta
+      name="description"
+      content="把 OpenAI Chat / Responses、Claude、Gemini 四种协议收敛成一个可控、可观测、可容灾的大模型网关。API Key、官方订阅、第三方中转统一接入，自带调度容灾、成本账本与每密钥额度。"
+    />
+    <meta name="theme-color" content="#070a12" />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="LLM Protocol Gateway · 四协议统一网关" />
+    <meta
+      property="og:description"
+      content="四协议点对点互转、14 种接入方式、调度容灾、成本账本与每密钥额度。一个 Go 单二进制，既能跑 Docker，也能装成桌面 App。"
+    />
+    <meta property="og:image" content="https://yangyongyongyong.github.io/llm-protocol-gateway/assets/icon-512.png" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate icon" href="assets/favicon.ico" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+    <link rel="manifest" href="site.webmanifest" />
+    <link rel="preload" href="assets/fonts/PlusJakartaSans-Variable.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href="assets/fonts/JetBrainsMono-Variable.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="app.js"></script>
+  </head>
+  <body data-repo="yangyongyongyong/llm-protocol-gateway" data-version="0.3.0">
+    <a class="skip-link" href="#main">跳到正文</a>
+
+    <header class="nav" id="nav">
+      <div class="container nav-inner">
+        <a class="brand" href="#top" aria-label="LLM Protocol Gateway 首页">
+          <img src="assets/logo.svg" width="34" height="34" alt="" />
+          <span class="brand-text">
+            <strong>LLM Protocol Gateway</strong>
+            <span>四协议统一网关</span>
+          </span>
+        </a>
+        <nav class="nav-links" aria-label="主导航">
+          <a href="#why">为什么</a>
+          <a href="#protocols">协议矩阵</a>
+          <a href="#features">能力</a>
+          <a href="#screens">界面</a>
+          <a href="#download">下载</a>
+          <a href="#start">快速开始</a>
+        </nav>
+        <div class="nav-actions">
+          <a class="btn btn-ghost btn-sm repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway" rel="noopener">
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">
+              <path
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+              />
+            </svg>
+            GitHub
+            <span class="star-count" data-star-count hidden></span>
+          </a>
+          <a class="btn btn-primary btn-sm" href="#download">下载</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ---------------------------------------------------------------- hero -->
+      <section class="hero" id="top">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span> SELF-HOSTED · SINGLE BINARY · 凭证不出网关</p>
+            <h1>把四套 LLM 协议<br />收进<span class="grad">一个网关</span>。</h1>
+            <p class="lede">
+              OpenAI Chat、OpenAI Responses、Claude、Gemini 点对点互转；API Key、官方订阅、第三方中转统一成同一套
+              Provider 与密钥体系 —— 可控、可观测、可容灾。
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#download">
+                下载安装
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 2v8m0 0 3-3m-3 3L5 7M3 13h10" />
+                </svg>
+              </a>
+              <a class="btn btn-ghost repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway" rel="noopener">
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">
+                  <path
+                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                  />
+                </svg>
+                查看源码
+              </a>
+              <a class="link-quiet" href="#protocols">先看协议矩阵 <span aria-hidden="true">→</span></a>
+            </div>
+            <dl class="stat-strip">
+              <div><dt>协议</dt><dd>4</dd></div>
+              <div><dt>直转路径</dt><dd>12</dd></div>
+              <div><dt>接入方式</dt><dd>14</dd></div>
+              <div><dt>添加预设</dt><dd>60</dd></div>
+              <div><dt>记账精度</dt><dd>µ$</dd></div>
+            </dl>
+          </div>
+
+          <div class="hero-visual">
+            <div class="flow-card">
+              <div class="flow-head">
+                <span class="traffic-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="flow-title">router · trace</span>
+                <span class="pill pill-live"><span class="live-dot" aria-hidden="true"></span> live</span>
+              </div>
+              <svg class="flow" viewBox="0 0 660 360" role="img" aria-labelledby="flow-title flow-desc">
+                <title id="flow-title">协议路由示意</title>
+                <desc id="flow-desc">四种入站协议经由网关内核，转换为任一种上游协议。</desc>
+                <defs>
+                  <radialGradient id="hub-fill" cx="50%" cy="42%" r="62%">
+                    <stop offset="0%" stop-color="#1b2542" />
+                    <stop offset="100%" stop-color="#0a0f1e" />
+                  </radialGradient>
+                  <linearGradient id="hub-ring-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#818cf8" stop-opacity=".85" />
+                    <stop offset="50%" stop-color="#38bdf8" stop-opacity=".35" />
+                    <stop offset="100%" stop-color="#818cf8" stop-opacity=".85" />
+                  </linearGradient>
+                </defs>
+
+                <!-- 入站 -->
+                <g class="sv-chip">
+                  <rect x="8" y="30" width="152" height="54" rx="14" />
+                  <circle cx="28" cy="55" r="4" fill="#34d399" />
+                  <text class="sv-lbl" x="40" y="54">OpenAI Chat</text>
+                  <text class="sv-sub" x="40" y="70">chat/completions</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="8" y="112" width="152" height="54" rx="14" />
+                  <circle cx="28" cy="137" r="4" fill="#22d3ee" />
+                  <text class="sv-lbl" x="40" y="136">OpenAI Responses</text>
+                  <text class="sv-sub" x="40" y="152">/v1/responses</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="8" y="194" width="152" height="54" rx="14" />
+                  <circle cx="28" cy="219" r="4" fill="#fb923c" />
+                  <text class="sv-lbl" x="40" y="218">Claude</text>
+                  <text class="sv-sub" x="40" y="234">/v1/messages</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="8" y="276" width="152" height="54" rx="14" />
+                  <circle cx="28" cy="301" r="4" fill="#818cf8" />
+                  <text class="sv-lbl" x="40" y="300">Gemini</text>
+                  <text class="sv-sub" x="40" y="316">generateContent</text>
+                </g>
+
+                <!-- 出站 -->
+                <g class="sv-chip">
+                  <rect x="500" y="30" width="152" height="54" rx="14" />
+                  <circle cx="518" cy="55" r="4" fill="#34d399" />
+                  <text class="sv-lbl" x="530" y="54">OpenAI</text>
+                  <text class="sv-sub" x="530" y="70">api.openai.com</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="500" y="112" width="152" height="54" rx="14" />
+                  <circle cx="518" cy="137" r="4" fill="#fb923c" />
+                  <text class="sv-lbl" x="530" y="136">Anthropic</text>
+                  <text class="sv-sub" x="530" y="152">api.anthropic.com</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="500" y="194" width="152" height="54" rx="14" />
+                  <circle cx="518" cy="219" r="4" fill="#818cf8" />
+                  <text class="sv-lbl" x="530" y="218">Gemini</text>
+                  <text class="sv-sub" x="530" y="234">googleapis.com</text>
+                </g>
+                <g class="sv-chip">
+                  <rect x="500" y="276" width="152" height="54" rx="14" />
+                  <circle cx="518" cy="301" r="4" fill="#38bdf8" />
+                  <text class="sv-lbl" x="530" y="300">GLM / 兼容上游</text>
+                  <text class="sv-sub" x="530" y="316">open.bigmodel.cn</text>
+                </g>
+
+                <!-- 连线 -->
+                <g fill="none" stroke-linecap="round">
+                  <path id="p1" class="flow-path" d="M160 57 C214 57 238 174 272 174" stroke="#34d399" />
+                  <path id="p2" class="flow-path" d="M160 139 C218 139 242 168 272 174" stroke="#22d3ee" />
+                  <path id="p3" class="flow-path" d="M160 221 C218 221 242 180 272 174" stroke="#fb923c" />
+                  <path id="p4" class="flow-path" d="M160 303 C214 303 238 174 272 174" stroke="#818cf8" />
+                  <path id="o1" class="flow-path" d="M388 174 C422 174 446 57 500 57" stroke="#34d399" />
+                  <path id="o2" class="flow-path" d="M388 174 C422 180 446 139 500 139" stroke="#fb923c" />
+                  <path id="o3" class="flow-path" d="M388 174 C422 168 446 221 500 221" stroke="#818cf8" />
+                  <path id="o4" class="flow-path" d="M388 174 C422 174 446 303 500 303" stroke="#38bdf8" />
+                </g>
+
+                <!-- 数据包 -->
+                <g class="packets">
+                  <circle r="3.2" fill="#34d399">
+                    <animateMotion dur="2.6s" repeatCount="indefinite" begin="-0.2s" path="M160 57 C214 57 238 174 272 174" />
+                  </circle>
+                  <circle r="3.2" fill="#22d3ee">
+                    <animateMotion dur="3.1s" repeatCount="indefinite" begin="-1.4s" path="M160 139 C218 139 242 168 272 174" />
+                  </circle>
+                  <circle r="3.2" fill="#fb923c">
+                    <animateMotion dur="2.9s" repeatCount="indefinite" begin="-0.8s" path="M160 221 C218 221 242 180 272 174" />
+                  </circle>
+                  <circle r="3.2" fill="#818cf8">
+                    <animateMotion dur="2.4s" repeatCount="indefinite" begin="-1.9s" path="M160 303 C214 303 238 174 272 174" />
+                  </circle>
+                  <circle r="3.2" fill="#34d399">
+                    <animateMotion dur="2.8s" repeatCount="indefinite" begin="-1.1s" path="M388 174 C422 174 446 57 500 57" />
+                  </circle>
+                  <circle r="3.2" fill="#fb923c">
+                    <animateMotion dur="3.2s" repeatCount="indefinite" begin="-0.5s" path="M388 174 C422 180 446 139 500 139" />
+                  </circle>
+                  <circle r="3.2" fill="#818cf8">
+                    <animateMotion dur="2.5s" repeatCount="indefinite" begin="-2.1s" path="M388 174 C422 168 446 221 500 221" />
+                  </circle>
+                  <circle r="3.2" fill="#38bdf8">
+                    <animateMotion dur="3.4s" repeatCount="indefinite" begin="-1.7s" path="M388 174 C422 174 446 303 500 303" />
+                  </circle>
+                </g>
+
+                <!-- 内核 -->
+                <circle class="hub-ring" cx="330" cy="174" r="72" fill="none" stroke="url(#hub-ring-grad)" stroke-width="1" stroke-dasharray="2 7" />
+                <circle cx="330" cy="174" r="58" fill="url(#hub-fill)" stroke="rgba(129,140,248,.45)" stroke-width="1" />
+                <circle cx="330" cy="174" r="58" fill="none" stroke="rgba(129,140,248,.16)" stroke-width="8" class="hub-pulse" />
+                <image href="assets/logo.svg" x="301" y="145" width="58" height="58" />
+              </svg>
+              <div class="flow-foot">
+                <code id="flow-line">POST /v1/chat/completions → 200 · 412 ms · 2,841 tok</code>
+                <span class="flow-foot-tag">stream · heartbeat on</span>
+              </div>
+            </div>
+            <p class="visual-note">入站协议与上游协议互不绑定：任意一边都能换成另外三种。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- providers marquee -->
+      <section class="marquee-band" aria-label="已支持的 Provider 图标">
+        <div class="marquee">
+          <div class="marquee-track">
+            <span class="tile"><img class="mono" src="assets/icons/openai.svg" alt="OpenAI" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/claude-color.svg" alt="Claude" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/deepseek-color.svg" alt="DeepSeek" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/qwen-color.svg" alt="Qwen" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/kimi.svg" alt="Kimi" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/zhipu-color.svg" alt="智谱 GLM" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/xai.svg" alt="xAI" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/mistral-color.svg" alt="Mistral" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/ollama.svg" alt="Ollama" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/openrouter.svg" alt="OpenRouter" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/siliconcloud-color.svg" alt="SiliconCloud" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/groq.svg" alt="Groq" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/qoder.svg" alt="Qoder" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/workbuddy-color.svg" alt="WorkBuddy" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/trae.svg" alt="Trae" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/zcode.png" alt="ZCode" loading="lazy" /></span>
+            <!-- 循环副本 -->
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/openai.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/claude-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/deepseek-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/qwen-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/kimi.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/zhipu-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/xai.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/mistral-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/ollama.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/openrouter.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/siliconcloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/groq.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/qoder.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/workbuddy-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img class="mono" src="assets/icons/trae.svg" alt="" loading="lazy" /></span>
+            <span class="tile" aria-hidden="true"><img src="assets/icons/zcode.png" alt="" loading="lazy" /></span>
+          </div>
+        </div>
+        <div class="marquee marquee-reverse" aria-hidden="true">
+          <div class="marquee-track">
+            <span class="tile"><img class="mono" src="assets/icons/cursor.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/codex-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/minimax-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/stepfun-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/tencentcloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/volcengine-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/baiducloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/huaweicloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/nvidia-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/nousresearch.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/lmstudio.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/zai.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/anthropic.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/openai.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/claude-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/deepseek-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/cursor.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/codex-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/minimax-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/stepfun-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/tencentcloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/volcengine-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/baiducloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/huaweicloud-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img src="assets/icons/nvidia-color.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/nousresearch.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/lmstudio.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/zai.svg" alt="" loading="lazy" /></span>
+            <span class="tile"><img class="mono" src="assets/icons/anthropic.svg" alt="" loading="lazy" /></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- why -->
+      <section class="section section-why" id="why">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">WHY A GATEWAY</p>
+            <h2>模型越多，链路越碎。</h2>
+            <p class="section-lede">
+              客户端、上游、账号、账单各说各话。网关把不一致的部分收敛到一处，让调用方只面对一个稳定的端点。
+            </p>
+          </div>
+          <div class="why-grid">
+            <article class="why-item reveal">
+              <span class="why-index">01</span>
+              <h3>协议对不上</h3>
+              <p>客户端只会 OpenAI Chat，上游只给 Claude / Gemini / Responses。点对点直转，不经过有损中间层。</p>
+            </article>
+            <article class="why-item reveal">
+              <span class="why-index">02</span>
+              <h3>账号很分散</h3>
+              <p>官方 API Key、订阅账号、第三方中转与自建服务，统一进同一套 Provider、密钥与日志体系。</p>
+            </article>
+            <article class="why-item reveal">
+              <span class="why-index">03</span>
+              <h3>总要手工切</h3>
+              <p>限流、封号、掉线时自动切备选链，冷却结束回切；会话粘性保证同一会话不被打断上下文。</p>
+            </article>
+            <article class="why-item reveal">
+              <span class="why-index">04</span>
+              <h3>花了多少说不清</h3>
+              <p>按模型价格表逐请求记账到微美元，配合每密钥额度与用量分析，把成本摊在明面上。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- protocols -->
+      <section class="section" id="protocols">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">PROTOCOL MATRIX</p>
+            <h2>四进四出，12 条直转路径。</h2>
+            <p class="section-lede">
+              同协议原样透传，跨协议点对点转换。工具调用、图像输入、thinking 块与 prompt cache
+              断点在每条路径上都有测试覆盖。
+            </p>
+          </div>
+
+          <div class="matrix-wrap reveal">
+            <table class="matrix" id="matrix">
+              <caption>
+                入站协议 × 出站协议。对角线为透传，其余为直转。
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col"><span class="th-in">入站</span><span class="th-out">出站</span></th>
+                  <th scope="col">OpenAI Chat</th>
+                  <th scope="col">OpenAI Responses</th>
+                  <th scope="col">Claude</th>
+                  <th scope="col">Gemini</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr data-in="chat">
+                  <th scope="row">OpenAI Chat</th>
+                  <td data-out="chat" data-in="chat" class="is-pass">透传</td>
+                  <td data-out="responses" data-in="chat">直转</td>
+                  <td data-out="claude" data-in="chat">直转</td>
+                  <td data-out="gemini" data-in="chat">直转</td>
+                </tr>
+                <tr data-in="responses">
+                  <th scope="row">OpenAI Responses</th>
+                  <td data-out="chat" data-in="responses">直转</td>
+                  <td data-out="responses" data-in="responses" class="is-pass">透传</td>
+                  <td data-out="claude" data-in="responses">直转</td>
+                  <td data-out="gemini" data-in="responses">直转</td>
+                </tr>
+                <tr data-in="claude">
+                  <th scope="row">Claude</th>
+                  <td data-out="chat" data-in="claude">直转</td>
+                  <td data-out="responses" data-in="claude">直转</td>
+                  <td data-out="claude" data-in="claude" class="is-pass">透传</td>
+                  <td data-out="gemini" data-in="claude">直转</td>
+                </tr>
+                <tr data-in="gemini">
+                  <th scope="row">Gemini</th>
+                  <td data-out="chat" data-in="gemini">直转</td>
+                  <td data-out="responses" data-in="gemini">直转</td>
+                  <td data-out="claude" data-in="gemini">直转</td>
+                  <td data-out="gemini" data-in="gemini" class="is-pass">透传</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="matrix-status" id="matrix-status" aria-live="polite">
+              <span class="matrix-status-dot" aria-hidden="true"></span>
+              <code>悬停任意单元格，查看这条转换路径的说明</code>
+            </div>
+          </div>
+          <p class="matrix-hint">表格可左右滑动查看完整矩阵 <span aria-hidden="true">→</span></p>
+
+          <div class="api-band reveal">
+            <span class="api-band-label">协议面</span>
+            <ul>
+              <li><code>/v1/chat/completions</code></li>
+              <li><code>/v1/responses</code></li>
+              <li><code>/v1/messages</code></li>
+              <li><code>generateContent</code></li>
+              <li><code>/v1/embeddings</code></li>
+              <li><code>/v1/audio/transcriptions</code></li>
+              <li><code>/v1/images/generations</code></li>
+              <li><code>tools · vision · thinking · cache_control</code></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- features -->
+      <section class="section" id="features">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">CAPABILITIES</p>
+            <h2>不只是转发。</h2>
+            <p class="section-lede">
+              调度、容灾、成本、额度、观测、公网访问，都在同一个进程里完成，不需要再拼一套旁路系统。
+            </p>
+          </div>
+
+          <div class="bento">
+            <article class="card feature card-sched reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 5h5l2 5h7M3 15h5l2-5M15 3l3 2-3 2M15 13l3 2-3 2" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>调度与容灾</h3>
+                  <p>备选链、梯度冷却、回切探测与会话粘性，一次配置长期生效。</p>
+                </div>
+              </header>
+              <ul class="attempts">
+                <li>
+                  <span class="attempt-step">首选</span>
+                  <span class="attempt-name">Claude · api.anthropic.com</span>
+                  <span class="badge badge-ok">200</span>
+                  <span class="attempt-ms">1.24s</span>
+                </li>
+                <li>
+                  <span class="attempt-step">冷却</span>
+                  <span class="attempt-name">GLM · open.bigmodel.cn</span>
+                  <span class="badge badge-warn">429</span>
+                  <span class="attempt-ms">retry 42s</span>
+                </li>
+                <li>
+                  <span class="attempt-step">备选</span>
+                  <span class="attempt-name">OpenAI · api.openai.com</span>
+                  <span class="badge badge-ok">200</span>
+                  <span class="attempt-ms">0.91s</span>
+                </li>
+                <li>
+                  <span class="attempt-step">回切</span>
+                  <span class="attempt-name">轻量探测 · 不消耗订阅额度</span>
+                  <span class="badge badge-idle">待命</span>
+                  <span class="attempt-ms">30 min</span>
+                </li>
+              </ul>
+              <p class="feature-foot">四种调度模式：链路顺序 · 轮询 · 最空闲 · 额度最多</p>
+            </article>
+
+            <article class="card feature card-cost reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M10 2v16M14.5 5.5c0-1.4-2-2.5-4.5-2.5S5.5 4.1 5.5 5.5 7 8 10 8s4.5 1.1 4.5 2.5S12.5 13 10 13s-4.5-1.1-4.5-2.5" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>成本账本</h3>
+                  <p>按模型维护四个单价，逐请求换算成微美元入库。</p>
+                </div>
+              </header>
+              <div class="cost-body">
+                <div class="cost-figure">
+                  <span class="cost-value">$0.00421</span>
+                  <span class="cost-sub">claude-sonnet-4.5 · 2,841 tok</span>
+                </div>
+                <div class="coverage" style="--pct: 98">
+                  <span class="coverage-inner">98.2%<small>计价覆盖率</small></span>
+                </div>
+              </div>
+              <p class="feature-foot">未配置价格的请求显示「未计价」，绝不写成 $0。</p>
+            </article>
+
+            <article class="card feature card-quota reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2.5" y="5" width="15" height="10" rx="3" />
+                    <path d="M2.5 10h9" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>每密钥额度</h3>
+                  <p>日 / 月双层额度，请求前预扣，超限直接 429。</p>
+                </div>
+              </header>
+              <div class="quota-row">
+                <div class="quota-meta"><span>Token</span><span>1.36M / 2.00M</span></div>
+                <div class="bar"><span style="width: 68%"></span></div>
+              </div>
+              <div class="quota-row">
+                <div class="quota-meta"><span>成本</span><span>$0.41 / $1.00</span></div>
+                <div class="bar"><span style="width: 41%"></span></div>
+              </div>
+              <p class="feature-foot">单个调用方吃不满整个账号，也不会拖垮别的密钥。</p>
+            </article>
+
+            <article class="card feature card-obs reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2 13l3.5-4 3 2.5L12 6l6 6" />
+                    <path d="M2 17h16" opacity=".45" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>逐请求可观测</h3>
+                  <p>日志、用量、TTFT、缓存命中与成本，全部落到一条链路。</p>
+                </div>
+              </header>
+              <svg class="spark" viewBox="0 0 520 110" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <linearGradient id="spark-area" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#38bdf8" stop-opacity=".34" />
+                    <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+                  </linearGradient>
+                  <linearGradient id="spark-line" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#818cf8" />
+                    <stop offset="100%" stop-color="#22d3ee" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M0 82 L28 74 L56 78 L84 58 L112 64 L140 44 L168 52 L196 38 L224 47 L252 30 L280 40 L308 26 L336 35 L364 22 L392 30 L420 16 L448 24 L476 12 L504 20 L520 15 L520 110 L0 110 Z"
+                  fill="url(#spark-area)"
+                />
+                <path
+                  d="M0 82 L28 74 L56 78 L84 58 L112 64 L140 44 L168 52 L196 38 L224 47 L252 30 L280 40 L308 26 L336 35 L364 22 L392 30 L420 16 L448 24 L476 12 L504 20 L520 15"
+                  fill="none"
+                  stroke="url(#spark-line)"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <dl class="metric-row">
+                <div><dt>TTFT</dt><dd>486<small>ms</small></dd></div>
+                <div><dt>P95</dt><dd>2.1<small>s</small></dd></div>
+                <div><dt>缓存命中</dt><dd>72<small>%</small></dd></div>
+              </dl>
+            </article>
+
+            <article class="card feature card-tunnel reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6.5 13.5a3.5 3.5 0 0 1-.4-7A4.5 4.5 0 0 1 15 7.4a3 3 0 0 1-.6 6h-1" />
+                    <path d="M10 11v7m0 0 2.5-2.5M10 18l-2.5-2.5" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>公网访问</h3>
+                  <p>Cloudflare 快速隧道零配置对外，也可绑定自有域名。</p>
+                </div>
+              </header>
+              <div class="tunnel-flow">
+                <span class="tunnel-node"><strong>llm.example.com</strong><small>公网域名</small></span>
+                <span class="tunnel-arrow" aria-hidden="true">→</span>
+                <span class="tunnel-node tunnel-node-cf"><strong>Cloudflare Tunnel</strong><small>出站连接，无开放端口</small></span>
+                <span class="tunnel-arrow" aria-hidden="true">→</span>
+                <span class="tunnel-node"><strong>127.0.0.1:18093</strong><small>本地网关</small></span>
+              </div>
+              <p class="feature-foot">API 与 UI 可用不同域名，并互相屏蔽对方路由。</p>
+            </article>
+
+            <article class="card feature card-roles reveal">
+              <header class="feature-head">
+                <span class="feature-icon">
+                  <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="7.5" cy="7" r="2.6" />
+                    <path d="M2.5 16c.6-2.7 2.6-4.2 5-4.2s4.4 1.5 5 4.2" />
+                    <path d="M13.5 5.2a2.4 2.4 0 0 1 0 4.6M15 12.2c1.6.5 2.6 1.8 3 3.8" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>用户与角色</h3>
+                  <p>管理员管全部 Provider，普通用户只看自己的六个页面。</p>
+                </div>
+              </header>
+              <ul class="role-rows">
+                <li><span class="role-name">管理员</span><span>全部页面 · 全部 Provider · 用户管理</span></li>
+                <li><span class="role-name">普通用户</span><span>Provider · 模型 · 密钥 · 日志 · 用量 · 保活</span></li>
+                <li><span class="role-name">本机访问</span><span>loopback 免密，远程需管理员密码</span></li>
+              </ul>
+              <p class="feature-foot">管理员可把指定 Provider 授权给指定用户。</p>
+            </article>
+          </div>
+
+          <div class="cap-strip reveal">
+            <div><strong>流式保活</strong><span>长思考静默时发送心跳，空响应与纯 thinking 自动重试。</span></div>
+            <div><strong>额度保活</strong><span>按天 / 小时 / 分钟定时探测，把订阅额度窗口钉在固定时刻。</span></div>
+            <div><strong>监控中心</strong><span>SLA 矩阵、18 条内置规则、事件流与静默窗口。</span></div>
+            <div><strong>告警通道</strong><span>飞书、钉钉、企业微信、Telegram，按严重级别过滤。</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- screens -->
+      <section class="section" id="screens">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">CONSOLE</p>
+            <h2>所有上游，一屏看清。</h2>
+            <p class="section-lede">
+              同一份 React 控制台，Docker 服务、桌面 App 与局域网访问共用。截图取自真实运行实例，账号信息已脱敏。
+            </p>
+          </div>
+
+          <div class="shot-tabs reveal" role="tablist" aria-label="控制台页面">
+            <button class="shot-tab is-active" role="tab" aria-selected="true" data-shot="input-providers" data-caption="输入 Provider：额度、刷新时间、失败原因与批量导出">
+              输入 Provider
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="api-keys" data-caption="API 密钥：同一 Key 多套方案、调度模式与容灾链路">
+              API 密钥
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="output-providers" data-caption="接入地址：四种协议端点、调用示例与试跑命令">
+              接入地址
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="models" data-caption="模型列表：正则搜索、能力过滤与 Provider 筛选">
+              模型列表
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="usage-stats" data-caption="用量统计：请求、Token、缓存、成本与延迟">
+              用量统计
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="traffic-logs" data-caption="API 日志：逐请求链路与调度决策摘要">
+              API 日志
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="monitoring-overview" data-caption="监控中心：拓扑、SLA、请求分布与集群健康度">
+              监控总览
+            </button>
+            <button class="shot-tab" role="tab" aria-selected="false" data-shot="monitoring-events" data-caption="事件流：请求、探测、签到与内核事件合成一条时间线">
+              事件流
+            </button>
+          </div>
+
+          <div class="shot-frame reveal">
+            <div class="browser-bar">
+              <span class="traffic-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="browser-url"><span class="lock" aria-hidden="true"></span>127.0.0.1:18093</span>
+              <span class="browser-page" id="shot-page">输入 Provider</span>
+            </div>
+            <button class="shot-open" id="shot-open" type="button" aria-label="放大查看截图">
+              <img
+                id="shot-img"
+                src="assets/images/input-providers.png"
+                alt="控制台输入 Provider 页面"
+                width="1920"
+                height="1200"
+                decoding="async"
+              />
+              <span class="shot-zoom" aria-hidden="true">
+                <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                  <circle cx="9" cy="9" r="5.5" />
+                  <path d="M13.2 13.2 17 17M9 6.8v4.4M6.8 9h4.4" />
+                </svg>
+              </span>
+            </button>
+            <p class="shot-caption" id="shot-caption">输入 Provider：额度、刷新时间、失败原因与批量导出</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- download -->
+      <section class="section section-download" id="download">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">DOWNLOAD</p>
+            <h2>挑一个平台，装上就能用。</h2>
+            <p class="section-lede">
+              每个安装包内含同一份 Go 核心与前端。桌面 App 关闭窗口后继续在后台运行，macOS 版内置 cloudflared 可直接开公网访问。
+            </p>
+          </div>
+
+          <div class="release-bar reveal">
+            <span class="release-label">最新版本</span>
+            <span class="release-version" id="release-version">v0.3.0</span>
+            <span class="release-state" id="release-state">正在读取 GitHub Releases…</span>
+            <a class="link-quiet release-all repo-link" id="release-all" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+              所有版本 <span aria-hidden="true">→</span>
+            </a>
+          </div>
+
+          <div class="dl-grid">
+            <article class="card dl-card reveal" data-os="mac">
+              <header class="dl-head">
+                <span class="dl-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor">
+                    <path d="M13.6 10.7c0-1.7 1.4-2.5 1.5-2.6-.8-1.2-2-1.4-2.5-1.4-1-.1-2 .6-2.5.6s-1.3-.6-2.2-.6c-1.1 0-2.2.7-2.8 1.7-1.2 2.1-.3 5.2.9 6.9.6.8 1.3 1.7 2.2 1.7s1.2-.5 2.3-.5 1.4.5 2.3.5 1.6-.8 2.2-1.7c.7-1 1-1.9 1-2-.1 0-1.9-.7-2-2.6h.1ZM12 5.3c.5-.6.8-1.4.7-2.2-.7 0-1.6.5-2.1 1.1-.5.5-.9 1.3-.8 2.1.8.1 1.6-.4 2.2-1Z" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>macOS 桌面 App</h3>
+                  <p>关闭窗口继续运行 · 内置控制台 · 一键公网访问</p>
+                </div>
+                <span class="dl-badge" data-os-badge hidden>当前系统</span>
+              </header>
+              <div class="dl-links">
+                <a class="dl-link" data-asset="desktop-darwin-arm64.zip" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>Apple 芯片 · arm64</span><span class="dl-size"></span>
+                </a>
+                <a class="dl-link" data-asset="desktop-darwin-amd64.zip" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>Intel 芯片 · amd64</span><span class="dl-size"></span>
+                </a>
+              </div>
+              <p class="dl-note">要求 macOS 11+。未做公证，首次打开请右键 →「打开」。</p>
+            </article>
+
+            <article class="card dl-card reveal" data-os="win">
+              <header class="dl-head">
+                <span class="dl-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor">
+                    <path d="M3 4.3 9 3.5v5.7H3V4.3Zm7-1L17 2.2v6.9h-7V3.3ZM3 10.2h6v5.7L3 15V10.2Zm7 0h7v6.6l-7-1.1v-5.5Z" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>Windows 桌面 App</h3>
+                  <p>单文件 exe · 复用系统 WebView2 · 关闭窗口不退出</p>
+                </div>
+                <span class="dl-badge" data-os-badge hidden>当前系统</span>
+              </header>
+              <div class="dl-links">
+                <a class="dl-link" data-asset="desktop-windows-amd64.exe" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>Windows 10 / 11 · x64</span><span class="dl-size"></span>
+                </a>
+                <a class="dl-link" data-asset="windows_amd64.zip" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>无界面服务 · x64 zip</span><span class="dl-size"></span>
+                </a>
+              </div>
+              <p class="dl-note">未签名，SmartScreen 提示时点「更多信息 → 仍要运行」。</p>
+            </article>
+
+            <article class="card dl-card reveal" data-os="linux">
+              <header class="dl-head">
+                <span class="dl-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2.5" y="3" width="15" height="11" rx="2" />
+                    <path d="m5.2 7 2.4 2-2.4 2M9.8 11h4" />
+                    <path d="M6.5 17h7" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>Linux 桌面 App</h3>
+                  <p>AppImage 免安装 · deb 走系统包管理</p>
+                </div>
+                <span class="dl-badge" data-os-badge hidden>当前系统</span>
+              </header>
+              <div class="dl-links">
+                <a class="dl-link" data-asset="desktop-linux-amd64.AppImage" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>AppImage · x86_64</span><span class="dl-size"></span>
+                </a>
+                <a class="dl-link" data-asset="desktop-linux-amd64.deb" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">
+                  <span>Debian / Ubuntu · amd64</span><span class="dl-size"></span>
+                </a>
+              </div>
+              <p class="dl-note">需要 GTK3 与 WebKitGTK 4.0 / 4.1，主流桌面发行版已自带。</p>
+            </article>
+
+            <article class="card dl-card dl-card-docker reveal">
+              <header class="dl-head">
+                <span class="dl-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2.5 9.5h15v3a4 4 0 0 1-4 4h-7a4 4 0 0 1-4-4v-3Z" />
+                    <path d="M5 9.5V7h2.5v2.5M8.5 9.5V7H11v2.5M12 9.5V7h2.5v2.5M8.5 5.5V3H11v2.5" />
+                  </svg>
+                </span>
+                <div>
+                  <h3>Docker / K8s</h3>
+                  <p>多架构镜像 · 非 root · 内置健康检查</p>
+                </div>
+                <span class="dl-badge dl-badge-ghcr">GHCR</span>
+              </header>
+              <div class="docker-cmds">
+                <div class="mini-code">
+                  <code id="docker-dh">docker pull yangyongyong/llm-protocol-gateway:latest</code>
+                  <button class="copy-btn" data-copy="docker-dh" aria-label="复制 Docker Hub 拉取命令">复制</button>
+                </div>
+                <div class="mini-code">
+                  <code id="docker-ghcr">docker pull ghcr.io/yangyongyongyong/llm-protocol-gateway:latest</code>
+                  <button class="copy-btn" data-copy="docker-ghcr" aria-label="复制 GHCR 拉取命令">复制</button>
+                </div>
+              </div>
+              <p class="dl-note">支持 linux/amd64 与 linux/arm64。完整运行命令见快速开始。</p>
+            </article>
+          </div>
+
+          <div class="cli-table-wrap reveal">
+            <div class="cli-table-head">
+              <h3>无界面服务 · 全部平台</h3>
+              <p>解压后保留 <code>gateway</code> 与 <code>web-dist/</code> 同级，用包内 <code>start.sh</code> / <code>start.cmd</code> 启动。</p>
+            </div>
+            <div class="table-scroll">
+              <table class="cli-table">
+                <thead>
+                  <tr><th scope="col">平台</th><th scope="col">架构</th><th scope="col">格式</th><th scope="col">下载</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Linux</td><td>x86_64</td><td>tar.gz</td><td><a data-asset="linux_amd64.tar.gz" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>Linux</td><td>arm64</td><td>tar.gz</td><td><a data-asset="linux_arm64.tar.gz" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>Linux</td><td>armv7</td><td>tar.gz</td><td><a data-asset="linux_armv7.tar.gz" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>macOS</td><td>Apple 芯片</td><td>tar.gz</td><td><a data-asset="darwin_arm64.tar.gz" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>macOS</td><td>Intel</td><td>tar.gz</td><td><a data-asset="darwin_amd64.tar.gz" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>Windows</td><td>x64</td><td>zip</td><td><a data-asset="windows_amd64.zip" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                  <tr><td>Windows</td><td>arm64</td><td>zip</td><td><a data-asset="windows_arm64.zip" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">下载</a></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="cli-table-foot">
+              每个 Release 附带 <code>SHA256SUMS</code>；macOS 用户也可以一条命令安装：
+            </p>
+            <div class="mini-code mini-code-wide">
+              <code id="mac-install">curl -fsSL https://raw.githubusercontent.com/yangyongyongyong/llm-protocol-gateway/main/scripts/install-macos.sh | bash</code>
+              <button class="copy-btn" data-copy="mac-install" aria-label="复制 macOS 安装命令">复制</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- start -->
+      <section class="section" id="start">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="eyebrow">QUICK START</p>
+            <h2>三条命令，跑起来。</h2>
+            <p class="section-lede">
+              第一次启动会在用户配置目录创建 SQLite。用 <code>127.0.0.1</code> 访问时免登录；
+              远程访问需要先设置管理员密码。
+            </p>
+          </div>
+
+          <div class="start-grid">
+            <div class="start-main reveal">
+              <div class="tabs" role="tablist" aria-label="运行方式" data-tabs="start">
+                <button class="tab is-active" role="tab" aria-selected="true" data-tab="docker">Docker</button>
+                <button class="tab" role="tab" aria-selected="false" data-tab="binary">二进制</button>
+                <button class="tab" role="tab" aria-selected="false" data-tab="source">源码</button>
+              </div>
+              <div class="tab-panels" data-panels="start">
+                <div class="tab-panel is-active" role="tabpanel" data-panel="docker">
+                  <div class="code">
+                    <div class="code-head"><span>bash</span><button class="copy-btn" data-copy="code-docker">复制</button></div>
+                    <pre id="code-docker"><code>docker run -d --name llm-protocol-gateway \
+  -p 18093:18093 \
+  -v llm-gateway-data:/data \
+  --restart unless-stopped \
+  yangyongyong/llm-protocol-gateway:latest
+
+curl -s http://127.0.0.1:18093/__health</code></pre>
+                  </div>
+                  <p class="code-note">管理页：<code>http://127.0.0.1:18093/</code>。Compose 与 K8s 清单分别在仓库根目录与 <code>deploy/k8s.yaml</code>。</p>
+                </div>
+                <div class="tab-panel" role="tabpanel" data-panel="binary" hidden>
+                  <div class="code">
+                    <div class="code-head"><span>bash</span><button class="copy-btn" data-copy="code-binary">复制</button></div>
+                    <pre id="code-binary"><code>tar -xzf llm-protocol-gateway_*_linux_amd64.tar.gz
+cd llm-protocol-gateway_*_linux_amd64
+./start.sh
+
+# 自定义监听地址
+GATEWAY_ADDR=127.0.0.1:18090 ./start.sh</code></pre>
+                  </div>
+                  <p class="code-note"><code>start.sh</code> / <code>start.cmd</code> 会把 <code>GATEWAY_WEB_DIST</code> 指向包内的 <code>web-dist</code>，直接运行 gateway 会打不开控制台。</p>
+                </div>
+                <div class="tab-panel" role="tabpanel" data-panel="source" hidden>
+                  <div class="code">
+                    <div class="code-head"><span>bash</span><button class="copy-btn" data-copy="code-source">复制</button></div>
+                    <pre id="code-source"><code>git clone https://github.com/yangyongyongyong/llm-protocol-gateway.git
+cd llm-protocol-gateway
+go run ./cmd/gateway
+
+# 前端热更新（编译网关 + Vite）
+cd web && npm install && npm run dev</code></pre>
+                  </div>
+                  <p class="code-note">需要 Go 1.26+。前端开发地址 <code>http://127.0.0.1:5173</code>，网关 API 为 <code>:18093</code>。</p>
+                </div>
+              </div>
+            </div>
+
+            <aside class="start-side reveal">
+              <h3>常用环境变量</h3>
+              <dl class="env-list">
+                <div><dt><code>GATEWAY_ADDR</code></dt><dd>监听地址，默认 <code>127.0.0.1:18093</code>；容器内用 <code>0.0.0.0:18093</code>。</dd></div>
+                <div><dt><code>GATEWAY_DB</code></dt><dd>SQLite 路径，默认在用户配置目录。</dd></div>
+                <div><dt><code>GATEWAY_WEB_DIST</code></dt><dd>控制台静态目录，压缩包内指向 <code>web-dist</code>。</dd></div>
+                <div><dt><code>TZ</code></dt><dd>影响每日统计与签到日期，生产建议 <code>Asia/Shanghai</code>。</dd></div>
+              </dl>
+              <a class="btn btn-ghost btn-block repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/tree/main/docs" rel="noopener">阅读部署文档</a>
+            </aside>
+          </div>
+
+          <div class="deploy-options reveal">
+            <div>
+              <h3>Docker / Compose / Kubernetes</h3>
+              <p>多架构镜像，单副本带 PVC 与健康探针。</p>
+              <a class="link-quiet repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/deploy.md" rel="noopener">容器部署 <span aria-hidden="true">→</span></a>
+            </div>
+            <div>
+              <h3>Linux 裸机 · systemd</h3>
+              <p>无 Docker 的服务器，用 systemd 托管与自动重启。</p>
+              <a class="link-quiet repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/deploy-linux-bare-metal.md" rel="noopener">裸机部署 <span aria-hidden="true">→</span></a>
+            </div>
+            <div>
+              <h3>macOS App</h3>
+              <p>菜单栏应用、内置 cloudflared，支持一键公网访问。</p>
+              <a class="link-quiet repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/macos-app.md" rel="noopener">桌面说明 <span aria-hidden="true">→</span></a>
+            </div>
+            <div>
+              <h3>从源码打包</h3>
+              <p>一条命令产出全部平台的压缩包与 SHA256。</p>
+              <a class="link-quiet repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/scripts/release.sh" rel="noopener">release.sh <span aria-hidden="true">→</span></a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="#top" aria-label="回到顶部">
+            <img src="assets/logo.svg" width="30" height="30" alt="" />
+            <span class="brand-text"><strong>LLM Protocol Gateway</strong><span>四协议统一网关</span></span>
+          </a>
+          <p>本地优先、单二进制、凭证不出网关。Go 核心 + React 控制台，同一份代码跑在服务器和桌面上。</p>
+        </div>
+        <div class="footer-col">
+          <h4>产品</h4>
+          <a href="#protocols">协议矩阵</a>
+          <a href="#features">能力</a>
+          <a href="#screens">控制台</a>
+          <a href="#download">下载</a>
+        </div>
+        <div class="footer-col">
+          <h4>文档</h4>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway#readme" rel="noopener">README</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/deploy.md" rel="noopener">容器部署</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/macos-app.md" rel="noopener">macOS App</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/docs/known-issues.md" rel="noopener">已知问题</a>
+        </div>
+        <div class="footer-col">
+          <h4>项目</h4>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway" rel="noopener">GitHub</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/releases" rel="noopener">Releases</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/issues" rel="noopener">Issues</a>
+          <a class="repo-link" href="https://github.com/yangyongyongyong/llm-protocol-gateway/blob/main/THIRD_PARTY_NOTICES.md" rel="noopener">第三方声明</a>
+        </div>
+      </div>
+      <div class="container footer-base">
+        <span>© 2026 LLM Protocol Gateway</span>
+        <span class="footer-mono">OpenAI · Anthropic · Google · 14 种接入方式</span>
+      </div>
+    </footer>
+
+    <dialog class="lightbox" id="lightbox">
+      <button class="lightbox-close" id="lightbox-close" type="button" aria-label="关闭">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m5 5 10 10M15 5 5 15" /></svg>
+      </button>
+      <img id="lightbox-img" src="assets/images/input-providers.png" alt="控制台截图放大预览" />
+      <p id="lightbox-caption"></p>
+    </dialog>
+
+    <noscript>
+      <div class="noscript">页面脚本未启用：下载链接会跳到 GitHub Releases 页面，请在其中选择对应平台的安装包。</div>
+    </noscript>
+  </body>
+</html>

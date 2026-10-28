@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#070a12" />
+    <title>页面不存在 · LLM Protocol Gateway</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .notfound {
+        display: flex;
+        min-height: 100vh;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 32px;
+        text-align: center;
+        position: relative;
+        z-index: 1;
+      }
+      .notfound img {
+        width: 88px;
+        height: 88px;
+        border-radius: 22px;
+        box-shadow: 0 0 40px -8px rgba(129, 140, 248, 0.7);
+      }
+      .notfound code {
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        color: var(--dim);
+      }
+      .notfound h1 {
+        margin: 0;
+        font-size: clamp(1.6rem, 4vw, 2.2rem);
+        letter-spacing: -0.02em;
+      }
+      .notfound p {
+        margin: 0;
+        max-width: 420px;
+        font-size: 13.5px;
+        line-height: 1.75;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="notfound">
+      <img src="assets/logo.svg" alt="" />
+      <code>404</code>
+      <h1>这条路由没有对应的上游。</h1>
+      <p>页面可能已经移动，或者链接拼错了。回到主页继续浏览协议矩阵、界面截图与下载。</p>
+      <a class="btn btn-primary" href="./">回到首页</a>
+    </main>
+  </body>
+</html>

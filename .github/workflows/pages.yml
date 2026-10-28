@@ -1,0 +1,49 @@
+name: Site
+
+# 介绍站是纯静态文件，不需要构建。推送到 main 且站点文件有变化时发布到 GitHub Pages。
+# 首次使用需要在仓库 Settings → Pages 里把 Source 设为「GitHub Actions」。
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/site/**"
+      - "scripts/check-site.mjs"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 静态自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查本地链接、锚点与图片
+        run: node scripts/check-site.mjs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .github/site
+
+  deploy:
+    name: 发布到 GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

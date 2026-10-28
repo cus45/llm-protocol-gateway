@@ -10,8 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="https://yangyongyongyong.github.io/llm-protocol-gateway/">介绍站</a> ·
   <a href="#-界面预览">界面预览</a> ·
   <a href="#-核心能力">核心能力</a> ·
+  <a href="#-下载与安装">下载</a> ·
   <a href="#-快速开始">快速开始</a> ·
   <a href="#-部署">部署</a> ·
   <a href="#-文档">文档</a>
@@ -136,7 +138,7 @@ OpenAI Chat、OpenAI Responses、Claude、Gemini 四个端点集中展示，附�
 - **API 日志 / 用量统计**：全链路耗时、TTFT、缓存命中、成本、流量。
 - **监控中心**：集群容灾与 SLA 矩阵、轻量探测（chat + tools 两发、不消耗订阅额度）、事件流、18 条内置规则（可启停、改阈值）、静默窗口。
 - **告警通道**：飞书、钉钉、企业微信、Telegram，可按严重级别过滤。
-- **机器状态**：CPU、内存、磁盘、温度、风扇（macOS/Linux）。
+- **机器状态**：CPU（整机 + 逐核）、负载、内存构成、挂载卷、磁盘吞吐、网卡收发、网关卡顿相关的进程指标（RSS / 线程 / 句柄 / goroutine），加上近 60 分钟趋势图；「诊断」给出带处置建议的体检结论，「诊断包」导出含 GC 与数据库信息的 JSON，便于附在问题反馈里。Linux 走 `/proc`，macOS / Windows 走 gopsutil（系统计数器），三个平台启动即可用。
 
 ### 6. 运维能力
 
@@ -145,6 +147,46 @@ OpenAI Chat、OpenAI Responses、Claude、Gemini 四个端点集中展示，附�
 - **每日签到**：Qoder 两站与 WorkBuddy 国内版的积分活动可托管，按北京时间划分日期，失败自动重试。
 - **用户与角色**：管理员可用全部 Provider；普通用户只看到输入 Provider、模型列表、API 密钥、API 日志、用量统计、额度保活六个页面，且只能操作自己的数据。
 - **登录**：远程首次访问需设置管理员密码，本机 `127.0.0.1` 直连免密（SSH 端口转发同样可用）。
+
+---
+
+## 📥 下载与安装
+
+预编译产物由 [Release 工作流](.github/workflows/release.yml) 在 `v*` tag 上构建，
+在 [Releases](https://github.com/yangyongyongyong/llm-protocol-gateway/releases) 下载，
+每个版本附带 `SHA256SUMS`。介绍站 <https://yangyongyongyong.github.io/llm-protocol-gateway/>
+会读取最新 Release 并自动填充下载链接。
+
+### 桌面 App（带界面）
+
+| 平台 | 产物 | 说明 |
+| --- | --- | --- |
+| macOS 11+ | `llm-protocol-gateway-desktop-darwin-arm64.zip` / `-amd64.zip` | 未公证，首次打开请右键 →「打开」 |
+| Windows 10/11 | `llm-protocol-gateway-desktop-windows-amd64.exe` | 未签名，SmartScreen 提示时选「更多信息 → 仍要运行」 |
+| Linux x86_64 | `llm-protocol-gateway-desktop-linux-amd64.AppImage` / `.deb` | 需要 GTK3 与 WebKitGTK 4.0/4.1 |
+
+macOS 也可以一条命令安装到 `/Applications`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yangyongyongyong/llm-protocol-gateway/main/scripts/install-macos.sh | bash
+```
+
+### 无界面服务（gateway + web-dist）
+
+| 系统 | 架构 | 产物 |
+| --- | --- | --- |
+| Linux | amd64 / arm64 / armv7 | `llm-protocol-gateway_<版本>_linux_<架构>.tar.gz` |
+| macOS | arm64 / amd64 | `llm-protocol-gateway_<版本>_darwin_<架构>.tar.gz` |
+| Windows | amd64 / arm64 | `llm-protocol-gateway_<版本>_windows_<架构>.zip` |
+
+压缩包内 `gateway` 与 `web-dist/` 必须保持同级，用包内的 `start.sh` / `start.cmd` 启动
+（脚本会设置 `GATEWAY_WEB_DIST`，直接运行二进制打不开控制台）。本地出包：
+
+```bash
+bash scripts/release.sh package 0.4.0          # 默认全部 7 个平台到 dist/ + SHA256SUMS
+bash scripts/release.sh package 0.4.0 linux/amd64 windows/amd64
+bash scripts/release.sh desktop 0.4.0 windows/amd64   # Windows 桌面 exe（含图标与版本资源）
+```
 
 ---
 
@@ -203,10 +245,14 @@ curl -s http://127.0.0.1:18093/__health
 
 ### 桌面 App
 
-Wails 打包的 macOS 菜单栏应用，内置同一套核心与 `web/dist`，支持一键 Cloudflare 公网访问，详见 **[macOS App](docs/macos-app.md)**。
+Wails 打包的桌面应用覆盖 macOS / Windows / Linux，内置同一套核心与 `web/dist`，关闭窗口后继续在后台运行；
+macOS 版内置 `cloudflared`，可直接开启 Cloudflare 公网访问。预编译包见上方的「下载与安装」，
+macOS 本地构建与使用细节见 **[macOS App](docs/macos-app.md)**。
 
 ```bash
-bash scripts/build-macos-app.sh
+bash scripts/build-macos-app.sh                      # macOS
+bash scripts/release.sh desktop 0.4.0 windows/amd64  # Windows（交叉编译）
+bash scripts/package-desktop-linux.sh                # Linux AppImage / deb
 ```
 
 ---

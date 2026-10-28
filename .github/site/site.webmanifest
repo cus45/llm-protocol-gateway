@@ -1,0 +1,16 @@
+{
+  "name": "LLM Protocol Gateway",
+  "short_name": "LLM Gateway",
+  "description": "把 OpenAI Chat / Responses、Claude、Gemini 四种协议收敛成一个可控、可观测、可容灾的大模型网关。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#070a12",
+  "theme_color": "#070a12",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

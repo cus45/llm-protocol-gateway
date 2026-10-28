@@ -1,0 +1,421 @@
+name: Release
+
+# 推一个 v* tag 就把所有平台的产物一次发出去：
+#
+#   核心网关（无界面，纯 Go 静态二进制）   linux/macOS/Windows × amd64/arm64 + linux armv7   7 个包
+#   桌面 App（Wails 壳）                   macOS arm64/amd64、Windows amd64、Linux amd64       4 个包
+#   校验                                   SHA256SUMS
+#
+# 各平台原生产物在任何平台都无法完整产出（桌面壳要链接 GTK/WebKitGTK、要 codesign），
+# 所以按平台分 job 跑，最后由 release job 汇总成一个 GitHub Release。
+#
+# 手工补发：workflow_dispatch 填 tag 名即可（tag 必须已经存在）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的 tag（例如 v0.2.0）'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.1'
+  XDG_RUNTIME_DIR: /tmp/runtime-root
+
+jobs:
+  # ------------------------------------------------------------------ 前置检查
+  gate:
+    name: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - id: v
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]; then
+            echo "::error::tag '$TAG' 不是 vX.Y.Z 形式"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >>"$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          echo "发布 $TAG（${TAG#v}）@ $(git rev-parse --short HEAD)"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: web build & tests
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          node --test src/lib.test.mjs
+
+  # ------------------------------------------------------------------ 核心网关（7 个平台）
+  cli:
+    name: cli ${{ matrix.target }}
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          GATEWAY_APP_VERSION="${{ needs.gate.outputs.version }}" npm run build
+
+      # Linux 机时上交叉编译，产物与原生一致：网关是 CGO_ENABLED=0 的纯 Go。
+      - name: Package
+        env:
+          SKIP_WEB: '1'
+        run: bash scripts/release.sh package "${{ needs.gate.outputs.version }}" "${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ strategy.job-index }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux/amd64
+          - linux/arm64
+          - linux/arm/v7
+          - darwin/amd64
+          - darwin/arm64
+          - windows/amd64
+          - windows/arm64
+
+  # ------------------------------------------------------------------ 桌面 App：macOS
+  # .app 里要放 web/dist、cloudflared、bun、cursor-bridge，全部在本 job 下载/安装后再打进包里，
+  # 用户首次打开即可用，不需要自己装 Go/Node/brew。
+  desktop-macos:
+    name: desktop macos/${{ matrix.arch }}
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: amd64
+            runner: macos-14 # Apple 芯片 + Rosetta 编译 Intel 版
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.19
+
+      - name: Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      # 先确认 Intel 运行时确实装了：Rosetta 缺失时 `arch -x86_64` 会在后面才炸。
+      - name: Rosetta (Intel builds)
+        if: matrix.arch == 'amd64'
+        run: |
+          if ! /usr/bin/pgrep oahd >/dev/null 2>&1; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      - name: Build app
+        env:
+          GATEWAY_APP_VERSION: ${{ needs.gate.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          npm ci --no-audit --no-fund --prefix web
+          bash scripts/build-macos-app.sh
+
+      - name: Ad-hoc sign & verify bundle
+        run: |
+          APP="desktop/build/bin/LLM Protocol Gateway.app"
+          test -x "$APP/Contents/MacOS/LLM Protocol Gateway"
+          test -d "$APP/Contents/Resources/web-dist"
+          test -x "$APP/Contents/Resources/bin/cloudflared"
+          test -x "$APP/Contents/Resources/bin/bun"
+          test -f "$APP/Contents/Resources/cursor-bridge/standalone.ts"
+          codesign --verify --deep --strict "$APP" || codesign --force --deep --sign - "$APP"
+          # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位
+          strings "$APP/Contents/MacOS/LLM Protocol Gateway" | grep -q "${{ needs.gate.outputs.version }}"
+          plutil -lint "$APP/Contents/Info.plist"
+
+      - name: Zip (preserve symlinks & executable bits)
+        run: |
+          VERSION="${{ needs.gate.outputs.version }}"
+          STAGE="$(mktemp -d)/llm-protocol-gateway-$VERSION"
+          mkdir -p "$STAGE"
+          ditto "desktop/build/bin/LLM Protocol Gateway.app" "$STAGE/LLM Protocol Gateway.app"
+          cp docs/macos-app.md "$STAGE/README.md"
+          # 安装脚本只下载 macOS 包，相对本文件生成，免去维护第二份副本
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/scripts/install-macos.sh" \
+            -o "$STAGE/install.sh"
+          test -s "$STAGE/install.sh"
+          chmod +x "$STAGE/install.sh"
+
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
+            "dist/llm-protocol-gateway-desktop-darwin-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------ 桌面 App：Windows
+  # WebView2 不需要 cgo，直接交叉编译；图标/版本/DPI 清单由 go-winres 生成。
+  desktop-windows:
+    name: desktop windows/amd64
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build desktop exe
+        run: |
+          npm ci --no-audit --no-fund --prefix web
+          GATEWAY_APP_VERSION="${{ needs.gate.outputs.version }}" npm --prefix web run build
+          bash scripts/release.sh desktop "${{ needs.gate.outputs.version }}" windows/amd64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist/llm-protocol-gateway-desktop-windows-amd64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------ 桌面 App：Linux
+  # Wails 在 Linux 上通过 cgo 链接 GTK3 + WebKitGTK（webkit2_41），必须原生构建。
+  desktop-linux:
+    name: desktop linux/amd64
+    needs: gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev libegl1 \
+            xvfb zlib1g-dev patchelf desktop-file-utils libfuse2 file
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build desktop binary
+        env:
+          GATEWAY_APP_VERSION: ${{ needs.gate.outputs.version }}
+          # App.version 来自 build tag；-ldflags 末尾覆盖它，让控制台看到真实版本号
+          DESKTOP_LDFLAGS: -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=${{ needs.gate.outputs.version }}
+        run: |
+          npm ci --no-audit --no-fund --prefix web
+          GATEWAY_APP_VERSION="$GATEWAY_APP_VERSION" npm --prefix web run build
+          node desktop/frontend/sync-dist.mjs
+          cd desktop
+          wails build -tags webkit2_41 -ldflags "$DESKTOP_LDFLAGS"
+
+      - name: Smoke test (headless X)
+        run: |
+          BIN="desktop/build/bin/LLM Protocol Gateway"
+          if [ ! -x "$BIN" ]; then
+            echo "wails 产物不在预期路径，实际："
+            find desktop/build/bin -maxdepth 1
+            exit 1
+          fi
+          file "$BIN"
+          # 窗口起不来时会立刻退出；跑 10 秒还活着说明 GTK/WebKit 都加载成功并起了本地网关。
+          set +e
+          timeout 10 xvfb-run -a "$BIN" >/tmp/desk.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/desk.log || true
+          # 124 = 被 timeout 杀掉，说明一直在正常运行
+          if [ "$rc" != "124" ]; then
+            echo "桌面壳启动后提前退出（rc=$rc）"
+            exit 1
+          fi
+
+      - name: Package AppImage
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: bash scripts/package-desktop-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------ 汇总发布
+  publish:
+    name: publish release
+    needs: [gate, cli, desktop-macos, desktop-windows, desktop-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: assets
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+            -printf '%P\n' | sort | xargs sha256sum >SHA256SUMS
+          cat SHA256SUMS
+          n=$(wc -l <SHA256SUMS)
+          if [ "$n" -lt 12 ]; then
+            echo "::error::应有 12 个产物，实际 $n 个"
+            exit 1
+          fi
+
+      - name: Release notes
+        run: |
+          VERSION="${{ needs.gate.outputs.version }}"
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "## 下载"
+            echo
+            echo "| 用途 | 文件 |"
+            echo "| --- | --- |"
+            echo "| macOS 桌面 App（Apple 芯片 / Intel） | \`llm-protocol-gateway-desktop-darwin-arm64.zip\` / \`-amd64.zip\` |"
+            echo "| Windows 桌面 App | \`llm-protocol-gateway-desktop-windows-amd64.exe\` |"
+            echo "| Linux 桌面 App（AppImage / deb） | \`llm-protocol-gateway-desktop-linux-amd64.AppImage\` / \`.deb\` |"
+            echo "| 无界面服务（Linux / macOS / Windows） | \`llm-protocol-gateway_${VERSION}_<系统>_<架构>.tar.gz\\|.zip\` |"
+            echo "| 容器镜像 | \`yangyongyong/llm-protocol-gateway:${VERSION}\` / \`:latest\` |"
+            echo
+            echo "各安装包内都有 \`RUN.txt\`，写了解压/双击之后怎么启动、数据存在哪、可选依赖是什么。"
+            echo "校验：\`sha256sum -c SHA256SUMS\`（macOS 用 \`shasum -a 256 -c\`）。"
+            echo
+            echo "## 未签名说明"
+            echo
+            echo "- macOS：ad-hoc 签名、未公证。首次打开请右键 →「打开」，或"
+            echo "  \`xattr -dr com.apple.quarantine \"/Applications/LLM Protocol Gateway.app\"\`。"
+            echo "- Windows：未做代码签名，SmartScreen 首次会拦：点「更多信息」→「仍要运行」。"
+            echo
+            echo "## 变更"
+            echo
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty='- %s' "$PREV..HEAD" | head -80
+            else
+              git log --no-merges --pretty='- %s' -n 40
+            fi
+            echo
+            printf '<!-- lang:zh -->\n'
+          } >notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "LLM Protocol Gateway $TAG" --notes-file notes.md
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* \
+              --verify-tag \
+              --title "LLM Protocol Gateway $TAG" \
+              --notes-file notes.md
+          fi
+          gh release view "$TAG" --json assets -q '.assets | length' | xargs -I{} echo "Release $TAG 共 {} 个文件"
