@@ -263,7 +263,9 @@ jobs:
   desktop-linux:
     name: desktop linux/amd64
     needs: gate
-    runs-on: ubuntu-22.04
+    # 必须用 24.04：构建用的是 -tags webkit2_41，而 22.04 的软件源里只有
+    # libwebkit2gtk-4.0-dev，tags 与库版本对不上会直接链接失败。
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -273,7 +275,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev libegl1 \
+            build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libegl1 \
             xvfb zlib1g-dev patchelf desktop-file-utils libfuse2 file
 
       - uses: actions/setup-go@v5
