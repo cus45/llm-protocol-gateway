@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "paths": {
+      "react": ["./.test-stubs/react.d.ts"],
+      "virtual:pwa-register": ["./.test-stubs/pwa-register.d.ts"]
+    }
+  },
+  "include": ["pwa_install_store.ts"]
+}

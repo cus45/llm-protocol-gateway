@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "imports": {
+    "#pwa-register": "./pwa-register.js"
+  }
+}

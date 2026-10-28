@@ -7927,6 +7927,105 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
   .upgrade-toast { top: 12px; right: 12px; left: 12px; width: auto; }
 }
 
+/* ----------------------------------------------------------------
+   安装到桌面（PWA）：侧栏入口 + 右下角提议卡片
+   ---------------------------------------------------------------- */
+/* 侧栏入口和 GitHub、折叠按钮同一级别：26px 幽灵图标，不抢主视觉 */
+.pwa-install-entry {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--sidebar-subtle);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.pwa-install-entry:hover:not(:disabled) { background: var(--sidebar-hover); color: var(--sidebar-text); }
+.pwa-install-entry:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.pwa-install-entry:disabled { opacity: 0.5; cursor: default; }
+
+.pwa-install-prompt {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  width: min(340px, calc(100vw - 36px));
+  padding: 13px 13px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  animation: upgrade-toast-in 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pwa-install-icon {
+  flex: 0 0 auto;
+  display: block;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 10px;
+  box-shadow: 0 6px 16px -6px rgba(79, 70, 229, 0.45);
+}
+.pwa-install-icon > img { display: block; width: 100%; height: 100%; }
+.pwa-install-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 18px;
+}
+.pwa-install-copy { display: flex; flex-direction: column; gap: 2px; }
+.pwa-install-copy strong { font-size: 13px; font-weight: 650; color: var(--text-strong); }
+.pwa-install-copy span { font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.pwa-install-note { font-size: 11.5px; line-height: 1.5; color: var(--amber); }
+.pwa-install-actions { display: flex; align-items: center; gap: 6px; }
+.pwa-install-actions .btn { --btn-h: 28px; font-size: 12px; }
+.pwa-install-actions .btn.primary { box-shadow: 0 1px 2px rgba(79, 70, 229, 0.24); }
+.pwa-install-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pwa-install-close:hover { background: var(--surface-sunken); color: var(--text); }
+
+@media (max-width: 640px) {
+  .pwa-install-prompt { right: 12px; bottom: 12px; left: 12px; width: auto; }
+}
+
+/* 图标栏（≤1240）里品牌行只留 logo，和 GitHub 图标一起隐藏，避免挤成一列 */
+@media (max-width: 1240px) {
+  .pwa-install-entry { display: none; }
+}
+
+/* 窄屏侧栏变成顶部导航条，品牌行里塞不下，只保留卡片入口 */
+@media (max-width: 900px) {
+  .pwa-install-entry { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pwa-install-prompt { animation: none; }
+}
+
 /* ── 监控中心 ────────────────────────────────────────────────────────────
    只用现有 tokens；补的都是既有体系里没有的：能在窄处收成单列的两栏网格、
    不在 .field 里的裸输入框（搜索框、重试渠道下拉），以及监控自己的行网格。

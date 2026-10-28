@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process';
-import type { Connect } from 'vite';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { defineConfig, type Plugin } from 'vite';
+import {spawn} from 'node:child_process';
+import type {Connect} from 'vite';
+import {defineConfig, type Plugin} from 'vite';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import react from '@vitejs/plugin-react';
+import {VitePWA} from 'vite-plugin-pwa';
 
 const gatewayTarget = 'http://127.0.0.1:18093';
 const gatewayBind = process.env.GATEWAY_ADDR || '0.0.0.0:18093';
@@ -111,7 +112,38 @@ function gatewayDevPlugin(): Plugin {
 const appVersion = (process.env.GATEWAY_APP_VERSION ?? '').trim();
 
 export default defineConfig({
-  plugins: [react(), gatewayDevPlugin()],
+  plugins: [
+    react(),
+    gatewayDevPlugin(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      injectRegister: false,
+      devOptions: { enabled: false },
+      manifest: {
+        name: 'LLM 协议网关',
+        short_name: '协议网关',
+        description: 'LLM Protocol Gateway 管理与调度控制台',
+        lang: 'zh-CN',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        launch_handler: { client_mode: 'focus-existing' },
+        background_color: '#080c16',
+        theme_color: '#0f1424',
+        icons: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+        ],
+      },
+      workbox: {
+        // 只预缓存带 hash 的构建产物：index.html 必须每次都上网取，
+        // 否则升级提示刷新后仍是旧页，看不到新版本。
+        globPatterns: ['assets/**/*.{js,css}', '*.{ico,svg,png,ttf}'],
+        navigateFallback: null,
+        cleanupOutdatedCaches: true,
+      },
+    }),
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
   },

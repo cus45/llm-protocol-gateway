@@ -18,6 +18,8 @@ import {
 } from './components/api_key_console';
 import {UsagePage} from './components/usage';
 import {runCloudflareAuthPoll} from './pollers';
+import {PwaInstallButton, PwaInstallPrompt} from './components/pwa_install';
+import {registerPwaServiceWorker, startPwaInstallCapture} from './pwa_install_store';
 import {providerRankOrder, rankProviderIDs} from './usage_poll';
 import {type MergedModel, mergeModelsAcrossAccounts} from './model_merge';
 import {
@@ -141,7 +143,6 @@ import {
     trafficRanksEqual,
     trafficRanksFromMap,
     uiCacheScope,
-    USERS_TABLE_GRID,
     writeStoredNavCollapsed,
     writeStoredProviderDensity,
     writeStoredSidebarCollapsed,
@@ -161,10 +162,10 @@ import {
 import {SubscriptionConnect} from './components/subscription';
 import {providerIcon, ProviderLabel} from './components/provider_label';
 import {MonitoringPage} from './monitoring/MonitoringPage';
-import {groupProvidersByBrand, ProviderChecklist, providerSelectOptions} from './components/provider_select';
+import {groupProvidersByBrand, providerSelectOptions} from './components/provider_select';
 import {ChatTestDialog, type ChatTestTab} from './components/chat_test';
 import {QuotaKeeperPanel} from './components/quota_keeper';
-import {ReplayPanel, ScheduleTracePanel, TrafficLogTable, trafficLogRowKey} from './components/traffic_log';
+import {ReplayPanel, ScheduleTracePanel, trafficLogRowKey, TrafficLogTable} from './components/traffic_log';
 import {IconSelect} from './components/selects';
 import {ProviderCatalogDialog} from './components/provider_catalog';
 import {PROVIDER_CONNECT_CHOICES, providerConnectIcon, resolveProviderIcon} from './provider_presets';
@@ -222,8 +223,8 @@ import {
     URLRow
 } from './components/ui';
 import {TerminalAuthGate} from './components/terminal_auth';
-import {useRoles, RolesPage} from './components/roles_page';
-import {UsersPage, ProfileModal} from './components/users_page';
+import {RolesPage, useRoles} from './components/roles_page';
+import {ProfileModal, UsersPage} from './components/users_page';
 import {
     CURRENT_APP_VERSION,
     dismissUpgrade,
@@ -4776,6 +4777,7 @@ function App() {
           </div>
         </div>
       )}
+      <PwaInstallPrompt/>
       <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
         <aside className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}>
           <div className="brand">
@@ -4797,6 +4799,7 @@ function App() {
                   <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
                 </svg>
               </a>
+              <PwaInstallButton/>
               <button
                 type="button"
                 className="sidebar-toggle"
@@ -8110,3 +8113,6 @@ function App() {
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
+// beforeinstallprompt 只在满足条件时发一次，必须赶在挂载前监听。
+startPwaInstallCapture();
+registerPwaServiceWorker();

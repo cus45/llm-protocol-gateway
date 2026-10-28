@@ -368,7 +368,9 @@ func isAdminAuthPublicPath(path string) bool {
 	// login screen must also be able to learn that a release is live.
 	case "/__health", "/__app/version", "/__auth/status", "/__auth/setup", "/__auth/login", "/__auth/logout":
 		return true
-	case "/login", "/favicon.ico", "/favicon.svg", "/apple-touch-icon.png":
+	case "/login", "/favicon.ico", "/favicon.svg", "/apple-touch-icon.png",
+		// 未登录也要能取到 manifest/sw，否则浏览器判定应用不可安装。
+		"/manifest.webmanifest", "/sw.js", "/registerSW.js":
 		return true
 	}
 	return strings.HasPrefix(path, "/assets/")

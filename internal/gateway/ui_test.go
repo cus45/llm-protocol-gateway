@@ -34,3 +34,16 @@ func TestWebDistIfPresent(t *testing.T) {
 		t.Fatalf("got %q want %q", got, tmp)
 	}
 }
+
+func TestPwaInstallPathsStayFetchable(t *testing.T) {
+	// manifest / service worker 被 SPA 兜底成 index.html 时浏览器判定不可安装；
+	// 被登录拦截时未登录页也装不上，两白名单必须同时放行。
+	for _, path := range []string{"/manifest.webmanifest", "/sw.js", "/registerSW.js"} {
+		if !shouldServeUIFallback(path) {
+			t.Errorf("shouldServeUIFallback(%q) = false, want true", path)
+		}
+		if !isAdminAuthPublicPath(path) {
+			t.Errorf("isAdminAuthPublicPath(%q) = false, want true", path)
+		}
+	}
+}

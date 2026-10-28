@@ -128,7 +128,10 @@ func shouldServeUIFallback(path string) bool {
 		return true
 	}
 	switch path {
-	case "/index.html", "/favicon.ico", "/favicon.svg", "/apple-touch-icon.png":
+	case "/index.html", "/favicon.ico", "/favicon.svg", "/apple-touch-icon.png",
+		// PWA 安装（「安装到桌面」）必需的三个入口：manifest 与 service worker
+		// 被当成 SPA 路由兜底成 index.html 的话，浏览器会判定应用不可安装。
+		"/manifest.webmanifest", "/sw.js", "/registerSW.js":
 		return true
 	default:
 		return false
