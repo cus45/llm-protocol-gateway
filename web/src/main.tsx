@@ -1475,7 +1475,12 @@ function App() {
         retry = window.setTimeout(measure, 400);
         return;
       }
-      const rowHeight = firstRow.getBoundingClientRect().height;
+      // 只量已经落定的行：新行进场时 max-height 从 0 撑到 44px，动画途中量第一行
+      // 会读到几像素，页容量被算成 55 → setState → 整表重取，新行连同动画一起被
+      // 替换掉，下一次轮询再循环一遍。表里全是动画中的行就这轮不量。
+      const rowSample = host.querySelector('.tlog-row:not(.is-new)');
+      if (!rowSample) return;
+      const rowHeight = rowSample.getBoundingClientRect().height;
       const headHeight = head?.getBoundingClientRect().height || 0;
       // clientHeight 已经扣掉横向滚动条；表头也在这个滚动容器里，要减掉。
       const avail = scroller.clientHeight - headHeight;
@@ -6420,9 +6425,13 @@ function App() {
               <div
                 className="log-table"
                 ref={(node) => {
+                  // 内联 ref 每次渲染都会先置 null 再挂回来；null 不算卸载，只在真挂载
+                  // 到新节点时量一次。否则每 5 秒轮询插入新行都会触发一次测量
+                  // （行还在进场动画里，量出来只有几像素），页容量一改就整表重取。
+                  if (!node || logsTableRef.current === node) return;
                   logsTableRef.current = node;
                   // 挂载即量一次：直接打开本页时表格挂载晚于上面 effect 的首次执行。
-                  if (node) measureLogsPageSizeRef.current?.();
+                  measureLogsPageSizeRef.current?.();
                 }}
               >
                 {logsLoading || !logsFetchedOnce ? (
