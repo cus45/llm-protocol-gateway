@@ -28,7 +28,12 @@ permissions:
   contents: read
 
 env:
-  DOCKERHUB_IMAGE: docker.io/wuchangbaibai/llm-protocol-gateway
+  # 镜像地址跟着仓库走，不在 workflow 里写死任何账号名/仓库名：
+  #   Docker Hub 用户名取自已配置的 secret（fork 是 wuchangbaibai，上游是 yangyongyong），
+  #   仓库名沿用 GitHub 仓库名。写死会在 fork 上被 registry 拒绝（insufficient_scope）。
+  # 没有 secret 时（例如来自 fork 的 PR）用户名会为空，拼出来是非法镜像名；
+  # 此时 can_push=false 不会推送，这里给个占位让它至少能当 tag 正常解析。
+  DOCKERHUB_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ github.event.repository.name }}
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
