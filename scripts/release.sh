@@ -231,8 +231,12 @@ build_desktop() {
     syso="overlay_winres_$GOARCH.syso"
     cp "$rsrc/rsrc_windows_$GOARCH.syso" "$syso"
     trap 'rm -f "$syso"' RETURN
+    # 必须带 desktop,production：缺标签时 wails 只编出一个空壳，双击后会弹
+    # 「Wails applications will not build without the correct build tags」然后退出。
+    # 版本号也要注入，否则桌面里的控制台会一直显示开发版本。
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOFLAGS=-mod=mod \
-      go build -trimpath -buildvcs=true -ldflags "-s -w -H windowsgui" \
+      go build -trimpath -buildvcs=true -tags desktop,production \
+      -ldflags "-s -w -H windowsgui -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$VERSION" \
       -o "$out" .
     rm -f "$syso"
     trap - RETURN

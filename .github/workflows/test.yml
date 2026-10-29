@@ -138,3 +138,17 @@ jobs:
           npm --prefix web ci --no-audit --no-fund
           GATEWAY_APP_VERSION=0.0.0-ci npm --prefix web run build
           SKIP_WEB=1 bash scripts/release.sh build v0.0.0-ci linux/amd64
+
+      # Wails 缺少 desktop,production 标签时依然能编过，但产物是个只会弹
+      # 「will not build without the correct build tags」的空壳。必须用发版脚本
+      # 真编一次并检查这个串不在产物里，否则要到用户双击时才发现。
+      - name: Windows desktop shell is not a Wails stub
+        run: |
+          set -euo pipefail
+          SKIP_WEB=1 bash scripts/release.sh desktop v0.0.0-ci windows/amd64
+          EXE="dist/llm-protocol-gateway-desktop-windows-amd64.exe"
+          test -s "$EXE"
+          if grep -aqF 'will not build without the correct build tags' "$EXE"; then
+            echo "::error::桌面壳缺少 desktop,production 构建标签，运行时会弹错误框"
+            exit 1
+          fi

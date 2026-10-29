@@ -259,9 +259,17 @@ jobs:
 
       - name: Build desktop exe
         run: |
+          set -euo pipefail
           npm ci --no-audit --no-fund --prefix web
           GATEWAY_APP_VERSION="${{ needs.gate.outputs.version }}" npm --prefix web run build
           bash scripts/release.sh desktop "${{ needs.gate.outputs.version }}" windows/amd64
+          # 缺 desktop,production 标签时产物是个只会弹错误框的空壳，这里直接拦住。
+          EXE="dist/llm-protocol-gateway-desktop-windows-amd64.exe"
+          test -s "$EXE"
+          if grep -aqF 'will not build without the correct build tags' "$EXE"; then
+            echo "::error::桌面壳缺少 desktop,production 构建标签"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
