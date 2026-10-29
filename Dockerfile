@@ -17,8 +17,13 @@ RUN go mod download
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH
+# 版本号由 CI 传入（tag 名或 commit sha），必须编进二进制：
+# /__app/version 与控制台的「有新版本」提示都读这个值，缺了会一直是空串。
+ARG VERSION=docker
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags "-s -w" -o /out/gateway ./cmd/gateway
+    go build -trimpath \
+      -ldflags "-s -w -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=${VERSION}" \
+      -o /out/gateway ./cmd/gateway
 
 ########## 3) 运行时镜像 ##########
 FROM alpine:3.20
