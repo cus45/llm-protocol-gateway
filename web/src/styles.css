@@ -1067,8 +1067,13 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
     min-height: 0;
     overflow-y: auto;
   }
-  /* 网格的行是 auto 高度，默认 align-content:stretch 会把仅有的几行拉满整块区域。 */
-  .section-full.providers-page .provider-card-grid { align-content: start; }
+  /* 行高必须显式 max-content：容器被钉成确定高度后，auto 行会按 min-content 压缩
+     （40 张卡时每行只剩 30px，卡片内容被 overflow:hidden 裁掉）；align-content:start
+     则防止卡片少时默认的 stretch 把仅有的几行拉满整块区域。 */
+  .section-full.providers-page .provider-card-grid {
+    align-content: start;
+    grid-auto-rows: max-content;
+  }
   /* 紧凑列表整块滚动，表头随内容走掉就认不出列，钉在容器顶部。 */
   .section-full.providers-page .provider-list-head { position: sticky; top: 0; z-index: 1; }
 }
