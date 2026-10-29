@@ -108,7 +108,11 @@ func TestHostMetricsConcurrentStartWaitsForHistory(t *testing.T) {
 
 func TestHostMetricsHistoryRingKeepsWindowAndDedupes(t *testing.T) {
 	h := newHostMetricsSampler()
-	now := time.Now()
+	// 时间戳故意放在未来：History() 会先 Start 并追加一个真实采样点，
+	// 若种子点和它落在同一毫秒就是「替换」（1 条），否则被当作乱序丢弃
+	// （仍是 1 条）。不做这个偏移，断言结果就取决于两次调用是否同毫秒，
+	// Windows 的计时精度约 15ms，几乎必跨。
+	now := time.Now().Add(time.Minute)
 	h.mu.Lock()
 	// A point from outside the window is dropped; an in-window one is kept.
 	h.appendLocked(storePoint(now.Add(-hostMetricsHistoryWindow-time.Minute).UnixMilli(), 1))
