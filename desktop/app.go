@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/app"
@@ -25,10 +26,13 @@ const launchAgentLabel = "com.luca.llm-protocol-gateway"
 type App struct {
 	ctx context.Context
 	rt  *app.Runtime
+	// ready closes when startup has finished (gateway listening or quitting),
+	// so the bootstrap page never navigates to a port that is not open yet.
+	ready chan struct{}
 }
 
 func NewApp() *App {
-	return &App{rt: app.New()}
+	return &App{rt: app.New(), ready: make(chan struct{})}
 }
 
 func (a *App) buildMenu() *menu.Menu {
@@ -104,6 +108,8 @@ func (a *App) buildMenu() *menu.Menu {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	markReady := sync.OnceFunc(func() { close(a.ready) })
+	defer markReady()
 	ensurePackagedWebDistEnv()
 	// Prefer the copy that travelled inside this binary: side-car web-dist dirs
 	// in a downloaded .exe / AppImage are missing (or from another version).
@@ -173,6 +179,7 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.rt.WaitHealthy(8 * time.Second); err != nil {
 		slog.Warn("gateway health wait", "error", err)
 	}
+	markReady()
 	a.verifyLocalUI()
 }
 
@@ -223,19 +230,35 @@ func (a *App) verifyLocalUI() {
 func (a *App) domReady(ctx context.Context) {
 	a.ctx = ctx
 	// Navigate from the embedded bootstrap page to the local gateway UI once.
-	// Do NOT replace when already on 127.0.0.1 — OnDomReady fires again after
-	// every navigation and would otherwise reload-loop (page flicker).
+	// Wait for startup first: navigating before the listener is up lands on an
+	// error page, and the "already on 127.0.0.1" guard would then keep it there.
 	if a.rt == nil {
 		return
+	}
+	select {
+	case <-a.ready:
+	case <-time.After(12 * time.Second):
 	}
 	target := a.rt.LocalURL() + "/"
 	runtime.WindowExecJS(ctx, fmt.Sprintf(`
 		(function () {
 			var target = %q;
 			var href = String(location.href || '');
-			if (href.indexOf('127.0.0.1:') !== -1 || href.indexOf('localhost:') !== -1) {
+			var onGateway = href.indexOf('127.0.0.1:') !== -1 || href.indexOf('localhost:') !== -1;
+			var tries = 0;
+			try { tries = Number(sessionStorage.getItem('gw-nav-tries') || '0') || 0; } catch (e) {}
+			if (!onGateway) {
+				location.replace(target);
 				return;
 			}
+			if (document.getElementById('root')) {
+				try { sessionStorage.removeItem('gw-nav-tries'); } catch (e) {}
+				return;
+			}
+			// 上一次导航可能落在网关尚未监听的错误页：就绪后重试，最多两次，
+			// 避免控制台资源真的缺失时无限刷新。
+			if (tries >= 2) { return; }
+			try { sessionStorage.setItem('gw-nav-tries', String(tries + 1)); } catch (e) {}
 			location.replace(target);
 		})();
 	`, target))
