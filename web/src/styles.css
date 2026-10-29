@@ -4872,6 +4872,9 @@ details:not([open]) > *:not(summary) { display: none !important; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  /* 实时日志新行是用户盯着看的核心反馈：系统关了「动画效果」也要照常播。
+     否则整页看着就是「新行突然出现」，和实时滚动对不上（2026-10-29 线上实证）。 */
+  .tlog-row.is-new { animation-duration: 0.46s, 0.4s, 1.6s !important; }
   .main > section { animation: panel-fade 220ms ease-out !important; }
   .provider-card-grid > .provider-card { animation: panel-fade 260ms ease-out backwards !important; }
   .live-dot::after, .nav-status-dot.on::after {
@@ -7658,9 +7661,8 @@ html[data-theme="dark"] .quota-next { background: var(--surface-strong); }
              tlog-row-enter 0.4s cubic-bezier(0.25, 0.7, 0.35, 1) both,
              tlog-row-flash 1.6s ease-out both;
 }
-@media (prefers-reduced-motion: reduce) {
-  .tlog-row.is-new { overflow: visible; min-height: 30px; animation: none; }
-}
+/* 新日志进场动画刻意不放进 prefers-reduced-motion 的禁用名单：
+   它是用户盯着看的核心反馈，系统关了「动画效果」也照常播（见上方说明）。 */
 
 /* 单元格数字样式只作用于数据行：写成 `.tlog .num` 会连带命中表头，
    于是数字列的表头变成等宽 + 亮色，和旁边的文字表头两种样子。 */
