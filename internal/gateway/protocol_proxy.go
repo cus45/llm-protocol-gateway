@@ -745,6 +745,13 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 				// is committed as an error the client can do nothing with.
 				return response.StatusCode, usage, nil, streamErr, true
 			}
+			if streamErr != nil && busyRefusalText(strings.ToLower(streamErr.Error())) {
+				// The model is busy (Qoder's 10605): nothing of this attempt
+				// reached the client, so hand the turn back to the failover loop
+				// to try the next account — asking this same busy model again a
+				// few times in a row only burns the wait.
+				return response.StatusCode, usage, nil, streamErr, false
+			}
 			fw.WriteHeader(response.StatusCode)
 			fw.FlushError()
 			return response.StatusCode, usage, nil, streamErr, false

@@ -110,8 +110,18 @@ func (r *qoderChunkReader) consume(line string) {
 		if len(data) == 0 {
 			data = []byte(payload)
 		}
-		status, message, _ := qoderFailure(envelope.StatusCodeValue, data)
-		r.emitError(fmt.Sprintf("%s（HTTP %d）", message, status))
+		status, message, wait := qoderFailure(envelope.StatusCodeValue, data)
+		// The queue verdict lives on the envelope, not always in its body: a
+		// body that is only the queue state names no code, so qoderFailure
+		// read from it alone answers a plain 403 and the account looks broken.
+		// Any frame whose envelope says 10605 is the model being busy, never
+		// the account — ask again with the whole frame and keep the wait.
+		if qoderEnvelopeQueued(envelope.Code, data) && wait == 0 {
+			if s2, m2, w2 := qoderFailure(envelope.StatusCodeValue, []byte(payload)); w2 > 0 {
+				status, message, wait = s2, m2, w2
+			}
+		}
+		r.emitErrorQueued(fmt.Sprintf("%s（HTTP %d）", message, status), wait)
 		return
 	}
 	if strings.TrimSpace(string(body)) == "[DONE]" {
@@ -299,6 +309,43 @@ func (r *qoderChunkReader) emitError(message string) {
 	payload, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": "api_error"}})
 	r.out = append(r.out, []byte("data: "+string(payload)+"\n\n"))
 	r.done = true
+}
+
+// emitErrorQueued is emitError for a refusal the vendor framed as "the model is
+// busy" (Qoder's 10605). The type carries that verdict to the failover loop,
+// which must move on to the next account without counting this one as failed:
+// a queued model answers every account the same way, so cooling this account
+// down would only send the next request into the same queue with fewer places
+// left to try.
+func (r *qoderChunkReader) emitErrorQueued(message string, wait time.Duration) {
+	if r.done {
+		return
+	}
+	errType := "api_error"
+	if wait > 0 {
+		errType = upstreamBusyErrorType
+	}
+	payload, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": errType}})
+	r.out = append(r.out, []byte("data: "+string(payload)+"\n\n"))
+	r.done = true
+}
+
+// qoderEnvelopeQueued reports whether a failure frame names the model as busy.
+// Qoder puts the code on the envelope and sometimes leaves only the queue state
+// inside body, so both places are read.
+func qoderEnvelopeQueued(code json.Number, body []byte) bool {
+	if strings.TrimSpace(code.String()) == "10605" {
+		return true
+	}
+	var state struct {
+		IsQueued          bool   `json:"isQueued"`
+		ServiceAvailable  *bool  `json:"serviceAvailable"`
+		RetryAfterSeconds int    `json:"retryAfterSeconds"`
+	}
+	if json.Unmarshal(body, &state) != nil {
+		return false
+	}
+	return state.IsQueued || state.RetryAfterSeconds > 0 || (state.ServiceAvailable != nil && !*state.ServiceAvailable)
 }
 
 // qoderEnvelopeBody unwraps the chunk a Qoder frame carries: Qoder sends it as

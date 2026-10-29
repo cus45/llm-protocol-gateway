@@ -667,6 +667,15 @@ func qoderFailure(status int, payload []byte) (int, string, time.Duration) {
 			ModelKey          string `json:"modelKey"`
 			QueueType         string `json:"queueType"`
 		} `json:"queue"`
+		// A stream error frame carries the queue state in the envelope's own
+		// body field instead of under "queue": the code that names it (10605)
+		// stays on the outer envelope, so reading only the body loses both the
+		// code and the verdict. Unmarshal the same shape at the top level too.
+		IsQueued          bool   `json:"isQueued"`
+		ServiceAvailable  *bool  `json:"serviceAvailable"`
+		RetryAfterSeconds int    `json:"retryAfterSeconds"`
+		ModelKey          string `json:"modelKey"`
+		QueueType         string `json:"queueType"`
 	}
 	code := ""
 	message := strings.TrimSpace(string(payload))
@@ -695,6 +704,21 @@ func qoderFailure(status int, payload []byte) (int, string, time.Duration) {
 				answer.Queue.QueueType = nested.QueueType
 			}
 		}
+		// The frame put the queue state at the top level (see the struct's own
+		// note): fold it into Queue so one verdict reads both shapes.
+		if answer.Queue.ServiceAvailable == nil && answer.ServiceAvailable != nil {
+			answer.Queue.ServiceAvailable = answer.ServiceAvailable
+		}
+		if answer.Queue.RetryAfterSeconds == 0 {
+			answer.Queue.RetryAfterSeconds = answer.RetryAfterSeconds
+		}
+		if answer.Queue.ModelKey == "" {
+			answer.Queue.ModelKey = answer.ModelKey
+		}
+		if answer.Queue.QueueType == "" {
+			answer.Queue.QueueType = answer.QueueType
+		}
+		answer.Queue.IsQueued = answer.Queue.IsQueued || answer.IsQueued
 	}
 	if message == "" {
 		message = http.StatusText(status)

@@ -30,7 +30,19 @@ const (
 	// another agent's system prompt. Every account of it answers the same, so
 	// none of them is at fault.
 	failoverPromptRefusal
+	// failoverBusy advances the chain but rests nobody: the vendor said the
+	// model is busy/queued (Qoder's 10605), which is a property of the model at
+	// this moment, not of the account. Cooling the account down for it sends
+	// the next request into the same queue with one fewer place to try, and the
+	// recovery loop then walks it right back into the queue.
+	failoverBusy
 )
+
+// upstreamBusyErrorType is the error.type an adapter writes when the vendor
+// framed its refusal as "the model is busy". It is the one signal the
+// classifier can read after the vendor's own codes are gone: a converted
+// stream carries the refusal as an error event, and only its type survives.
+const upstreamBusyErrorType = "upstream_busy"
 
 const (
 	// Soft failures must repeat within this window before the provider is
@@ -144,6 +156,12 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 		if errors.Is(transportErr, errProviderSaturated) {
 			return failoverNone, "lane_saturated"
 		}
+		// A converted stream carries the vendor's refusal as an error event, so
+		// it reaches here as a transport error with the vendor's verdict inside
+		// its text. A model that is busy is still not an account that failed.
+		if busyRefusalText(transportErr.Error()) {
+			return failoverBusy, "model_busy"
+		}
 		return failoverSoft, "transport: " + truncateReason(transportErr.Error())
 	}
 
@@ -151,6 +169,9 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 	hardQuota := containsAnyHint(msg, hardQuotaHints)
 	hardAuth := containsAnyHint(msg, hardAuthHints)
 	softThrottle := containsAnyHint(msg, softThrottleHints)
+	if busyRefusalText(msg) {
+		return failoverBusy, "model_busy"
+	}
 
 	switch {
 	case status == http.StatusTooManyRequests || status == 529:
@@ -184,6 +205,16 @@ func classifyProviderFailover(status int, body []byte, transportErr error, fiveH
 	default:
 		return failoverNone, ""
 	}
+}
+
+// busyRefusalText reports whether a refusal message says the model is busy
+// rather than the account being at fault. Matching is done on the lowercased
+// text callers already build.
+func busyRefusalText(msg string) bool {
+	return strings.Contains(msg, upstreamBusyErrorType) ||
+		strings.Contains(msg, "10605") ||
+		strings.Contains(msg, "is busy") ||
+		strings.Contains(msg, "排进队列")
 }
 
 func maybeDowngradeHardUsage(class failoverClass, reason string, fiveHourUtil *float64) (failoverClass, string) {
@@ -1077,6 +1108,14 @@ func (s *Server) applyProviderFailoverOutcome(providerID string, status int, bod
 		}
 	case failoverPromptRefusal:
 		// The account is not the problem: ask the next provider, mark nothing.
+	case failoverBusy:
+		// The model is busy, the account is fine: keep it out of the cooldown
+		// ladder and drop any soft-failure count it may have picked up from
+		// earlier busy answers, or three of them would still rest it.
+		s.clearSoftFailures(providerID)
+		if s.logs != nil {
+			s.logs.AddApp("info", "provider busy, next account tried", fmt.Sprintf("provider=%s reason=%s", providerID, reason))
+		}
 	}
 	return true
 }
@@ -1329,14 +1368,18 @@ func (s *Server) executeProtocolFlowWithFailover(
 			// a streamed request, or a deferred attempt whose turn was
 			// committed — the client's time-to-first-token has been paid, so a
 			// cut is the answer: it stays with the account that started it.
-			// Worth another account while nothing of this turn has reached the
-			// client; the writer knows whether that is still so.
+			// A busy refusal is no exception: a stream that already carried
+			// content cannot be replayed onto a second account.
 			if !writer.deferring() {
 				transportFailoverWorthy = false
 			}
+			busy := busyRefusalText(strings.ToLower(execErr.Error()))
 			transportReason := attemptReasonTransportError
 			if errors.Is(execErr, errUpstreamFirstPacketTimeout) {
 				transportReason = attemptReasonFirstPacketTimeout
+			}
+			if busy {
+				transportReason = attemptReasonModelBusy
 			}
 			noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Ms: elapsed, Reason: transportReason, Error: truncateReason(execErr.Error()), Deferred: canDefer && transportFailoverWorthy})
 			if canDefer && transportFailoverWorthy {
@@ -1433,6 +1476,9 @@ func (s *Server) executeProtocolFlowWithFailover(
 func attemptFailoverReason(body []byte) string {
 	if isUpstreamStreamInterruption(errors.New(string(body))) {
 		return attemptReasonStreamInterrupted
+	}
+	if busyRefusalText(strings.ToLower(string(body))) {
+		return attemptReasonModelBusy
 	}
 	return attemptReasonUpstreamError
 }

@@ -249,11 +249,38 @@ func TestQoderChunkReaderSurfacesEnvelopeFailure(t *testing.T) {
 	}
 }
 
+// A stream error frame whose body holds only the queue state names the model as
+// busy even though isQueued is false: serviceAvailable is false and the vendor
+// names a wait. Reading it as a plain 403 cooled the account down for a busy
+// model (2026-10-29).
+func TestQoderChunkReaderMarksQueueFrameAsBusy(t *testing.T) {
+	queue := `{"isQueued":false,"modelKey":"dfmodel","queueCount":0,"queueType":"p3","retryAfterSeconds":30,"serviceAvailable":false,"subCode":"RESOURCE_LIMIT","waitTime":0}`
+	reply := qoderFrame(t, map[string]any{"statusCodeValue": 403, "code": json.Number("10605"), "body": queue})
+	lines := drainQoderReader(t, reply)
+	if len(lines) != 1 {
+		t.Fatalf("expected one frame, got %d: %v", len(lines), lines)
+	}
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(lines[0]), &envelope) != nil {
+		t.Fatalf("not an error frame: %s", lines[0])
+	}
+	if envelope.Error.Type != upstreamBusyErrorType {
+		t.Fatalf("error type = %q, want %q", envelope.Error.Type, upstreamBusyErrorType)
+	}
+	if !strings.Contains(envelope.Error.Message, "is busy") {
+		t.Fatalf("queue frame not mapped to busy: %q", envelope.Error.Message)
+	}
+}
+
 // Qoder sends its usage in a chunk of its own after the finish reason, with no
 // choices in it. Reading to the finish and stopping there is what made every
 // Qoder request count as 0 tokens.
-func TestQoderChunkReaderReadsUsageAfterTheFinishFrame(t *testing.T) {
-	reply := qoderChunkFrame(t, map[string]any{"content": "done"}, "stop", nil) +
+func TestQoderChunkReaderReadsUsageAfterTheFinishFrame(t *testing.T) {	reply := qoderChunkFrame(t, map[string]any{"content": "done"}, "stop", nil) +
 		qoderFrame(t, map[string]any{"statusCodeValue": 200, "body": `{"usage":{"prompt_tokens":120,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":64}}}`})
 	lines := drainQoderReader(t, reply)
 	var last map[string]any
@@ -303,6 +330,18 @@ func TestQoderFailureMapsUpstreamCodes(t *testing.T) {
 		{"queued", 403, `{"code":10605,"message":"busy","queue":{"isQueued":true,"retryAfterSeconds":12,"modelKey":"ultimate"}}`, http.StatusServiceUnavailable, 12 * time.Second, "排进队列"},
 		{"queued without a wait", 503, `{"code":10605}`, http.StatusServiceUnavailable, 30 * time.Second, "busy"},
 		{"queue state inside the message", 403, `{"code":10605,"message":"{\"isQueued\":true,\"retryAfterSeconds\":5}"}`, http.StatusServiceUnavailable, 5 * time.Second, "排进队列"},
+		// The live 2026-10-29 frame: a stream error frame carries the queue
+		// state as its own body, with isQueued=false and serviceAvailable=false.
+		// Read literally that is not "queued", and the account got cooled down
+		// for a busy model; the code on the envelope is what names it.
+		{
+			"queue state as the body with source limit",
+			403,
+			`{"code":"10605","message":"{\"isQueued\":false,\"modelKey\":\"dfmodel\",\"queueCount\":0,\"queueType\":\"p3\",\"retryAfterSeconds\":30,\"serviceAvailable\":false,\"subCode\":\"RESOURCE_LIMIT\",\"waitTime\":0}","subCode":"RESOURCE_LIMIT"}`,
+			http.StatusServiceUnavailable,
+			30 * time.Second,
+			"is busy",
+		},
 		{"quota", 400, `{"code":112,"message":"credits used up"}`, http.StatusTooManyRequests, 0, "额度已用完"},
 		{"request refusal", 400, `{"code":406,"message":"内容不适合"}`, http.StatusBadRequest, 0, "拒绝了这个请求"},
 		{"lapsed sign-in by code", 401, `{"code":105,"message":"loginExpired"}`, http.StatusUnauthorized, 0, "重新登录"},
