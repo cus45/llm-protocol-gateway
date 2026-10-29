@@ -80,3 +80,38 @@ func TestFinishConvertedProxyReportsAPlainJSONRefusalWithoutCommitting(t *testin
 		t.Fatalf("the refusal reached the client: %q", recorder.Body.String())
 	}
 }
+
+// A stream was asked for but the upstream refused before any stream began.
+// That refusal must not reach the client while the chain still has accounts:
+// this is the exact shape of Qoder's 10605 (403 JSON to a streaming request),
+// and committing it here is what left twelve candidates untried.
+func TestFinishConvertedProxyKeepsAStreamRefusalForTheLoop(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), nil)
+	queueBody := `{"code":"10605","message":"{\"isQueued\":true,\"retryAfterSeconds\":30}"}`
+	response := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(queueBody))),
+	}
+	convert := func(body []byte, _ string) ([]byte, TokenUsage, error) {
+		return body, TokenUsage{}, nil
+	}
+	recorder := httptest.NewRecorder()
+	fw := newFailoverResponseWriter(recorder, true)
+	status, _, bodyOut, streamErr, _ := server.finishConvertedProxy(fw, response, "m", true, convert, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if streamErr == nil || !busyRefusalText(strings.ToLower(streamErr.Error())) {
+		t.Fatalf("the busy refusal must be reported: %v", streamErr)
+	}
+	if !fw.deferring() {
+		t.Fatal("nothing may be committed while the chain can still try another account")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("the refusal reached the client: %q", recorder.Body.String())
+	}
+	if !bytes.Contains(bodyOut, []byte("10605")) {
+		t.Fatalf("the refusal body must travel back for the last attempt: %q", bodyOut)
+	}
+}

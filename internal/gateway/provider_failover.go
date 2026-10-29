@@ -1301,7 +1301,9 @@ func (s *Server) executeProtocolFlowWithFailover(
 		status, usage, body, execErr := s.executeProtocolFlow(writer, r, route, attemptDecision, attemptModel, attemptReq, clientProtocol, skipIncomingAuth)
 		elapsed := timer.millis()
 		if execErr != nil {
-			lastStatus, lastUsage, lastBody, lastErr, lastModel = status, usage, nil, execErr, attemptModel
+			// Keep the attempt's body: a refusal that was held back (nothing
+			// written yet) is what the last attempt answers with.
+			lastStatus, lastUsage, lastBody, lastErr, lastModel = status, usage, body, execErr, attemptModel
 			opened := writer.streamOpened()
 			// Client already gone: never advance the chain (backup would reuse the
 			// same canceled context and surface a fake GLM/fallback cancel).
@@ -1398,6 +1400,13 @@ func (s *Server) executeProtocolFlowWithFailover(
 				writer.Discard()
 			} else {
 				writer.FlushError()
+			}
+			// 最后一家：拒绝没有写手去写它（转换链把它押在返回值里），在这里
+			// 补上，客户端才拿得到上游的原话而不是一个空响应。
+			if !canDefer && len(body) > 0 && !writer.wroteHeader && writer.status == 0 {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(status)
+				_, _ = w.Write(body)
 			}
 			return status, usage, body, attemptDecision, attemptModel, execErr
 		}

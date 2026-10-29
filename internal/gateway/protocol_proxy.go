@@ -709,20 +709,34 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 		dw.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		dw.Header().Set("Cache-Control", "no-cache")
 		dw.Header().Set("Connection", "keep-alive")
-		dw.WriteHeader(response.StatusCode)
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			// The upstream refused before any stream began. Answering here — as
+			// this did, status and body both — committed the first account's
+			// refusal as the client's reply, and the failover loop never saw an
+			// error to act on: a busy model (Qoder's 10605 answers 403 JSON on
+			// a request that asked for a stream) looked like a dead end with
+			// twelve accounts still untried.
 			responseBody, readErr := io.ReadAll(response.Body)
 			if readErr != nil {
 				return response.StatusCode, TokenUsage{}, nil, readErr, false
 			}
 			converted, _, convErr := convert(responseBody, model)
 			if convErr != nil || len(converted) == 0 {
-				_, writeErr := dw.Write(responseBody)
-				return response.StatusCode, TokenUsage{}, responseBody, writeErr, false
+				converted = responseBody
 			}
-			_, writeErr := dw.Write(converted)
-			return response.StatusCode, TokenUsage{}, converted, writeErr, false
+			if _, behindLoop := w.(*failoverResponseWriter); !behindLoop {
+				dw.WriteHeader(response.StatusCode)
+				_, writeErr := dw.Write(converted)
+				return response.StatusCode, TokenUsage{}, converted, writeErr, false
+			}
+			// Behind the loop: write nothing. The deferred writer commits on the
+			// first byte, and committing here is exactly what stopped the chain
+			// on its first account. The refusal travels back as the attempt's
+			// body so the loop's last attempt can answer with it.
+			return response.StatusCode, TokenUsage{}, converted,
+				fmt.Errorf("%s", summarizeUpstreamHTTPError(response.StatusCode, converted)), false
 		}
+		dw.WriteHeader(response.StatusCode)
 		// Behind the failover loop the attempt is intercepted rather than sent,
 		// so an interrupted stream can still be retried (empty: same provider;
 		// cut mid-answer: the backup): the client has seen nothing of it. For
