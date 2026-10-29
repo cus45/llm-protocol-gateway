@@ -120,10 +120,19 @@ export function writeOAuthUsageCache(path: string, data: unknown) {
 // isDocumentActive 判定「本页面所在 app 当前是否为用户前台」。
 // 注意：Chrome 切到别的 macOS app（失去系统焦点）时并不会触发 visibilitychange，
 // document.visibilityState 仍是 'visible'；只有 document.hasFocus() 会变成 false。
-// 所有后台自动轮询都用它兜底：非前台时一律跳过刷新，避免白白消耗后台算力。
+// 只用于「真正需要省厂商额度」的轮询（订阅额度/用量），每次都会打厂商 API。
 export function isDocumentActive(): boolean {
   if (typeof document === 'undefined') return true;
   return document.visibilityState !== 'hidden' && document.hasFocus();
+}
+
+// isPageVisible 只判「标签页是否可见」，不要求 OS 焦点。
+// 控制台自己的轮询（实时日志、/__state、健康检查）用它：副屏不聚焦、
+// 内嵌浏览器（Electron）里 document.hasFocus() 可能恒为 false，
+// 用 isDocumentActive 会让实时日志整页停更（2026-10-29 线上实证）。
+export function isPageVisible(): boolean {
+  if (typeof document === 'undefined') return true;
+  return document.visibilityState !== 'hidden';
 }
 
 // ── 额度轮询：全控制台一只定时器 ───────────────────────────────────────────

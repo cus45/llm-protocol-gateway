@@ -151,7 +151,7 @@ import {
     CursorOAuthUsagePanel,
     DeepSeekBalancePanel,
     formatClaudeUsageResetAt,
-    isDocumentActive,
+    isPageVisible,
     ProviderCard,
     WorkBuddyUsagePanel,
     ZhipuUsagePanel
@@ -521,7 +521,7 @@ function App() {
     };
     check();
     const timer = window.setInterval(check, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
-    const onVisible = () => { if (isDocumentActive()) check(); };
+    const onVisible = () => { if (isPageVisible()) check(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       cancelled = true;
@@ -1183,7 +1183,7 @@ function App() {
     if (activeNav !== 'api-keys') return undefined;
     let cancelled = false;
     const tick = () => {
-      if (!isDocumentActive()) return;
+      if (!isPageVisible()) return;
       void fetchWithTimeout(`${API_BASE}/__state`, {credentials: 'same-origin'})
         .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
         .then((data: GatewayState) => {
@@ -1195,7 +1195,7 @@ function App() {
         .catch(() => { /* 轮询失败保持现状，下一轮再试 */ });
     };
     const timer = window.setInterval(tick, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
-    const onVisible = () => { if (isDocumentActive()) tick(); };
+    const onVisible = () => { if (isPageVisible()) tick(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       cancelled = true;
@@ -1307,7 +1307,7 @@ function App() {
     // __state (App WebView and browser otherwise diverge after first paint).
     const pollOnce = () => {
       void (async () => {
-        if (!isDocumentActive()) return;
+        if (!isPageVisible()) return;
         const [connected, auth] = await Promise.all([refreshBackendHealth(), refreshAuthStatus()]);
         if (!connected) {
           // 只有累计失败到阈值（确认真断了）才走重连流程；单次抖动直接跳过本轮，
@@ -1327,7 +1327,7 @@ function App() {
     const timer = window.setInterval(pollOnce, isRemoteOrigin() ? BACKEND_POLL_MS_REMOTE : BACKEND_POLL_MS_LOCAL);
     // 重新回到前台（Chrome 变为最前台 / 标签页重新可见）时立即补一次刷新，
     // 让底部“数据更新于”不必等到下一个 5s 周期才追上。
-    const onFocusResume = () => { if (isDocumentActive()) pollOnce(); };
+    const onFocusResume = () => { if (isPageVisible()) pollOnce(); };
     window.addEventListener('focus', onFocusResume);
     document.addEventListener('visibilitychange', onFocusResume);
     return () => {
@@ -1535,15 +1535,29 @@ function App() {
 
   // 仅第 1 页自动轮询；翻到第 2 页及以后立刻停表，绝不自动刷新。
   // 第 1 页走增量追加（见 pollNewLogs）：新行插到表头，已有的行原地不动。
+  //
+  // 这里刻意不做「页面是否可见/是否有焦点」的判断：document.hasFocus() 在副屏、
+  // 内嵌 Electron 浏览器里恒为 false，visibilityState 也可能在窗口被判定遮挡时
+  // 变 hidden（线上实测：页面明明开着，45 秒里一个 /__logs 都没发），实时日志
+  // 于是整个停摆，看着和没做实时一样。这条请求便宜（本地 SQLite 索引查询），
+  // 后台标签页浏览器本来就会把定时器节流到 1 次/分钟，不值得为省这点算力
+  // 再赌一个不可靠的环境信号。
   useEffect(() => {
     if (activeNav !== 'traffic-tokens') return;
     if (logsPage !== 1) return;
-    const timer = window.setInterval(() => {
-      if (!isDocumentActive()) return;
+    const tick = () => {
       if (logsPageRef.current !== 1) return;
       void pollNewLogs();
-    }, LOGS_LIVE_POLL_MS);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(tick, LOGS_LIVE_POLL_MS);
+    // 切回本页立刻补一次，不用等下一个 5 秒周期，也补上后台期间空过的窗口。
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', tick);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, [activeNav, logsPage, logsStatusFilter, logsFrom, logsTo, logsApiKeyName, logsProviderFilter, logsOwnerFilter, logsUsageTarget]);
 
   // 表里的行同步进 ref：增量轮询按它去重，不用等 React 状态落地。
