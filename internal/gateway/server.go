@@ -5756,8 +5756,6 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 		}
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		hw := newSSEHeartbeatResponseWriter(w)
-		hw.WriteHeader(response.StatusCode)
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			responseBody, readErr := io.ReadAll(response.Body)
 			if readErr != nil {
@@ -5767,12 +5765,44 @@ func (s *Server) proxyOpenAIToClaudeMessages(w http.ResponseWriter, r *http.Requ
 			_ = json.Unmarshal(responseBody, &payload)
 			claudeBody, _, convErr := openAIErrorValueToClaude(errorValueOrBody(payload, response.StatusCode, responseBody), model)
 			if convErr != nil || len(claudeBody) == 0 {
-				_, writeErr := hw.Write(responseBody)
-				return response.StatusCode, TokenUsage{}, responseBody, writeErr
+				claudeBody = responseBody
 			}
+			if _, behindLoop := w.(*failoverResponseWriter); behindLoop {
+				// Behind the failover loop nothing may be committed here: a
+				// refusal held back is what lets the next account answer, and
+				// writing the status first is what pinned a busy model (Qoder's
+				// 10605 is a 403 JSON even when a stream was asked for) to the
+				// first account with twelve candidates untried.
+				return response.StatusCode, TokenUsage{}, claudeBody,
+					fmt.Errorf("%s", summarizeUpstreamHTTPError(response.StatusCode, claudeBody))
+			}
+			hw := newSSEHeartbeatResponseWriter(w)
+			hw.WriteHeader(response.StatusCode)
 			_, writeErr := hw.Write(claudeBody)
 			return response.StatusCode, TokenUsage{}, claudeBody, writeErr
 		}
+		// Behind the failover loop the answer streams through the same holding
+		// writer the converting paths use: the opening frames and any refusal
+		// stay off the wire until the turn says something, so an account that
+		// answers "busy" (Qoder frames 10605 as an error event inside a 200
+		// stream) can still be replaced by the next one. The heartbeat starts
+		// with it, on first content.
+		if fw, ok := w.(*failoverResponseWriter); ok {
+			streamed := newConverterStreamWriter(fw)
+			usage, streamErr := streamOpenAIChatToClaudeEvents(streamed, response.Body, model, declaredTools, clientStopSequences...)
+			streamBody := streamed.Finish()
+			if streamed.Committed() {
+				return response.StatusCode, usage, streamBody, streamErr
+			}
+			if streamErr != nil {
+				// Nothing reached the client: report it so the chain can move on,
+				// and keep the body for the last attempt.
+				return response.StatusCode, usage, streamBody, streamErr
+			}
+			return response.StatusCode, usage, streamBody, nil
+		}
+		hw := newSSEHeartbeatResponseWriter(w)
+		hw.WriteHeader(response.StatusCode)
 		// Chat→Claude 直写流（未走 finishConvertedProxy），同样需要心跳防反代空闲断流。
 		stopHeartbeat := startSSEHeartbeat(hw, sseHeartbeatInterval)
 		defer stopHeartbeat()
