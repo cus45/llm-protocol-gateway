@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 	"github.com/luca/llm-protocol-gateway/internal/monitor"
@@ -38,4 +39,21 @@ func TestHostMetricsSamplerIsCreatedOnce(t *testing.T) {
 	if server.hostMetrics == nil {
 		t.Fatalf("the sampler was never created")
 	}
+}
+
+// The sampler must run for the life of the process, not from the first console
+// visit: before StartHostMetrics existed, a restart left the curve blank until
+// someone opened the page, and SQLite had nothing to restore because nothing
+// had been sampled at all.
+func TestStartHostMetricsSamplesWithoutARequest(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), nil)
+	server.StartHostMetrics()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(server.hostSampler().History()) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no sample was taken without a console request")
 }

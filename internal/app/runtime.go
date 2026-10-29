@@ -266,6 +266,10 @@ func (rt *Runtime) Start(cfg Config) error {
 	// upgrade prompt, so it must be set before the first request is served.
 	gateway.SetBuildVersion(cfg.Version)
 	server := gateway.NewServer(router, logs, db)
+	// 采样器跟着进程活，而不是跟着第一个访问机器状态页的请求：否则重启之后
+	// 要等到有人打开那个页面才恢复采样，中间那段曲线就是空的（SQLite 里也
+	// 没有点可回填，因为根本没采）。
+	server.StartHostMetrics()
 	// 上次自检若被 kill/重启打断，selfcheck-* 密钥会残留；启动时扫一遍。
 	server.SweepSelfcheckLeftovers()
 	bridge := cursor.NewBridge(cursor.FindRepoRoot())

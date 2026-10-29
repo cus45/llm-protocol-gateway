@@ -593,6 +593,15 @@ func (s *Server) handleHostMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.hostSampler().Snapshot())
 }
 
+// StartHostMetrics brings the sampler up with the process instead of with the
+// first console visit. Without it the curve only exists while someone has the
+// machine page open: the sampler was only ever built lazily from a request, so
+// a restart left a hole exactly as wide as the gap until the next visit, and
+// SQLite — which does keep every point it was handed — had nothing to restore.
+func (s *Server) StartHostMetrics() {
+	s.hostMetricsPump()
+}
+
 // hostSampler builds the process-wide sampler once (two concurrent first polls
 // used to create two, and the loser's goroutine was never read again).
 func (s *Server) hostSampler() *hostMetricsSampler {
