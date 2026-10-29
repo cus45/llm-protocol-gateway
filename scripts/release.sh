@@ -218,6 +218,7 @@ build_desktop() {
     unset GOWORK
     cd desktop
     node frontend/sync-dist.mjs
+    bash "$ROOT/scripts/bundle-desktop-assets.sh"
     local rsrc
     rsrc="$(mktemp -d)"
     # go-winres 只接受 ≤256px 的图标源，仓库里保存的是缩好的那张。
@@ -233,9 +234,10 @@ build_desktop() {
     trap 'rm -f "$syso"' RETURN
     # 必须带 desktop,production：缺标签时 wails 只编出一个空壳，双击后会弹
     # 「Wails applications will not build without the correct build tags」然后退出。
+    # desktop_ui 把 web/dist 内嵌进 exe：单独下载一个 exe 也能打开控制台。
     # 版本号也要注入，否则桌面里的控制台会一直显示开发版本。
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" GOFLAGS=-mod=mod \
-      go build -trimpath -buildvcs=true -tags desktop,production \
+      go build -trimpath -buildvcs=true -tags desktop,production,desktop_ui \
       -ldflags "-s -w -H windowsgui -X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$VERSION" \
       -o "$out" .
     rm -f "$syso"

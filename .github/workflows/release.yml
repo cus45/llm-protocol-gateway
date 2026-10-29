@@ -190,6 +190,10 @@ jobs:
             test -x "$APP/Contents/Resources/bin/cloudflared"
             test -x "$APP/Contents/Resources/bin/bun"
             test -f "$APP/Contents/Resources/cursor-bridge/standalone.ts"
+            # 控制台资源必须内嵌进可执行文件：用户常把 .app 单独拷走，
+            # 只靠 Resources/web-dist 时窗口里会只剩 404。
+            symbols="$(strings "$APP/Contents/MacOS/LLM Protocol Gateway")"
+            grep -qF 'PlusJakartaSans-Variable.ttf' <<<"$symbols"
             codesign --verify --deep --strict "$APP" || codesign --force --deep --sign - "$APP"
             # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位。
             # 先取回全文再匹配：`strings | grep -q` 在 pipefail 下会因为 grep 提前
@@ -270,6 +274,11 @@ jobs:
             echo "::error::桌面壳缺少 desktop,production 构建标签"
             exit 1
           fi
+          # 单文件 exe 必须自带控制台资源，否则双击后窗口里只有 404 page not found。
+          if ! grep -aqF 'PlusJakartaSans-Variable.ttf' "$EXE"; then
+            echo "::error::exe 里没有内嵌 web/dist（检查 desktop_ui 构建标签与 bundle-desktop-assets.sh）"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -322,8 +331,10 @@ jobs:
           npm ci --no-audit --no-fund --prefix web
           GATEWAY_APP_VERSION="$GATEWAY_APP_VERSION" npm --prefix web run build
           node desktop/frontend/sync-dist.mjs
+          bash scripts/bundle-desktop-assets.sh
           cd desktop
-          wails build -tags webkit2_41 -ldflags "$DESKTOP_LDFLAGS"
+          # desktop_ui：把 web/dist 内嵌进二进制，AppImage/deb 被单独拷走也能打开控制台。
+          wails build -tags "webkit2_41,desktop_ui" -ldflags "$DESKTOP_LDFLAGS"
 
       - name: Smoke test (headless X)
         run: |
@@ -334,17 +345,42 @@ jobs:
             exit 1
           fi
           file "$BIN"
-          # 窗口起不来时会立刻退出；跑 10 秒还活着说明 GTK/WebKit 都加载成功并起了本地网关。
+          # 必须带上控制台资源：内嵌的 web/dist 缺了，窗口里只有 404。
+          # 先取回全文再匹配，避免 grep 提前退出让 strings 收到 SIGPIPE（pipefail 下会误判）。
+          symbols="$(strings "$BIN")"
+          grep -qF 'PlusJakartaSans-Variable.ttf' <<<"$symbols"
           set +e
-          timeout 10 xvfb-run -a "$BIN" >/tmp/desk.log 2>&1
-          rc=$?
-          set -e
-          cat /tmp/desk.log || true
-          # 124 = 被 timeout 杀掉，说明一直在正常运行
-          if [ "$rc" != "124" ]; then
-            echo "桌面壳启动后提前退出（rc=$rc）"
+          xvfb-run -a "$BIN" >/tmp/desk.log 2>&1 &
+          APP_PID=$!
+          ui_ok=0
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /tmp/ui.html -w '%{http_code}' --max-time 2 http://127.0.0.1:18093/ || true)
+            if [ "$code" = "200" ] && grep -qi '<!doctype html' /tmp/ui.html; then
+              ui_ok=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ui_ok" != "1" ]; then
+            echo "控制台首页没有返回 HTML（内嵌 web 资源缺失或网关没起来）"
+            curl -sS -i --max-time 2 http://127.0.0.1:18093/ || true
+            cat /tmp/desk.log || true
+            kill "$APP_PID" 2>/dev/null
             exit 1
           fi
+          # 窗口起不来时会立刻退出；再跑 5 秒还活着说明 GTK/WebKit 都加载成功。
+          sleep 5
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "桌面壳启动后提前退出"
+            cat /tmp/desk.log || true
+            exit 1
+          fi
+          echo "桌面壳与内嵌控制台均正常"
+          kill "$APP_PID" 2>/dev/null
+          pkill -f "LLM Protocol Gateway" 2>/dev/null
+          sleep 1
+          cat /tmp/desk.log || true
+          set -e
 
       - name: Package AppImage
         env:

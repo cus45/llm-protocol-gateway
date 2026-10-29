@@ -59,5 +59,14 @@
           {{end}}
         </array>
         {{end}}
+        <!-- 窗口启动后从内置的 wails:// 跳板页导航到 http://127.0.0.1:18093 的本地控制台；
+             生产模板默认没有 ATS 例外，WKWebView 会拦截这条明文请求，窗口一片空白。 -->
+        <key>NSAppTransportSecurity</key>
+        <dict>
+            <key>NSAllowsLocalNetworking</key>
+            <true/>
+            <key>NSAllowsArbitraryLoadsInWebContent</key>
+            <true/>
+        </dict>
     </dict>
 </plist>

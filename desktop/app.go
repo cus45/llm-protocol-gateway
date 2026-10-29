@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +105,14 @@ func (a *App) buildMenu() *menu.Menu {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	ensurePackagedWebDistEnv()
+	// Prefer the copy that travelled inside this binary: side-car web-dist dirs
+	// in a downloaded .exe / AppImage are missing (or from another version).
+	if dist := materializeEmbeddedUI(); dist != "" {
+		_ = os.Setenv("GATEWAY_WEB_DIST", dist)
+		slog.Info("using embedded web UI", "path", dist)
+	} else {
+		slog.Warn("no embedded web UI in this build", "web_dist", os.Getenv("GATEWAY_WEB_DIST"))
+	}
 
 	if app.PortInUse(app.DefaultPort) {
 		choice, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
@@ -163,6 +173,51 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.rt.WaitHealthy(8 * time.Second); err != nil {
 		slog.Warn("gateway health wait", "error", err)
 	}
+	a.verifyLocalUI()
+}
+
+// verifyLocalUI fails loudly when the console is not being served: a missing
+// web-dist used to surface only as a bare "404 page not found" inside the window.
+func (a *App) verifyLocalUI() {
+	if a.rt == nil {
+		return
+	}
+	url := a.rt.LocalURL() + "/"
+	var lastErr error
+	status := 0
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		status = resp.StatusCode
+		buf := make([]byte, 512)
+		n, _ := io.ReadFull(resp.Body, buf)
+		_ = resp.Body.Close()
+		lastErr = nil
+		if status == http.StatusOK && strings.Contains(strings.ToLower(string(buf[:n])), "<!doctype html") {
+			return
+		}
+	}
+	webDist := os.Getenv("GATEWAY_WEB_DIST")
+	slog.Error("local UI check failed", "url", url, "status", status, "error", lastErr, "web_dist", webDist)
+	if a.ctx == nil {
+		return
+	}
+	detail := fmt.Sprintf("管理页没有正常加载：%s\nHTTP %d\nweb dist: %s", url, status, webDist)
+	if lastErr != nil {
+		detail = fmt.Sprintf("管理页没有正常加载：%s\n%v\nweb dist: %s", url, lastErr, webDist)
+	}
+	_, _ = runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
+		Type:    runtime.ErrorDialog,
+		Title:   "控制台资源缺失",
+		Message: detail,
+	})
 }
 
 func (a *App) domReady(ctx context.Context) {

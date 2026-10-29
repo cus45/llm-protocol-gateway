@@ -18,6 +18,8 @@ scripts/cursor-bridge/dist/
 # Desktop (Wails)
 desktop/build/bin/
 desktop/frontend/dist/
+# web/dist 的副本：打包前由 scripts/bundle-desktop-assets.sh 生成，随 -tags desktop_ui 内嵌
+desktop/assets/
 desktop/frontend/node_modules/
 desktop/frontend/package.json.md5
 desktop/frontend/wailsjs/

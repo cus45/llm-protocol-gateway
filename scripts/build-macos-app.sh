@@ -35,6 +35,9 @@ echo "==> syncing desktop frontend shell"
   node ./sync-dist.mjs
 )
 
+echo "==> embedding web UI into the desktop binary"
+bash "$ROOT/scripts/bundle-desktop-assets.sh"
+
 echo "==> go mod tidy (desktop)"
 (
   cd "$ROOT/desktop"
@@ -48,6 +51,7 @@ echo "==> wails build ($PLATFORM, version $APP_VERSION)"
   # 后端 BuildVersion 与控制台版本必须一致：release.yml 会用 strings 校验产物里
   # 确实带着本次 tag 的版本号，缺了这一步 macOS 包会全部判失败。
   "$WAILS_BIN" build -platform "$PLATFORM" -clean \
+    -tags desktop_ui \
     -ldflags "-X github.com/luca/llm-protocol-gateway/internal/gateway.BuildVersion=$APP_VERSION"
 )
 

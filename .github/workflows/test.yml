@@ -152,3 +152,8 @@ jobs:
             echo "::error::桌面壳缺少 desktop,production 构建标签，运行时会弹错误框"
             exit 1
           fi
+          # 单独下载的 exe 打不开控制台（404）就是这里漏了内嵌资源。
+          if ! grep -aqF 'PlusJakartaSans-Variable.ttf' "$EXE"; then
+            echo "::error::exe 里没有内嵌 web/dist（检查 desktop_ui 构建标签）"
+            exit 1
+          fi
