@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
@@ -42,5 +43,40 @@ func TestFinishConvertedProxySendsTheConverterStatusThroughTheFailoverWriter(t *
 	}
 	if !bytes.Contains(recorder.Body.Bytes(), []byte("provider is busy")) {
 		t.Fatalf("the client was not told why: %s", recorder.Body.String())
+	}
+}
+
+// An upstream refusal that arrives as plain JSON (not a stream) must be
+// reported to the failover loop, not written as the client's answer: a busy
+// model (Qoder's 10605 answers 403 JSON) has to be able to go to the next
+// account, and before this the converter committed it on the first one.
+func TestFinishConvertedProxyReportsAPlainJSONRefusalWithoutCommitting(t *testing.T) {
+	server := NewServer(NewRouter(domain.GatewayState{}), nil)
+	queueBody := `{"code":"10605","message":"{\"isQueued\":false,\"retryAfterSeconds\":30,\"serviceAvailable\":false}"}`
+	response := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(queueBody))),
+	}
+	convert := func(body []byte, _ string) ([]byte, TokenUsage, error) {
+		return body, TokenUsage{}, nil
+	}
+	recorder := httptest.NewRecorder()
+	fw := newFailoverResponseWriter(recorder, true)
+	status, _, _, streamErr, _ := server.finishConvertedProxy(fw, response, "m", false, convert, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if streamErr == nil {
+		t.Fatal("a refusal must be reported to the failover loop")
+	}
+	if !busyRefusalText(strings.ToLower(streamErr.Error())) {
+		t.Fatalf("the refusal lost its busy verdict: %v", streamErr)
+	}
+	if !fw.deferring() {
+		t.Fatal("the refusal must stay deferrable so the next account can be tried")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("the refusal reached the client: %q", recorder.Body.String())
 	}
 }

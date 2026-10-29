@@ -794,13 +794,27 @@ func (s *Server) finishConvertedProxy(w http.ResponseWriter, response *http.Resp
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		converted, _, convErr := convert(responseBody, model)
 		if convErr != nil || len(converted) == 0 {
-			w.WriteHeader(response.StatusCode)
-			_, writeErr := w.Write(responseBody)
-			return response.StatusCode, TokenUsage{}, responseBody, writeErr, false
+			converted = responseBody
 		}
+		// Behind the failover loop the deferred writer keeps a >=400 status in
+		// its buffer instead of committing it, so the refusal is written here
+		// (the last attempt must still answer with it) and the error is
+		// reported alongside: the loop may hand the turn to the next account,
+		// and does when the status names a model that is merely busy. Writing
+		// without the error — what this did before — committed the first
+		// account's refusal as the client's answer with twelve accounts untried.
 		w.WriteHeader(response.StatusCode)
 		_, writeErr := w.Write(converted)
-		return response.StatusCode, TokenUsage{}, converted, writeErr, false
+		if writeErr != nil {
+			return response.StatusCode, TokenUsage{}, converted, writeErr, false
+		}
+		// Only behind the failover loop is the refusal a decision the loop can
+		// act on; a direct call keeps its old contract of answering with it.
+		if _, behindLoop := w.(*failoverResponseWriter); !behindLoop {
+			return response.StatusCode, TokenUsage{}, converted, nil, false
+		}
+		return response.StatusCode, TokenUsage{}, converted,
+			fmt.Errorf("%s", summarizeUpstreamHTTPError(response.StatusCode, converted)), false
 	}
 	converted, usage, err := convert(responseBody, model)
 	if err != nil {
