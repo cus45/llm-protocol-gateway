@@ -5090,7 +5090,7 @@ function App() {
           )}
 
           {activeNav === 'input-providers' && (
-          <section className="section-full">
+          <section className="section-full providers-page">
             <div className="card panel">
               <div className="panel-header">
                 <div>

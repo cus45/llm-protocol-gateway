@@ -247,10 +247,10 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
    2. Shell 布局：深色侧栏 + 浅色画布
    ---------------------------------------------------------------- */
 .shell {
-  width: min(1600px, 100%);
-  /* 只去掉上下外边距；水平 auto 必须保留：侧栏是 fixed，left 按「居中 1600 容器」
-     反算（50% - 800px），shell 一旦左贴边，宽于 1600 的窗口下侧栏就会压到主栏上。 */
-  margin: 0 auto;
+  /* 铺满视口：大屏不再锁 1600px 居中，四周留 16px 与侧栏的上下边距同宽，
+     主栏顶边因此与侧栏顶边对齐（见下方 ≥901 的 padding）。 */
+  width: 100%;
+  margin: 0;
   display: grid;
   grid-template-columns: var(--sidebar-w, 248px) minmax(0, 1fr);
   gap: 0;
@@ -285,25 +285,26 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
    侧栏不会再随页面滚走。left 用百分比而不是 100vw 计算，避免 Windows
    纵向滚动条占宽时和 .shell 的左边缘错开。 */
 @media (min-width: 901px) {
-  .shell { --sidebar-w: 224px; }
+  .shell { --sidebar-w: 224px; padding: 0 16px; }
   .shell.sidebar-collapsed { --sidebar-w: 76px; }
   .sidebar {
     position: fixed;
     top: 16px;
-    /* 与 .shell 的左缘对齐：shell 已改为贴边（margin 左右 0），所以这里不能再加
-       16px 偏移——否则侧栏右缘（16+224=240）会盖住从 224 开始的主栏 16px。 */
-    left: max(0px, calc(50% - 800px));
+    /* 与 .shell 的 16px 内边距对齐：shell 铺满视口并内缩 16px，侧栏贴同一左缘。 */
+    left: 16px;
     width: var(--sidebar-w);
     z-index: 30;
   }
-  /* 侧栏 fixed 后不再占网格单元，主栏需显式落在第 2 列 */
+  /* 侧栏 fixed 后不占网格单元：第一列只留出侧栏宽度，20px 的内容间距
+     由主栏自己的左内边距提供。 */
+  .shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
   .main { grid-column: 2; }
 }
 
 /* 长内容回到顶部：右下角悬浮按钮，滚过一屏后出现 */
 .back-to-top {
   position: fixed;
-  right: max(20px, calc(50% - 796px));
+  right: 20px;
   bottom: 24px;
   z-index: 900;
   width: 40px;
@@ -328,10 +329,10 @@ html[data-theme="dark"] *:hover::-webkit-scrollbar-thumb { background: rgba(152,
 
 /* 主区卡片：实体白/暗，浮在画布上 */
 .main { display: grid; gap: 14px; min-width: 0; align-content: start; }
-/* 桌面端侧栏是 fixed（左右 0 贴边），主栏从侧栏右缘开始；不留内边距时，
-   页面标题会紧贴侧栏边框，看起来像被压住。20px 与监控页 tab 面板一致。 */
+/* 主栏上下各 16px：顶边与侧栏 top 对齐，底边与侧栏 bottom 对齐；
+   左侧 20px 是侧栏与内容之间的间距，右侧留白由 .shell 的 16px 内边距提供。 */
 @media (min-width: 901px) {
-  .main { padding-left: 20px; }
+  .main { padding: 16px 0 16px 20px; }
 }
 .main > .card,
 .main .card {
@@ -1044,6 +1045,33 @@ html[data-theme="dark"] .badge.slate { color: #cbd5e1; }
 .provider-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; align-items: stretch; }
 .provider-card-grid .provider-card { margin-bottom: 0; }
 @media (max-width: 560px) { .provider-card-grid { grid-template-columns: 1fr; } }
+
+/* Provider 页也吃满可视高度（与日志页同一套口径）：面板底边与侧栏底边齐平，
+   头部与筛选固定，卡片区在面板内滚动；否则 Provider 少时面板下方留着一条空带。 */
+@media (min-width: 901px) {
+  .section-full.providers-page,
+  .section-full.providers-page > .card.panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .section-full.providers-page { height: calc(100dvh - 32px); }
+  .section-full.providers-page > .card.panel { flex: 1 1 auto; min-height: 0; }
+  .section-full.providers-page > .card.panel > .panel-header,
+  .section-full.providers-page > .card.panel > .providers-filter-toolbar,
+  .section-full.providers-page > .card.panel > .providers-toolbar,
+  .section-full.providers-page > .card.panel > .hint-text { flex: 0 0 auto; }
+  .section-full.providers-page .provider-card-grid,
+  .section-full.providers-page .provider-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  /* 网格的行是 auto 高度，默认 align-content:stretch 会把仅有的几行拉满整块区域。 */
+  .section-full.providers-page .provider-card-grid { align-content: start; }
+  /* 紧凑列表整块滚动，表头随内容走掉就认不出列，钉在容器顶部。 */
+  .section-full.providers-page .provider-list-head { position: sticky; top: 0; z-index: 1; }
+}
 
 .route-list, .model-list, .log-list { display: grid; gap: 10px; }
 .route-card, .provider-card, .model-card {
@@ -2415,9 +2443,9 @@ html[data-theme="dark"] .log-row.error { background: rgba(239, 68, 68, 0.12); bo
        min-content 顶到 .main 的 grid 列上，1100~1600px 的窗口整页横向溢出，
        面板右侧（调度决策的账号数）被挤出视口。横向滚动应该只发生在表内。 */
     min-width: 0;
-    /* shell 已去掉外边距、面板也没有上下外边距：卡片的顶/底就是 section 的顶/底，
-       高度按视口减 32px 算，底边与侧栏（bottom 16px）齐平。 */
-    height: calc(100dvh - 16px);
+    /* shell 已去掉外边距、主栏上下各 16px 内边距：卡片顶边在 16、底边落 100dvh-16，
+       与侧栏（top 16 / bottom 16）齐平，故高度是视口减 32。 */
+    height: calc(100dvh - 32px);
   }
   .section-full.logs-page > .traffic-panel {
     display: flex;
@@ -9400,7 +9428,7 @@ html[data-theme="light"] .mon-probe-pause.on { color: color-mix(in srgb, var(--a
   border: 1px solid var(--border);
   background: var(--surface-soft);
 }
-/* 事件流页：桌面端把整页撑到与 fixed 侧栏同高（shell 上下各 16px），
+/* 事件流页：桌面端把整页撑到与 fixed 侧栏同高（shell 上下各 16px + 主栏 16px 内边距），
    视窗吃掉剩余高度，脚注正好落在侧栏底缘；窄屏侧栏在文档流里，保持整页滚动。 */
 @media (min-width: 901px) {
   .monitoring-page.mon-stream-fill { display: flex; flex-direction: column; height: calc(100dvh - 32px); }
@@ -11893,7 +11921,7 @@ html[data-theme="dark"] .monitoring-page {
 .monitoring-page > .mon-notice { flex: none; }
 
 @media (min-width: 901px) {
-  .main:has(> .section-full > .monitoring-page) { height: calc(100vh - 0px); min-height: 0; overflow: hidden; }
+  .main:has(> .section-full > .monitoring-page) { height: 100vh; min-height: 0; overflow: hidden; }
   .monitoring-page {
     display: flex; flex-direction: column;
     height: 100%; min-height: 0;
@@ -11916,9 +11944,9 @@ html[data-theme="dark"] .monitoring-page {
 }
 /* 新的滚动模型下主栏已满宽，抵消极左内边距取消；tab 面板四边 20（参考 p-5）。 */
 .monitoring-page { margin-left: 0; }
-/* 参考的内容区从侧栏右缘直接开始（244 = 224 + 20 由内层 p-5 提供），
-   .main 不再额外加左内边距。 */
-@media (min-width: 901px) { .main { padding-left: 0; } }
+/* 参考的内容区从侧栏右缘直接开始（间距由内层 p-5 提供），
+   监控页不再额外加左内边距。 */
+@media (min-width: 901px) { .main:has(> .section-full > .monitoring-page) { padding-left: 0; } }
 /* grid 行默认按内容撑高，需显式约束才能让内层滚动容器拿到可用高度 */
 @media (min-width: 901px) {
   .main:has(> .section-full > .monitoring-page) > .section-full { min-height: 0; height: 100%; overflow: hidden; }
