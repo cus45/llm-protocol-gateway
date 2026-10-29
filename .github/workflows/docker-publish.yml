@@ -195,6 +195,24 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           set -euo pipefail
+
+          # 镜像仓库偶发 502（Docker Hub 的 registry 尤其常见），imagetools create 失败一次
+          # 就让整步挂掉；复制到 GHCR 时还可能只成功一部分、留下两边 tag 不一致。
+          # 重试是幂等的：已存在的索引会被覆盖成相同内容。
+          retry() {
+            local attempt=1 max=4 delay=10
+            until "$@"; do
+              if (( attempt >= max )); then
+                echo "重试 ${max} 次仍失败：$*" >&2
+                return 1
+              fi
+              echo "第 ${attempt} 次失败，${delay}s 后重试：$*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           DIGESTS=()
           for f in *; do DIGESTS+=("$DOCKERHUB_IMAGE@sha256:$f"); done
           echo "digest 个数：${#DIGESTS[@]}"
@@ -215,13 +233,13 @@ jobs:
           printf '    %s\n' "${hub_tags[@]}"
           hub_args=()
           for t in "${hub_tags[@]}"; do hub_args+=(-t "$t"); done
-          docker buildx imagetools create "${hub_args[@]}" "${DIGESTS[@]}"
+          retry docker buildx imagetools create "${hub_args[@]}" "${DIGESTS[@]}"
 
           # GHCR 不重复构建，直接把刚合成好的索引复制过去，两者 digest 一致。
           echo "==> $GHCR_IMAGE"
           printf '    %s\n' "${ghcr_tags[@]}"
           for i in "${!hub_tags[@]}"; do
-            docker buildx imagetools create -t "${ghcr_tags[$i]}" "${hub_tags[$i]}"
+            retry docker buildx imagetools create -t "${ghcr_tags[$i]}" "${hub_tags[$i]}"
           done
 
       - name: Inspect
