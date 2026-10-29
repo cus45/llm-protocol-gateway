@@ -172,7 +172,7 @@ jobs:
           fi
           arch -x86_64 /usr/bin/true
 
-      - name: build, sign, zip (两种架构)
+      - name: build, sign, package (两种架构)
         env:
           GATEWAY_APP_VERSION: ${{ needs.gate.outputs.version }}
           VERSION: ${{ needs.gate.outputs.version }}
@@ -211,12 +211,27 @@ jobs:
             ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
               "dist/llm-protocol-gateway-desktop-darwin-$ARCH.zip"
             ls -lh "dist/llm-protocol-gateway-desktop-darwin-$ARCH.zip"
+
+            # dmg 是 macOS 用户的常规安装方式：挂载后把 App 拖进 Applications 即可。
+            # /Applications 用软链表示，不占体积；README 一并放进去。
+            DMG_ROOT="$(mktemp -d)/dmg"
+            mkdir -p "$DMG_ROOT"
+            ditto "$APP" "$DMG_ROOT/LLM Protocol Gateway.app"
+            ln -s /Applications "$DMG_ROOT/Applications"
+            cp docs/macos-app.md "$DMG_ROOT/README.md"
+            hdiutil create -quiet -volname "LLM Protocol Gateway" -srcfolder "$DMG_ROOT" \
+              -fs HFS+ -format UDZO -ov \
+              "dist/llm-protocol-gateway-desktop-darwin-$ARCH.dmg"
+            hdiutil verify -quiet "dist/llm-protocol-gateway-desktop-darwin-$ARCH.dmg"
+            ls -lh "dist/llm-protocol-gateway-desktop-darwin-$ARCH.dmg"
           done
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-macos
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.dmg
           if-no-files-found: error
           retention-days: 7
 
@@ -358,25 +373,28 @@ jobs:
       - name: Checksums
         working-directory: assets
         run: |
-          find . -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' \) \
             -printf '%P\n' | sort | xargs sha256sum >SHA256SUMS
           cat SHA256SUMS
           n=$(wc -l <SHA256SUMS)
-          if [ "$n" -lt 12 ]; then
-            echo "::error::应有 12 个产物，实际 $n 个"
+          if [ "$n" -lt 14 ]; then
+            echo "::error::应有 14 个产物，实际 $n 个"
             exit 1
           fi
 
       - name: Release notes
         run: |
           VERSION="${{ needs.gate.outputs.version }}"
-          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          # 手工补发时 workflow 从 main 跑、tag 由输入指定，所以不能拿 GITHUB_REF_NAME
+          # 当前缀：那会算成 main^，变更日志错位。
+          TAG="${{ inputs.tag || github.ref_name }}"
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           {
             echo "## 下载"
             echo
             echo "| 用途 | 文件 |"
             echo "| --- | --- |"
-            echo "| macOS 桌面 App（Apple 芯片 / Intel） | \`llm-protocol-gateway-desktop-darwin-arm64.zip\` / \`-amd64.zip\` |"
+            echo "| macOS 桌面 App（Apple 芯片 / Intel） | \`llm-protocol-gateway-desktop-darwin-arm64.dmg\` / \`-amd64.dmg\`（挂载后拖进 Applications），另有 \`.zip\` 备用 |"
             echo "| Windows 桌面 App | \`llm-protocol-gateway-desktop-windows-amd64.exe\` |"
             echo "| Linux 桌面 App（AppImage / deb） | \`llm-protocol-gateway-desktop-linux-amd64.AppImage\` / \`.deb\` |"
             echo "| 无界面服务（Linux / macOS / Windows） | \`llm-protocol-gateway_${VERSION}_<系统>_<架构>.tar.gz\\|.zip\` |"
@@ -407,7 +425,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ inputs.tag || github.ref_name }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "LLM Protocol Gateway $TAG" --notes-file notes.md
             gh release upload "$TAG" assets/* --clobber

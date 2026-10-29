@@ -161,7 +161,7 @@ OpenAI Chat、OpenAI Responses、Claude、Gemini 四个端点集中展示，附�
 
 | 平台 | 产物 | 说明 |
 | --- | --- | --- |
-| macOS 11+ | `llm-protocol-gateway-desktop-darwin-arm64.zip` / `-amd64.zip` | 未公证，首次打开请右键 →「打开」 |
+| macOS 11+ | `llm-protocol-gateway-desktop-darwin-arm64.dmg` / `-amd64.dmg`（另有 `.zip`） | 挂载后把 App 拖进 Applications；未公证，首次打开请右键 →「打开」 |
 | Windows 10/11 | `llm-protocol-gateway-desktop-windows-amd64.exe` | 未签名，SmartScreen 提示时选「更多信息 → 仍要运行」 |
 | Linux x86_64 | `llm-protocol-gateway-desktop-linux-amd64.AppImage` / `.deb` | 需要 GTK3 与 WebKitGTK 4.0/4.1 |
 
