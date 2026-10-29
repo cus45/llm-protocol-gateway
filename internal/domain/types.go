@@ -758,7 +758,10 @@ type APIKey struct {
 	// chain round-robin, "least_used" picks the account that carried the
 	// smallest load in the last few minutes, and "quota" prefers the account
 	// with the most quota left (subscription windows read from the quota
-	// panels; accounts without a readable quota sit in the middle). A
+	// panels; accounts without a readable quota sit in the middle). "spread"
+	// balances conversations rather than load: a new conversation goes to the
+	// account holding the fewest live ones and stays there for two hours, so
+	// separate conversations run on separate accounts in parallel. A
 	// conversation's session pin still wins over all of them, so prompt caches
 	// survive; every mode still skips providers that are unavailable, disabled,
 	// revoked from the key's owner, or cross-protocol without a locked model.

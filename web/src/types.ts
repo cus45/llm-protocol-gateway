@@ -604,7 +604,7 @@ export type APIKey = {
   /** 运行期：最近一次真正返回响应的 Provider（「在服务」看它，而不是 activeProviderId）。 */
   servingProviderId?: string;
   /** 运行期：最近一次真正返回响应的 Provider（「在服务」看它，而不是 activeProviderId）。 */
-  /** 调度模式：'' / order 按链路顺序，rotate 轮流，least_used 挑近几分钟干活最少的，quota 挑额度剩得最多的。会话粘性始终优先。 */
+  /** 调度模式：'' / order 按链路顺序，rotate 轮流，least_used 挑近几分钟干活最少的，quota 挑额度剩得最多的，spread 把不同会话分到不同账号（每会话独占一个账号两小时）。会话粘性始终优先。 */
   scheduleMode?: string;
   /** 额度窗口：'' 不限 / 'day' 每天（网关本机时区 0 点重置）/ 'month' 每月 1 号 0 点。 */
   quotaWindow?: string;

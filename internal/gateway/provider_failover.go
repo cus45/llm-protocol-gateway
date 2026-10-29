@@ -1232,6 +1232,10 @@ func (s *Server) executeProtocolFlowWithFailover(
 				fmt.Errorf("%w: provider %q is not assigned to your account", errProviderNotAssigned, strings.TrimSpace(route.ProviderID))
 		}
 	}
+	// A conversation stays on the account that has its prompt cache, even when
+	// another conversation on this same key has moved the key-level sticky
+	// provider somewhere else.
+	sessionKey := sessionAffinityKey(r, req, matchedKey.ID)
 	attempts := s.failoverAttemptOrder(scheduleInput{
 		chain:   chain,
 		active:  matchedKey.ActiveProviderID,
@@ -1239,11 +1243,23 @@ func (s *Server) executeProtocolFlowWithFailover(
 		keyID:   matchedKey.ID,
 		advance: true,
 	})
-	// A conversation stays on the account that has its prompt cache, even when
-	// another conversation on this same key has moved the key-level sticky
-	// provider somewhere else.
-	sessionKey := sessionAffinityKey(r, req, matchedKey.ID)
 	attempts, pinnedProviderID := s.applySessionPin(sessionKey, attempts)
+	// spread mode decides a conversation's account here, before the request is
+	// sent: two conversations that start at the same moment would both read an
+	// empty table and pick the same account. A turn that settles nothing (every
+	// candidate skipped, or the whole chain failing) must not leave the
+	// conversation anchored to an account that never answered it.
+	reservedProviderID := ""
+	if isScheduleModeSpread(matchedKey.ScheduleMode) && sessionKey != "" && pinnedProviderID == "" && len(attempts) > 0 {
+		reservedProviderID = attempts[0]
+		s.setSessionPinFor(sessionKey, reservedProviderID, spreadSessionAffinityTTL)
+	}
+	served := false
+	defer func() {
+		if reservedProviderID != "" && !served {
+			s.clearSessionPin(sessionKey)
+		}
+	}()
 	noteScheduleDecision(r.Context(), matchedKey.ScheduleMode, attempts, pinnedProviderID)
 
 	var lastStatus int
@@ -1453,6 +1469,13 @@ func (s *Server) executeProtocolFlowWithFailover(
 			desiredActive = providerID
 		}
 		pinnedThisTurn := pinnedProviderID != "" && providerID == pinnedProviderID
+		// Spread mode is per conversation by definition: every conversation on
+		// this key sits somewhere else, so letting each of them write the
+		// key-level sticky provider would make it flip on every request (one
+		// row write each) and the value would mean nothing.
+		if isScheduleModeSpread(matchedKey.ScheduleMode) && sessionKey != "" {
+			pinnedThisTurn = true
+		}
 		if !pinnedThisTurn && strings.TrimSpace(matchedKey.ActiveProviderID) != desiredActive {
 			s.persistAPIKeyActiveProvider(matchedKey.ID, desiredActive)
 			if desiredActive != "" {
@@ -1463,8 +1486,14 @@ func (s *Server) executeProtocolFlowWithFailover(
 		}
 		s.noteKeyServingProvider(matchedKey.ID, providerID)
 		// The conversation now belongs to the account that answered it, and that
-		// account has now carried this request's work.
-		s.setSessionPin(sessionKey, providerID)
+		// account has now carried this request's work. An answer that was itself
+		// failover-worthy (the last candidate is out of accounts to move to) is
+		// not an answer: pinning the conversation to it would keep sending the
+		// next turns to an account that just refused this one.
+		if !attemptFailoverWorthy {
+			s.setSessionPinFor(sessionKey, providerID, s.sessionPinTTL(matchedKey.ScheduleMode))
+			served = true
+		}
 		s.noteProviderUsage(providerID, usage)
 		noteScheduleAttempt(r.Context(), monitor.RequestAttempt{ProviderID: providerID, Model: attemptModel, Status: status, Ms: elapsed, Reason: attemptReasonServed})
 		if !writer.passthrough {

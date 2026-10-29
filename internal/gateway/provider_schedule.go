@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/luca/llm-protocol-gateway/internal/domain"
 )
@@ -19,20 +20,37 @@ const (
 	scheduleModeRotate    = "rotate"
 	scheduleModeLeastUsed = "least_used"
 	scheduleModeQuota     = "quota"
+	scheduleModeSpread    = "spread"
 )
 
 // ScheduleModes are the values the console may set ("" is accepted and means
 // the same as "order").
-var ScheduleModes = []string{"", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota}
+var ScheduleModes = []string{"", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota, scheduleModeSpread}
 
 func normalizeScheduleMode(mode string) (string, error) {
 	trimmed := strings.ToLower(strings.TrimSpace(mode))
 	switch trimmed {
-	case "", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota:
+	case "", scheduleModeOrder, scheduleModeRotate, scheduleModeLeastUsed, scheduleModeQuota, scheduleModeSpread:
 		return trimmed, nil
 	default:
-		return "", fmt.Errorf("unknown schedule mode %q (expected order, rotate, least_used or quota)", mode)
+		return "", fmt.Errorf("unknown schedule mode %q (expected order, rotate, least_used, quota or spread)", mode)
 	}
+}
+
+// isScheduleModeSpread reports whether the mode balances separate conversations
+// across accounts instead of picking by account-level load.
+func isScheduleModeSpread(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), scheduleModeSpread)
+}
+
+// sessionPinTTL is how long a conversation keeps its account under mode. The
+// spread mode holds on longer, because it is the only thing that assigns a
+// conversation an account of its own.
+func (s *Server) sessionPinTTL(mode string) time.Duration {
+	if isScheduleModeSpread(mode) {
+		return spreadSessionAffinityTTL
+	}
+	return sessionAffinityTTL
 }
 
 // scheduleInput is what the scheduler decides from. It is deliberately a plain
@@ -77,6 +95,8 @@ func (s *Server) failoverAttemptOrder(input scheduleInput) []string {
 		ordered = s.leastUsedChain(chain)
 	case scheduleModeQuota:
 		ordered = s.quotaHeadroomChain(chain)
+	case scheduleModeSpread:
+		ordered = s.spreadChain(chain)
 	default:
 		ordered = rotateChainAt(chain, input.active)
 	}
@@ -153,6 +173,45 @@ func (s *Server) leastUsedChain(chain []string) []string {
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		left, right := loads[ordered[i]], loads[ordered[j]]
+		if left.inflight != right.inflight {
+			return left.inflight < right.inflight
+		}
+		return left.work < right.work
+	})
+	return ordered
+}
+
+// spreadChain puts the account holding the fewest live conversations first, so
+// separate conversations land on separate accounts instead of all starting on
+// the preferred one. Once a conversation has answered a turn its session pin
+// keeps it there (applySessionPin runs after this ordering), so the balance is
+// per conversation, not per request. Ties fall back to the live load signals
+// least_used uses, and finally to the administrator's chain order.
+//
+// Only conversations are counted, not accounts: the point of the mode is "one
+// account per conversation", which rotate cannot promise because its cursor
+// advances per request.
+func (s *Server) spreadChain(chain []string) []string {
+	ordered := append([]string(nil), chain...)
+	type slot struct {
+		sessions int
+		inflight int
+		work     int64
+	}
+	held := s.sessionPins.countsByProvider()
+	slots := make(map[string]slot, len(ordered))
+	for _, providerID := range ordered {
+		provider := domain.Provider{ID: providerID}
+		if stored, err := s.router.ProviderByID(providerID); err == nil {
+			provider = stored
+		}
+		slots[providerID] = slot{sessions: held[providerID], inflight: s.providerInFlight(provider), work: s.providerWorkload(providerID)}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := slots[ordered[i]], slots[ordered[j]]
+		if left.sessions != right.sessions {
+			return left.sessions < right.sessions
+		}
 		if left.inflight != right.inflight {
 			return left.inflight < right.inflight
 		}

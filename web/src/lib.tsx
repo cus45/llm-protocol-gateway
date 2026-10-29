@@ -1976,6 +1976,7 @@ export const ScheduleModeOptions: { value: string; label: string; hint: string }
   { value: 'rotate', label: '轮流分配（rotate）', hint: '每个请求换下一个候选，把流量摊到整条链上。' },
   { value: 'least_used', label: '最空闲优先（least_used）', hint: '按近几分钟各账号实际处理的 token 量排序，缓存命中不计入。' },
   { value: 'quota', label: '额度最多优先（quota）', hint: '读额度面板已缓存的窗口余量，剩得多的先用；读不到额度的账号排在中位。' },
+  { value: 'spread', label: '会话分散（spread）', hint: '按每个账号当前挂着的活跃会话数排序：新会话落到会话最少的账号，之后钉在该账号两小时（Prompt Cache 最省）。不同会话并行在不同账号上。' },
 ];
 
 export function scheduleModeLabel(mode?: string) {

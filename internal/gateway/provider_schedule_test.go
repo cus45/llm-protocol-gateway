@@ -60,7 +60,7 @@ func TestFailoverAttemptOrderMovesUnavailableLast(t *testing.T) {
 
 func TestNormalizeScheduleMode(t *testing.T) {
 	t.Parallel()
-	for _, accepted := range []string{"", "order", "rotate", "least_used", "quota", " Quota ", "ORDER"} {
+	for _, accepted := range []string{"", "order", "rotate", "least_used", "quota", "spread", " Quota ", "ORDER", " Spread "} {
 		mode, err := normalizeScheduleMode(accepted)
 		if err != nil {
 			t.Fatalf("%q rejected: %v", accepted, err)
@@ -417,5 +417,160 @@ func TestSessionPinOutranksScheduleMode(t *testing.T) {
 	}
 	if f.preferred.Load() != 5 || f.backup.Load() != 0 {
 		t.Fatalf("the conversation should have stayed on one account, preferred=%d backup=%d", f.preferred.Load(), f.backup.Load())
+	}
+}
+
+// spread mode gives every conversation an account of its own: the second
+// conversation opening on the same chain must not land on the account that is
+// already holding the first one.
+func TestScheduleModeSpreadGivesEachConversationItsOwnAccount(t *testing.T) {
+	f := newFailoverFixture(t, 0, 0, "", withScheduleMode(scheduleModeSpread))
+	// chat-a opens first and takes the head of the chain.
+	if rec := f.requestWithSession(t, "chat-a"); rec.Code != http.StatusOK {
+		t.Fatalf("chat-a turn failed: %d", rec.Code)
+	}
+	if !strings.Contains(f.requestWithSession(t, "chat-a").Body.String(), "preferred") {
+		t.Fatal("chat-a should have kept the account it was given")
+	}
+	// chat-b arrives with the preferred account already holding one
+	// conversation, so it goes to the one holding none.
+	second := f.requestWithSession(t, "chat-b")
+	if !strings.Contains(second.Body.String(), "backup") {
+		t.Fatalf("the second conversation should have taken the free account: %s", second.Body.String())
+	}
+	for i := 0; i < 3; i++ {
+		if rec := f.requestWithSession(t, "chat-b"); rec.Code != http.StatusOK {
+			t.Fatalf("chat-b turn %d failed", i)
+		}
+	}
+	// Two conversations, two accounts, one each.
+	if f.preferred.Load() != 2 || f.backup.Load() != 4 {
+		t.Fatalf("expected a 2/4 split, preferred=%d backup=%d", f.preferred.Load(), f.backup.Load())
+	}
+}
+
+// Once the pinning account fails, the conversation moves to another account and
+// stays there — the failure is a move, not a return to the old account on the
+// next turn.
+func TestScheduleModeSpreadFollowsTheConversationAcrossFailover(t *testing.T) {
+	f := newFailoverFixture(t, 0, 0, "", withScheduleMode(scheduleModeSpread))
+	if rec := f.requestWithSession(t, "chat-a"); rec.Code != http.StatusOK {
+		t.Fatalf("first turn failed: %d", rec.Code)
+	}
+	f.setPreferredStatus(http.StatusTooManyRequests)
+	if rec := f.requestWithSession(t, "chat-a"); rec.Code != http.StatusOK {
+		t.Fatalf("the conversation should have failed over, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The account is down for new turns too, but chat-a now belongs to the
+	// backup and must not even try the failed one again.
+	f.setPreferredStatus(0)
+	before := f.preferred.Load()
+	if rec := f.requestWithSession(t, "chat-a"); rec.Code != http.StatusOK {
+		t.Fatalf("third turn failed: %d", rec.Code)
+	}
+	if f.preferred.Load() != before {
+		t.Fatalf("the conversation went back to the failed account, hits=%d", f.preferred.Load())
+	}
+	// A different conversation is free to take the recovered account.
+	other := f.requestWithSession(t, "chat-c")
+	if !strings.Contains(other.Body.String(), "preferred") {
+		t.Fatalf("a new conversation should take the free account: %s", other.Body.String())
+	}
+}
+
+// A conversation held by the spread mode keeps its account longer than the
+// default window, because that account is what the mode promised it.
+func TestSpreadModeSessionPinOutlivesTheDefaultWindow(t *testing.T) {
+	t.Parallel()
+	s := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	s.setSessionPinFor("session-spread", "p1", s.sessionPinTTL(scheduleModeSpread))
+	pin, ok := s.pinStore().pins["session-spread"]
+	if !ok {
+		t.Fatal("the pin was not stored")
+	}
+	held := time.Until(pin.expiresAt)
+	if held <= sessionAffinityTTL {
+		t.Fatalf("spread pins must outlive the default window, held %v", held)
+	}
+	if s.sessionPinTTL(scheduleModeRotate) != sessionAffinityTTL {
+		t.Fatal("the other modes must keep the default window")
+	}
+}
+
+// Without a conversation identity spread cannot tell conversations apart, so
+// it falls back to the load signals instead of never balancing at all.
+func TestScheduleModeSpreadWithoutSessionFallsBackToLoad(t *testing.T) {
+	t.Parallel()
+	s := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	s.noteProviderUsage("p1", TokenUsage{InputTokens: 4000, OutputTokens: 200})
+	chain := []string{"p1", "p2"}
+	if got := strings.Join(s.failoverAttemptOrder(scheduleInput{chain: chain, mode: scheduleModeSpread, keyID: "k"}), ","); got != "p2,p1" {
+		t.Fatalf("the loaded account should step aside, got %v", got)
+	}
+}
+
+// spread counts conversations, not requests: a conversation that has answered
+// many turns still occupies one slot.
+func TestSpreadChainCountsSessionsNotTurns(t *testing.T) {
+	t.Parallel()
+	s := NewServer(NewRouter(domain.GatewayState{}), monitor.NewStore())
+	chain := []string{"p1", "p2", "p3"}
+	s.setSessionPin("s-a", "p1")
+	s.setSessionPin("s-b", "p2")
+	if got := strings.Join(s.spreadChain(chain), ","); got != "p3,p1,p2" {
+		t.Fatalf("the account holding no conversation leads, got %v", got)
+	}
+	s.setSessionPin("s-c", "p3")
+	s.setSessionPin("s-d", "p1")
+	// p1 now holds two; the tie between p2 and p3 keeps the chain order.
+	if got := strings.Join(s.spreadChain(chain), ","); got != "p2,p3,p1" {
+		t.Fatalf("got %v", got)
+	}
+	// Expired conversations stop occupying a slot.
+	store := s.pinStore()
+	store.mu.Lock()
+	store.pins["s-c"] = sessionPin{providerID: "p3", expiresAt: time.Now().Add(-time.Minute)}
+	store.mu.Unlock()
+	if got := strings.Join(s.spreadChain(chain), ","); got != "p3,p2,p1" {
+		t.Fatalf("an expired conversation must free its account, got %v", got)
+	}
+}
+
+// An attempt that never got an answer must not leave the conversation anchored
+// to that account: the next turn has to choose again from scratch.
+func TestScheduleModeSpreadDropsTheReservationWhenNothingServed(t *testing.T) {
+	f := newFailoverFixture(t, 0, 0, "", withScheduleMode(scheduleModeSpread))
+	f.setPreferredStatus(http.StatusServiceUnavailable)
+	f.setBackupStatus(http.StatusServiceUnavailable)
+	if rec := f.requestWithSession(t, "chat-down"); rec.Code == http.StatusOK {
+		t.Fatal("expected the turn to fail when both accounts are down")
+	}
+	sessionKey := sessionAffinityKey(nil, map[string]any{"session_id": "chat-down"}, "k-sched")
+	if pinned := f.server.pinStore().sessionPin(sessionKey); pinned != "" {
+		t.Fatalf("a failed turn must not pin the conversation, got %q", pinned)
+	}
+	// Both accounts recover: the conversation is free to be placed again.
+	f.setPreferredStatus(0)
+	if rec := f.requestWithSession(t, "chat-down"); rec.Code != http.StatusOK {
+		t.Fatalf("the next turn should be served, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if pinned := f.server.pinStore().sessionPin(sessionKey); pinned == "" {
+		t.Fatal("the served turn must pin the conversation")
+	}
+}
+
+// The last candidate refusing the turn is not "the account that answered":
+// no mode may pin the conversation to it, or the next turn would be sent
+// straight back to an account that just refused.
+func TestAServedRefusalDoesNotPinTheConversation(t *testing.T) {
+	f := newFailoverFixture(t, 0, 0, "")
+	f.setPreferredStatus(http.StatusServiceUnavailable)
+	f.setBackupStatus(http.StatusServiceUnavailable)
+	if rec := f.requestWithSession(t, "chat-refused"); rec.Code == http.StatusOK {
+		t.Fatal("expected the turn to fail")
+	}
+	sessionKey := sessionAffinityKey(nil, map[string]any{"session_id": "chat-refused"}, "k-sched")
+	if pinned := f.server.pinStore().sessionPin(sessionKey); pinned != "" {
+		t.Fatalf("a refusal must not pin the conversation, got %q", pinned)
 	}
 }

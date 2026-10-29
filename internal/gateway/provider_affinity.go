@@ -23,6 +23,12 @@ const (
 	// creates a session id per conversation, and an unbounded map would grow
 	// with the number of past conversations.
 	sessionAffinityMaxPins = 10000
+	// spreadSessionAffinityTTL is how long a conversation keeps its account in
+	// the spread mode. Longer than the default on purpose: that mode exists to
+	// give every conversation an account of its own, and a pin that lapses
+	// while the user is away sends the conversation to a different account with
+	// a cold prompt cache when it comes back.
+	spreadSessionAffinityTTL = 2 * time.Hour
 	// sessionPinFlushDelay is how long a changed pin waits before it is written:
 	// pins change on every successful turn, and the delay turns a busy gateway's
 	// thousands of turns into a handful of small writes.
@@ -172,6 +178,13 @@ func (s *Server) setSessionPin(sessionKey, providerID string) {
 	s.pinStore().set(sessionKey, providerID)
 }
 
+// setSessionPinFor keeps a conversation on providerID for ttl. The spread mode
+// uses a longer one: the account belongs to that conversation, and letting the
+// pin lapse while the user is away would silently move it to another account.
+func (s *Server) setSessionPinFor(sessionKey, providerID string, ttl time.Duration) {
+	s.pinStore().setFor(sessionKey, providerID, ttl)
+}
+
 func (s *Server) clearSessionPin(sessionKey string) {
 	s.pinStore().clear(sessionKey)
 }
@@ -198,6 +211,33 @@ func (s *Server) applySessionPin(sessionKey string, attempts []string) ([]string
 	return attempts, ""
 }
 
+// countsByProvider is how many live conversations each provider is holding.
+// Expired pins are dropped on the way through, so a conversation that went
+// quiet stops occupying a slot in the spread mode.
+//
+// Read live on every decision instead of a cached snapshot: two conversations
+// opening at the same moment must see each other's reservation, and a second
+// of staleness would put both on the same account, which is exactly what the
+// mode exists to prevent.
+func (store *sessionPinStore) countsByProvider() map[string]int {
+	counts := make(map[string]int)
+	if store == nil {
+		return counts
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	now := store.now()
+	for key, pin := range store.pins {
+		if now.After(pin.expiresAt) {
+			delete(store.pins, key)
+			store.scheduleFlushLocked(key)
+			continue
+		}
+		counts[pin.providerID]++
+	}
+	return counts
+}
+
 // sessionPin returns the provider a session is pinned to, "" when there is no
 // live pin. Expired pins are dropped on read.
 func (store *sessionPinStore) sessionPin(sessionKey string) string {
@@ -219,12 +259,20 @@ func (store *sessionPinStore) sessionPin(sessionKey string) string {
 }
 
 func (store *sessionPinStore) set(sessionKey, providerID string) {
+	store.setFor(sessionKey, providerID, 0)
+}
+
+// setFor pins a conversation for ttl; 0 means the store's default window.
+func (store *sessionPinStore) setFor(sessionKey, providerID string, ttl time.Duration) {
 	if store == nil || sessionKey == "" || providerID == "" {
 		return
 	}
+	if ttl <= 0 {
+		ttl = store.ttlOrDefault()
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.pins[sessionKey] = sessionPin{providerID: providerID, expiresAt: store.now().Add(store.ttlOrDefault())}
+	store.pins[sessionKey] = sessionPin{providerID: providerID, expiresAt: store.now().Add(ttl)}
 	store.scheduleFlushLocked(sessionKey)
 	if len(store.pins) <= store.maxOrDefault() {
 		return

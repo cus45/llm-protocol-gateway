@@ -131,3 +131,28 @@ func TestSnapshotKeyProfileCapturesScheduleMode(t *testing.T) {
 		t.Fatal("the snapshot profile is missing")
 	}
 }
+
+// A scheme may carry the spread policy too: switching to it must move the key
+// onto conversation-spreading, and switching away must not leave it behind.
+func TestScheduleModeSpreadSurvivesASchemeSwitch(t *testing.T) {
+	t.Parallel()
+	router := scheduleModeRouter(t)
+	spreadProfile, err := router.AddKeyProfile("k1", domain.KeyProfile{
+		Name: "spread scheme", RouteID: "r1", StreamEnabled: true,
+		ScheduleMode:        scheduleModeSpread,
+		FallbackProviderIDs: []string{"p2"},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spreadProfile.ScheduleMode != scheduleModeSpread {
+		t.Fatalf("activating the scheme must apply spread, got %q", spreadProfile.ScheduleMode)
+	}
+	restored, err := router.SwitchKeyProfile("k1", spreadProfile.Profiles[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ScheduleMode == scheduleModeSpread {
+		t.Fatal("switching back must not keep spread")
+	}
+}
