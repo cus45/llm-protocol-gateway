@@ -433,6 +433,15 @@ func (s *converterStreamWriter) WriteHeader(statusCode int) {
 
 func (s *converterStreamWriter) Write(p []byte) (int, error) {
 	if s.hw == nil {
+		// A refusal is not a reply: hold it no matter how long the turn has
+		// been waiting, so the failover loop can still hand the turn to the
+		// next account. Releasing on the hold deadline sent the refusal to the
+		// client as the answer (Qoder's queued model took 1.5–2.6s to say
+		// "busy", exactly past converterHoldLimit).
+		if s.turnIsRefusal(p) {
+			_, _ = s.pending.Write(p)
+			return len(p), nil
+		}
 		// Held until the turn says something: the leading frames of every
 		// protocol (message_start, response.created, the first Chat role chunk)
 		// say only that a reply began, and a failure behind them can still be
@@ -505,6 +514,66 @@ func (s *converterStreamWriter) turnHasContent(p []byte) bool {
 	return false
 }
 
+// hasJSONValue reports whether a raw JSON field is present and not null.
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
+// hasJSONObject reports whether a raw JSON field is a non-empty object.
+func hasJSONObject(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(trimmed, "{") && trimmed != "{}"
+}
+
+// turnIsRefusal reports whether this chunk is the vendor refusing the request
+// rather than answering it. Every protocol shapes it differently — Claude's
+// "event: error" frame, an OpenAI chunk whose only field is "error", a
+// Responses "response.failed" — but all of them are the turn saying no, and
+// none of them may be treated as the client's answer while it can still go to
+// another account.
+func (s *converterStreamWriter) turnIsRefusal(p []byte) bool {
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimSpace(line)
+		if kind, ok := strings.CutPrefix(line, "event:"); ok {
+			if strings.TrimSpace(kind) == "error" {
+				return true
+			}
+			continue
+		}
+		if payload, ok := strings.CutPrefix(line, "data:"); ok {
+			line = strings.TrimSpace(payload)
+		}
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Type    string          `json:"type"`
+			Error   json.RawMessage `json:"error"`
+			Choices []any           `json:"choices"`
+			Delta   json.RawMessage `json:"delta"`
+			Content json.RawMessage `json:"content"`
+			Usage   json.RawMessage `json:"usage"`
+		}
+		if json.Unmarshal([]byte(line), &chunk) != nil {
+			continue
+		}
+		// An error field only makes the frame a refusal when the frame carries
+		// no part of an answer: a chunk that also has choices/delta/content is
+		// a reply that happens to echo something, not a turned-away request.
+		if len(chunk.Choices) > 0 || hasJSONValue(chunk.Delta) || hasJSONValue(chunk.Content) {
+			continue
+		}
+		if strings.EqualFold(chunk.Type, "error") || strings.HasPrefix(strings.ToLower(chunk.Type), "response.failed") {
+			return true
+		}
+		if hasJSONObject(chunk.Error) {
+			return true
+		}
+	}
+	return false
+}
+
 // heldTurn is what the writer holds before the turn says anything.
 func (s *converterStreamWriter) heldTurn() []byte {
 	return append([]byte(nil), s.pending.Bytes()...)
@@ -546,9 +615,17 @@ func (s *converterStreamWriter) Committed() bool { return s.hw != nil && s.hw.Co
 // Finish stops the heartbeat and returns the capped copy of what went out.
 func (s *converterStreamWriter) Finish() []byte {
 	// A turn that never said anything but its opening still sent that opening:
-	// it is not held back from a client that has nothing else.
+	// it is not held back from a client that has nothing else. A refusal is the
+	// exception — releasing it here would answer the client with the very
+	// error the failover loop is about to retry elsewhere. It still belongs in
+	// the log copy: the request log is where an operator reads what the vendor
+	// said.
 	if s.hw == nil && s.pending.Len() > 0 {
-		s.release()
+		if !s.turnIsRefusal(s.pending.Bytes()) {
+			s.release()
+		} else {
+			_, _ = s.tee.Write(s.pending.Bytes())
+		}
 	}
 	if s.stop != nil {
 		s.stop()

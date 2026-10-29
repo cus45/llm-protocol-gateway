@@ -280,7 +280,8 @@ func TestQoderChunkReaderMarksQueueFrameAsBusy(t *testing.T) {
 // Qoder sends its usage in a chunk of its own after the finish reason, with no
 // choices in it. Reading to the finish and stopping there is what made every
 // Qoder request count as 0 tokens.
-func TestQoderChunkReaderReadsUsageAfterTheFinishFrame(t *testing.T) {	reply := qoderChunkFrame(t, map[string]any{"content": "done"}, "stop", nil) +
+func TestQoderChunkReaderReadsUsageAfterTheFinishFrame(t *testing.T) {
+	reply := qoderChunkFrame(t, map[string]any{"content": "done"}, "stop", nil) +
 		qoderFrame(t, map[string]any{"statusCodeValue": 200, "body": `{"usage":{"prompt_tokens":120,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":64}}}`})
 	lines := drainQoderReader(t, reply)
 	var last map[string]any

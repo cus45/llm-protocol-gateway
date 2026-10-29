@@ -338,9 +338,9 @@ func qoderEnvelopeQueued(code json.Number, body []byte) bool {
 		return true
 	}
 	var state struct {
-		IsQueued          bool   `json:"isQueued"`
-		ServiceAvailable  *bool  `json:"serviceAvailable"`
-		RetryAfterSeconds int    `json:"retryAfterSeconds"`
+		IsQueued          bool  `json:"isQueued"`
+		ServiceAvailable  *bool `json:"serviceAvailable"`
+		RetryAfterSeconds int   `json:"retryAfterSeconds"`
 	}
 	if json.Unmarshal(body, &state) != nil {
 		return false
