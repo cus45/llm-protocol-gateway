@@ -191,8 +191,11 @@ jobs:
             test -x "$APP/Contents/Resources/bin/bun"
             test -f "$APP/Contents/Resources/cursor-bridge/standalone.ts"
             codesign --verify --deep --strict "$APP" || codesign --force --deep --sign - "$APP"
-            # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位
-            strings "$APP/Contents/MacOS/LLM Protocol Gateway" | grep -q "$VERSION"
+            # 产物必须带本次版本号，否则控制台与 App 的升级判断会错位。
+            # 先取回全文再匹配：`strings | grep -q` 在 pipefail 下会因为 grep 提前
+            # 退出、strings 收到 SIGPIPE 而误判失败。
+            symbols="$(strings "$APP/Contents/MacOS/LLM Protocol Gateway")"
+            grep -qF "$VERSION" <<<"$symbols"
             plutil -lint "$APP/Contents/Info.plist"
 
             STAGE="$(mktemp -d)/llm-protocol-gateway-$VERSION"
